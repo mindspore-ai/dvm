@@ -78,8 +78,8 @@ class VKernel;
 
 struct ShapeRef {
   ShapeRef() {}
-  ShapeRef(const std::vector<int64_t> &other) : data(other.data()), size(other.size()) {}
-  ShapeRef& operator=(const std::vector<int64_t> &other) {
+  explicit ShapeRef(const std::vector<int64_t> &other) : data(other.data()), size(other.size()) {}
+  ShapeRef &operator=(const std::vector<int64_t> &other) {
     data = other.data();
     size = other.size();
     return *this;
@@ -104,37 +104,37 @@ class Kernel {
   void Reserve(size_t size);
   // int ParallelNext();     -- TODO: parallel fusion
 
-  NDObject* Load(void *addr, ShapeRef *shape, DType type);
-  NDObject* Store(void *addr, NDObject *input);
+  NDObject *Load(void *addr, ShapeRef *shape, DType type);
+  NDObject *Store(void *addr, NDObject *input);
 
-  NDObject* Unary(int op_type, NDObject *input);
-  NDObject* Binary(int op_type, NDObject *lhs, NDObject *rhs);
-  NDObject* Binary(int op_type, float val, NDObject *rhs);
-  NDObject* Binary(int op_type, NDObject *lhs, float val);
-  NDObject* Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims);
-  NDObject* Select(NDObject *cond, NDObject *lhs, NDObject *rhs);
+  NDObject *Unary(int op_type, NDObject *input);
+  NDObject *Binary(int op_type, NDObject *lhs, NDObject *rhs);
+  NDObject *Binary(int op_type, float val, NDObject *rhs);
+  NDObject *Binary(int op_type, NDObject *lhs, float val);
+  NDObject *Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims);
+  NDObject *Select(NDObject *cond, NDObject *lhs, NDObject *rhs);
 
-  NDObject* Cast(NDObject *input, DType type);
-  NDObject* Broadcast(NDObject *input, ShapeRef *shape);
-  NDObject* Broadcast(float val, ShapeRef *shape, DType type, bool dummy_load);
-  NDObject* Reshape(NDObject *input, ShapeRef *shape);
-  NDObject* Copy(NDObject *input);
+  NDObject *Cast(NDObject *input, DType type);
+  NDObject *Broadcast(NDObject *input, ShapeRef *shape);
+  NDObject *Broadcast(float val, ShapeRef *shape, DType type, bool dummy_load);
+  NDObject *Reshape(NDObject *input, ShapeRef *shape);
+  NDObject *Copy(NDObject *input);
 
-  NDObject* ElemAny(NDObject *input);
+  NDObject *ElemAny(NDObject *input);
 
   int CodeGen();
-  int Launch(void* stream);
-  int Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void* stream);
-  int Launch(NDObject **op, int size, void* stream);
+  int Launch(void *stream);
+  int Launch(const RelocTable &reloc_table, void **inputs, void **outputs, void *stream);
+  int Launch(NDObject **op, int size, void *stream);
 
-  ShapeRef* GetShape(NDObject* op) const;
-  DType GetDType(NDObject* op) const;
+  ShapeRef *GetShape(NDObject *op) const;
+  DType GetDType(NDObject *op) const;
 
-  const char* DisAssemble();
-  VKernel* GetImpl() const { return kernel_; }
+  const char *DisAssemble();
+  VKernel *GetImpl() const { return kernel_; }
 
  private:
   VKernel *kernel_;
 };
-} // namespace dvm
-#endif // _DVM_H_
+}  // namespace dvm
+#endif  // _DVM_H_

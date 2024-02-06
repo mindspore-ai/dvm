@@ -80,10 +80,10 @@ struct vUnary {
     return size;
   }
 };
-
+template<typename T>
 struct vBinaryS {
   uint64_t head; // ext: xd(18) << 18 | xn(18)
-  float scalar;
+  T scalar;
   uint32_t data; // rs(4) << 18 | repeat(18)
 }INSN_ATTR;
 
@@ -143,9 +143,10 @@ struct vCompare {
   }
 };
 
+template <typename T>
 struct vBroadcastS {
   uint64_t head; // ext: xd(18)
-  float scalar;
+  T scalar;
   uint32_t data;  // rs(4) << 16) | repeat(18)
 }INSN_ATTR;
 
@@ -304,10 +305,11 @@ struct vDMA {
   uint64_t has_round;
   uint64_t round;
   uint64_t factor;
+  uint64_t last_tile_idx;
   // pc[0]: has_round(1) << 20 | xn(18)
   // pc[1]: gm
   // pc[2]: tile_stride(32) << 32 | tail_lenburst(16) << 16 | lenburst(16)
-  // pc[3]: round << 32 | factor
+  // pc[3]: last_tile_idx(24) << 40 | round(20) << 20 | factor(20)
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vDMA &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.has_round = head >> (V_HEAD_EXT_OFFSET + 20);
@@ -319,15 +321,56 @@ struct vDMA {
   }
   __aicore_inline__ void DecodeRound(bcode_t pc, vDMA &op) {
     uint64_t data = pc[3];
-    op.round = data >> 32;
-    op.factor = data & 0xfffffffful;
+    op.last_tile_idx = data >> 40;
+    op.round = (data >> 20) & 0xffffful;
+    op.factor = data & 0xffffful;
+  }
+  __aicore_inline__ void UpdateTileIdx(bcode_t pc, uint64_t idx) {
+    pc[3] = (pc[3] & 0xfffffffffful) | idx << 40;
   }
   __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vDMA &op) {
     uint64_t size = 4;
     pc[0] = vMakeHead(id, op.has_round << 20 | op.xn, size, 0);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.tile_stride << 32 | op.tail_lenburst << 16 | op.lenburst;
-    pc[3] = op.round << 32 | op.factor;
+    pc[3] = 0xfffffful << 40 | op.round << 20 | op.factor;
+    return size;
+  }
+  __aicore_inline__ void Reloc(bcode_t pc, uint8_t *gm) {
+    pc[1] = reinterpret_cast<uint64_t>(gm);
+  }
+};
+
+struct vSliceLoad2D {
+  __gm__ uint8_t *gm;
+  uint64_t xn;
+  uint64_t tile_stride;
+  uint64_t offset;
+  uint64_t src_n;
+  uint64_t src_m;
+  uint64_t slice_n;
+  uint64_t slice_m;
+  uint64_t pad_size;
+
+  __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vSliceLoad2D &op) {
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
+    op.tile_stride = head >> (V_HEAD_EXT_OFFSET + 18);
+    uint64_t data = pc[2];
+    op.src_n = data & 0xfffful;
+    op.src_m = (data >> 16) & 0xfffful;
+    op.slice_n = (data >> 32) & 0xfffful;
+    op.slice_m = (data >> 48) & 0xfffful;
+    data = pc[3];
+    op.pad_size = data;
+  }
+
+  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vSliceLoad2D &op) {
+    uint64_t size = 4;
+    pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, 0);
+    pc[1] = reinterpret_cast<uint64_t>(op.gm);
+    pc[2] = op.slice_m << 48 | op.slice_n << 32 | op.src_m << 16 | op.src_n;
+    pc[3] = op.pad_size;
     return size;
   }
   __aicore_inline__ void Reloc(bcode_t pc, uint8_t *gm) {
@@ -346,10 +389,11 @@ struct vLoad {
   uint64_t has_round;
   uint64_t round;
   uint64_t factor;
+  uint64_t last_tile_idx;
   // pc[0]: tile_stride(18) << 18 | xn(18)
   // pc[1]: from
   // pc[2]: // has_round(1) << 62 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
-  // pc[3]: round << 32 | factor
+  // pc[3]: last_tile_idx(24) << 40 | round(20) << 20 | factor(20)
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vLoad &op) {
     op.tile_stride = head >> (V_HEAD_EXT_OFFSET + 18);
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
@@ -363,15 +407,19 @@ struct vLoad {
   }
   __aicore_inline__ void DecodeRound(bcode_t pc, vLoad &op) {
     uint64_t data = pc[3];
-    op.round = data >> 32;
-    op.factor = data & 0xfffffffful;
+    op.last_tile_idx = data >> 40;
+    op.round = (data >> 20) & 0xffffful;
+    op.factor = data & 0xffffful;
+  }
+  __aicore_inline__ void UpdateTileIdx(bcode_t pc, uint64_t idx) {
+    pc[3] = (pc[3] & 0xfffffffffful) | idx << 40;
   }
   __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vLoad &op) {
     uint32_t size = 4;
     pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, 0);
     pc[1] = reinterpret_cast<uint64_t>(op.from);
     pc[2] = op.has_round << 62 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
-    pc[3] = op.round << 32 | op.factor;
+    pc[3] = 0xfffffful << 40 | op.round << 20 | op.factor;
     return size;
   }
   __aicore_inline__ void Reloc(bcode_t pc, __gm__ void *gm) {
@@ -398,16 +446,14 @@ struct vStoreAtomic {
   uint64_t tile_stride;
   uint64_t round;
   uint64_t factor;
-  uint64_t type;
   // pc[0]: tile_stride(18) << 18 | xn(18)
-  // pc[1]: type(8) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
+  // pc[1]: pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
   // pc[2]: round(32) << 32 | factor(32)
   // pc[4]: to
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vStoreAtomic &op) {
     op.tile_stride = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
-    op.type = data >> 60;
     op.pad_size = (data >> 50) & 0xfful;
     op.iter_size = (data >> 32) & 0x3fffful;
     op.iter_tail = (data >> 16) & 0xfffful;
@@ -421,7 +467,7 @@ struct vStoreAtomic {
     uint32_t size = 4;
     uint64_t ext = op.tile_stride << V_X_BITS | op.xn;
     pc[0] = vMakeHead(id, ext, size, 0);
-    pc[1] = op.type << 60 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 | op.iter_num;
+    pc[1] = op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 | op.iter_num;
     pc[2] = op.round << 32 | op.factor;
     pc[3] = op.to;
     return size;
@@ -458,7 +504,7 @@ struct vStoreStatus {
   __gm__ void *to;
 }INSN_ATTR;
 
-#define V_INSN_SIZE_MAX   sizeof(vLoad)
+#define V_INSN_SIZE_MAX   (4 * sizeof(uint64_t))
 
 enum vMemInsnID {
   V_LOAD = 0,
@@ -468,6 +514,8 @@ enum vMemInsnID {
   V_STORE_ATOMIC,
   V_STORE_STATUS,
   V_LOAD_DUMMY,
+  V_SLICE_LOAD_2D,
+  V_SLICE_LOAD_2D_FP16,
 };
 
 enum vOpInsnID {
@@ -476,7 +524,6 @@ enum vOpInsnID {
   V_BROADCAST_Y,
   V_BROADCAST_S,
   V_SQRT,
-  V_RSQRT,
   V_ABS,
   V_LOG,
   V_EXP,
@@ -508,7 +555,6 @@ enum vOpInsnID {
   V_BROADCAST_X_FP16,
   V_BROADCAST_S_FP16,
   V_SQRT_FP16,
-  V_RSQRT_FP16,
   V_ABS_FP16,
   V_LOG_FP16,
   V_EXP_FP16,
@@ -526,8 +572,6 @@ enum vOpInsnID {
   V_CAST_FP16_TO_INT8,
   V_CAST_FP16_TO_FP32,
   V_CAST_FP16_TO_INT32,
-  V_RSUM_X_FP16,
-  V_RSUM_Y_FP16,
   V_CMP_FP16,
   V_SEL_FP16,
   V_POW_FP16,
@@ -542,6 +586,17 @@ enum vOpInsnID {
   V_OR_INT8,
   V_AND_INT8,
   // int32
+  V_BROADCAST_X_INT32,
+  V_BROADCAST_S_INT32,
+  V_ADDS_INT32,
+  V_MULS_INT32,
+  V_MAXS_INT32,
+  V_MINS_INT32,
+  V_ADD_INT32,
+  V_SUB_INT32,
+  V_MUL_INT32,
+  V_MIN_INT32,
+  V_MAX_INT32,
   V_CAST_INT32_TO_FP16,
   V_CAST_INT32_TO_FP32,
   V_NONE,

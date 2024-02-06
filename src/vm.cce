@@ -134,6 +134,16 @@ __aicore_inline__ void vDiv(__ubuf__ half *dst, __ubuf__ half *src0, __ubuf__ ha
   vdiv(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride);
 }
 
+__aicore_inline__ void vDiv(__ubuf__ float *dst, __ubuf__ float *src0, __ubuf__ float *src1, uint8_t repeat,
+                            uint8_t dstRepeatStride, uint8_t src0RepeatStride, uint16_t src1RepeatStride) {
+  vdiv(dst, src0, src1, repeat, 1, 1, 1, dstRepeatStride, src0RepeatStride, src1RepeatStride);
+}
+
+__aicore_inline__ void vDiv(__ubuf__ half *dst, __ubuf__ half *src0, __ubuf__ half *src1, uint8_t repeat,
+                            uint8_t dstRepeatStride, uint8_t src0RepeatStride, uint16_t src1RepeatStride) {
+  vdiv(dst, src0, src1, repeat, 1, 1, 1, dstRepeatStride, src0RepeatStride, src1RepeatStride);
+}
+
 __aicore_inline__ void vMax(__ubuf__ float *dst, __ubuf__ float *src0, __ubuf__ float *src1, uint8_t repeat, uint8_t repeatStride) {
   vmax(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride);
 }
@@ -176,6 +186,10 @@ __aicore_inline__ void vDup(__ubuf__ float*dst, float src, uint8_t repeat, uint1
 }
 
 __aicore_inline__ void vDup(__ubuf__ half *dst, half src, uint8_t repeat, uint16_t repeatStride) {
+  vector_dup(dst, src, repeat, 1, 1, repeatStride, repeatStride);
+}
+
+__aicore_inline__ void vDup(__ubuf__ int32_t *dst, int32_t src, uint8_t repeat, uint16_t repeatStride) {
   vector_dup(dst, src, repeat, 1, 1, repeatStride, repeatStride);
 }
 
@@ -311,6 +325,7 @@ __aicore_inline__ void vCmpGe(__ubuf__ half *src0, __ubuf__ half *src1, uint8_t 
     builtin(dst, src, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                       \
   }
 
+DELCARE_BINARY(vadd, float)
 DELCARE_BINARY(vsub, int32_t)
 DELCARE_BINARY(vsub, float)
 DELCARE_BINARY(vsub, half)
@@ -340,6 +355,7 @@ DELCARE_BINARYS(vadds, float)
 DELCARE_BINARYS(vadds, half)
 
 DELCARE_CAST(vconv_s322f32, float, int32_t)
+DELCARE_CAST(vconv_f322f16, half, float)
 #ifdef AICORE_ARCH_C220
 DELCARE_BINARYS(vshl, uint32_t)
 DELCARE_BINARYS_WITH_MODE(vshr, uint32_t, false)
@@ -361,14 +377,13 @@ __aicore_inline__ void Reciprocal(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   uint64_t rs = GetRepeatStride(tile, T);
   __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
   __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
+  pipe_barrier(PIPE_V);
+  vDup((__ubuf__ T *)WORKSPACE, (T)1.0, 1, rs);
+  pipe_barrier(PIPE_V);
   if (op.repeat <= 255) {
-    vDup(xd, (T)1.0, op.repeat, rs);
-    pipe_barrier(PIPE_V);
-    vDiv(xd, xd, xn, op.repeat, rs);
+    vDiv(xd, (__ubuf__ T *)WORKSPACE, xn, op.repeat, rs, 0, rs);
   } else {
-    repeat_vector_dup(xd, (T)1.0, op.repeat, 1, 1, rs, rs);
-    pipe_barrier(PIPE_V);
-    repeat_vdiv(xd, xd, xn, op.repeat, 1, 1, 1, rs, rs, rs);
+    repeat_vdiv(xd, (__ubuf__ T *)WORKSPACE, xn, op.repeat, 1, 1, 1, rs, 0, rs);
   }
 }
 
@@ -461,7 +476,29 @@ __aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head) {
 
 #define BINARYS(pc, builtin, head, VTYPE)                                               \
   do {                                                                                  \
-    __ubuf__ vBinaryS *op = (__ubuf__ vBinaryS*)pc;                                     \
+    __ubuf__ vBinaryS<float> *op = (__ubuf__ vBinaryS<float>*)pc;                                     \
+    uint64_t data = static_cast<uint64_t>(op->data);                                    \
+    uint64_t rs = data >> 18;                                                           \
+    uint64_t repeat = data & V_X_MASK;                                                  \
+    __ubuf__ VTYPE *xd = (__ubuf__ VTYPE*)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK); \
+    __ubuf__ VTYPE *xn = (__ubuf__ VTYPE*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);     \
+    VTYPE val = op->scalar;                                                             \
+    if (repeat <= 255) {                                                                \
+      builtin(xd, xn, val, repeat, 1, 1, rs, rs);                                       \
+    } else {                                                                            \
+      uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);                                 \
+      for (; repeat > 255; repeat -= 255) {                                             \
+        builtin(xd, xn, val, 255, 1, 1, rs, rs);                                        \
+        xd += 255 * simd_width;                                                         \
+        xn += 255 * simd_width;                                                         \
+      }                                                                                 \
+      builtin(xd, xn, val, repeat, 1, 1, rs, rs);                                       \
+    }                                                                                   \
+  } while (0)
+
+#define BINARYS_INT(pc, builtin, head, VTYPE)                                               \
+  do {                                                                                  \
+    __ubuf__ vBinaryS<int32_t> *op = (__ubuf__ vBinaryS<int32_t>*)pc;                                     \
     uint64_t data = static_cast<uint64_t>(op->data);                                    \
     uint64_t rs = data >> 18;                                                           \
     uint64_t repeat = data & V_X_MASK;                                                  \
@@ -676,61 +713,47 @@ static inline[aicore] void LogicalNot(__ubuf__ uint64_t *pc, uint64_t head, uint
   vUnary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, uint8_t);
   uint64_t repeat = op.repeat;
-#ifdef AICORE_ARCH_C220
-  __ubuf__ int16_t *xd = (__ubuf__ int16_t *)(op.xd);
-  __ubuf__ int16_t *xn = (__ubuf__ int16_t *)(op.xn);
-  rs = rs << 1;
-  uint64_t simd_width = rs << 4;
-  if (repeat == 1) {
-    pipe_barrier(PIPE_V);
-    vmuls((__ubuf__ int16_t *)WORKSPACE, xn, -1, 1, 1, 1, rs, rs);
-    pipe_barrier(PIPE_V);
-    vadds((__ubuf__ int16_t *)WORKSPACE, (__ubuf__ int16_t *)WORKSPACE, 257, 1, 1, 1, rs, rs);
-    pipe_barrier(PIPE_V);
-    copy_ubuf_to_ubuf(xd, (__ubuf__ uint16_t *)WORKSPACE, 0, 1, simd_width >> 3, 0, 0);
-  } else {
-    uint64_t odd = repeat & 1;
-    repeat = repeat / 2;
-    if (repeat <= 255) {
-      vmuls(xd, xn, -1, repeat, 1, 1, rs, rs);
-      pipe_barrier(PIPE_V);
-      vadds(xd, xd, 257, repeat, 1, 1, rs, rs);
-    } else {
-      repeat_vmuls(xd, xn, -1, repeat, 1, 1, rs, rs);
-      pipe_barrier(PIPE_V);
-      repeat_vadds(xd, xd, 257, repeat, 1, 1, rs, rs);
-    }
-    if (odd) {
-      xd += repeat * simd_width - simd_width / 2;
-      xn += repeat * simd_width - simd_width / 2;
-      vmuls(xd, xn, -1, 1, 1, 1, rs, rs);
-      pipe_barrier(PIPE_V);
-      vadds(xd, xd, 257, 1, 1, 1, rs, rs);
-    }
-  }
-#else
   __ubuf__ int8_t *xd = (__ubuf__ int8_t *)(op.xd);
   __ubuf__ int8_t *xn = (__ubuf__ int8_t *)(op.xn);
   uint64_t fp16_rs = rs << 1;
   uint64_t simd_width = rs << 5;
   for (size_t i = 0; i < repeat; i++) {
     pipe_barrier(PIPE_V);
-    vconv_s82f16((__ubuf__ half *)WORKSPACE, xn, 2, 1, 1, fp16_rs, rs);
+    vconv_s82f16((__ubuf__ half *)WORKSPACE, xn, 1, 1, 1, fp16_rs, rs);
     pipe_barrier(PIPE_V);
-    vmuls((__ubuf__ half *)WORKSPACE, (__ubuf__ half *)WORKSPACE, (half)-1.0, 2, 1, 1, fp16_rs, fp16_rs);
+    vmuls((__ubuf__ half *)WORKSPACE, (__ubuf__ half *)WORKSPACE, (half)-1.0, 1, 1, 1, fp16_rs, fp16_rs);
     pipe_barrier(PIPE_V);
-    vadds((__ubuf__ half *)WORKSPACE, (__ubuf__ half *)WORKSPACE, (half)1.0, 2, 1, 1, fp16_rs, fp16_rs);
+    vadds((__ubuf__ half *)WORKSPACE, (__ubuf__ half *)WORKSPACE, (half)1.0, 1, 1, 1, fp16_rs, fp16_rs);
     pipe_barrier(PIPE_V);
-    vconv_f162s8(xd, (__ubuf__ half *)WORKSPACE, 2, 1, 1, rs, fp16_rs);
+    vconv_f162s8(xd, (__ubuf__ half *)WORKSPACE, 1, 1, 1, rs, fp16_rs);
     xd += simd_width;
     xn += simd_width;
   }
-#endif
 }
 
 template <typename T>
 __aicore_inline__ void BroadcastS(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vBroadcastS *op = (__ubuf__ vBroadcastS *)pc;
+  __ubuf__ vBroadcastS<float> *op = (__ubuf__ vBroadcastS<float> *)pc;
+  uint64_t data = static_cast<uint64_t>(op->data);
+  uint64_t rs = data >> 18;
+  uint64_t repeat = data & V_X_MASK;
+  __ubuf__ T*xd = (__ubuf__ T*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
+  T val = op->scalar;
+  if (repeat <= 255) {
+    vDup(xd, val, repeat, rs);
+  } else {
+    uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xd);
+    for (; repeat > 255; repeat -= 255) {
+      vDup(xd, val, 255, rs);
+      xd += 255 * simd_width;
+    }
+    vDup(xd, val, repeat, rs);
+  }
+}
+
+template <typename T>
+__aicore_inline__ void BroadcastS_INT(__ubuf__ uint64_t *pc, uint64_t head) {
+  __ubuf__ vBroadcastS<int32_t> *op = (__ubuf__ vBroadcastS<int32_t> *)pc;
   uint64_t data = static_cast<uint64_t>(op->data);
   uint64_t rs = data >> 18;
   uint64_t repeat = data & V_X_MASK;
@@ -793,15 +816,14 @@ static inline [aicore] void BroadcastY(__ubuf__ uint64_t *pc, uint64_t head) {
   }
 }
 
-template <typename T>
 __aicore_inline__ void ReduceSumX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
   vReduceX op;
   vReduceX::Decode(pc, head, op);
   if (IsLastTile(tile)) {
     op.red_size = op.red_tail;
   }
-  __ubuf__ T*xn = (__ubuf__ T*)(op.xn);
-  __ubuf__ T*xd = (__ubuf__ T*)(op.xd);
+  __ubuf__ float *xn = (__ubuf__ float*)(op.xn);
+  __ubuf__ float *xd = (__ubuf__ float*)(op.xd);
   uint64_t red_size = op.red_size;
   uint64_t simd_width = TileSimdWidth(tile);
   uint16_t srcRepeatStride =  simd_width >> SIMD_WIDTH_SHIFT(xn); // simd_width /8
@@ -822,8 +844,8 @@ __aicore_inline__ void ReduceSumX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
       break;
     }
     for (uint64_t dup = 0; dup < op.dup_size; ++dup) {
-      __ubuf__ T* next_xn = xn + op.red_size;
-      __ubuf__ T* next_xd = xd + op.red_size;
+      __ubuf__ float* next_xn = xn + op.red_size;
+      __ubuf__ float* next_xd = xd + op.red_size;
       uint64_t iter_num = red_size;
       for (; iter_num > 255; iter_num -= 255) {
         vCAdd(xd, xn, 255, 1, srcRepeatStride);
@@ -835,7 +857,7 @@ __aicore_inline__ void ReduceSumX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
       xn = next_xn;
       xd = next_xd;
     }
-    xn = xd = (__ubuf__ T*)(head >> (V_HEAD_EXT_OFFSET + V_X_BITS));
+    xn = xd = (__ubuf__ float*)(head >> (V_HEAD_EXT_OFFSET + V_X_BITS));
     pipe_barrier(PIPE_V);
   }
   vReduceX::DecodeBlock(pc, op);
@@ -850,15 +872,14 @@ __aicore_inline__ void ReduceSumX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   }
 }
 
-template <typename T>
 __aicore_inline__ void ReduceSumY(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
   vReduceY op;
   vReduceY::Decode(pc, head, op);
-  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
-  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
+  __ubuf__ float *xn = (__ubuf__ float*)(op.xn);
+  __ubuf__ float *xd = (__ubuf__ float*)(op.xd);
   uint64_t red_size = IsLastTile(tile) ? op.red_tail : op.red_size;
   if (red_size == 1) {
-    uint64_t lenburst = op.dup_num * op.iter_size * sizeof(*xn) / 32;
+    uint64_t lenburst = op.dup_num * op.iter_size * sizeof(float) / 32;
     copy_ubuf_to_ubuf(xd, xn, 0, 1, lenburst, 0, 0);
     return;
   }
@@ -896,7 +917,7 @@ __aicore_inline__ void ReduceSumY(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
       xn += dup_stride;
       pipe_barrier(PIPE_V);
     } // end for dup
-    xn = xd = (__ubuf__ T*)(head >> (V_HEAD_EXT_OFFSET + V_X_BITS));
+    xn = xd = (__ubuf__ float*)(head >> (V_HEAD_EXT_OFFSET + V_X_BITS));
   } // end while iter_num
 }
 
@@ -970,10 +991,55 @@ static inline [aicore] void Load(__ubuf__ uint64_t *pc, uint64_t head, uint64_t 
   if (op.has_round) {
     vDMA::DecodeRound(pc, op);
     tile_idx = tile_idx / op.factor * op.round + tile_idx % op.round;
+    if (tile_idx == op.last_tile_idx) {
+      return;
+    }
+    vDMA::UpdateTileIdx(pc, tile_idx);
   }
   uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
   __gm__ void* gm = (__gm__ uint8_t*)op.gm + op.tile_stride * tile_idx;
   copy_gm_to_ubuf((__ubuf__ void*)op.xn, gm, 0, 1, len_burst, 0, 0);
+}
+
+template <typename T>
+__aicore_inline__ uint64_t GetBlock(uint64_t stride) {
+  return (stride * sizeof(T) + 31) >> 5;
+}
+
+template <typename T>
+static inline[aicore] void SliceLoad2D(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+  vSliceLoad2D op;
+  vSliceLoad2D::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t  offset_slice = op.tile_stride * tile_idx / op.slice_m * op.src_m + op.tile_stride * tile_idx % op.slice_m;
+  uint64_t begin_tmp = op.tile_stride * tile_idx;
+  uint64_t end_tmp = begin_tmp + op.tile_stride;
+  uint64_t begin_row = begin_tmp / op.slice_m;
+  uint64_t end_row = end_tmp / op.slice_m;
+  uint64_t begin_column = begin_tmp % op.slice_m;
+  uint64_t end_column = end_tmp % op.slice_m;
+
+  __gm__ uint8_t *src = (__gm__ uint8_t *)op.gm + offset_slice * sizeof(T);
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
+  if (begin_row == end_row) {
+    uint64_t num = GetBlock<T>(end_column - begin_column);
+    copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
+  } else {
+    uint64_t num = GetBlock<T>(op.slice_m - begin_column);
+    copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
+    src += (op.src_m - begin_column) * sizeof(T);
+    dst += (op.slice_m - begin_column + op.pad_size) * sizeof(T);
+    num = GetBlock<T>(op.slice_m);
+    for (uint64_t i = 0; i < end_row - begin_row - 1; ++i) {
+      copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
+      src += op.src_m * sizeof(T);
+      dst += (op.slice_m + op.pad_size) * sizeof(T);
+    }
+    if (end_column) {
+      num = GetBlock<T>(end_column);
+      copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
+    }
+  }
 }
 
 static inline [aicore] void Store(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
@@ -992,6 +1058,10 @@ static inline [aicore] void Load2(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   if (op.has_round) {
     vLoad::DecodeRound(pc, op);
     tile_idx = tile_idx / op.factor * op.round + tile_idx % op.round;
+    if (tile_idx == op.last_tile_idx) {
+      return;
+    }
+    vDMA::UpdateTileIdx(pc, tile_idx);
   }
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + op.tile_stride * tile_idx;
   __ubuf__ uint8_t* dst = (__ubuf__ uint8_t*)(op.xn);
@@ -1069,15 +1139,7 @@ static inline [aicore] void Store2(__ubuf__ uint64_t *pc, uint64_t head, uint64_
 static inline [aicore] void StoreAtomic(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
   vStoreAtomic op;
   vStoreAtomic::Decode(pc, head, op);
-#if AICORE_ARCH_C220
-  if (op.type == 0) {
-    set_atomic_f32();
-  } else {
-    set_atomic_f16();
-  }
-#else
   set_atomic_f32();
-#endif
   uint64_t tile_idx = TileIdx(tile);
   if (IsLastTile(tile)) {
     op.iter_num = op.iter_tail;
@@ -1117,7 +1179,6 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_BROADCAST_Y, BroadcastY(pc, head));
     DISPATCH(V_BROADCAST_S, BroadcastS<float>(pc, head));
     DISPATCH(V_SQRT, UNARY(pc, vsqrt, head, tile, float));
-    DISPATCH(V_RSQRT, UNARY(pc, vrsqrt, head, tile, float));
     DISPATCH(V_ABS, UNARY(pc, vabs, head, tile, float));
     DISPATCH(V_LOG, UNARY(pc, vln, head, tile, float));
     DISPATCH(V_EXP, UNARY(pc, vexp, head, tile, float));
@@ -1137,8 +1198,8 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_MAX, BINARY(pc, vmax, head, tile, float));
     DISPATCH(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, half));
     DISPATCH(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t));
-    DISPATCH(V_RSUM_X, ReduceSumX<float>(pc, head, tile));
-    DISPATCH(V_RSUM_Y, ReduceSumY<float>(pc, head, tile));
+    DISPATCH(V_RSUM_X, ReduceSumX(pc, head, tile));
+    DISPATCH(V_RSUM_Y, ReduceSumY(pc, head, tile));
     DISPATCH(V_CMP, BinCompare<float>(pc, head, tile));
     DISPATCH(V_SEL, Select<float>(pc, head));
     DISPATCH(V_POW, Power<float>(pc, head, tile));
@@ -1151,7 +1212,6 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_BROADCAST_X_FP16, BroadcastX<half>(pc, head, tile));
     DISPATCH(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head));
     DISPATCH(V_SQRT_FP16, UNARY(pc, vsqrt, head, tile, half));
-    DISPATCH(V_RSQRT_FP16, UNARY(pc, vrsqrt, head, tile, half));
     DISPATCH(V_ABS_FP16, UNARY(pc, vabs, head, tile, half));
     DISPATCH(V_LOG_FP16, UNARY(pc, vln, head, tile, half));
     DISPATCH(V_EXP_FP16, UNARY(pc, vexp, head, tile, half));
@@ -1171,23 +1231,34 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_CAST_FP16_TO_INT8, CAST(pc, vconv_f162s8, head, tile, half, int8_t));
     DISPATCH(V_CAST_FP16_TO_FP32, CAST(pc, vconv_f162f32, head, tile, half, float));
     DISPATCH(V_CAST_FP16_TO_INT32, CAST(pc, vconv_f162s32z, head, tile, half, int32_t));
-    DISPATCH(V_RSUM_X_FP16, ReduceSumX<half>(pc, head, tile));
-    DISPATCH(V_RSUM_Y_FP16, ReduceSumY<half>(pc, head, tile));
     DISPATCH(V_CMP_FP16, BinCompare<half>(pc, head, tile));
     DISPATCH(V_SEL_FP16, Select<half>(pc, head));
     DISPATCH(V_POW_FP16, Power<half>(pc, head, tile));
     DISPATCH(V_NOT_FP16, Not<half>(pc, head, tile));
     DISPATCH(V_OR_FP16, BINARY(pc, vmax, head, tile, half));
     DISPATCH(V_AND_FP16, BINARY(pc, vmin, head, tile, half));
+    DISPATCH(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile));
     // int8
     DISPATCH(V_NOT_INT8, LogicalNot(pc, head, tile));
     DISPATCH(V_OR_INT8, LogicalBinary<kBinOr>(pc, head, tile));
     DISPATCH(V_AND_INT8, LogicalBinary<kBinAnd>(pc, head, tile));
     DISPATCH(V_CAST_INT8_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half));
     // int32
+    DISPATCH(V_BROADCAST_X_INT32, BroadcastX<int32_t>(pc, head, tile));
+    DISPATCH(V_BROADCAST_S_INT32, BroadcastS<int32_t>(pc, head));
+#ifdef AICORE_ARCH_C220
+    DISPATCH(V_ADDS_INT32, BINARYS_INT(pc, vadds, head, int32_t));
+    DISPATCH(V_MULS_INT32, BINARYS_INT(pc, vmuls, head, int32_t));
+    DISPATCH(V_MAXS_INT32, BINARYS_INT(pc, vmaxs, head, int32_t));
+    DISPATCH(V_MINS_INT32, BINARYS_INT(pc, vmins, head, int32_t));
+#endif
+    DISPATCH(V_ADD_INT32, BINARY(pc, vadd, head, tile, int32_t));
+    DISPATCH(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t));
+    DISPATCH(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t));
+    DISPATCH(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t));
+    DISPATCH(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t));
     DISPATCH(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0); CAST(pc, vconv_deq, head, tile, int32_t, half));
     DISPATCH(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float));
-    DISPATCH(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile));
     default:
       trap();
       break;
@@ -1202,6 +1273,8 @@ static inline [aicore] void Dispatch_LoadStore(__ubuf__ uint64_t *pc, uint64_t h
     DISPATCH(V_STORE_2, Store2(pc, head, tile));
     DISPATCH(V_STORE_ATOMIC, StoreAtomic(pc, head, tile));
     DISPATCH(V_STORE_STATUS, StoreStatus(pc, head));
+    DISPATCH(V_SLICE_LOAD_2D, SliceLoad2D<float>(pc, head, tile));
+    DISPATCH(V_SLICE_LOAD_2D_FP16, SliceLoad2D<half>(pc, head, tile));
     DISPATCH(V_LOAD_DUMMY, void(0));
     default:
       trap();
@@ -1210,32 +1283,64 @@ static inline [aicore] void Dispatch_LoadStore(__ubuf__ uint64_t *pc, uint64_t h
 }
 
 extern "C"  __global__ [aicore] void vmain(uint64_t config) {
-  uint64_t len_burst = config & 0xfffful;
-  __gm__ void* base_addr = (__gm__ void*)(get_para_base() + sizeof(uint64_t));
-  copy_gm_to_ubuf(PC_BASE, base_addr, 0, 1, len_burst, 0, 0);
-  set_atomic_none();
+  __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
+  uint64_t tile_start, tile_end, insn_num;
+  if ((config >> 63) == 0) {
+    // config: last_tile(23) << 40 | simd_width(32) | insn_num(16) << 16 | lenburst(16)
+    uint64_t len_burst = config & 0xfffful;
+    copy_gm_to_ubuf(PC_BASE, base_addr + sizeof(config), 0, 1, len_burst, 0, 0);
+    set_atomic_none();
 #ifdef AICORE_ARCH_C220
-  set_mask_norm();
+    set_mask_norm();
 #endif
-  uint64_t simd_width = (config >> 24) & 0xfful;
-  if (simd_width > 64) {
-    set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
-  } else {
-    set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
+    uint64_t simd_width = (config >> 32) & 0xfful;
+    if (simd_width > 64) {
+      set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
+    } else {
+      set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
+    }
+    insn_num = (config >> 16) & 0xfffful;
+    uint64_t last_tile = config >> 40;
+    uint64_t tile_per_block = (last_tile + block_num) / block_num;
+    uint64_t tile_start_idx = tile_per_block * block_idx;
+    uint64_t tile_end_idx = tile_start_idx + tile_per_block - 1;
+    uint64_t tile_fill = 1ul << 41;
+    if (tile_end_idx >= last_tile) {
+      tile_end_idx = last_tile;
+      tile_fill = 0;
+    }
+    tile_fill |= simd_width << 42 | tile_end_idx << 21;
+    tile_start = tile_fill | tile_start_idx;
+    tile_end = tile_fill | tile_end_idx;
+  } else { // parallel fusion
+    // bytecode format:
+    // config(1) + summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
+    // config = parallel(1) << 63 | simdwidth7(7) << 56 | .. | simdwidth1(7) << 7 | simdwidth0(7)
+    // summary = lenburst(6) << 58 | offset(9) << 49 | ker_idx(3) << 46 | insn_num(6) << 40 | tail_tile(1) << 39 | end_offset(19) << 20 | start_idx(20)
+    // codeseg = code(n)
+    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(base_addr + sizeof(config)) + block_idx);
+    uint64_t offset = (summary >> (49 - 5)) & 0x3fe0ul;
+    uint64_t lenburst = summary >> 58;
+    copy_gm_to_ubuf(PC_BASE, base_addr + offset, 0, 1, lenburst, 0, 0);
+    set_atomic_none();
+#ifdef AICORE_ARCH_C220
+    set_mask_norm();
+#endif
+    uint64_t ker_idx = (summary >> 46) & 0x7ul;
+    uint64_t simd_width = ((config >> (ker_idx * 8)) & 0x7ful) + 1;
+    if (simd_width > 64) {
+      set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
+    } else {
+      set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
+    }
+    insn_num = (summary >> 40) & 0x3ful;
+    uint64_t start_idx = summary & 0xffffful;
+    uint64_t end_idx = ((summary >> 20) & 0x7fffful) + start_idx;
+    uint64_t tail_tile = summary & (0x1ul << 39);
+    uint64_t tile_fill = simd_width << 42 | tail_tile << (41 - 39) | end_idx << 21;
+    tile_start = tile_fill | start_idx;
+    tile_end = tile_fill | end_idx;
   }
-  uint64_t insn_num = (config >> 16) & 0xff;
-  uint64_t last_tile = config >> 32;
-  uint64_t tile_per_block = (last_tile + block_num) / block_num;
-  uint64_t tile_start_idx = tile_per_block * block_idx;
-  uint64_t tile_end_idx = tile_start_idx + tile_per_block - 1;
-  uint64_t tile_fill = 1ul << 41;
-  if (tile_end_idx >= last_tile) {
-    tile_end_idx = last_tile;
-    tile_fill = 0;
-  }
-  tile_fill |= simd_width << 42 | tile_end_idx << 21;
-  uint64_t tile_start = tile_fill | tile_start_idx;
-  uint64_t tile_end = tile_fill | tile_end_idx;
   pipe_barrier(PIPE_ALL);
   for (uint64_t tile = tile_start; tile <= tile_end; ++tile) {
     set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);

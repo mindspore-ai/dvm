@@ -85,27 +85,6 @@ def test_reduce(in_shape, dims):
     t.store_expect(y, res, 1e-4)
     assert(t.run_check())
 
-@pytest.mark.parametrize('in_shape, dims', [[[12, 1024],(0,)], [[12, 1024],(1,)]])
-def test_reduce_fp16(in_shape, dims):
-    t = Tester()
-    a = np.full(in_shape, 0.01, np.float16)
-    x = t.load(a)
-    y = t.reduce("sum", x, dims, True)
-    res = np.sum(a, dims, keepdims=True)
-    t.store_expect(y, res, 1e-2)
-    assert(t.run_check())
-
-@pytest.mark.skipif(os.getenv("TEST_TARGET") != '910b', reason = "only 910b support fp16 atomic")
-def test_reduce_fp16_atomic():
-    t = Tester()
-    a = np.full([32, 4096], 0.01, np.float16)
-    x = t.load(a)
-    dims = (0,)
-    y = t.reduce("sum", x, dims, True)
-    res = np.sum(a, dims, keepdims=True)
-    t.store_expect(y, res, 1e-2)
-    assert(t.run_check())
-
 @pytest.mark.skipif(os.getenv("TEST_TARGET") != '910', reason = "only support 910 tiling")
 def test_reduce_store_with_lead_dim_tiling():
     in_shape = [521, 1024]

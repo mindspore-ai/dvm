@@ -50,6 +50,25 @@ struct TileParam {
   int64_t tail;
 };
 
+struct PropRange {
+  enum {
+    ELEMWISE = 0,
+    BROADCAST,
+    REDUCE,
+  };
+  int base;
+  int depth;
+  int affine{ELEMWISE};
+  int64_t space;
+};
+
+class VKernel;
+
+#define OBJ_FLAG_FREE_LHS   1
+#define OBJ_FLAG_FREE_RHS   2
+#define OBJ_FLAG_REUSE_LHS  4
+#define OBJ_FLAG_REUSE_RHS  8
+
 class NDObject {
  public:
   NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
@@ -60,12 +79,12 @@ class NDObject {
   // re-infer shape(nd_) from its inputs nd_
   virtual void Normalize(std::vector<NDObject*> &run_ops) {}
   // fold axis right alignment: [base-depth+1, base]
-  virtual int FoldPropY(int base, int depth) { return depth; }
+  virtual void FoldProp(PropRange &range) {}
   // fold axis left alignment:  [0, depth-1]
-  virtual int FoldPropX(int depth) { return depth; }
+  virtual void AlignProp(PropRange &range) {}
   // tile nd range
   virtual void Tile(const TileParam &tp);
-  virtual std::pair<uint32_t, uint32_t> Emit(const Code &code) = 0;
+  virtual int Emit(Code &code) = 0;
 
   void UpdateStride(uint64_t simd_width);
 
@@ -79,19 +98,18 @@ class NDObject {
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_{0};
+  ShapeRef *shape_ref_;
   NDObject *pd_next_{nullptr};
   int lead_dim_{0};
   ObjectType obj_id_;
-  ShapeRef *shape_ref_;
   DType type_id_;
 
   // op info
   int index_{0};
   int pipe_idx{-1};
-  bool free_lhs{false};
-  bool free_rhs{false};
-  uint64_t *insn{nullptr};
-  uint64_t *tail_insn{nullptr};
+  uint32_t flags_{0};
+  uint64_t *insn_{nullptr};       // when in optimization passes, used to point to the next NDObject
+  uint64_t *tail_insn_{nullptr};  // when in optimization passes, used to point to the prev NDObject
 };
 
 class NDLoadDummy : public NDObject {
@@ -102,7 +120,7 @@ class NDLoadDummy : public NDObject {
     shape_ref_ = &shape_ref_data_;
   }
   void Tile(const TileParam &tp) override { }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 
  private:
   std::vector<int64_t> shape_{1};
@@ -115,24 +133,10 @@ class NDLoad : public NDObject {
       : NDObject(nullptr, nullptr, type_id, ObjectType::kLoad), src_(src) {
     shape_ref_ = shape_ref;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override {
-    auto dims = shape_ref_->size;
-    nd_.resize(dims);
-    for (size_t i = 0; i < shape_ref_->size; i++) {
-      nd_[i] = shape_ref_->data[dims - i - 1];
-    }
-    // prevent reuse of any tiling configurations next time
-    ClearTileConfig();
-  }
-  void Reloc(void *src, bool update_insn = false);
+  void Normalize(std::vector<NDObject*> &run_ops) override;
+  virtual void Reloc(void *src, bool update_insn);
   void Tile(const TileParam &tp) override;
-  void ClearTileConfig() {
-    tail_dim_ = -1;
-    tail_size_ = 0;
-    factor_ = 0;
-    round_ = 0;
-  }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
   uint8_t *src_;
 
  private:
@@ -145,6 +149,43 @@ class NDLoad : public NDObject {
   std::vector<int64_t> shape_;
 };
 
+class NDSliceLoad : public NDLoad {
+ public:
+  NDSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
+      : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {}
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    ASSERT(src_ref_->size <= 2);
+    NDLoad::Normalize(run_ops);
+  }
+
+  int Emit(Code &code) override;
+  void Reloc(void *src, bool update_insn) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+
+ protected:
+  ShapeRef *start_ref_;
+  ShapeRef *src_ref_;
+  ShapeRef *size_ref_;
+};
+
+class NDStridedSliceLoad : public NDSliceLoad {
+ public:
+  NDStridedSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
+                     DType type_id = kFloat32)
+      : NDSliceLoad(src, src_ref, start_ref, nullptr, type_id), end_ref_(end_ref), step_ref_(step_ref) {
+    shape_ref_ = new ShapeRef();
+  }
+  ~NDStridedSliceLoad() { delete shape_ref_; }
+
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+
+ private:
+  std::vector<int64_t> shape_;
+  ShapeRef *end_ref_;
+  ShapeRef *step_ref_;
+};
+
 class NDStore : public NDObject {
  public:
   NDStore(NDObject *src) : NDObject(src, nullptr, src->type_id_, ObjectType::kStore), dst_(nullptr) {
@@ -153,25 +194,24 @@ class NDStore : public NDObject {
   NDStore(uint8_t *dst, NDObject *src) : NDObject(src, nullptr, src->type_id_, ObjectType::kStore), dst_(dst) {
     shape_ref_ = src->shape_ref_;
   }
+  ~NDStore() override;
   void Reloc(void *dst, bool update_insn = false);
-  bool IsAtomic() const { return atomic_; }
   void Normalize(std::vector<NDObject*> &run_ops) override {
     nd_ = lhs_->nd_;
-    // prevent reuse of any tiling configurations next time
-    ClearTileConfig();
-  }
-  void Tile(const TileParam &tp) override;
-  void ClearTileConfig() {
     tail_dim_ = -1;
     tail_size_ = 0;
   }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  void Tile(const TileParam &tp) override;
+  void ClearTileConfig() {
+  }
+  int Emit(Code &code) override;
   uint8_t *dst_;
 
  private:
   int tail_dim_{-1};
   int tail_size_{0};
-  bool atomic_{false};
+  NDStore *clear_store_{nullptr};
+  VKernel *clear_kernel_{nullptr};
 };
 
 class CopyOp : public NDObject {
@@ -181,7 +221,7 @@ class CopyOp : public NDObject {
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 };
 
 class ReshapeOp : public CopyOp {
@@ -192,7 +232,6 @@ class ReshapeOp : public CopyOp {
     obj_id_ = ObjectType::kReshape;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  int FoldPropY(int base, int depth) override { return depth; }
 
  private:
   std::vector<int64_t> shape_;
@@ -202,7 +241,7 @@ class UnaryOp : public NDObject {
  public:
   UnaryOp(int op_type, NDObject *input);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 
  protected:
   vOpInsnID id_;
@@ -214,12 +253,9 @@ class ElementAnyOp: public NDObject {
     shape_ref_data_ = shape_;
     shape_ref_ = &shape_ref_data_;
   }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
   void Normalize(std::vector<NDObject *> &run_ops) override {
-    nd_ = lhs_->nd_;
-    for (int64_t &i : nd_) {
-      i = 1;
-    }
+    nd_.resize(lhs_->nd_.size(), 1);
   }
 
  private:
@@ -233,7 +269,7 @@ class _CastOp : public NDObject {
       : NDObject(input, nullptr, type_id, ObjectType::kCast) {
     ASSERT(type_id != lhs_->type_id_);
   }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 };
 
 class CastOp : public _CastOp {
@@ -255,15 +291,16 @@ enum BinarySOpType {
   kBinarySOpEnd,
 };
 
+template <typename T>
 class BinaryScalarOp : public NDObject {
  public:
-  BinaryScalarOp(int op_type, NDObject *input, float scalar);
+  BinaryScalarOp(int op_type, NDObject *input, T scalar);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 
  private:
   vOpInsnID id_;
-  float scalar_;
+  T scalar_;
 };
 
 class BinaryOp : public NDObject {
@@ -271,7 +308,7 @@ class BinaryOp : public NDObject {
   BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
   ~BinaryOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 
  protected:
   vOpInsnID id_;
@@ -289,7 +326,7 @@ class SelectOp : public NDObject {
   }
   ~SelectOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
   NDObject *cond_{nullptr};
   bool free_cond{false};
 
@@ -303,9 +340,9 @@ class _BroadcastOp : public NDObject {
       : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
     nd_ = nd;
   }
-  int FoldPropY(int base, int depth) override;
-  int FoldPropX(int depth) override;
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  void FoldProp(PropRange &range) override;
+  void AlignProp(PropRange &range) override;
+  int Emit(Code &code) override;
 
  private:
   int64_t EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_width);
@@ -328,9 +365,10 @@ class BroadcastOp : public _BroadcastOp {
   std::vector<int64_t> shape_;
 };
 
+template <typename T>
 class BroadcastScalarOp : public NDObject {
  public:
-  BroadcastScalarOp(float scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
+  BroadcastScalarOp(T scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
   : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
   }
@@ -342,9 +380,9 @@ class BroadcastScalarOp : public NDObject {
       nd_[i] = shape_ref_->data[dims - i - 1];
     }
   }
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
  private:
-  float scalar_;
+  T scalar_;
   std::vector<int64_t> shape_;
 };
 
@@ -354,10 +392,10 @@ class _ReduceOp : public NDObject {
   _ReduceOp(NDObject *input, int red_op)
     : NDObject(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {
   }
-  int FoldPropY(int base, int depth) override;
-  int FoldPropX(int depth) override;
+  void FoldProp(PropRange &range) override;
+  void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
   void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
@@ -371,33 +409,15 @@ class _ReduceOp : public NDObject {
 
 class ReduceOp : public _ReduceOp {
  public:
-  ReduceOp(NDObject *input, int red_op, bool keepdims) : _ReduceOp(input, red_op), keepdims_(keepdims) {
+  ReduceOp(NDObject *input, int red_op, ShapeRef *dims_ref, bool keepdims)
+      : _ReduceOp(input, red_op), keepdims_(keepdims) {
+    dims_ref_ = dims_ref;
     shape_ref_ = new ShapeRef();
   }
-  ReduceOp(NDObject *input, int red_op, ShapeRef *dims_ref, bool keepdims)
-      : ReduceOp(input, red_op, keepdims) {
-    dims_ref_ = dims_ref;
-    SetDims(std::vector<int64_t>(dims_ref->data, dims_ref->data + dims_ref->size));
-  }
   ~ReduceOp();
-  void SetDims(const std::vector<int64_t> &dims) {
-    shape_dims_ = dims;
-    auto size = shape_dims_.size();
-    if (shape_dims_.empty()) {
-      size = lhs_->nd_.size();
-      shape_dims_.resize(size);
-      for (int64_t i = 0; i < static_cast<int64_t>(size); ++i) {
-        shape_dims_[i] = i;
-      }
-    }
-    dims_.resize(size);
-    for (size_t i = 0; i < size; ++i) {
-      dims_[i] = lhs_->nd_.size() - shape_dims_[size - i - 1] - 1;
-    }
-  }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  std::pair<uint32_t, uint32_t> Emit(const Code &code) override;
+  int Emit(Code &code) override;
 
   uint64_t factor_{0};
   uint64_t round_{0};

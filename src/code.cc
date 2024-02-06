@@ -16,13 +16,14 @@
 
 #include <unordered_map>
 #include <vector>
+#include <cstring>
 #include "acl/acl_base.h"
 #include "code.h"
 
 namespace dvm {
 namespace {
 std::string GetSocName() {
-  const char *soc_name = getenv("VK_SOC_NAME");
+  const char *soc_name = getenv("DVM_SOC_NAME");
   if (soc_name == nullptr) {
     soc_name = aclrtGetSocName();
   }
@@ -33,26 +34,8 @@ std::string GetSocName() {
   res = soc_name;
   return res;
 }
-}  // namespace
 
-DeviceInfo::DeviceInfo() {
-  auto soc_name = GetSocName();
-  if (soc_name.find("Ascend910B") != std::string::npos) {
-    arch_ = kAiCore_C220;
-    local_mem_size_ = 192 * 1024;
-    event_num_ = 8;
-    core_num_ = (soc_name == "Ascend910B1" || soc_name == "Ascend910B2") ? 48 : 40;
-  } else {
-    arch_ = kAiCore_C100;
-    local_mem_size_ = 256 * 1024;
-    event_num_ = 4;
-    core_num_ = 32;
-  }
-  ub_workspace_size_ = 1024;
-}
-
-
-static std::unordered_map<std::string, vCompareType> cmp_insn_id = {
+std::unordered_map<std::string, vCompareType> cmp_insn_id = {
   {"Greater", V_CMP_GT},
   {"Less", V_CMP_LT},
   {"GreaterEqual", V_CMP_GE},
@@ -74,7 +57,7 @@ struct DumpInfo {
       : insn(insn_in), ext(ext_in), simd_width(simd_width_in) {}
 };
 
-static void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vDMA op;
   vDMA::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "load.u8.32x" << op.lenburst;
@@ -92,7 +75,17 @@ static void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-static void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vSliceLoad2D op;
+  vSliceLoad2D::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "slice_load 2d" << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  oss << " //";
+  DumpVal("body_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+}
+
+void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vDMA op;
   vDMA::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "store.u8.32x" << op.lenburst;
@@ -103,7 +96,7 @@ static void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tail_lenburst", op.tail_lenburst, oss);
 }
 
-static void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
   vLoad op;
   vLoad::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "load2.u8." << op.iter_size << "x" << op.body_iter;
@@ -123,7 +116,7 @@ static void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-static void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStore *op = reinterpret_cast<vStore *>(dump_info.insn);
   auto tile_stride = dump_info.ext >> V_X_BITS;
   auto xn = dump_info.ext & V_X_MASK;
@@ -144,7 +137,7 @@ static void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("lead_tiling", lead_tiling, oss);
 }
 
-static void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreAtomic op;
   vStoreAtomic::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "store_atomic.u8." << op.iter_size << "x" << op.iter_num;
@@ -159,27 +152,26 @@ static void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) 
   DumpVal("round", op.round, oss);
   oss << ", ";
   DumpVal("factor", op.factor, oss);
-  oss << ", ";
-  DumpVal("type", op.type, oss);
 }
 
-static void DumpStoreStatus(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpStoreStatus(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreStatus *op = reinterpret_cast<vStoreStatus *>(dump_info.insn);
   auto xn = dump_info.ext & V_X_MASK;
   oss << "store_status." << reinterpret_cast<void *>(op->to) << ", " << reinterpret_cast<void *>(xn);
 }
 
-static void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
+void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
 
-static void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
   vUnary op;
   vUnary::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
-static void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vBinaryS *op = reinterpret_cast<vBinaryS *>(dump_info.insn);
+template <typename T = float>
+void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vBinaryS<T> *op = reinterpret_cast<vBinaryS<T> *>(dump_info.insn);
   auto rs = op->data >> 18;
   auto repeat = op->data & V_X_MASK;
   auto xn = dump_info.ext & V_X_MASK;
@@ -189,7 +181,7 @@ static void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("rs", rs, oss);
 }
 
-static void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBinary op;
   vBinary::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
@@ -197,7 +189,7 @@ static void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << ", " << reinterpret_cast<void *>(op.xm);
 }
 
-static void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
   vCompare op;
   vCompare::Decode(dump_info.insn, *dump_info.insn, op);
   std::string cmp_op("Unknown");
@@ -212,8 +204,9 @@ static void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("cmp_type", cmp_op, oss);
 }
 
-static void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vBroadcastS *op = reinterpret_cast<vBroadcastS *>(dump_info.insn);
+template <typename T = float>
+void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vBroadcastS<T> *op = reinterpret_cast<vBroadcastS<T> *>(dump_info.insn);
   uint64_t data = op->data;
   uint64_t rs = data >> 18;
   uint64_t repeat = data & V_X_MASK;
@@ -222,7 +215,7 @@ static void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("rs", rs, oss);
 }
 
-static void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSelect *op = reinterpret_cast<vSelect *>(dump_info.insn);
   auto rs = op->data >> 60;
   auto repeat = (op->data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
@@ -237,23 +230,24 @@ static void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("rs", rs, oss);
 }
 
-static void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastX op;
   vBroadcastX::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "[" << dump_info.simd_width << "x" << op.repeat << "]x" << op.lead_num << "x" << op.iter_num;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
-static void DumpBroadcastY(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpBroadcastY(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastY op;
   vBroadcastY::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "32x" << op.dup_stride << "x[" << op.dup_num << "]x" << op.iter_num;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
-static void DumpReduceX(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpReduceX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vReduceX op;
-  vReduceX::Decode(dump_info.insn, *dump_info.insn, op);
+  auto head = *dump_info.insn;
+  vReduceX::Decode(dump_info.insn, head, op);
   vReduceX::DecodeBlock(dump_info.insn, op);
   oss << "[" << op.red_size<< "]x" << op.dup_size;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
@@ -264,15 +258,16 @@ static void DumpReduceX(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("dup_pad", op.dup_pad, oss);
 }
 
-static void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
   vReduceY op;
-  vReduceY::Decode(dump_info.insn, *dump_info.insn, op);
+  auto head = *dump_info.insn;
+  vReduceY::Decode(dump_info.insn, head, op);
   oss << op.iter_size << "x[" << op.red_size << "]x" << op.dup_num;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("red_tail", op.red_tail, oss);
 }
 
-static void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
   vCopy *op = reinterpret_cast<vCopy *>(dump_info.insn);
   auto xn = dump_info.ext & V_X_MASK;
   auto xd = (dump_info.ext >> V_X_BITS) & V_X_MASK;
@@ -281,7 +276,7 @@ static void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(xd) << ", " << reinterpret_cast<void *>(xn);
 }
 
-static void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vClearPad op;
   vClearPad::Decode(dump_info.insn, *dump_info.insn, op);
   oss << op.iter_size << "x" << op.iter_num << " " << reinterpret_cast<void *>(op.xd) << " //";
@@ -290,7 +285,7 @@ static void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("simd_width", op.simd_width, oss);
 }
 
-static void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   vElementAny op;
   vElementAny::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", "
@@ -308,19 +303,21 @@ std::unordered_map<uint64_t, DumpFunc *> mem_dump_func_table = {
   {V_STORE_ATOMIC, &DumpStoreAtomic},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_LOAD_DUMMY, &DumpLoadDummy},
+  {V_SLICE_LOAD_2D, &DumpSliceLoad},
+  {V_SLICE_LOAD_2D_FP16, &DumpSliceLoad}
 };
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
   {V_COPY, {&DumpCopy, "Copy", "u8"}},
   {V_BROADCAST_X, {&DumpBroadcastX, "BroadcastX", "fp32"}},
   {V_BROADCAST_X_FP16, {&DumpBroadcastX, "BroadcastX", "fp16"}},
+  {V_BROADCAST_X_INT32, {&DumpBroadcastX, "BroadcastX", "int32"}},
   {V_BROADCAST_Y, {&DumpBroadcastY, "BroadcastY", "u8"}},
   {V_BROADCAST_S, {&DumpBroadcastS, "BroadcastS", "fp32"}},
   {V_BROADCAST_S_FP16, {&DumpBroadcastS, "BroadcastS", "fp16"}},
+  {V_BROADCAST_S_INT32, {&DumpBroadcastS<int32_t>, "BroadcastS", "int32"}},
   {V_SQRT, {&DumpUnary, "Sqrt", "fp32"}},
   {V_SQRT_FP16, {&DumpUnary, "Sqrt", "fp16"}},
-  {V_RSQRT, {&DumpUnary, "Rsqrt", "fp32"}},
-  {V_RSQRT_FP16, {&DumpUnary, "Rsqrt", "fp16"}},
   {V_ABS, {&DumpUnary, "Abs", "fp32"}},
   {V_ABS_FP16, {&DumpUnary, "Abs", "fp16"}},
   {V_LOG, {&DumpUnary, "Log", "fp32"}},
@@ -344,24 +341,33 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CAST_INT32_TO_FP16, {&DumpUnary, "CastS32", "fp16"}},
   {V_ADDS, {&DumpBinaryS, "Adds", "fp32"}},
   {V_ADDS_FP16, {&DumpBinaryS, "Adds", "fp16"}},
+  {V_ADDS_INT32, {&DumpBinaryS<int32_t>, "Adds", "int32"}},
   {V_MULS, {&DumpBinaryS, "Muls", "fp32"}},
   {V_MULS_FP16, {&DumpBinaryS, "Muls", "fp16"}},
+  {V_MULS_INT32, {&DumpBinaryS<int32_t>, "Muls", "int32"}},
   {V_MAXS, {&DumpBinaryS, "Maximums", "fp32"}},
   {V_MAXS_FP16, {&DumpBinaryS, "Maximums", "fp16"}},
+  {V_MAXS_INT32, {&DumpBinaryS<int32_t>, "Maximums", "int32"}},
   {V_MINS, {&DumpBinaryS, "Minimums", "fp32"}},
-  {V_MINS_FP16, {&DumpBinaryS, "Maximums", "fp32"}},
+  {V_MINS_FP16, {&DumpBinaryS, "Maximums", "fp16"}},
+  {V_MINS_INT32, {&DumpBinaryS<int32_t>, "Maximums", "int32"}},
   {V_ADD, {&DumpBinary, "Add", "fp32"}},
   {V_ADD_FP16, {&DumpBinary, "Add", "fp16"}},
+  {V_ADD_INT32, {&DumpBinary, "Add", "int32"}},
   {V_SUB, {&DumpBinary, "Sub", "fp32"}},
   {V_SUB_FP16, {&DumpBinary, "Sub", "fp16"}},
+  {V_SUB_INT32, {&DumpBinary, "Sub", "int32"}},
   {V_MUL, {&DumpBinary, "Mul", "fp32"}},
   {V_MUL_FP16, {&DumpBinary, "Mul", "fp16"}},
+  {V_MUL_INT32, {&DumpBinary, "Mul", "int32"}},
   {V_DIV, {&DumpBinary, "Div", "fp32"}},
   {V_DIV_FP16, {&DumpBinary, "Div", "fp16"}},
   {V_MAX, {&DumpBinary, "Maximum", "fp32"}},
   {V_MAX_FP16, {&DumpBinary, "Maximum", "fp16"}},
+  {V_MAX_INT32, {&DumpBinary, "Maximum", "int32"}},
   {V_MIN, {&DumpBinary, "Minimum", "fp32"}},
   {V_MIN_FP16, {&DumpBinary, "Minimum", "fp16"}},
+  {V_MIN_INT32, {&DumpBinary, "Minimum", "int32"}},
   {V_POW, {&DumpBinary, "Pow", "fp32"}},
   {V_POW_FP16, {&DumpBinary, "Pow", "fp16"}},
   {V_CMP, {&DumpCompare, "Cmp", "fp32"}},
@@ -375,9 +381,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_SEL, {&DumpSelect, "Select", "fp32"}},
   {V_SEL_FP16, {&DumpSelect, "Select", "fp16"}},
   {V_RSUM_X, {&DumpReduceX, "SumX", "fp32"}},
-  {V_RSUM_X_FP16, {&DumpReduceX, "SumX", "fp16"}},
   {V_RSUM_Y, {&DumpReduceY, "SumY", "fp32"}},
-  {V_RSUM_Y_FP16, {&DumpReduceY, "SumY", "fp16"}},
   {V_CLR_PAD, {&DumpClearPad, "ClrPad", "fp32"}},
   {V_ELEMENT_ANY, {&DumpElementAny, "ElementAny", "fp32"}},
   {V_ELEMENT_ANY_FP16, {&DumpElementAny, "ElementAny", "fp16"}},
@@ -409,9 +413,9 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
   return offset;
 }
 
-void Code::DisAssemble(std::ostringstream &oss) {
-  unsigned char *insn = data + HeadSize();
-  unsigned char *insn_end = data + size;
+void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
+  unsigned char *insn = bcode;
+  unsigned char *insn_end = bcode + bcode_size;
   std::vector<std::pair<uint64_t*, std::string>> insn_dump;
   while (insn < insn_end) {
     auto op = reinterpret_cast<uint64_t*>(insn);
@@ -434,14 +438,12 @@ void Code::DisAssemble(std::ostringstream &oss) {
     return -1;
   }; 
   std::unordered_map<int, int> wait_map;
-  oss << "vkernel.main(tile_num=" << tile_num << ", block_dim=" << BlockDim() <<
-      ", simd_width="<<simd_width << ", insn_num=" << insn_num << ") {" << std::endl;
   for (size_t i = 0; i < insn_dump.size(); ++i) {
     auto &dump = insn_dump[i];
     auto head = *(dump.first);
     bool is_simd = bool(head & (1ul << V_HEAD_IS_SIMD_OFFSET));
-    oss << " " << i << ": " << dump.second << std::endl;
-    oss << "   { simd(" << is_simd << ")";
+    oss << indent << i << ": " << dump.second << std::endl;
+    oss << indent << "  { simd(" << is_simd << ")";
     if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
       auto it = wait_map.find(i);
       int from = it != wait_map.end() ? it->second : -1;
@@ -462,6 +464,116 @@ void Code::DisAssemble(std::ostringstream &oss) {
     if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
       oss << ", set_next_load(1)";
     }
+    oss << " }" << std::endl;
+  }
+}
+}  // namespace
+
+DeviceInfo::DeviceInfo() {
+  auto soc_name = GetSocName();
+  if (soc_name.find("Ascend910B") != std::string::npos) {
+    arch_ = kAiCore_C220;
+    local_mem_size_ = 192 * 1024;
+    event_num_ = 8;
+    core_num_ = (soc_name == "Ascend910B1" || soc_name == "Ascend910B2") ? 48 : 40;
+  } else {
+    arch_ = kAiCore_C100;
+    local_mem_size_ = 256 * 1024;
+    event_num_ = 4;
+    core_num_ = 32;
+  }
+  ub_workspace_size_ = 1024;
+}
+
+void Code::DisAssemble(std::ostringstream &oss) {
+  oss << "vmain(tile_num=" << tile_num_ << ", block_dim=" << block_dim_ <<
+      ", simd_width="<<simd_width_ << ", insn_num=" << insn_num_ << ") {" << std::endl;
+  DasBody(oss, data_ + HeadSize(), data_size_ - HeadSize(), simd_width_, " "); 
+  oss << "}";
+}
+
+void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
+  ASSERT(children_.size() <= 8);
+  atomic_clean_.clear();
+  block_dim_ = 0;
+  uint64_t code_size = 0;
+  for (auto c : children_) {
+    block_dim_ += c->block_dim_;
+    code_size += ((c->data_size_ - 8 + 31) >> 5) << 5;
+  }
+  data_size_ = (((block_dim_ + 1) * sizeof(uint64_t) + 31) >> 5) << 5; // config + summary
+  uint64_t offset = data_size_;
+  data_size_ += code_size;
+  Alloc(data_size_);
+  uint64_t *data_64 = reinterpret_cast<uint64_t*>(data_);
+  uint64_t config = 1ul << 63;
+  int summary_idx = 1;
+  for (size_t k = 0; k < children_.size(); ++k) {
+    Code *code = children_[k];
+    ASSERT(code->tile_num_ <= 0xffffful && code->insn_num_ <= 0x3ful);
+    // config
+    config |= (children_[k]->simd_width_ - 1) << (8 * k);
+    // summary
+    uint64_t lenburst = (code->data_size_ - sizeof(uint64_t) + 31) / 32;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | k << 46 | code->insn_num_ << 40;
+    uint64_t tile_per_block = (code->tile_num_ - 1) / code->block_dim_ + 1;
+    uint64_t start_idx = 0;
+    for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
+      data_64[summary_idx++] = summary | (tile_per_block - 1) << 20 | start_idx;
+      start_idx += tile_per_block;
+    }
+    data_64[summary_idx++] = summary | 1ul << 39 | (code->tile_num_ - start_idx - 1) << 20 | start_idx;
+    // data
+    offsets.push_back(offset - sizeof(uint64_t));
+    uint64_t cpy_size = code->data_size_ - sizeof(uint64_t);
+    memcpy(data_ + offset, code->data_ + sizeof(uint64_t), cpy_size);
+    offset += ((cpy_size + 31) >> 5) << 5;
+    // atomic clean
+    if (!code->atomic_clean_.empty()) {
+      for (auto ac : code->atomic_clean_) {
+        atomic_clean_.push_back(ac);
+      }
+    }
+  }
+  data_64[0] = config;
+}
+
+void CodeP::DisAssemble(std::ostringstream &oss) {
+  struct Summary {
+    int64_t block_start{-1};
+    int64_t block_end{-1};
+    int64_t block_step{-1};
+    int64_t block_tail{-1};
+    uint8_t *bcode{nullptr};
+  };
+  std::vector<Summary> summays(children_.size());
+  uint64_t *data_64 = reinterpret_cast<uint64_t*>(data_ + sizeof(uint64_t));
+  for (uint64_t i = 0; i < block_dim_; ++i) {
+    uint64_t sum_data = *data_64++;
+    uint64_t start_idx = sum_data & 0xffffful;
+    uint64_t end_idx = start_idx + ((sum_data >> 20) & 0x7fffful);
+    uint64_t ker_idx = (sum_data >> 46) & 0x7ul;
+    uint64_t offset = ((sum_data >> 49) & 0x1fful) * 32;
+    uint64_t tail = (sum_data >> 39) & 0x1ul;
+    auto &summary = summays[ker_idx];
+    if (summary.block_start == -1) {
+      summary.block_start = i;
+      summary.block_step = end_idx - start_idx + 1;
+      summary.bcode = data_ + offset;
+    }
+    if (tail) {
+      summary.block_end = i;
+      summary.block_tail = end_idx - start_idx + 1;
+    }
+  }
+  oss << "vmain.parallel(block_dim=" << block_dim_ << ") {" << std::endl;
+  for (uint64_t i = 0; i < children_.size(); ++i) {
+    auto code = children_[i];
+    auto &summary = summays[i];
+    oss << " kernel_" << i << "(tile_num=" << code->tile_num_ << ", simd_width="<<code->simd_width_ << ", insn_num=" << code->insn_num_ <<
+          ", block_range=[" << summary.block_start << ", " << summary.block_end << "], block_step=" << summary.block_step <<
+          ", block_tail=" << summary.block_tail << ") {" << std::endl;
+    DasBody(oss, summary.bcode, code->data_size_ - code->HeadSize(), code->simd_width_, "  ");
     oss << " }" << std::endl;
   }
   oss << "}";

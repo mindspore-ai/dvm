@@ -18,10 +18,10 @@
 #define _DVM_CODE_H_
 #include <iostream>
 #include <sstream>
-#include <string>
 #include "dvm.h"
 #include "isa.h"
 
+#ifdef DEBUG
 #define ASSERT(cond)                                                           \
   do {                                                                         \
     if (!(cond)) {                                                             \
@@ -30,6 +30,9 @@
       exit(0);                                                                 \
     }                                                                          \
   } while (0)
+#else
+#define ASSERT(cond)
+#endif
 
 namespace dvm {
 enum AiCoreArch {
@@ -65,49 +68,64 @@ const uint64_t SIMD_REPEAT_SIZE = 256;
 // {sizeof(int8_t). sizeof(float16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, sizeof(float), sizeof(int32_t)};
 
-struct Code {
-  Code() = default;
-  Code(const Code &obj) = delete;
-  Code &operator=(const Code &) = delete;
-  ~Code() {
-    if (data)
-      std::free(data);
+struct CodeBase {
+  CodeBase() = default;
+  CodeBase(const CodeBase &obj) = delete;
+  CodeBase &operator=(const CodeBase &) = delete;
+  virtual ~CodeBase() {
+    if (data_)
+      std::free(data_);
   }
-  void Reset() {
-    insn_num = 0;
-    simd_width = 0;
-    tile_num = 0;
-    tile_mem = 0;
+  bool IsParallel() const {
+    uint64_t* head = reinterpret_cast<uint64_t*>(data_);
+    return (*head) >> 63;
   }
-  bool isGen() { return data != nullptr; }
   void Alloc(size_t s) {
-    if (data) {
-      data = static_cast<unsigned char *>(std::realloc(data, s));
+    if (data_) {
+      data_ = static_cast<unsigned char *>(std::realloc(data_, s));
     } else {
-      data = static_cast<unsigned char *>(std::malloc(s));
+      data_ = static_cast<unsigned char *>(std::malloc(s));
     }
+  };
+  virtual void DisAssemble(std::ostringstream &oss) = 0;
+  unsigned char *data_{nullptr};
+  size_t data_size_{0};
+  uint64_t block_dim_{0};
+  std::vector<CodeBase*> atomic_clean_{nullptr};
+};
+
+struct Code : public CodeBase {
+  void Reset() {
+    insn_num_ = 0;
+    simd_width_ = 0;
+    tile_num_ = 0;
+    atomic_clean_.clear();
   }
+
   void FillHead() {
-    uint64_t *ptr = reinterpret_cast<uint64_t*>(data);
-    *ptr = (tile_num - 1) << 32 | simd_width << 24 | insn_num << 16 | (size - sizeof(uint64_t) + 31) / 32;
+    uint64_t *ptr = reinterpret_cast<uint64_t*>(data_);
+    *ptr = (tile_num_ - 1) << 40 | simd_width_ << 32 | insn_num_ << 16 | (data_size_ - sizeof(uint64_t) + 31) / 32;
   }
   uint64_t HeadSize() const { return sizeof(uint64_t); }
 
-  uint64_t BlockDim() const {
-    static auto device_core_num = DeviceInfo::Instance().CoreNum();
-    auto tile_per_block = std::max((tile_num + device_core_num - 1) / device_core_num, core_tile_least_);
-    return (tile_num + tile_per_block - 1) / tile_per_block;
+  void UpdateBlockDim(uint64_t core_num) {
+    auto tile_per_block = (tile_num_ + core_num - 1) / core_num;
+    block_dim_ = (tile_num_ + tile_per_block - 1) / tile_per_block;
   }
 
-  void DisAssemble(std::ostringstream &oss);
+  void ApplyTileLimit(uint64_t core_tile_least) {
+    while (block_dim_ > 1 && ((tile_num_ - 1) / block_dim_ + 1 < core_tile_least)) block_dim_--; // TODO: optimize me
+  }
+  void DisAssemble(std::ostringstream &oss) override;
+  uint64_t insn_num_{0};
+  uint64_t simd_width_{0};
+  uint64_t tile_num_{0};
+};
 
-  unsigned char *data{nullptr};
-  size_t size{0};
-  uint64_t insn_num{0};
-  uint64_t simd_width{0};
-  uint64_t tile_num{0};
-  uint64_t tile_mem{0};
-  uint64_t core_tile_least_{1};
+struct CodeP : public CodeBase {
+ void LinkAll(std::vector<uint64_t> &offsets);
+ void DisAssemble(std::ostringstream &oss) override;
+ std::vector<Code*> children_;
 };
 
 } // namespace dvm 

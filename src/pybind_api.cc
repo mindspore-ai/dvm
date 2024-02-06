@@ -90,8 +90,7 @@ static std::unordered_map<std::string, UnaryOpType> unary_map = {{"Abs", UnaryOp
                                                                  {"Log", UnaryOpType::kLog},
                                                                  {"LogicalNot", UnaryOpType::kLogicalNot},
                                                                  {"Reciprocal", UnaryOpType::kReciprocal},
-                                                                 {"Sqrt", UnaryOpType::kSqrt},
-                                                                 {"Rsqrt", UnaryOpType::kRsqrt}};
+                                                                 {"Sqrt", UnaryOpType::kSqrt}};
 
 static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", BinaryOpType::kAdd},
                                                                    {"Sub", BinaryOpType::kSub},
@@ -111,7 +110,7 @@ static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", Binar
                                                                    {"LogicalOr", BinaryOpType::kLogicalOr}};
 
 void VKernelPy::Tile(int start, int end, int64_t num) {
-  kernel_.GetImpl()->SetTile(start, end, num);
+  static_cast<VKernelBase*>(kernel_.GetImpl())->SetTile(start, end, num);
 }
 
 void* VKernelPy::ToDev(void* host, size_t size) {
@@ -210,13 +209,13 @@ py::object DvmKernelBuilderPy::Copy(const py::object &input) {
   return py::cast(std::make_shared<NDOpPy>(op));
 }
 
-VKernelPy::VKernelPy(int dev_id) {
+VKernelPy::VKernelPy(int dev_id, KernelType type) {
   uint32_t dev_count = 0;
   ASCEND_CALL(aclrtGetDeviceCount(&dev_count));
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
   ASCEND_CALL(aclrtSetDevice(dev_id));
   dev_id_ = dev_id_;
-  kernel_.Reset(kStaticShape);
+  kernel_.Reset(type);
 }
 
 VKernelPy::~VKernelPy() {
@@ -240,10 +239,10 @@ py::object VKernelPy::CodeGen(const std::string &path) {
   auto code = GetCode();
   if (!path.empty()) {
     std::ofstream file(path);
-    file.write(reinterpret_cast<char *>(code->data), code->size);
+    file.write(reinterpret_cast<char *>(code->data_), code->data_size_);
     file.close();
   }
-  return py::cast(code->BlockDim());
+  return py::cast(code->block_dim_);
 }
 
 py::object VKernelPy::DisAssemble() {
@@ -314,7 +313,7 @@ py::object VKernelPy::Perf() {
 #endif
 }
 
-Code *VKernelPy::GetCode() {
+CodeBase *VKernelPy::GetCode() {
   if (!codegen_) {
     auto begin = GetTimeX();
     kernel_.GetImpl()->CodeGen();
@@ -335,6 +334,51 @@ py::object DvmKernelBuilderPy::Load(const py::object &array) {
   }
   auto shape_ref = kernel_->shape_.emplace_back(new ShapeRef(shape_vec));
   auto op = kernel_->kernel_.Load(reinterpret_cast<void *>(addr), shape_ref, GetTypeID(buf));
+  return py::cast(std::make_shared<NDOpPy>(op));
+}
+
+py::object DvmKernelBuilderPy::SliceLoad(const py::object &array, const py::object &start, const py::object &size) {
+  auto input = py::array(array);
+  py::buffer_info buf = input.request();
+  void *addr = kernel_->ToDev(buf.ptr, buf.itemsize * buf.size);
+  std::vector<int64_t> &shape_vec = kernel_->shape_vec_.emplace_back(buf.ndim);
+  for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
+    shape_vec[i] = buf.shape[i];
+  }
+  auto shape_ref = kernel_->shape_.emplace_back(new ShapeRef(shape_vec));
+
+  std::vector<int64_t> &start_vec = kernel_->shape_vec_.emplace_back(GetVector(start));
+  auto start_ref = kernel_->shape_.emplace_back(new ShapeRef(start_vec));
+
+  std::vector<int64_t> &size_vec = kernel_->shape_vec_.emplace_back(GetVector(size));
+  auto size_ref = kernel_->shape_.emplace_back(new ShapeRef(size_vec));
+
+  auto op =
+    kernel_->kernel_.SliceLoad(reinterpret_cast<void *>(addr), shape_ref, start_ref, size_ref, GetTypeID(buf));
+  return py::cast(std::make_shared<NDOpPy>(op));
+}
+
+py::object DvmKernelBuilderPy::StridedSliceLoad(const py::object &array, const py::object &start, const py::object &end, const py::object &step) {
+  auto input = py::array(array);
+  py::buffer_info buf = input.request();
+  void *addr = kernel_->ToDev(buf.ptr, buf.itemsize * buf.size);
+  std::vector<int64_t> &shape_vec = kernel_->shape_vec_.emplace_back(buf.ndim);
+  for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
+    shape_vec[i] = buf.shape[i];
+  }
+  auto shape_ref = kernel_->shape_.emplace_back(new ShapeRef(shape_vec));
+
+  std::vector<int64_t> &start_vec = kernel_->shape_vec_.emplace_back(GetVector(start));
+  auto start_ref = kernel_->shape_.emplace_back(new ShapeRef(start_vec));
+
+  std::vector<int64_t> &end_vec = kernel_->shape_vec_.emplace_back(GetVector(end));
+  auto end_ref = kernel_->shape_.emplace_back(new ShapeRef(end_vec));
+
+  std::vector<int64_t> &step_vec = kernel_->shape_vec_.emplace_back(GetVector(step));
+  auto step_ref = kernel_->shape_.emplace_back(new ShapeRef(step_vec));
+
+  auto op =
+    kernel_->kernel_.StridedSliceLoad(reinterpret_cast<void *>(addr), shape_ref, start_ref, end_ref, step_ref, GetTypeID(buf));
   return py::cast(std::make_shared<NDOpPy>(op));
 }
 
@@ -377,6 +421,10 @@ py::object DvmKernelBuilderPy::ElementAny(const py::object &input) {
   return py::cast(std::make_shared<NDOpPy>(op));
 }
 
+void DvmKernelBuilderPy::ParallelNext() {
+  kernel_->kernel_.ParallelNext();
+}
+
 py::object DvmKernelBuilderPy::Get() {
   return py::cast(kernel_);
 }
@@ -393,8 +441,10 @@ PYBIND11_MODULE(builder, m) {
       .def("run", &VKernelPy::Run, "run kernel");
 
   (void)py::class_<DvmKernelBuilderPy, std::shared_ptr<DvmKernelBuilderPy>>(m, "DvmKernelBuilder")
-      .def(py::init([](int dev_id) { return std::make_shared<DvmKernelBuilderPy>(dev_id); }))
+      .def(py::init([](int dev_id, const std::string &ker_type) { return std::make_shared<DvmKernelBuilderPy>(dev_id, ker_type); }))
       .def("load", &DvmKernelBuilderPy::Load, "load array")
+      .def("slice_load", &DvmKernelBuilderPy::SliceLoad, "load array")
+      .def("stridedslice_load", &DvmKernelBuilderPy::StridedSliceLoad, "load array")
       .def("store", &DvmKernelBuilderPy::Store, "store array")
       .def("unary", &DvmKernelBuilderPy::Unary, "emit unary op")
       .def("cast", &DvmKernelBuilderPy::Cast, "emit cast op")
@@ -406,6 +456,7 @@ PYBIND11_MODULE(builder, m) {
       .def("reshape", &DvmKernelBuilderPy::Reshape, "emit reshape op")
       .def("reduce", &DvmKernelBuilderPy::Reduce, "emit reduce op")
       .def("copy", &DvmKernelBuilderPy::Copy, "emit copy op")
+      .def("p_next", &DvmKernelBuilderPy::ParallelNext, "parallel next")
       .def("get", &DvmKernelBuilderPy::Get, "get vm kernel");
 }
 }  // namespace dvm

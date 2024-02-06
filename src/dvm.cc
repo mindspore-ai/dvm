@@ -18,9 +18,9 @@
 #include "kernel.h"
 #include "acl_ext.h"
 
-extern unsigned char g_vkernel_bin[];
+extern const unsigned char g_vkernel_bin[];
 extern unsigned int  g_vkernel_bin_len;
-extern unsigned char g_vkernel_910b_bin[];
+extern const unsigned char g_vkernel_910b_bin[];
 extern unsigned int  g_vkernel_910b_bin_len;
 
 namespace dvm {
@@ -65,7 +65,30 @@ VKernelHolder::VKernelHolder() {
     exit(0);
   }
 }
+
+template <typename T>
+NDObject *GetBinaryS(int op_type, T val, NDObject *rhs) {
+  if (rhs->type_id_ == kInt32) {
+    return nullptr;
+  }
+  switch (op_type) {
+    case BinaryOpType::kAdd:
+      return new BinaryScalarOp<T>(BinarySOpType::kAdds, rhs, val);
+    case BinaryOpType::kMul:
+      return new BinaryScalarOp<T>(BinarySOpType::kMuls, rhs, val);
+    case BinaryOpType::kMaximum:
+      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
+        return new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
+      }
+    case BinaryOpType::kMinimum:
+      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
+        return new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
+      }
+    default:
+      return nullptr;
+  }
 }
+}  // namespace
 
 Kernel::Kernel() : kernel_{nullptr} {
   static bool init = false;
@@ -87,6 +110,8 @@ void Kernel::Reset(KernelType type) {
     kernel_ = new VKernelS();
   } else if (type == kDynShape) {
     kernel_ = new VKernelD();
+  } else if (type == kStaticParallel) {
+    kernel_ = new VKernelP();
   } else {
     ASSERT(0);
   }
@@ -94,6 +119,19 @@ void Kernel::Reset(KernelType type) {
 
 NDObject* Kernel::Load(void *addr, ShapeRef *shape, DType type) {
   auto obj = new NDLoad(static_cast<uint8_t*>(addr), shape, type);
+  kernel_->Append(obj);
+  return obj;
+}
+
+NDObject *Kernel::SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DType type) {
+  auto obj = new NDSliceLoad(static_cast<uint8_t *>(addr), shape, start, size, type);
+  kernel_->Append(obj);
+  return obj;
+}
+
+
+NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step, DType type) {
+  auto obj = new NDStridedSliceLoad(static_cast<uint8_t *>(addr), shape, start, end, step, type);
   kernel_->Append(obj);
   return obj;
 }
@@ -110,61 +148,34 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
   return obj;
 }
 
-NDObject* Kernel::Binary(int op_type, float val, NDObject *rhs) {
-  NDObject *obj = nullptr;
-  switch (op_type) {
-    case BinaryOpType::kAdd:
-      obj = new BinaryScalarOp(BinarySOpType::kAdds, rhs, val);
-      break;
-    case BinaryOpType::kMul:
-      obj = new BinaryScalarOp(BinarySOpType::kMuls, rhs, val);
-      break;
-    case BinaryOpType::kMaximum:
-      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-        obj = new BinaryScalarOp(BinarySOpType::kMaximums, rhs, val);
-        break;
-      }
-    case BinaryOpType::kMinimum:
-      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-        obj = new BinaryScalarOp(BinarySOpType::kMinimums, rhs, val);
-        break;
-      }
-    default:
-      auto broadcast = new BroadcastScalarOp(val, rhs->shape_ref_, rhs->type_id_, nullptr);
-      kernel_->Append(broadcast);
-      obj = new BinaryOp(op_type, broadcast, rhs);
+template<typename T>
+NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
+  NDObject *obj = GetBinaryS(op_type, val, rhs);
+  if (obj == nullptr) {
+    auto broadcast = new BroadcastScalarOp<T>(val, rhs->shape_ref_, rhs->type_id_, nullptr);
+    kernel_->Append(broadcast);
+    obj = new BinaryOp(op_type, broadcast, rhs);
   }
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject* Kernel::Binary(int op_type, NDObject* lhs, float val) {
-  NDObject *obj = nullptr;
-  switch (op_type) {
-    case BinaryOpType::kAdd:
-      obj = new BinaryScalarOp(BinarySOpType::kAdds, lhs, val);
-      break;
-    case BinaryOpType::kMul:
-      obj = new BinaryScalarOp(BinarySOpType::kMuls, lhs, val);
-      break;
-    case BinaryOpType::kMaximum:
-      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-        obj = new BinaryScalarOp(BinarySOpType::kMaximums, lhs, val);
-        break;
-      }
-    case BinaryOpType::kMinimum:
-      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-        obj = new BinaryScalarOp(BinarySOpType::kMinimums, lhs, val);
-        break;
-      }
-    default:
-      auto broadcast = new BroadcastScalarOp(val, lhs->shape_ref_, lhs->type_id_, nullptr);
-      kernel_->Append(broadcast);
-      obj = new BinaryOp(op_type, lhs, broadcast);
+template<typename T>
+NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
+  NDObject *obj = GetBinaryS(op_type, val, lhs);
+  if (obj == nullptr) {
+    auto broadcast = new BroadcastScalarOp<T>(val, lhs->shape_ref_, lhs->type_id_, nullptr);
+    kernel_->Append(broadcast);
+    obj = new BinaryOp(op_type, lhs, broadcast);
   }
   kernel_->Append(obj);
   return obj;
 }
+
+template NDObject *Kernel::Binary<float>(int op_type, NDObject *lhs, float val);
+template NDObject *Kernel::Binary<int32_t>(int op_type, NDObject *lhs, int32_t val);
+template NDObject *Kernel::Binary<float>(int op_type, float val, NDObject *rhs);
+template NDObject *Kernel::Binary<int32_t>(int op_type, int32_t val, NDObject *rhs);
 
 NDObject* Kernel::Select(NDObject* cond, NDObject* lhs, NDObject* rhs) {
   auto obj = new SelectOp(cond, lhs, rhs);
@@ -190,16 +201,20 @@ NDObject* Kernel::ElemAny(NDObject* input) {
   return obj;
 }
 
-NDObject *Kernel::Broadcast(float val, ShapeRef *shape, DType type, bool dummy_load) {
+template<typename T>
+NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load) {
   NDObject *load = nullptr;
   if (dummy_load) {
     load = new NDLoadDummy(type);
     kernel_->Append(load);
   }
-  auto obj = new BroadcastScalarOp(val, shape, type, load);
+  auto obj = new BroadcastScalarOp<T>(val, shape, type, load);
   kernel_->Append(obj);
   return obj;
 }
+
+template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DType type, bool dummy_load);
+template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DType type, bool dummy_load);
 
 NDObject* Kernel::Broadcast(NDObject* input, ShapeRef *shape) {
   auto obj = new BroadcastOp(input, shape);
@@ -214,6 +229,9 @@ NDObject* Kernel::Reshape(NDObject* input, ShapeRef *shape) {
 }
 
 NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keepdims) {
+  if (input->type_id_ != DType::kFloat32) {
+    return nullptr;
+  }
   auto obj = new ReduceOp(input, ReduceOp::SUM, dims, keepdims);
   kernel_->Append(obj);
   return obj;
@@ -226,7 +244,22 @@ NDObject* Kernel::Store(void *addr, NDObject* input) {
 }
 
 void Kernel::Reserve(size_t size) {
+  auto ktype = kernel_->KType();
+  if (ktype == KernelType::kStaticParallel) {
+    static_cast<VKernelP*>(kernel_)->Reserve(size);
+  } else {
+    static_cast<VKernelBase*>(kernel_)->Reserve(size);
+  }
+}
 
+int Kernel::ParallelNext() {
+  if (kernel_->KType() != KernelType::kStaticParallel) {
+    ASSERT(0);
+    return -1;
+  }
+  auto p_kernel = static_cast<VKernelP*>(kernel_);
+  p_kernel->AppendNext();
+  return 0;
 }
 
 ShapeRef* Kernel::GetShape(NDObject* op) const {
@@ -237,20 +270,27 @@ DType Kernel::GetDType(NDObject* op) const {
   return op->type_id_;
 }
 
-int Kernel::CodeGen() {
+uint64_t Kernel::CodeGen() {
   kernel_->CodeGen();
-  return 0;
+  return kernel_->GetCode()->data_size_;
 }
 
 int Kernel::Launch(void* stream) {
-  Code* code = kernel_->GetCode();
-  if (code->data == nullptr) {
+  CodeBase* code = kernel_->GetCode();
+  if (code->data_ == nullptr) {
     return -1;
   }
   auto stub_func = VKernelHolder::Instance().StubFunc();
-  auto block_dim = code->BlockDim();
-  ASSERT(code->size <= 4096);
-  auto ret = rtKernelLaunch(stub_func, block_dim, code->data, code->size, nullptr, stream);
+  if (!code->atomic_clean_.empty()) {
+    for (auto atomic: code->atomic_clean_) {
+      auto ret = rtKernelLaunch(stub_func, atomic->block_dim_, atomic->data_, atomic->data_size_, nullptr, stream);
+      if (ret != RT_ERROR_NONE) {
+        return ret;
+      }
+    }
+  }
+  ASSERT(code->data_size_ <= 4096);
+  auto ret = rtKernelLaunch(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
   return ret;
 }
 
@@ -263,15 +303,7 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
     auto store = static_cast<NDStore*>(reloc_table.outputs[i]);
     store->Reloc(*outputs++, true);
   }
-  Code* code = kernel_->GetCode();
-  if (code->data == nullptr) {
-    return -1;
-  }
-  auto stub_func = VKernelHolder::Instance().StubFunc();
-  auto block_dim = code->BlockDim();
-  ASSERT(code->size <= 4096);
-  auto ret = rtKernelLaunch(stub_func, block_dim, code->data, code->size, nullptr, stream);
-  return ret;
+  return Launch(stream);
 }
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {

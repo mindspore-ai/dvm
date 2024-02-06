@@ -23,7 +23,7 @@
 #include "ops.h"
 
 namespace dvm {
-class VKernel;
+class VKernelBase;
 class PropDomainBuilder;
 class PropDomain {
  public:
@@ -36,13 +36,8 @@ class PropDomain {
     subdoms_.clear();
   }
   virtual void Normalize();
-  virtual int AlignProp(int depth);
-  struct FoldRange {
-    int base;
-    int depth;
-    int64_t space;
-  };
-  virtual void FoldProp(FoldRange &range);
+  virtual void AlignProp(PropRange &range);
+  virtual void FoldProp(PropRange &range);
   virtual void TileProp(const TileParam &tp);
  protected:
   NDObject* head_;
@@ -55,53 +50,72 @@ class RootDomain : public PropDomain {
  public:
   RootDomain() = default;
   void SetHead(NDObject *head) { head_ = head; }
-  void Normalize(VKernel *kernel);
+  void Normalize(VKernelBase *kernel);
   int64_t Tile(int start, int end, int64_t space, int64_t num);
 
   std::vector<int64_t>& DimSpace() const { return dom_->nd_; }
-  int AlignDepth() const { return align_depth_; }
   int64_t TileNum() const { return tile_num_; }
   int64_t TileSize() const { return tile_size_; }
 
+  PropRange align_;
+
  private:
-  int align_depth_;    // max align axis depth
   int block_align_;    // mim block align
-  int64_t align_size_; // align size
   int64_t tile_size_;  // shape size of object tile size
   int64_t tile_num_;   // current tile num. multiply by tile
 };
 
-class CodeGenHelper;
 class VKernel {
  public:
-  VKernel() = default;
-  virtual ~VKernel();
+  VKernel(CodeBase* code_ptr, KernelType ktype) : code_ptr_(code_ptr), ktype_(ktype) {}
+  virtual ~VKernel() {}
 
   virtual void Append(NDObject *obj) = 0;
-  virtual void CodeGen();
+  virtual void CodeGen() = 0;
+  CodeBase *GetCode() const { return code_ptr_; }
+
+  virtual std::string DumpGraph() = 0;
+  std::string& DisAssemble();
+  KernelType KType() const { return ktype_; }
+
+ protected:
+  CodeBase* code_ptr_{nullptr};
+  std::string das_str_;
+  KernelType ktype_;
+};
+
+class CodeGenHelper;
+class VKernelBase : public VKernel {
+ public:
+  VKernelBase(KernelType ktype) : VKernel(&code_, ktype) {}
+  virtual ~VKernelBase();
+
+  std::string DumpGraph() override;
+  void Reserve(size_t size) {
+    build_ops_.reserve(size);
+    objects_.reserve(size * 2);
+  }
 
   void SetTile(int start, int end, int64_t num) {
     tiles_.emplace_back(DimTile{start, end, num});
   }
-
-  std::string DumpGraph();
-  std::string& DisAssemble();
-
-  Code *GetCode() { return &code_; }
-
   uint64_t MaxTypeSize() const { return ITEM_SIZE[max_type_]; }
+  uint64_t MinTypeSize() const { return ITEM_SIZE[max_type_]; }
   uint64_t BlockAlign() const { return SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_]; }
   uint64_t ReserveCodeSize() const { return (objects_.size() * V_INSN_SIZE_MAX + 511ul) & ~511ul; } // 512B align
 
- protected:
-  int Analyze(CodeGenHelper &codegen);
   void BuildDomain();
+  void NormalizeDomain() { root_dom_.Normalize(this); }
+
+  int Analyze(CodeGenHelper &codegen);
+  void DoCodeGen(uint64_t core_limit);
 
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
   Code code_;
-
   RootDomain root_dom_;
+
+ protected:
   int max_type_{-1};
   int min_type_{-1};
 
@@ -111,36 +125,44 @@ class VKernel {
     int64_t num;
   };
   std::vector<DimTile> tiles_;
-  std::string das_str_;
   friend CodeGenHelper;
 };
 
-class VKernelS : public VKernel {
+class VKernelS : public VKernelBase {
  public:
-  void Append(NDObject *obj) override {
-    obj->Normalize(objects_);
-    obj->index_ = objects_.size();
-    objects_.emplace_back(obj);
-    build_ops_.push_back(obj);
-  }
+  VKernelS() : VKernelBase(KernelType::kStaticShape) {}
+  void Append(NDObject *obj) override;
+  void Optimize();
+  void CodeGen() override;
 };
 
-class VKernelD : public VKernel {
+class VKernelD : public VKernelBase {
  public:
-  void Append(NDObject *obj) override {
-    build_ops_.push_back(obj);
+  VKernelD() : VKernelBase(KernelType::kDynShape) {}
+  void Append(NDObject *obj) override { build_ops_.push_back(obj); }
+  void CodeGen() override;
+};
+
+class VKernelP : public VKernel {
+ public:
+  VKernelP() : VKernel(&code_, KernelType::kStaticParallel) {
+    children_.push_back(new VKernelS());
   }
-  void CodeGen() override {
-    objects_.clear();
-    root_dom_.Clear();
-    for (auto op : build_ops_) {
-      op->Normalize(objects_);
-      op->index_ = objects_.size();
-      objects_.emplace_back(op);
+  ~VKernelP() {
+    for (auto k : children_) {
+      delete k;
     }
-    VKernel::CodeGen();
   }
-};
+  void AppendNext() { children_.push_back(new VKernelS()); }
+  void Append(NDObject *obj) override { children_.back()->Append(obj); }
+  void Reserve(size_t size) { children_.back()->Reserve(size); }
 
+  void CodeGen() override;
+  std::string DumpGraph() override;
+
+ protected:
+  std::vector<VKernelS*> children_;
+  CodeP code_;
+};
 } // namespace dvm
 #endif // _DVM_KERNEL_H_

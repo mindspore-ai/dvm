@@ -29,16 +29,6 @@ def test_unary(type, op, func):
     assert (t.run_check())
 
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize('op, func', [("Rsqrt", lambda x:1/(np.sqrt(x)))]) # Accuracy of Reciprocal and Rsqrt is 2e-3.
-def test_unary_wrong_accuracy(type, op, func):
-    t = Tester()
-    a = np.full([32, 1024], 0.5, type)
-    x = t.load(a)
-    y = t.unary(op, x)
-    t.store_expect(y, func(a), 2e-3)
-    assert (t.run_check())
-
-@pytest.mark.parametrize('type', [np.float16, np.float32])
 @pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract),  ("Div", np.divide),
                                       ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
 def test_binary(type, op, func):
@@ -47,7 +37,10 @@ def test_binary(type, op, func):
     b = np.full([32, 1024], 0.4, type)
     x = t.load(a)
     y = t.load(b)
+    x = t.copy(x)
+    y = t.copy(y)
     z = t.binary(op, x, y)
+    z = t.copy(z)
     t.store_expect(z, func(a, b))
     assert (t.run_check())
 
@@ -60,7 +53,10 @@ def test_logical(type, shape, op, func):
     b = np.random.choice([True, False], shape).astype(type)
     x = t.load(a)
     y = t.load(b)
+    x = t.copy(x)
+    y = t.copy(y)
     z = t.binary(op, x, y)
+    z = t.copy(z)
     t.store_expect(z, func(a, b).astype(type))
     assert (t.run_check())
 
@@ -71,7 +67,9 @@ def test_logical_not(type, shape, op, func):
     t = Tester()
     a = np.random.choice([True, False], shape).astype(type)
     x = t.load(a)
+    x = t.copy(x)
     z = t.unary(op, x)
+    z = t.copy(z)
     t.store_expect(z, func(a).astype(type))
     assert (t.run_check())
 
@@ -82,7 +80,9 @@ def test_binary_s(type, op, func):
     t = Tester()
     a = np.random.normal(0, 1, [32, 1024]).astype(type)
     x = t.load(a)
+    x = t.copy(x)
     y = t.binary(op, x, 0.1)
+    y = t.copy(y)
     t.store_expect(y, func(a, 0.1))
     assert(t.run_check())
 
@@ -95,7 +95,9 @@ def test_isfinite(type, size):
     a = np.concatenate((random_numbers, np.tile(special_values, size))).astype(type)
     np.random.shuffle(a)
     x = t.load(a)
+    x = t.copy(x)
     y = t.unary("IsFinite", x)
+    y = t.copy(y)
     t.store_expect(y, np.isfinite(a).astype(type), 0)
     assert(t.run_check())
 
@@ -179,3 +181,30 @@ def test_rsqrt(type, eps):
     y = t.unary("Reciprocal", z)
     t.store_expect(y, np.reciprocal(np.sqrt(a)).astype(type), eps)
     assert(t.run_check())
+
+@pytest.mark.parametrize('type', [np.int32])
+@pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract), ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
+def test_binary_int(type, op, func):
+    t = Tester()
+    a = np.full([32, 1024], 23333, type)
+    b = np.full([32, 1024], 11111, type)
+    x = t.load(a)
+    y = t.load(b)
+    x = t.copy(x)
+    y = t.copy(y)
+    z = t.binary(op, x, y)
+    z = t.copy(z)
+    t.store_expect(z, func(a, b))
+    assert (t.run_check())
+
+@pytest.mark.parametrize('type', [np.int32])
+@pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract), ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
+def test_binarys_int(type, op, func):
+    t = Tester()
+    a = np.full([32, 1024], 1024 * 1024 * 512, type)
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.binary(op, x, 11111)
+    z = t.copy(z)
+    t.store_expect(z, func(a, 11111))
+    assert (t.run_check())

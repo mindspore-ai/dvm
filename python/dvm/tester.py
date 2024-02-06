@@ -21,9 +21,9 @@ from .builder import DvmKernelBuilder as DvmKernelMod
 
 class Tester(DvmKernelMod):
     __test__ = False
-    def __init__(self):
+    def __init__(self, ker_type=""):
         dev_id = int(os.getenv("DEVICE_ID"))
-        DvmKernelMod.__init__(self, dev_id)
+        DvmKernelMod.__init__(self, dev_id, ker_type)
         self.results = []
 
     def store_expect(self, x, e, eps=None):
@@ -55,7 +55,7 @@ class Tester(DvmKernelMod):
                     error_ranges.append([start, end])
                     start, end = -1, -1
             if start >= 0:
-                error_ranges.append([start, out.shape[0]])
+                error_ranges.append([start, out.shape[0]-1])
             print("********* error data ranges **********")
             for i in error_ranges:
                 print("[{}, {}]: {}".format(i[0], i[1], i[1] - i[0] + 1))
@@ -78,8 +78,13 @@ class Tester(DvmKernelMod):
                     return False
             else:
                 if eps == None:
-                    eps = 1e-3 if out.dtype == np.float16 else 1e-5
-                if not np.allclose(out, expect, rtol=eps, atol=eps):
+                    if out.dtype == np.float32:
+                        eps = 1e-5
+                    elif out.dtype == np.float16:
+                        eps = 1e-3
+                    else:
+                        eps = 0
+                if not np.allclose(out, expect, rtol=eps, atol=eps, equal_nan=True):
                     if verbose:
                         _print_result_diff(out, expect, eps)
                     return False

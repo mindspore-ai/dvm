@@ -43,7 +43,7 @@ class NDOpPy {
 class DvmKernelBuilderPy;
 class VKernelPy {
  public:
-  VKernelPy(int dev_id);
+  VKernelPy(int dev_id, KernelType ker_type);
   ~VKernelPy();
 
   void Tile(int start, int end, int64_t num);
@@ -64,7 +64,7 @@ class VKernelPy {
   void FromDev(void* host, size_t size);
 
  protected:
-  Code* GetCode();
+  CodeBase* GetCode();
   bool codegen_{false};
   Kernel kernel_;
   std::vector<Store> stores_;
@@ -79,12 +79,18 @@ class DvmKernelBuilderPy {
  public:
   using NDOpPyPtr = std::shared_ptr<NDOpPy>;
 
-  DvmKernelBuilderPy(int dev_id) {
-    kernel_ = std::make_shared<VKernelPy>(dev_id);
+  DvmKernelBuilderPy(int dev_id, const std::string &ker_type) {
+    KernelType type = kStaticShape;
+    if (ker_type == "parallel") {
+      type = kStaticParallel;
+    }
+    kernel_ = std::make_shared<VKernelPy>(dev_id, type);
   }
   ~DvmKernelBuilderPy() = default;
 
   py::object Load(const py::object &array);
+  py::object SliceLoad(const py::object &array, const py::object &start, const py::object &size);
+  py::object StridedSliceLoad(const py::object &array, const py::object &start, const py::object &end, const py::object &step);
   py::object Store(const py::object &obj);
   py::object Unary(const std::string &op_name, const py::object &input);
   py::object Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs);
@@ -95,6 +101,7 @@ class DvmKernelBuilderPy {
   py::object Select(const py::object &cond, const py::object &lhs, const py::object &rhs);
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
+  void ParallelNext();
   py::object Get();
 
  protected:

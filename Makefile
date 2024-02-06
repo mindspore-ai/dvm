@@ -1,18 +1,18 @@
 VPATH = ./src:./include
-OBJ = ops.o kernel.o code.o pybind_api.o dvm.o
+OBJ = ops.o kernel.o code.o dvm.o pass.o
 
-CFLGAS = -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC -shared
+CFLGAS = --std=c++17 -Werror -Wall -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC
 ifneq ($(dbg),)
-CFLGAS += -g -O0
+CFLGAS += -g -O0 -DDEBUG
 else
 CFLGAS += -O2
 endif
 
-CCE_FLGAS = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100 --cce-aicore-arch=dav-c100
-CCE_FLGAS_910B = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-aicore-arch=dav-c220-vec --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
+CCE_FLGAS_C100 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100 --cce-aicore-arch=dav-c100
+CCE_FLGAS_C220 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-aicore-arch=dav-c220-vec --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
 
 ifneq ($(sim),)
-LD_FLAGS = -L${ASCEND_PATH}/latest/toolkit/tools/simulator/Ascend$(soc)/lib -L${ASCEND_PATH}/latest/lib64 -lruntime_camodel -lascendcl
+LD_FLAGS = -L${ASCEND_PATH}/latest/toolkit/tools/simulator/Ascend$(sim)/lib -L${ASCEND_PATH}/latest/lib64 -lruntime_camodel -lascendcl
 CFLGAS += -DVK_SIM_MODEL
 else
 LD_FLAGS = -L${ASCEND_PATH}/latest/lib64 -lruntime -lascendcl
@@ -26,21 +26,26 @@ builder.so: pybind_api.o libdvm.a
 	g++ -shared $^ $(LD_FLAGS) -o $@
 	cp $@ ./python/dvm
 
-libdvm.a: ops.o kernel.o code.o dvm.o vm.o
+libdvm.a: $(OBJ) vm.o
 	ar crv $@ $^
 
+pybind_api.o: pybind_api.cc pybind_api.h $(HEADERS)
+	g++ -c $(CFLGAS) $< -o $@
+
 ${OBJ}: %.o: %.cc $(HEADERS)
-	g++ --std=c++17 -Werror -Wall -c $(CFLGAS) $< -o $@
+	g++ -fvisibility=hidden -c $(CFLGAS) $< -o $@
 
 vm.o: vm.cce isa.h
-	ccec -c -O2 $(CCE_FLGAS) src/vm.cce -o g_vkernel_bin
-	ccec -c -O2 $(CCE_FLGAS_910B) src/vm.cce -o g_vkernel_910b_bin
-	xxd -i g_vkernel_bin > vm.cc
+	ccec -c -O2 $(CCE_FLGAS_C100) src/vm.cce -o g_vkernel_bin
+	ccec -c -O2 $(CCE_FLGAS_C220) src/vm.cce -o g_vkernel_910b_bin
+	echo "extern const" > vm.cc
+	xxd -i g_vkernel_bin >> vm.cc
+	echo "extern const" >> vm.cc
 	xxd -i g_vkernel_910b_bin >> vm.cc
-	g++ --std=c++17 -Werror -Wall -c $(CFLGAS) vm.cc -o vm.o
+	g++ -fvisibility=hidden -c $(CFLGAS) vm.cc -o vm.o
 
 clean:
-	rm *.o *.so *.a
+	rm *.o *.so *.a *bin vm.cc
 
 help:
-	@echo "Usage: make [sim=1] [dbg=1]"
+	@echo "Usage: make [sim=910B1|910B2|...] [dbg=1]"

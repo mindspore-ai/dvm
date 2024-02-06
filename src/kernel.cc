@@ -18,35 +18,35 @@
 #include <unordered_map>
 #include <cstdlib>
 #include <climits>
+#include <algorithm>
 #include "kernel.h"
+#include "pass.h"
 
 namespace dvm {
 class CodeGenHelper {
  public:
   CodeGenHelper() {}
-  bool Generate(VKernel *kernel) {
+  bool Generate(VKernelBase *kernel) {
     auto &code = kernel->code_;
     auto code_reserved = kernel->ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
-    unsigned char *code_ptr = code.data + code.HeadSize();
-    xbuf_size_ = code.tile_mem;
+    uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
     static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize() + code_reserved;
     for (auto op : static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     }
     for (auto op: kernel->objects_) {
-      op->insn = reinterpret_cast<uint64_t*>(code_ptr); 
-      op->tail_insn = op->insn;
       auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
-      if (op->free_lhs) {
+      if (op->flags_ & OBJ_FLAG_FREE_LHS) {
         free_xbuf_.emplace(op->lhs_, op);
       }
-      if (op->free_rhs) {
+      if (op->flags_ & OBJ_FLAG_FREE_RHS) {
         free_xbuf_.emplace(op->rhs_, op);
       }
-      op->UpdateStride(code.simd_width);
-      auto size_inum = op->Emit(code);
+      op->UpdateStride(code.simd_width_);
+      op->tail_insn_ = op->insn_ = code_ptr;
+      code_ptr += op->Emit(code);
       if (anti_dep) {
         InjectBar(anti_dep, op);
       }
@@ -65,12 +65,10 @@ class CodeGenHelper {
           }
         }
       }
-      code_ptr = code_ptr + size_inum.first;
-      code.insn_num += size_inum.second;
     }
-    *(back_set_->tail_insn) |= 0x1ul << V_HEAD_BACK_SET_OFFSET;
-    *(back_wait_->insn) |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET;
-    code.size = code_ptr - code.data;
+    *(back_set_->tail_insn_) |= 0x1ul << V_HEAD_BACK_SET_OFFSET;
+    *(back_wait_->insn_) |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET;
+    code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
       OverWriteCoreLimit(code);
     }
@@ -87,7 +85,7 @@ class CodeGenHelper {
       // producer node for Store
       uint64_t size = op->strides_.back() / op->LeadAlign() * op->nd_[op->lead_dim_] * ITEM_SIZE[op->type_id_];
       if (size < SIMD_BLOCK_SIZE) {
-        code.core_tile_least_ = std::max(code.core_tile_least_, (SIMD_BLOCK_SIZE + size - 1) / size);
+        code.ApplyTileLimit((SIMD_BLOCK_SIZE + size - 1) / size);
       }
     }
   }
@@ -113,6 +111,14 @@ class CodeGenHelper {
   }
 
   NDObject* AllocDynXBuf(NDObject *obj) {
+    if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
+      obj->xbuf_ = obj->lhs_->xbuf_;
+      return nullptr;
+    }
+    if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
+      obj->xbuf_ = obj->rhs_->xbuf_;
+      return nullptr;
+    }
     if (static_xbuf_ + xbuf_size_ <= DeviceInfo::Instance().LocalMemSize()) {
       obj->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
@@ -128,15 +134,15 @@ class CodeGenHelper {
 
   void InjectBar(NDObject *from, NDObject *to) {
     if (from->pipe_idx >= vector_vector_sync) {
-      *(to->insn) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      *(to->insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
       vector_vector_sync = to->pipe_idx;
     }
   }
 
   void InjectSync(NDObject *from, NDObject *to) {
     int from_pipe_idx = from->pipe_idx;
-    auto from_insn = from->tail_insn;
-    auto to_insn = to->insn;
+    auto from_insn = from->tail_insn_;
+    auto to_insn = to->insn_;
     uint64_t event;
     if (from->Pipe() == V_PIPE_LOAD) { // load -vector
       if (from_pipe_idx <= load_vector_sync) {
@@ -174,7 +180,7 @@ class CodeGenHelper {
   uint64_t load_vector_event = 0;
   uint64_t vector_store_event = 0;
 
-  friend VKernel;
+  friend VKernelBase;
 };
 
 void PropDomain::Normalize() {
@@ -209,32 +215,28 @@ void PropDomain::Normalize() {
   }
 }
 
-int PropDomain::AlignProp(int depth) {
+void PropDomain::AlignProp(PropRange &range) {
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    depth = op->FoldPropX(depth);
+    op->AlignProp(range);
   }
   if (!subdoms_.empty()) {
     for (auto sd: subdoms_) {
-      depth = sd->AlignProp(depth);
+      sd->AlignProp(range);
     }
   }
-  return depth;
 }
 
-void PropDomain::FoldProp(FoldRange &range) {
-  int depth = range.depth;
+void PropDomain::FoldProp(PropRange &range) {
+  int old_depth = range.depth;
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    depth = op->FoldPropY(range.base, depth);
-    if (depth == 1)
-      break;
+    op->FoldProp(range);
   }
-  if (depth < range.depth || range.space == -1) {
+  if (range.depth < old_depth || range.space == -1) {
     int64_t space = dom_->nd_[range.base];
-    for (int i = 1; i < depth; ++i) {
+    for (int i = 1; i < range.depth; ++i) {
       space *= dom_->nd_[range.base - i];
     }
     range.space = space;
-    range.depth = depth;
   }
   if (!subdoms_.empty()) {
     for (auto sd: subdoms_) {
@@ -254,22 +256,23 @@ void PropDomain::TileProp(const TileParam &tp) {
   }
 }
 
-void RootDomain::Normalize(VKernel *kernel) {
+void RootDomain::Normalize(VKernelBase *kernel) {
   tile_num_ = 1;
   PropDomain::Normalize();
   auto &nd = dom_->nd_;
-  int depth = PropDomain::AlignProp(nd.size());
+  align_.base = 0;
+  align_.depth = nd.size();
+  PropDomain::AlignProp(align_);
   tile_size_ = 1;
-  for (int i = 0; i < depth; ++i) {
+  for (int i = 0; i < align_.depth; ++i) {
     tile_size_ *= nd[i];
   }
+  align_.space = tile_size_;
   block_align_ = kernel->BlockAlign();
   if (tile_size_ % block_align_) {
     tile_size_ += block_align_ - tile_size_ % block_align_;
   }
-  align_size_ = tile_size_;
-  align_depth_ = depth;
-  for (size_t i = depth; i < nd.size(); ++i) {
+  for (size_t i = align_.depth; i < nd.size(); ++i) {
     tile_size_ *= nd[i];
   }
 }
@@ -286,8 +289,8 @@ int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
     tile_size_ = tile_size_ / space * ((space + num - 1) / num);
   } else {
     auto align_size = (tp.tile + block_align_ - 1) / block_align_ * block_align_;
-    tile_size_ = tile_size_ / align_size_ * align_size;
-    align_size_ = align_size;
+    tile_size_ = tile_size_ / align_.space * align_size;
+    align_.space = align_size;
   }
   tile_num_ *= num;
   return tile_size_;
@@ -297,8 +300,8 @@ class ReshapeDomain : public PropDomain {
  public:
   ReshapeDomain(NDObject *head, const std::vector<int64_t> &src, const std::vector<int64_t> &dst)
    : PropDomain(head), src_(src), dst_(dst) {}
-  void FoldProp(FoldRange &range) override {
-    FoldRange dst_range;
+  void FoldProp(PropRange &range) override {
+    PropRange dst_range;
     dst_range.base = 0;
     for (int i = dst_.size() - 1; i >= 0; --i) {
       if (dst_[i] > 1) {
@@ -313,7 +316,6 @@ class ReshapeDomain : public PropDomain {
     }
     dst_range.depth = dst_range.base - start + 1;
     dst_range.space = range.space;
-    //std::cout << "foldprop to: [" << range.base << "," << range.depth << "," << range.space << "] => [" << dst_range.base <<"," << dst_range.depth <<","<<dst_range.space<<"]"<<std::endl;
     PropDomain::FoldProp(dst_range);
     if (range.space > dst_range.space) {
       int src_start = range.base - range.depth;
@@ -322,29 +324,35 @@ class ReshapeDomain : public PropDomain {
       }
       range.depth = range.base - src_start;
     }
+    if (dst_range.affine > range.affine) {
+      range.affine = dst_range.affine;
+    }
     prop_base = dst_range.base;
-    //std::cout << "foldprop back: [" << range.base << "," << range.depth << "," << range.space << "] <= [" << dst_range.base <<"," << dst_range.depth <<","<<dst_range.space<<"]"<<std::endl;
   }
-  int AlignProp(int depth) override {
+  void AlignProp(PropRange &range) override {
     int64_t space = src_[0];
-    for (int i = 1; i < depth; ++i) {
+    for (int i = 1; i < range.depth; ++i) {
       space *= src_[i];
     }
     int dst_init_depth = 0;
     while (space > 1) {
       space /= dst_[dst_init_depth++];
     }
-    auto dst_depth = PropDomain::AlignProp(dst_init_depth);
-    if (dst_depth < dst_init_depth) {
-      int64_t delta_space = dst_[dst_depth];
-      for (int i = dst_depth + 1; i < dst_init_depth; ++i) {
+    PropRange dst_range;
+    dst_range.depth = dst_init_depth;
+    PropDomain::AlignProp(dst_range);
+    if (dst_range.depth < dst_init_depth) {
+      int64_t delta_space = dst_[dst_range.depth];
+      for (int i = dst_range.depth + 1; i < dst_init_depth; ++i) {
         delta_space *= dst_[i];
       }
       while (delta_space > 1) {
-        delta_space /= src_[--depth];
+        delta_space /= src_[--range.depth];
       }
     }
-    return depth;
+    if (dst_range.affine > range.affine) {
+      range.affine = dst_range.affine;
+    }
   }
   void TileProp(const TileParam &tp) override {
     int64_t dim_space = tp.tile * tp.num;
@@ -372,7 +380,6 @@ class ReshapeDomain : public PropDomain {
     t.num = tp.num;
     t.tile = tp.tile;
     t.tail = tp.tail;
-    //std::cout << "reshape tile:["<<start<<","<<end<<"] => ["<<dst_start<<","<<dst_end<<"]"<<std::endl;
     PropDomain::TileProp(t);
   }
 
@@ -384,37 +391,42 @@ class ReshapeDomain : public PropDomain {
 
 class ShapeTiling {
  public:
-  ShapeTiling(VKernel *kernel, RootDomain &prim_dom) : kernel_(kernel), prim_dom_(prim_dom) {}
+  ShapeTiling(VKernelBase *kernel, RootDomain &prim_dom, int64_t core_limit)
+  : prim_dom_(prim_dom), core_limit_(core_limit) {
+    repeat_size_ = SIMD_REPEAT_SIZE / kernel->MinTypeSize();
+  }
   ~ShapeTiling() = default;
   void Run(int64_t tile_size_limit) {
     tile_size_limit_ = tile_size_limit;
-    PropDomain::FoldRange range;
-    range.base = prim_dom_.DimSpace().size() - 1;
+    int align_depth = prim_dom_.align_.depth;
+    PropRange fold;
+    fold.base = prim_dom_.DimSpace().size() - 1;
     int64_t tile_size = prim_dom_.TileSize();
-    while (tile_size > tile_size_limit_) {
-      if (range.base + 1 > prim_dom_.AlignDepth()) {
-        range.depth = range.base + 1;
-        range.space = -1;
-        prim_dom_.FoldProp(range);
-        int start_dim = range.base + 1 - range.depth;
+    do  {
+      if (fold.base + 1 > align_depth) {
+        fold.depth = fold.base + 1;
+        fold.space = -1;
+        prim_dom_.FoldProp(fold);
+        int start_dim = fold.base + 1 - fold.depth;
         ASSERT(start_dim > 0);
-        int64_t num = CalcTile(tile_size, range.space);
-        tile_size = prim_dom_.Tile(start_dim, range.base, range.space, num);
-        range.base = start_dim - 1;
+        if (start_dim < align_depth) { // axis of 1
+          start_dim = align_depth;
+        }
+        int64_t num = CalcTile(tile_size, fold);
+        if (num > 1) {
+          tile_size = prim_dom_.Tile(start_dim, fold.base, fold.space, num);
+        }
+        fold.base = start_dim - 1;
       } else {
-        int64_t num = CalcTileAlign(tile_size, tile_size);
-        tile_size = prim_dom_.Tile(0, range.base, tile_size, num);
+        int64_t num = CalcTileAlign(tile_size, prim_dom_.align_);
+        if (num > 1) {
+          tile_size = prim_dom_.Tile(0, fold.base, prim_dom_.align_.space, num);
+        }
         return;
       }
-    }
-    int align_depth = prim_dom_.AlignDepth();
+    } while(tile_size > tile_size_limit_);
     if (align_depth > 1) {
-      auto &nd = prim_dom_.DimSpace();
-      int64_t space = nd[0];
-      for (int i = 1; i < align_depth; ++i) {
-        space *= nd[i];
-      }
-      prim_dom_.Tile(0, align_depth - 1, space, 1);
+      prim_dom_.Tile(0, align_depth - 1, prim_dom_.align_.space, 1);
     }
   }
  protected:
@@ -438,27 +450,42 @@ class ShapeTiling {
     ASSERT(0);
     return -1;
   }
-  int64_t CostMeasure(int64_t tile_space, int64_t tile_factor, int64_t tile_num) {
-    auto device_core_num = DeviceInfo::Instance().CoreNum();
-    int64_t space = prim_dom_.TileSize() / tile_space * tile_factor;
-    int64_t core_tile_num = (tile_num * prim_dom_.TileNum() + device_core_num - 1) / device_core_num;
-    return core_tile_num * (space + 1);
+  int64_t CostMeasure(int64_t space, int64_t tile_num) {
+    return ((tile_num - 1) / core_limit_ + 1) * (std::max((space - 1) / repeat_size_, 3L) + 2);
   }
-  int64_t CalcTile(int64_t tile_size, int64_t space) {
+  int64_t CalcTile(int64_t tile_size, const PropRange &range) {
     // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
     // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
     // floor(a/b) <= c --> b >= floor(a/c)
     // floor(tile_size_/tile_num <= tile_size_limit_) --> tile_num >= floor(tile_size_/tile_size_limit_)
     // (tile_size / space) * floor(space /tile_num) <= tile_size_limit_) --> tile_num >= floor(space/max_factor)
-    int64_t max_factor = tile_size_limit_ / (tile_size / space);
-    if (max_factor <= 1) {
-      return space;
+    // EQUAL TO:
+    //  int64_t tile_num = (space + max_factor - 1) / max_factor;
+    //  while (tile_num < space && ((space + tile_num - 1) / tile_num) > max_factor) {
+    //    tile_num++;
+    //  }
+    int64_t space = range.space;
+    int64_t tile_num, tile_factor;
+    if (tile_size > tile_size_limit_) {
+      int64_t max_factor = tile_size_limit_ / (tile_size / space);
+      if (max_factor <= 1) {
+       return space;
+      }
+      tile_num = std::max((space + max_factor - 1) / max_factor, (tile_size_limit_ + tile_size - 1) / tile_size);
+      tile_factor = (space - 1) / tile_num + 1;
+    } else if (range.affine >= PropRange::REDUCE) {
+      return 1;
+    } else {
+      tile_num = 1;
+      tile_factor = space;
     }
-    int64_t tile_num = std::max((space + max_factor - 1) / max_factor, (tile_size_limit_ + tile_size - 1) / tile_size);
-    int64_t best_cost = CostMeasure(space, (space + tile_num - 1) / tile_num, tile_num);
+    int64_t space_unit = prim_dom_.TileSize() / space;
+    int64_t tile_num_base = prim_dom_.TileNum();
+    int64_t best_cost = CostMeasure(space_unit * tile_factor, tile_num * tile_num_base);
     int64_t max_tile_num = std::min(int64_t(tile_num + DeviceInfo::Instance().CoreNum() - 1), space);
     for (int64_t t_num = tile_num + 1; t_num <= max_tile_num; ++t_num) {
-      int64_t cost = CostMeasure(space, (space + t_num - 1) / t_num, t_num);
+      tile_factor = (space - 1) / t_num + 1;
+      int64_t cost = CostMeasure(space_unit * tile_factor, tile_num * tile_num_base);
       if (cost < best_cost) {
         tile_num = t_num;
         best_cost = cost;
@@ -467,18 +494,16 @@ class ShapeTiling {
     return tile_num;
   }
 
-  int64_t CalcTileAlign(int64_t tile_size, int64_t space) {
-    int64_t tile_num = GetDivision(space, (tile_size + tile_size_limit_ - 1) / tile_size_limit_);
-    int64_t align = space / tile_num;
-    if (tile_num < space) {
-      int64_t cost = CostMeasure(space, align, tile_num);
+  int64_t CalcTileAlign(int64_t tile_size, const PropRange &range) {
+    int64_t space = range.space;
+    int64_t tile_num = GetDivision(space, (tile_size - 1) / tile_size_limit_ + 1);
+    if (tile_num < space && range.affine < PropRange::REDUCE) {
+      int64_t tile_num_base = prim_dom_.TileNum();
+      int64_t cost = CostMeasure(space / tile_num, tile_num * tile_num_base);
       int64_t div_tile = tile_num;
-      //std::cout<<tile_num<<" : "<<cost<<std::endl;
       while (div_tile < space) {
         div_tile = GetDivision(space, div_tile + 1);
-        int64_t div_align = space / div_tile;
-        int64_t div_cost = CostMeasure(space, div_align, div_tile);
-        //std::cout<<div_tile<<" : "<<div_cost<<std::endl;
+        int64_t div_cost = CostMeasure(space / div_tile, div_tile * tile_num_base);
         if (div_cost >= cost) break;
         cost = div_cost;
         tile_num = div_tile;
@@ -487,29 +512,36 @@ class ShapeTiling {
     ASSERT(space % tile_num == 0);
     return tile_num;
   }
-  VKernel* kernel_;
+  VKernelBase* kernel_;
   RootDomain &prim_dom_;
   int64_t tile_size_limit_;
+  int64_t repeat_size_;
+  int64_t core_limit_;
 };
 
-VKernel::~VKernel() {
+std::string& VKernel::DisAssemble() {
+  std::ostringstream oss;
+  code_ptr_->DisAssemble(oss);
+  das_str_ = oss.str();
+  return das_str_;
+}
+
+VKernelBase::~VKernelBase() {
   for (auto &op: build_ops_) {
     delete op;
   }
 }
 
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 64, 64};
-void VKernel::CodeGen() {
+void VKernelBase::DoCodeGen(uint64_t core_limit) {
   code_.Reset();
   CodeGenHelper helper;
   int peak_live = Analyze(helper);
   uint64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize() - ReserveCodeSize();
   uint64_t tile_size_limit = free_mem / (MaxTypeSize() * peak_live);
   // tiling
-  BuildDomain();
-  root_dom_.Normalize(this);
   if (tiles_.empty()) {
-    ShapeTiling tiling(this, root_dom_);
+    ShapeTiling tiling(this, root_dom_, core_limit);
     tiling.Run(tile_size_limit);
   } else {
     auto &dims = root_dom_.DimSpace();
@@ -530,17 +562,18 @@ void VKernel::CodeGen() {
   for (uint64_t sw = max_sw; sw > 0; sw -= block_sw) {
     uint64_t repeat = (lead_dim + sw - 1) / sw * tile_outer;
     if (repeat * sw <= tile_size_limit && repeat <= best_repeat) {
-      code_.simd_width = sw;
+      code_.simd_width_ = sw;
       best_repeat = repeat;
     }
   }
-  code_.tile_mem = best_repeat * code_.simd_width * MaxTypeSize();
-  code_.tile_num = root_dom_.TileNum();
+  code_.tile_num_ = root_dom_.TileNum();
+  code_.UpdateBlockDim(core_limit);
   // codegen
+  helper.xbuf_size_ = best_repeat * code_.simd_width_ * MaxTypeSize();
   helper.Generate(this);
 }
 
-std::string VKernel::DumpGraph() {
+std::string VKernelBase::DumpGraph() {
   static std::unordered_map<ObjectType, std::string> obj_name = {
     {kLoad, "Load"},
     {kLoadDummy, "LoadDummy"},
@@ -567,8 +600,8 @@ std::string VKernel::DumpGraph() {
     }
     oss << "]";
   };
-  oss << "vkernel.graph(tile_num=" << code_.tile_num << ", simd_width="<<code_.simd_width << ", insn_num="
-      << code_.insn_num << ", tile_mem=" << code_.tile_mem <<") {" << std::endl;
+  oss << "vkernel.graph(tile_num=" << code_.tile_num_ << ", simd_width="<<code_.simd_width_ << ", insn_num="
+      << code_.insn_num_ << ") {" << std::endl;
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
     oss << "  ";
@@ -598,36 +631,21 @@ std::string VKernel::DumpGraph() {
   return oss.str();
 }
 
-std::string& VKernel::DisAssemble() {
-  std::ostringstream oss;
-  code_.DisAssemble(oss);
-  das_str_ = oss.str();
-  return das_str_;
-}
-
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
 #define OP_GEN_S(op) do { op->lead_dim_ = 2; } while(0)
 #define OP_GEN_D(op) do { op->lead_dim_ = 1; } while(0)
 #define OP_KILL(op) do { op->lead_dim_ = 0; } while(0)
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
-int VKernel::Analyze(CodeGenHelper &codegen) {
+int VKernelBase::Analyze(CodeGenHelper &codegen) {
   int cur_live = 0;
   int load_pipe_idx = 0;
   int store_pipe_idx = 0;
   int vector_pipe_idx = 0;
   int back_wait_idx = INT_MAX;
-  max_type_ = objects_.front()->type_id_;
-  min_type_ = objects_.front()->type_id_;
+  int op_index_ = 0;
   for (auto op : objects_) {
-    if (op->GetObjectType() == kCast || op->GetObjectType() == kLoad) {
-      int type = op->type_id_;
-      if (type > max_type_) {
-        max_type_ = type;
-      } else if (type < min_type_) {
-        min_type_ = type;
-      }
-    }
+    op->index_ = op_index_++;
     if (op->Pipe() == V_PIPE_LOAD) {
       cur_live++;
       codegen.static_ops_.push_back(op);
@@ -653,7 +671,6 @@ int VKernel::Analyze(CodeGenHelper &codegen) {
   auto LivenessEnd = [&back_set_idx, &cur_live](NDObject *op, NDObject *end) {
     if (end->Pipe() == V_PIPE_SIMD && !OP_LIVE(end)) {
       OP_GEN_D(end);
-      cur_live++;
       return true;
     }
     if (back_set_idx == -1 && end->Pipe() == V_PIPE_LOAD) {
@@ -666,22 +683,33 @@ int VKernel::Analyze(CodeGenHelper &codegen) {
     if (op->Pipe() == V_PIPE_SIMD) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
-        op->free_lhs = true;
+        if (OP_LIVE_D(op) && (op->obj_id_ == kUnary || op->obj_id_ == kBinary || op->obj_id_ == kBinaryS)) {
+          op->flags_ |= OBJ_FLAG_REUSE_LHS;
+        } else {
+          op->flags_ |= OBJ_FLAG_FREE_LHS;
+          cur_live++;
+        }
       }
       kill = op->rhs_;
       if (kill && LivenessEnd(op, kill)) {
-        op->free_rhs = true;
+        if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && op->obj_id_ == kBinary) {
+          op->flags_ |= OBJ_FLAG_REUSE_RHS;
+        } else {
+          op->flags_ |=  OBJ_FLAG_FREE_RHS;
+          cur_live++;
+        }
       }
       if (op->GetObjectType() == kSelect) {
         SelectOp *select_op = reinterpret_cast<SelectOp*>(op);
         if (LivenessEnd(op, select_op->cond_)) {
+          cur_live++;
           select_op->free_cond = true;
         }
       }
       if (cur_live > live_peak) {
         live_peak = cur_live;
       }
-      if (OP_LIVE_D(op)) {
+      if (OP_LIVE_D(op) && !(op->flags_ & (OBJ_FLAG_REUSE_LHS | OBJ_FLAG_REUSE_RHS))) {
         cur_live--;
       }
       OP_KILL(op);
@@ -720,8 +748,8 @@ class PropDomainBuilder {
     }
   }
  private:
-  NDObject* GetHead(NDObject *op)  { return reinterpret_cast<NDObject*>(op->insn); }
-  void SetHead(NDObject *op, NDObject* head)  { op->insn = reinterpret_cast<uint64_t*>(head); }
+  NDObject* GetHead(NDObject *op)  { return reinterpret_cast<NDObject*>(op->insn_); }
+  void SetHead(NDObject *op, NDObject* head)  { op->insn_ = reinterpret_cast<uint64_t*>(head); }
   void BuildOp(NDObject* op, NDObject* next) {
     auto op_head = GetHead(op);
     auto next_head = GetHead(next);
@@ -780,20 +808,113 @@ class PropDomainBuilder {
   int link_num_;
 };
 
-void VKernel::BuildDomain() {
-  for (auto op : objects_) { // TODO: slow path analyze to pre-analyze
+void VKernelBase::BuildDomain() {
+  max_type_ = objects_.front()->type_id_;
+  min_type_ = objects_.front()->type_id_;
+  bool slow_build_path = false;
+  for (auto op : objects_) {
     auto type = op->GetObjectType();
     if (type == kReshape) {
-      PropDomainBuilder builder;
-      builder.Build(objects_, root_dom_);
-      return;
+      slow_build_path = true;
+    } else if (type == kCast || type == kLoad) {
+      int type = op->type_id_;
+      if (type > max_type_) {
+        max_type_ = type;
+      } else if (type < min_type_) {
+        min_type_ = type;
+      }
     }
   }
-  NDObject *next = nullptr;
-  for (auto obj: objects_) {
-    obj->pd_next_ = next;
-    next = obj;
+  if (slow_build_path) {
+    PropDomainBuilder builder;
+    builder.Build(objects_, root_dom_);
+  } else {
+    NDObject *next = nullptr;
+    for (auto obj: objects_) {
+      obj->pd_next_ = next;
+      next = obj;
+    }
+    root_dom_.SetHead(next);
   }
-  root_dom_.SetHead(next);
+}
+
+void VKernelS::Append(NDObject *obj) {
+  build_ops_.push_back(obj);
+  obj->Normalize(objects_);
+  objects_.emplace_back(obj);
+}
+
+static std::vector<pass::Pass> passes = {&pass::ReorderStore};
+void VKernelS::Optimize() {
+  auto bb = pass::BasicBlock(objects_);
+  for (auto pass : passes) {
+    pass(bb);
+  }
+  objects_ = bb.ToVector();
+}
+
+void VKernelS::CodeGen() {
+  Optimize();
+  BuildDomain();
+  NormalizeDomain();
+  DoCodeGen(DeviceInfo::Instance().CoreNum());
+}
+
+void VKernelD::CodeGen() {
+  objects_.clear();
+  root_dom_.Clear();
+  for (auto op : build_ops_) {
+    op->Normalize(objects_);
+    objects_.emplace_back(op);
+  }
+  BuildDomain();
+  NormalizeDomain();
+  DoCodeGen(DeviceInfo::Instance().CoreNum());
+}
+
+void VKernelP::CodeGen() {
+  auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
+  uint64_t total_workload = 0;
+  for (auto k : children_) {
+    k->BuildDomain();
+    k->NormalizeDomain();
+    total_workload += WorkLoad(k);
+  }
+  std::sort(children_.begin(), children_.end(), [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
+  uint64_t core_num = DeviceInfo::Instance().CoreNum();
+  for (size_t i = 0; i < children_.size(); ++i) {
+    auto k = children_[i];
+    auto workload = WorkLoad(k);
+    uint64_t core_limit = core_num * workload / total_workload;
+    k->DoCodeGen(core_limit);
+    code_.children_.push_back(&k->code_);
+    total_workload -= workload;
+    core_num -= k->GetCode()->block_dim_;
+  }
+  std::vector<uint64_t> offsets;
+  code_.LinkAll(offsets);
+  for (size_t i = 0; i < children_.size(); ++i) {
+    uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + offsets[i]);
+    uint64_t *old_base = reinterpret_cast<uint64_t*>(code_.children_[i]->data_);
+    for (auto op :  children_[i]->objects_) {
+      if (op->obj_id_ == kLoad) {
+        auto load = static_cast<NDLoad*>(op);
+        load->insn_ = new_base + (load->insn_ - old_base);
+      } else if (op->obj_id_ == kStore) {
+        auto store = static_cast<NDStore*>(op);
+        store->insn_ = new_base + (store->insn_ - old_base);
+      }
+    }
+  }
+}
+
+std::string VKernelP::DumpGraph() {
+  std::ostringstream oss;
+  oss << "vgraph.parallel() {" << std::endl;
+  for (auto k : children_) {
+    oss << k->DumpGraph() << std::endl;
+  }
+  oss << "}";
+  return oss.str();
 }
 } // namespace dvm

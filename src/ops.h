@@ -38,6 +38,7 @@ enum ObjectType {
   kReduce,
   kSelect,
   kElementAny,
+  kRemovePad,
   kObjectBulk
 };
 
@@ -74,6 +75,8 @@ class NDObject {
   NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
     type_id_ = type_id;
   }
+  NDObject(const NDObject&) = delete;
+  NDObject &operator=(const NDObject&) = delete;
   virtual ~NDObject() = default;
 
   // re-infer shape(nd_) from its inputs nd_
@@ -98,7 +101,7 @@ class NDObject {
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_{0};
-  ShapeRef *shape_ref_;
+  ShapeRef *shape_ref_{nullptr};
   NDObject *pd_next_{nullptr};
   int lead_dim_{0};
   ObjectType obj_id_;
@@ -154,7 +157,7 @@ class NDSliceLoad : public NDLoad {
   NDSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
       : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {}
   void Normalize(std::vector<NDObject *> &run_ops) override {
-    ASSERT(src_ref_->size <= 2);
+    ASSERT(src_ref_->size <= 3);
     NDLoad::Normalize(run_ops);
   }
 
@@ -164,6 +167,7 @@ class NDSliceLoad : public NDLoad {
   void FoldProp(PropRange &range) override;
 
  protected:
+  int64_t CalcOffset();
   ShapeRef *start_ref_;
   ShapeRef *src_ref_;
   ShapeRef *size_ref_;
@@ -202,8 +206,6 @@ class NDStore : public NDObject {
     tail_size_ = 0;
   }
   void Tile(const TileParam &tp) override;
-  void ClearTileConfig() {
-  }
   int Emit(Code &code) override;
   uint8_t *dst_;
 
@@ -232,6 +234,7 @@ class ReshapeOp : public CopyOp {
     obj_id_ = ObjectType::kReshape;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
+  int Emit(Code &code) override;
 
  private:
   std::vector<int64_t> shape_;
@@ -247,6 +250,12 @@ class UnaryOp : public NDObject {
   vOpInsnID id_;
 };
 
+class RemovePadOp : public CopyOp {
+public:
+  RemovePadOp(NDObject *NDObject);
+  int Emit(Code &code) override;
+};
+
 class ElementAnyOp: public NDObject {
  public:
   ElementAnyOp(NDObject *input): NDObject(input, nullptr, input->type_id_, ObjectType::kElementAny) {
@@ -254,13 +263,18 @@ class ElementAnyOp: public NDObject {
     shape_ref_ = &shape_ref_data_;
   }
   int Emit(Code &code) override;
+  void Tile(const TileParam &tp) override;
   void Normalize(std::vector<NDObject *> &run_ops) override {
+    tail_dim_ = -1;
+    tail_size_ = 0;
     nd_.resize(lhs_->nd_.size(), 1);
   }
 
  private:
   std::vector<int64_t> shape_{1};
   ShapeRef shape_ref_data_;
+  int tail_dim_{-1};
+  int tail_size_{0};
 };
 
 class _CastOp : public NDObject {
@@ -277,10 +291,10 @@ class CastOp : public _CastOp {
   CastOp(NDObject *input, DType type_id);
   ~CastOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  NDObject *Input() const { return stuff_op_ == nullptr ? lhs_ : stuff_op_->lhs_; }
+  NDObject *Input() const { return stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_; }
 
  private:
-  _CastOp* stuff_op_{nullptr};
+  std::vector<_CastOp*> stuff_ops_;
 };
 
 enum BinarySOpType {
@@ -396,7 +410,7 @@ class _ReduceOp : public NDObject {
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
-  void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; }
+  void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; tail_dim_ = -1; }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
  protected:

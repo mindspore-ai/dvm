@@ -68,7 +68,7 @@ VKernelHolder::VKernelHolder() {
 
 template <typename T>
 NDObject *GetBinaryS(int op_type, T val, NDObject *rhs) {
-  if (rhs->type_id_ == kInt32) {
+  if (rhs->type_id_ == kInt32 && DeviceInfo::Instance().Arch() != kAiCore_C220) {
     return nullptr;
   }
   switch (op_type) {
@@ -137,12 +137,48 @@ NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start,
 }
 
 NDObject* Kernel::Unary(int op_type, NDObject* input) {
+  if (GetDType(input) == kInt32) {
+    if (op_type == UnaryOpType::kAbs) {
+      return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));
+    }
+  }
+  if (op_type == UnaryOpType::kLogicalNot && input->type_id_ != kInt8) {
+    if (input->type_id_ == kInt32) {
+      return Binary(BinaryOpType::kSub, 1, input);
+    } else {
+      return Binary(BinaryOpType::kSub, 1.0f, input);
+    }
+  }
   auto obj = new UnaryOp(op_type, input);
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
+  if (op_type < V_CMP_ALL && lhs->type_id_ == kInt32) {
+    if (op_type == kEqual || op_type == kNotEqual) {
+      auto sub = Binary(BinaryOpType::kSub, rhs, lhs);
+      auto abs = Binary(BinaryOpType::kMaximum, sub, Binary(BinaryOpType::kMul, sub, -1));;
+      auto min = Binary(BinaryOpType::kMinimum, abs, 1);
+      if (op_type == kEqual) {
+        return Binary(BinaryOpType::kSub, 1, min);
+      }
+      return min;
+    } else {
+      NDObject *sub;
+      if (op_type == kGreaterEqual || op_type == kGreater) {
+        sub = Binary(BinaryOpType::kSub, lhs, rhs);
+      } else {
+        sub = Binary(BinaryOpType::kSub, rhs, lhs);
+      }
+      if (op_type == kLessEqual || op_type == kGreaterEqual) {
+        sub = Binary(BinaryOpType::kAdd, sub, 1);
+      }
+      auto ret = Binary(BinaryOpType::kMinimum, sub, 1);
+      ret = Binary(BinaryOpType::kMaximum, ret, 0);
+      return ret;
+    }
+  }
   auto obj = new BinaryOp(op_type, lhs, rhs);
   kernel_->Append(obj);
   return obj;
@@ -152,9 +188,9 @@ template<typename T>
 NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
   NDObject *obj = GetBinaryS(op_type, val, rhs);
   if (obj == nullptr) {
-    auto broadcast = new BroadcastScalarOp<T>(val, rhs->shape_ref_, rhs->type_id_, nullptr);
+    NDObject *broadcast = new BroadcastScalarOp<T>(val, rhs->shape_ref_, rhs->type_id_, nullptr);
     kernel_->Append(broadcast);
-    obj = new BinaryOp(op_type, broadcast, rhs);
+    return Binary(op_type, broadcast, rhs);
   }
   kernel_->Append(obj);
   return obj;
@@ -164,9 +200,9 @@ template<typename T>
 NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
   NDObject *obj = GetBinaryS(op_type, val, lhs);
   if (obj == nullptr) {
-    auto broadcast = new BroadcastScalarOp<T>(val, lhs->shape_ref_, lhs->type_id_, nullptr);
+    NDObject *broadcast = new BroadcastScalarOp<T>(val, lhs->shape_ref_, lhs->type_id_, nullptr);
     kernel_->Append(broadcast);
-    obj = new BinaryOp(op_type, lhs, broadcast);
+    return Binary(op_type, lhs, broadcast);
   }
   kernel_->Append(obj);
   return obj;
@@ -289,7 +325,6 @@ int Kernel::Launch(void* stream) {
       }
     }
   }
-  ASSERT(code->data_size_ <= 4096);
   auto ret = rtKernelLaunch(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
   return ret;
 }
@@ -308,10 +343,5 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {
   return 0;
-}
-
-const char* Kernel::DisAssemble() {
-  std::string &das = kernel_->DisAssemble();
-  return das.c_str();
 }
 } // namespace dvm

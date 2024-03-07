@@ -38,6 +38,18 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TileSimdWidth(tile)   (tile >> 42)
 #define GetRepeatStride(tile, x)  (tile >> (42 + BlockDataShift(x)))
 
+__aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
+  return (stride * type_size + 31) >> 5;
+}
+
+__aicore_inline__ void SetVectorMask(uint64_t simd_width) {
+  if (simd_width > 64) {
+    set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
+  } else {
+    set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
+  }
+}
+
 // unary
 __aicore_inline__ void vAbs(__ubuf__ half *dst, __ubuf__ half *src, uint8_t repeat, uint16_t repeatStride) {
   vabs(dst, src, repeat, 1, 1, repeatStride, repeatStride);
@@ -152,6 +164,14 @@ __aicore_inline__ void vMax(__ubuf__ half *dst, __ubuf__ half *src0, __ubuf__ ha
   vmax(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride);
 }
 
+__aicore_inline__ void vReducev2(__ubuf__ uint16_t *dst, __ubuf__ uint16_t *src0, __ubuf__ uint16_t *src1, uint16_t repeat, uint8_t src0BlockStride, uint8_t patternMode, uint16_t src0RepeatStride, uint8_t src1RepeatStride) {
+  vreducev2(dst, src0, src1, repeat, src0BlockStride, patternMode, src0RepeatStride, src1RepeatStride);
+}
+
+__aicore_inline__ void vReducev2(__ubuf__ uint32_t *dst, __ubuf__ uint32_t *src0, __ubuf__ uint32_t *src1, uint16_t repeat, uint8_t src0BlockStride, uint8_t patternMode, uint16_t src0RepeatStride, uint8_t src1RepeatStride) {
+  vreducev2(dst, src0, src1, repeat, src0BlockStride, patternMode, src0RepeatStride, src1RepeatStride);
+}
+
 // cross
 __aicore_inline__ void vCAdd(__ubuf__ float *dst, __ubuf__ float *src, uint8_t repeat, uint16_t dstRepeatStride, uint16_t srcRepeatStride) {
 #ifdef AICORE_ARCH_C220
@@ -177,6 +197,17 @@ __aicore_inline__ void vCMax(__ubuf__ float *dst, __ubuf__ float *src, uint8_t r
   vector_dup((__ubuf__ float *)WORKSPACE, (float)1, 1, 1, 1, 0, 0);
   pipe_barrier(PIPE_V);
   vmin(dst, dst, (__ubuf__ float *)WORKSPACE, repeat, 1, 1, 1, srcRepeatStride, srcRepeatStride, 0);
+#endif
+}
+
+__aicore_inline__ void vCMax(__ubuf__ half *dst, __ubuf__ half *src, uint8_t repeat, uint16_t dstRepeatStride, uint16_t srcRepeatStride) {
+#ifdef AICORE_ARCH_C220
+  vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride, VALUE_INDEX);
+#else
+  vcadd(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride);
+  vector_dup((__ubuf__ half *)WORKSPACE, (half)1, 1, 1, 1, 0, 0);
+  pipe_barrier(PIPE_V);
+  vmin(dst, dst, (__ubuf__ half *)WORKSPACE, repeat, 1, 1, 1, srcRepeatStride, srcRepeatStride, 0);
 #endif
 }
 
@@ -388,11 +419,36 @@ __aicore_inline__ void Reciprocal(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
 }
 
 template <typename T>
-__aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head) {
+__aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
   vElementAny op;
   vElementAny::Decode(pc, head, op);
   uint64_t simd_width = op.rs * TYPE_SHIFT(T);
-  copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, op.burst_len, 0, 0);
+  copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, GetBlock(op.iter_size, sizeof(T)), 0, 0);
+  if (IsLastTile(tile) && op.iter_size != op.tail_size) {
+    uint64_t mod = op.tail_size % simd_width;
+    pipe_barrier(PIPE_V);
+    for (uint64_t i = op.tail_size / simd_width + 1; i < op.iter_size / simd_width; i++) {
+      vDup((__ubuf__ T *)op.xd + i * simd_width, (T)0, 1, 8);
+    }
+    uint64_t lmask, rmask;
+    if (simd_width > 64) {
+      lmask = 0xffffffffffffffffllu >> (128 - simd_width);
+      rmask = 0xffffffffffffffffllu;
+    } else {
+      lmask = 0;
+      rmask = 0xffffffffffffffffllu;
+    }
+    if (mod > 64) {
+      lmask &= (0xffffffffffffffffllu << (mod - 64));
+      rmask = 0;
+    } else {
+      lmask = 0;
+      rmask &= (0xffffffffffffffffllu << mod);
+    }
+    set_vector_mask(lmask, rmask);
+    vDup((__ubuf__ T *)op.xd + op.tail_size - mod, (T)0, 1, 8);
+    SetVectorMask(simd_width);
+  }
   pipe_barrier(PIPE_V);
   while (op.repeat != 1) {
     if (op.repeat & 1) {
@@ -752,7 +808,7 @@ __aicore_inline__ void BroadcastS(__ubuf__ uint64_t *pc, uint64_t head) {
 }
 
 template <typename T>
-__aicore_inline__ void BroadcastS_INT(__ubuf__ uint64_t *pc, uint64_t head) {
+__aicore_inline__ void BroadcastS_Int(__ubuf__ uint64_t *pc, uint64_t head) {
   __ubuf__ vBroadcastS<int32_t> *op = (__ubuf__ vBroadcastS<int32_t> *)pc;
   uint64_t data = static_cast<uint64_t>(op->data);
   uint64_t rs = data >> 18;
@@ -945,21 +1001,27 @@ __aicore_inline__ void Select(__ubuf__ uint64_t *pc, uint64_t head) {
   }
 }
 
-template <typename T>
-__aicore_inline__ void Not(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
-  vUnary op;
-  vUnary::Decode(pc, head, op);
-  uint64_t rs = GetRepeatStride(tile, T);
-  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
-  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
-  if (op.repeat <= 255) {
-    vMuls(xd, xn, (T)-1.0, op.repeat, rs);
-    pipe_barrier(PIPE_V);
-    vAdds(xd, xd, (T)1.0, op.repeat, rs);
-  } else {
-    repeat_vmuls(xd, xn, (T)-1.0, op.repeat, 1, 1, rs, rs);
-    pipe_barrier(PIPE_V);
-    repeat_vadds(xd, xd, (T)1.0, op.repeat, 1, 1, rs, rs);
+__aicore_inline__ void Select_Int(__ubuf__ uint64_t *pc, uint64_t head) {
+  __ubuf__ vSelect *op = (__ubuf__ vSelect *)pc;
+  uint64_t data = op->data;
+  uint64_t rs = data >> 60;
+  uint64_t repeat = (data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
+  __ubuf__ float *xm = (__ubuf__ float *)((data >> V_X_BITS) & V_X_MASK);
+  __ubuf__ int32_t *cond = (__ubuf__ int32_t *)(data & V_X_MASK);
+  __ubuf__ float *xd = (__ubuf__ float *)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK);
+  __ubuf__ float *xn = (__ubuf__ float *)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
+  uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);
+  pipe_barrier(PIPE_V);
+  vector_dup((__ubuf__ float *)WORKSPACE, (float)0, 1, 1, 1, rs, rs);
+  repeat_vconv_s322f32(xd, cond, repeat, 1, 1, rs, rs);
+  pipe_barrier(PIPE_V);
+  for (uint64_t i = 0; i < repeat; i++) {
+    vcmp_ne(xd, (__ubuf__ float *)WORKSPACE, 1, 1, 1, 1, rs, rs, rs);
+    vsel(xd, xn, xm, 1, 1, 1, 1, rs, rs, rs);
+    xn += simd_width;
+    xm += simd_width;
+    xd += simd_width;
+    cond += simd_width;
   }
 }
 
@@ -1001,46 +1063,85 @@ static inline [aicore] void Load(__ubuf__ uint64_t *pc, uint64_t head, uint64_t 
   copy_gm_to_ubuf((__ubuf__ void*)op.xn, gm, 0, 1, len_burst, 0, 0);
 }
 
-template <typename T>
-__aicore_inline__ uint64_t GetBlock(uint64_t stride) {
-  return (stride * sizeof(T) + 31) >> 5;
-}
-
-template <typename T>
-static inline[aicore] void SliceLoad2D(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
-  vSliceLoad2D op;
-  vSliceLoad2D::Decode(pc, head, op);
-  uint64_t tile_idx = TileIdx(tile);
-  uint64_t  offset_slice = op.tile_stride * tile_idx / op.slice_m * op.src_m + op.tile_stride * tile_idx % op.slice_m;
-  uint64_t begin_tmp = op.tile_stride * tile_idx;
-  uint64_t end_tmp = begin_tmp + op.tile_stride;
-  uint64_t begin_row = begin_tmp / op.slice_m;
-  uint64_t end_row = end_tmp / op.slice_m;
-  uint64_t begin_column = begin_tmp % op.slice_m;
-  uint64_t end_column = end_tmp % op.slice_m;
-
-  __gm__ uint8_t *src = (__gm__ uint8_t *)op.gm + offset_slice * sizeof(T);
-  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
-  if (begin_row == end_row) {
-    uint64_t num = GetBlock<T>(end_column - begin_column);
+static inline[aicore] void SliceMove2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_n, uint64_t end_n,
+                                       uint64_t begin_m, uint64_t end_m, uint64_t slice_m, uint64_t src_m,
+                                       uint64_t pad_size, uint64_t type_size) {
+  if (begin_n == end_n) {
+    uint64_t num = GetBlock(end_m - begin_m + 1, type_size);
     copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
   } else {
-    uint64_t num = GetBlock<T>(op.slice_m - begin_column);
+    uint64_t num = GetBlock(slice_m - begin_m, type_size);
     copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
-    src += (op.src_m - begin_column) * sizeof(T);
-    dst += (op.slice_m - begin_column + op.pad_size) * sizeof(T);
-    num = GetBlock<T>(op.slice_m);
-    for (uint64_t i = 0; i < end_row - begin_row - 1; ++i) {
+    src += (src_m - begin_m) * type_size;
+    dst += (slice_m - begin_m + pad_size) * type_size;
+    num = GetBlock(slice_m, type_size);
+    for (uint64_t i = 0; i < end_n - begin_n - 1; ++i) {
       copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
-      src += op.src_m * sizeof(T);
-      dst += (op.slice_m + op.pad_size) * sizeof(T);
+      src += src_m * type_size;
+      dst += (slice_m + pad_size) * type_size;
     }
-    if (end_column) {
-      num = GetBlock<T>(end_column);
-      copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
-    }
+    num = GetBlock(end_m + 1, type_size);
+    copy_gm_to_ubuf(dst, src, 0, 1, num, 0, 0);
   }
 }
+
+static inline[aicore] void SliceLoad(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile, uint64_t type_size) {
+  vSliceLoad op;
+  vSliceLoad::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t slice_nm = op.slice_m * op.slice_n;
+  uint64_t src_nm = op.src_m * op.src_n;
+
+  uint64_t begin_tmp = op.tile_stride * tile_idx;
+  uint64_t end_tmp = begin_tmp + op.tile_stride - 1;
+
+  uint64_t begin_k = begin_tmp / slice_nm;
+  uint64_t end_k = IsLastTile(tile) ? op.slice_k - 1 : end_tmp / slice_nm;
+  uint64_t begin_n = begin_tmp % slice_nm / op.slice_m;
+  uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % slice_nm / op.slice_m;
+  uint64_t begin_m = begin_tmp % op.slice_m;
+  uint64_t end_m = IsLastTile(tile) ? op.slice_m - 1 : end_tmp % op.slice_m;
+
+  uint64_t offset_slice = begin_k * src_nm + begin_n * op.src_m + begin_m;
+
+  __gm__ uint8_t *src = (__gm__ uint8_t *)op.gm + offset_slice * type_size;
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
+  if (begin_k == end_k) {
+    SliceMove2D(dst, src, begin_n, end_n, begin_m, end_m, op.slice_m, op.src_m, op.pad_size, type_size);
+  } else {
+    SliceMove2D(dst, src, begin_n, op.slice_n - 1, begin_m, op.slice_m - 1, op.slice_m, op.src_m, op.pad_size, type_size);
+    uint64_t pad_size_2d = (op.slice_m + op.pad_size) * op.slice_n;
+    src += (src_nm - begin_m - begin_n * op.src_m) * type_size;
+    if (op.pad_size) {
+      dst += (pad_size_2d - (op.slice_m + op.pad_size) * begin_n) * type_size;
+    } else {
+      dst += (pad_size_2d - op.slice_m * begin_n - begin_m) * type_size;
+    }
+    for (uint64_t i = 0; i < end_k - begin_k - 1; ++i) {
+      SliceMove2D(dst, src, 0, op.slice_n - 1, 0, op.slice_m - 1, op.slice_m, op.src_m, op.pad_size, type_size);
+      src += src_nm * type_size;
+      dst += pad_size_2d * type_size;
+    }
+    SliceMove2D(dst, src, 0, end_n, 0, end_m, op.slice_m, op.src_m, op.pad_size, type_size);
+  }
+}
+
+#ifdef AICORE_ARCH_C220
+template <typename T>
+static inline[aicore] void RemovePad(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+  vRemovePad op;
+  vRemovePad::Decode(pc, head, op);
+  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
+  uint64_t simd_width = TileSimdWidth(tile);
+  uint64_t rs = GetRepeatStride(tile, T);
+  set_mask_count();
+  set_vector_mask(0x0, op.iter_num);
+  vReducev2(xd, xn, xn, op.repeat, 1, 7, rs, 0);
+  set_mask_norm();
+  SetVectorMask(simd_width);
+}
+#endif
 
 static inline [aicore] void Store(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
   vDMA op;
@@ -1092,48 +1193,59 @@ static inline [aicore] void Store2(__ubuf__ uint64_t *pc, uint64_t head, uint64_
   }
   uint64_t pad_size = (config >> 54) & 0xfful;
   uint64_t iter_size = (config >> 36) & V_X_MASK;
-  uint64_t tail_part = iter_size & 0x1ful;
+#if AICORE_ARCH_C220
+  if (iter_size & 1) {
+    copy_ubuf_to_gm_align_b8(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
+  } else if (iter_size & 3) {
+    copy_ubuf_to_gm_align_b16(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
+  } else {
+    copy_ubuf_to_gm_align_b32(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
+  }
+#else
   uint64_t len_burst = (iter_size + 31) >> 5;
-  for (uint64_t i = 0; i < iter_body - 1; ++i) {
-    copy_ubuf_to_gm(dst, src, 0, 1, len_burst, 0, 0);
-    dst += iter_size;
-    src += iter_size + pad_size;
+  __gm__ uint8_t *dst_guard = (__gm__ uint8_t *)op->to + (TileEnd(tile) + 1) * tile_stride;
+  __gm__ uint8_t *dst_start = dst;
+  if (!IsLastTile(tile)) {
+    dst_guard -= len_burst << 5;
+  }
+  for (uint64_t i = 0; i < iter_body; ++i) {
+    if (dst <= dst_guard) {
+      copy_ubuf_to_gm(dst, src, 0, 1, len_burst, 0, 0);
+      dst += iter_size;
+      src += iter_size + pad_size;
+    } else {
+      uint64_t tail_part = iter_size & 0x1ful;
+      uint64_t align_part = iter_size - tail_part;
+      if (align_part) {
+        copy_ubuf_to_gm(dst, src, 0, 1, align_part >> 5, 0, 0);
+        src += align_part;
+        dst += align_part;
+      }
+      uint64_t align_pad = 32 - tail_part;
+      uint64_t offset = dst - dst_start;
+      if (offset < align_pad) {
+        align_pad = offset;
+      }
+      dst -= align_pad;
+      set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+      wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+      set_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
+      wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
+      copy_gm_to_ubuf((__ubuf__ void*)(WORKSPACE), dst, 0, 1, 1, 0, 0);
+      set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
+      wait_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
+      for (uint64_t j = 0; j < tail_part; j++) {
+        *(__ubuf__ uint8_t*)(WORKSPACE + align_pad + j) = *((__ubuf__ uint8_t*)(src++));
+      }
+      copy_ubuf_to_gm(dst, (__ubuf__ void*)(WORKSPACE), 0, 1, 1, 0, 0);
+      set_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
+      wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
+      dst += align_pad + tail_part;
+      src += pad_size;
+    }
     pipe_barrier(PIPE_MTE3);
   }
-  if (tail_part == 0 || (32 - tail_part) <= iter_size * (TileEnd(tile) - tile_idx) || IsLastTile(tile)) {
-    copy_ubuf_to_gm(dst, src, 0, 1, len_burst, 0, 0);
-  } else { // overwrite prevent for tail tile of each thread
-    uint64_t align_part = iter_size & ~0x1ful;
-#if AICORE_ARCH_C220
-    if (align_part) {
-      copy_ubuf_to_gm(dst, src, 0, 1, align_part >> 5, 0, 0);
-      src += align_part;
-      dst += align_part;
-    }
-    copy_ubuf_to_gm_align_b8(dst, src, 0, 1, tail_part, 0, 0, 0, 0);
-#else
-    uint64_t align_pad = 32 - tail_part; 
-    if (align_part) {
-      copy_ubuf_to_gm(dst, src, 0, 1, align_part >> 5, 0, 0);
-      src += align_part;
-      dst += align_part;
-    }
-    dst -= align_pad;
-    set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
-    wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
-    set_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
-    wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID1);
-    copy_gm_to_ubuf((__ubuf__ void*)(WORKSPACE), dst, 0, 1, 1, 0, 0);
-    set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
-    wait_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
-    for (uint64_t i = 0; i < tail_part; i++) {
-      *(__ubuf__ uint8_t*)(WORKSPACE + align_pad + i) = *((__ubuf__ uint8_t*)(src + i));
-    }
-    copy_ubuf_to_gm(dst, (__ubuf__ void*)(WORKSPACE), 0, 1, 1, 0, 0);
-    set_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
-    wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID1);
 #endif
-  }
 }
 
 static inline [aicore] void StoreAtomic(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
@@ -1147,15 +1259,23 @@ static inline [aicore] void StoreAtomic(__ubuf__ uint64_t *pc, uint64_t head, ui
   tile_idx = tile_idx / op.factor * op.round + tile_idx % op.round;
   __gm__ uint8_t* gm = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
   if (op.pad_size == 0) {
+#ifdef AICORE_ARCH_C220
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
+#else
     uint64_t lenburst = (op.iter_num * op.iter_size) >> 5;
-    copy_ubuf_to_gm(gm, (__ubuf__ void*)(op.xn), 0, 1, lenburst, 0, 0);
+    copy_ubuf_to_gm(gm, (__ubuf__ void *)(op.xn), 0, 1, lenburst, 0, 0);
+#endif
   } else {
+#ifdef AICORE_ARCH_C220
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
+#else
     uint64_t lenburst = (op.iter_size + 31) >> 5;
     for (uint64_t i = 0; i < op.iter_num; ++i) {
-      copy_ubuf_to_gm(gm, (__ubuf__ void*)(op.xn), 0, 1, lenburst, 0, 0);
+      copy_ubuf_to_gm(gm, (__ubuf__ void *)(op.xn), 0, 1, lenburst, 0, 0);
       op.xn += op.iter_size + op.pad_size;
       gm += op.iter_size;
     }
+#endif
   }
   set_atomic_none();
 }
@@ -1198,16 +1318,16 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_MAX, BINARY(pc, vmax, head, tile, float));
     DISPATCH(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, half));
     DISPATCH(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t));
+#ifdef AICORE_ARCH_C220
+    DISPATCH(V_CAST_FP32_TO_BF16, CAST(pc, vconv_f322bf16r, head, tile, float, bfloat16_t));
+#endif
     DISPATCH(V_RSUM_X, ReduceSumX(pc, head, tile));
     DISPATCH(V_RSUM_Y, ReduceSumY(pc, head, tile));
     DISPATCH(V_CMP, BinCompare<float>(pc, head, tile));
     DISPATCH(V_SEL, Select<float>(pc, head));
     DISPATCH(V_POW, Power<float>(pc, head, tile));
-    DISPATCH(V_NOT, Not<float>(pc, head, tile));
-    DISPATCH(V_OR, BINARY(pc, vmax, head, tile, float));
-    DISPATCH(V_AND, BINARY(pc, vmin, head, tile, float));
     DISPATCH(V_CLR_PAD, ClearPad(pc, head));
-    DISPATCH(V_ELEMENT_ANY, ElementAny<float>(pc, head));
+    DISPATCH(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile));
     // float16
     DISPATCH(V_BROADCAST_X_FP16, BroadcastX<half>(pc, head, tile));
     DISPATCH(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head));
@@ -1221,6 +1341,7 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
 #ifdef AICORE_ARCH_C220
     DISPATCH(V_MAXS_FP16, BINARYS(pc, vmaxs, head, half));
     DISPATCH(V_MINS_FP16, BINARYS(pc, vmins, head, half));
+    DISPATCH(V_REMOVEPAD_U16, RemovePad<uint16_t>(pc, head, tile));
 #endif
     DISPATCH(V_ADD_FP16, BINARY(pc, vadd, head, tile, half));
     DISPATCH(V_SUB_FP16, BINARY(pc, vsub, head, tile, half));
@@ -1234,10 +1355,8 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_CMP_FP16, BinCompare<half>(pc, head, tile));
     DISPATCH(V_SEL_FP16, Select<half>(pc, head));
     DISPATCH(V_POW_FP16, Power<half>(pc, head, tile));
-    DISPATCH(V_NOT_FP16, Not<half>(pc, head, tile));
-    DISPATCH(V_OR_FP16, BINARY(pc, vmax, head, tile, half));
-    DISPATCH(V_AND_FP16, BINARY(pc, vmin, head, tile, half));
     DISPATCH(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile));
+    DISPATCH(V_ELEMENT_ANY_FP16, ElementAny<half>(pc, head, tile));
     // int8
     DISPATCH(V_NOT_INT8, LogicalNot(pc, head, tile));
     DISPATCH(V_OR_INT8, LogicalBinary<kBinOr>(pc, head, tile));
@@ -1245,20 +1364,27 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
     DISPATCH(V_CAST_INT8_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half));
     // int32
     DISPATCH(V_BROADCAST_X_INT32, BroadcastX<int32_t>(pc, head, tile));
-    DISPATCH(V_BROADCAST_S_INT32, BroadcastS<int32_t>(pc, head));
+    DISPATCH(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head));
 #ifdef AICORE_ARCH_C220
     DISPATCH(V_ADDS_INT32, BINARYS_INT(pc, vadds, head, int32_t));
     DISPATCH(V_MULS_INT32, BINARYS_INT(pc, vmuls, head, int32_t));
     DISPATCH(V_MAXS_INT32, BINARYS_INT(pc, vmaxs, head, int32_t));
     DISPATCH(V_MINS_INT32, BINARYS_INT(pc, vmins, head, int32_t));
+    DISPATCH(V_REMOVEPAD, RemovePad<uint32_t>(pc, head, tile));
 #endif
     DISPATCH(V_ADD_INT32, BINARY(pc, vadd, head, tile, int32_t));
     DISPATCH(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t));
     DISPATCH(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t));
     DISPATCH(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t));
     DISPATCH(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t));
+    DISPATCH(V_SEL_INT32, Select_Int(pc, head));
     DISPATCH(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0); CAST(pc, vconv_deq, head, tile, int32_t, half));
     DISPATCH(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float));
+    // bfloat16
+#ifdef AICORE_ARCH_C220
+    DISPATCH(V_CAST_BF16_TO_FP32, CAST(pc, vconv_bf162f32, head, tile, bfloat16_t, float));
+    DISPATCH(V_CAST_BF16_TO_INT32, CAST(pc, vconv_bf162s32z, head, tile, bfloat16_t, int32_t));
+#endif
     default:
       trap();
       break;
@@ -1273,8 +1399,8 @@ static inline [aicore] void Dispatch_LoadStore(__ubuf__ uint64_t *pc, uint64_t h
     DISPATCH(V_STORE_2, Store2(pc, head, tile));
     DISPATCH(V_STORE_ATOMIC, StoreAtomic(pc, head, tile));
     DISPATCH(V_STORE_STATUS, StoreStatus(pc, head));
-    DISPATCH(V_SLICE_LOAD_2D, SliceLoad2D<float>(pc, head, tile));
-    DISPATCH(V_SLICE_LOAD_2D_FP16, SliceLoad2D<half>(pc, head, tile));
+    DISPATCH(V_SLICE_LOAD, SliceLoad(pc, head, tile, sizeof(uint32_t)));
+    DISPATCH(V_SLICE_LOAD_U16, SliceLoad(pc, head, tile, sizeof(uint16_t)));
     DISPATCH(V_LOAD_DUMMY, void(0));
     default:
       trap();
@@ -1294,11 +1420,7 @@ extern "C"  __global__ [aicore] void vmain(uint64_t config) {
     set_mask_norm();
 #endif
     uint64_t simd_width = (config >> 32) & 0xfful;
-    if (simd_width > 64) {
-      set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
-    } else {
-      set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
-    }
+    SetVectorMask(simd_width);
     insn_num = (config >> 16) & 0xfffful;
     uint64_t last_tile = config >> 40;
     uint64_t tile_per_block = (last_tile + block_num) / block_num;

@@ -14,5 +14,5 @@
 # ============================================================================
 
 """ dvm python """
-from .builder import DvmKernelBuilder
-from .builder import DvmKernelBuilder as DvmKernelMod # TODO: remove. backward compact
+from ._dvm_py import Kernel
+from ._dvm_py import Device as device

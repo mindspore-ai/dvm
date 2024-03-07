@@ -14,8 +14,8 @@
 # ============================================================================
 
 import pytest
-import os
 import numpy as np
+import dvm
 from dvm.tester import Tester
 
 @pytest.mark.parametrize('type', [np.float16, np.float32])
@@ -60,7 +60,7 @@ def test_logical(type, shape, op, func):
     t.store_expect(z, func(a, b).astype(type))
     assert (t.run_check())
 
-@pytest.mark.parametrize('type', [np.bool_, np.float16, np.float32])
+@pytest.mark.parametrize('type', [np.bool_, np.float16, np.float32, np.int32])
 @pytest.mark.parametrize("shape",[(1024, 32), (1312, 131), (16, 11) ,(128, 7), (128, 777)])
 @pytest.mark.parametrize('op, func', [("LogicalNot", np.logical_not)])
 def test_logical_not(type, shape, op, func):
@@ -86,7 +86,7 @@ def test_binary_s(type, op, func):
     t.store_expect(y, func(a, 0.1))
     assert(t.run_check())
 
-@pytest.mark.parametrize('type', [np.float16] if os.getenv("TEST_TARGET") != '910b' else [np.float16,np.float32])
+@pytest.mark.parametrize('type', [np.float16] if dvm.device.arch() != 'AscendC220' else [np.float16,np.float32])
 @pytest.mark.parametrize("size",[1024, 24, 66666])
 def test_isfinite(type, size):
     t = Tester()
@@ -186,8 +186,8 @@ def test_rsqrt(type, eps):
 @pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract), ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
 def test_binary_int(type, op, func):
     t = Tester()
-    a = np.full([32, 1024], 23333, type)
-    b = np.full([32, 1024], 11111, type)
+    a = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
+    b = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
     x = t.load(a)
     y = t.load(b)
     x = t.copy(x)
@@ -201,10 +201,22 @@ def test_binary_int(type, op, func):
 @pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract), ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
 def test_binarys_int(type, op, func):
     t = Tester()
-    a = np.full([32, 1024], 1024 * 1024 * 512, type)
+    a = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
     x = t.load(a)
     x = t.copy(x)
     z = t.binary(op, x, 11111)
     z = t.copy(z)
     t.store_expect(z, func(a, 11111))
+    assert (t.run_check())
+
+@pytest.mark.parametrize('type', [np.int32])
+@pytest.mark.parametrize('op, func', [("Abs", np.abs)])
+def test_unary_int(type, op, func):
+    t = Tester()
+    a = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.unary(op, x)
+    z = t.copy(z)
+    t.store_expect(z, func(a))
     assert (t.run_check())

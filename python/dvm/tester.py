@@ -17,19 +17,34 @@ import os
 import sys
 import inspect
 import numpy as np
-from .builder import DvmKernelBuilder as DvmKernelMod
+from ._dvm_py import Kernel
 
-class Tester(DvmKernelMod):
+class Tester(Kernel):
     __test__ = False
     def __init__(self, ker_type=""):
         dev_id = int(os.getenv("DEVICE_ID"))
-        DvmKernelMod.__init__(self, dev_id, ker_type)
+        Kernel.__init__(self, dev_id, ker_type)
         self.results = []
+        self.passes = []
+        self.reset_passes([])
 
     def store_expect(self, x, e, eps=None):
-        out = DvmKernelMod.store(self, x)
+        out = Kernel.store(self, x)
         self.results.append([out, e, eps])
         return out
+
+    def store_expect_flat(self, x, e, eps=None):
+        out = Kernel.store(self, x)
+        self.results.append([out.ravel(), e.ravel(), eps])
+        return out
+
+    def has_pass(self):
+        return len(self.passes)>0
+
+    def _optimize(self):
+        self.reset_passes(self.passes)
+        self.optimize()
+        self.reset_passes([])
 
     def run_check(self, verbose=False):
         def _print_result_diff(out, expect, eps):
@@ -60,16 +75,22 @@ class Tester(DvmKernelMod):
             for i in error_ranges:
                 print("[{}, {}]: {}".format(i[0], i[1], i[1] - i[0] + 1))
 
-        kernel = DvmKernelMod.get(self)
         if verbose:
             print("******* before tiling *******")
-            print(kernel.dump())
-            das = kernel.das()
+            print(self.dump())
+            if self.has_pass():
+                print("******* after optimize *******")
+                self._optimize()
+                print(self.dump())
+            das = self.das()
             print("******* after tiling *******")
-            print(kernel.dump())
+            print(self.dump())
             print("********* bytecode *********")
             print(das)
-        kernel.run()
+        else:
+            if self.has_pass():
+                self._optimize()
+        self.run()
         for out, expect, eps in self.results:
             if inspect.isfunction(expect):
                 if not expect(out):
@@ -91,6 +112,10 @@ class Tester(DvmKernelMod):
         return True
 
     def run_perf(self):
-        kernel = DvmKernelMod.get(self)
-        perf = kernel.perf()
+        perf = self.perf()
         print("kernel time(fun_min_max_avg, us): {}  {}  {}  {}".format(sys._getframe(1).f_code.co_name, perf[0], perf[1], perf[2]))
+
+    def set_passes(self, *pass_names):
+        self.passes.clear()
+        for pass_name in pass_names:
+            self.passes.append(pass_name)

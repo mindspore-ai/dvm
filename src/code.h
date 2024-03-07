@@ -21,6 +21,7 @@
 #include "dvm.h"
 #include "isa.h"
 
+namespace dvm {
 #ifdef DEBUG
 #define ASSERT(cond)                                                           \
   do {                                                                         \
@@ -34,7 +35,9 @@
 #define ASSERT(cond)
 #endif
 
-namespace dvm {
+#define EXCEPTION_IF(cond, error_str)   do { if (cond) DvmException(error_str); } while (0)
+void DvmException(const char* error_str);
+
 enum AiCoreArch {
   kAiCore_C100,
   kAiCore_C220,
@@ -65,8 +68,8 @@ class DeviceInfo {
 const uint64_t SIMD_BLOCK_SIZE  = 32;
 const uint64_t SIMD_REPEAT_SIZE = 256;
 
-// {sizeof(int8_t). sizeof(float16), sizeof(float32), sizeof(int32_t)}
-const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, sizeof(float), sizeof(int32_t)};
+// {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
+const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
 
 struct CodeBase {
   CodeBase() = default;

@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <vector>
 #include <cstring>
+#include <stdexcept>
 #include "acl/acl_base.h"
 #include "code.h"
 
@@ -76,9 +77,9 @@ void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
 }
 
 void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vSliceLoad2D op;
-  vSliceLoad2D::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "slice_load 2d" << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  vSliceLoad op;
+  vSliceLoad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "slice_load " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("body_size", op.pad_size, oss);
   oss << ", ";
@@ -167,6 +168,14 @@ void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
   vUnary::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+}
+
+void DumpRemovePad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vRemovePad op;
+  vRemovePad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " // ";
+  DumpVal("iter_num", op.iter_num, oss);
 }
 
 template <typename T = float>
@@ -291,6 +300,10 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << dump_info.simd_width << "x" << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", "
       << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("rs", op.rs, oss);
+  oss << ", ";
+  DumpVal("iter_size", op.iter_size, oss);
+  oss << ", ";
+  DumpVal("tail_size", op.tail_size, oss);
 }
 
 using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
@@ -303,8 +316,8 @@ std::unordered_map<uint64_t, DumpFunc *> mem_dump_func_table = {
   {V_STORE_ATOMIC, &DumpStoreAtomic},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_LOAD_DUMMY, &DumpLoadDummy},
-  {V_SLICE_LOAD_2D, &DumpSliceLoad},
-  {V_SLICE_LOAD_2D_FP16, &DumpSliceLoad}
+  {V_SLICE_LOAD, &DumpSliceLoad},
+  {V_SLICE_LOAD_U16, &DumpSliceLoad},
 };
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
@@ -326,8 +339,6 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_EXP_FP16, {&DumpUnary, "Exp", "fp16"}},
   {V_REC, {&DumpUnary, "Reciprocal", "fp32"}},
   {V_REC_FP16, {&DumpUnary, "Reciprocal", "fp16"}},
-  {V_NOT, {&DumpUnary, "LogicalNot", "fp32"}},
-  {V_NOT_FP16, {&DumpUnary, "LogicalNot", "fp16"}},
   {V_NOT_INT8, {&DumpUnary, "LogicalNot", "u8"}},
   {V_ISFINITE, {&DumpUnary, "IsFinite", "fp32"}},
   {V_ISFINITE_FP16, {&DumpUnary, "IsFinite", "fp16"}},
@@ -337,8 +348,11 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CAST_FP16_TO_INT32, {&DumpUnary, "CastFP16", "int32"}},
   {V_CAST_FP32_TO_INT32, {&DumpUnary, "CastFP32", "int32"}},
   {V_CAST_FP32_TO_FP16, {&DumpUnary, "CastFP32", "fp16"}},
+  {V_CAST_FP32_TO_BF16, {&DumpUnary, "CastFP32", "bf16"}},
   {V_CAST_INT32_TO_FP32, {&DumpUnary, "CastS32", "fp32"}},
   {V_CAST_INT32_TO_FP16, {&DumpUnary, "CastS32", "fp16"}},
+  {V_CAST_BF16_TO_FP32, {&DumpUnary, "CastBF16", "fp32"}},
+  {V_CAST_BF16_TO_INT32, {&DumpUnary, "CastBF16", "int32"}},
   {V_ADDS, {&DumpBinaryS, "Adds", "fp32"}},
   {V_ADDS_FP16, {&DumpBinaryS, "Adds", "fp16"}},
   {V_ADDS_INT32, {&DumpBinaryS<int32_t>, "Adds", "int32"}},
@@ -372,19 +386,18 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_POW_FP16, {&DumpBinary, "Pow", "fp16"}},
   {V_CMP, {&DumpCompare, "Cmp", "fp32"}},
   {V_CMP_FP16, {&DumpCompare, "Cmp", "fp16"}},
-  {V_AND, {&DumpBinary, "LogicalAnd", "fp32"}},
-  {V_AND_FP16, {&DumpBinary, "LogicalAnd", "fp16"}},
   {V_AND_INT8, {&DumpBinary, "LogicalAnd", "int8"}},
-  {V_OR, {&DumpBinary, "LogicalOr", "fp32"}},
-  {V_OR_FP16, {&DumpBinary, "LogicalOr", "fp16"}},
   {V_OR_INT8, {&DumpBinary, "LogicalOr", "int8"}},
   {V_SEL, {&DumpSelect, "Select", "fp32"}},
   {V_SEL_FP16, {&DumpSelect, "Select", "fp16"}},
+  {V_SEL_INT32, {&DumpSelect, "Select", "int32"}},
   {V_RSUM_X, {&DumpReduceX, "SumX", "fp32"}},
   {V_RSUM_Y, {&DumpReduceY, "SumY", "fp32"}},
   {V_CLR_PAD, {&DumpClearPad, "ClrPad", "fp32"}},
   {V_ELEMENT_ANY, {&DumpElementAny, "ElementAny", "fp32"}},
   {V_ELEMENT_ANY_FP16, {&DumpElementAny, "ElementAny", "fp16"}},
+  {V_REMOVEPAD, {&DumpRemovePad, "RemovePad", "u32"}},
+  {V_REMOVEPAD_U16, {&DumpRemovePad, "RemovePad", "u16"}},
 };
 
 size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
@@ -469,6 +482,12 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
 }
 }  // namespace
 
+void DvmException(const char* error_str) {
+  std::ostringstream oss;
+  oss << "DVM EXCEPTION. reason: " << error_str;
+  throw std::runtime_error(oss.str());
+}
+
 DeviceInfo::DeviceInfo() {
   auto soc_name = GetSocName();
   if (soc_name.find("Ascend910B") != std::string::npos) {
@@ -493,7 +512,6 @@ void Code::DisAssemble(std::ostringstream &oss) {
 }
 
 void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
-  ASSERT(children_.size() <= 8);
   atomic_clean_.clear();
   block_dim_ = 0;
   uint64_t code_size = 0;

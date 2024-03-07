@@ -94,3 +94,15 @@ def test_multi_dom(dim1, dim2):
     r = t.unary("Sqrt", z)
     t.store_expect(r, 0.42426)
     assert(t.run_check())
+
+def test_choise_dom_op_with_shape():
+    t = Tester()
+    g0 = np.full([32, 1], 0.1, np.float32)
+    g1 = np.full([32, 1024], 0.1, np.float32)
+    a = t.load(g0)
+    b = t.load(g1)
+    c = t.binary("Add", a, b)
+    t.store_expect(c, 0.2)
+    d = t.binary("Add", a, 0.2)
+    t.store_expect(d, 0.3)
+    assert(t.run_check())

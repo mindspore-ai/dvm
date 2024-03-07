@@ -17,28 +17,19 @@ import pytest
 import numpy as np
 from dvm.tester import Tester
 
-@pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])
-@pytest.mark.parametrize('type, eps', [(np.float32, 1e-3),(np.float16, 1e-3)])
-def test_greater(shape, type, eps):
-    t = Tester()
-    a = np.random.rand(*shape).astype(type)
-    b = np.random.rand(*shape).astype(type)
-    x = t.load(a)
-    y = t.load(b)
-    z = t.binary("Greater",x, y)
-    t.store_expect(z, np.greater(a, b).astype(type), eps)
-    assert(t.run_check())
-
-
-@pytest.mark.parametrize('type, eps', [(np.float32, 1e-3), (np.float16, 1e-3)])
+@pytest.mark.parametrize("shape",[(32, 32), (1024, 32), (1024, 2000)])
+@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16])
 @pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
                                       ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
-def test_equal(type, eps, op, func):
+def test_cmp(shape, type, op, func):
     t = Tester()
-    a = np.random.rand(16, 10).astype(type)
-    b = np.random.rand(16, 10).astype(type)
+    a = np.random.randint(1024, size=shape).astype(type)
+    b = np.random.randint(1024, size=shape).astype(type)
     x = t.load(a)
     y = t.load(b)
-    z = t.binary(op, x, y)
-    t.store_expect(z, func(a, b).astype(type), eps)
-    assert (t.run_check())
+    y = t.copy(y)
+    x = t.copy(x)
+    z = t.binary(op,x, y)
+    z = t.copy(z)
+    t.store_expect(z, func(a, b).astype(type))
+    assert(t.run_check())

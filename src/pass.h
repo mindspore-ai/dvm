@@ -94,7 +94,7 @@ class BasicBlockContext {
   void Init(const std::vector<NDObject *> &objects) {
     users_.reserve(objects.size());
     for (auto object : objects) {
-      users_.insert({object, std::unordered_set<NDObject *>()});
+      users_.insert({object, std::vector<NDObject *>()});
     }
     for (auto object : objects) {
       Insert(object);
@@ -103,7 +103,8 @@ class BasicBlockContext {
 
   void Init(NDObjectIterator<false> begin, NDObjectIterator<false> end) {
     while (begin != end) {
-      Insert(begin.get());
+      users_.insert({begin.get(), std::vector<NDObject *>()});
+      Insert(begin++.get());
     }
   }
 
@@ -112,13 +113,13 @@ class BasicBlockContext {
       // if lhs_ is empty, than rhs_ must be empty too
       return;
     }
-    users_[object->lhs_].insert(object);
+    users_[object->lhs_].emplace_back(object);
     if (object->rhs_ == nullptr) {
       return;
     }
-    users_[object->rhs_].insert(object);
+    users_[object->rhs_].emplace_back(object);
     if (object->GetObjectType() == kSelect) {
-      users_[reinterpret_cast<SelectOp *>(object)->cond_].insert(object);
+      users_[reinterpret_cast<SelectOp *>(object)->cond_].emplace_back(object);
     }
   }
 
@@ -127,26 +128,29 @@ class BasicBlockContext {
   void Clear() { users_.clear(); }
 
  public:
-  // Will fail when object not exist in the context
-  const std::unordered_set<NDObject *> &GetUsers(NDObject *object) const {
+  // Will fail when object not exist in the context.
+  // And users may duplicate
+  const std::vector<NDObject *> &GetUsers(NDObject *object) const {
     auto iter = users_.find(object);
     ASSERT(iter != users_.end());
     return iter->second;
   }
 
  protected:
-  std::unordered_map<NDObject *, std::unordered_set<NDObject *>> users_;
+  std::unordered_map<NDObject *, std::vector<NDObject *>> users_;
 };
 
 /// @brief Container of NDObject* in pass pipeline
 class BasicBlock {
  public:
-  BasicBlock(const std::vector<NDObject *> &objects);
+  BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner);
 
  public:
   using iterator = NDObjectIterator<false>;
   using reverse_iterator = NDObjectIterator<true>;
   using pointer = NDObject *;
+
+  void Reinit(const std::vector<NDObject *> &objects);
 
   iterator begin() { return iterator(NEXT_OBJ(&sentinel_)); }
 
@@ -158,10 +162,10 @@ class BasicBlock {
 
   inline size_t size() const { return size_; }
 
-  // Insert a object before position of iterator, ownership is move to this Block.
+  // Insert a object before position of iterator, ownership is move to object_owner_.
   iterator Insert(iterator iter, pointer object);
 
-  // Remove the object at position of iterator, the NDObject would be delete.
+  // Remove the object at position of iterator, the NDObject won't be deleted.
   iterator Erase(iterator iter);
 
   // Move an object to a new position just before the iterator
@@ -173,6 +177,9 @@ class BasicBlock {
 
   std::vector<NDObject *> ToVector();
 
+  // Remove use of insn_ and tail_insn_
+  void Clear();
+
   const BasicBlockContext &context() const { return context_; }
 
   // Should be called after dependency graph of objects has changed
@@ -182,6 +189,7 @@ class BasicBlock {
   NDLoadDummy sentinel_;
   size_t size_;  // Will size be used?
   BasicBlockContext context_;
+  std::vector<NDObject *> &objects_owner_;
 };
 
 #undef NEXT_OBJ
@@ -213,7 +221,42 @@ class BasicBlock {
 /// ----------
 void ReorderStore(BasicBlock &block);
 
+// For debug
+void PrintPeakLive(BasicBlock &bb);
+
+/// @brief Reorder objects, to minimum peak live variables
+/// @details there are two methods now.
+/// The heuristic version is quick but sometimes give suboptimal results.
+/// The DP version is slow but give optimal results.
+/// Currently we use the heuristic method.
+void CompactPeakLiveness(BasicBlock &bb);
+
+/// @brief Eliminate Reshape Objects if possible
+/// @example
+/// vkernel.graph() {
+///   %0::(4,8) = Load()
+///   %1::(8,4) = Load()
+///   %2::(4,8) = Reshape(%1)
+///   %3::(4,8) = Binary(%0, %2)
+///   %4::(4,8) = Store(%3)
+/// }
+/// ---------->
+/// vkernel.graph() {
+///   %0::(8,4) = Load()
+///   %1::(8,4) = Load()
+///   %2::(8,4) = Binary(%0, %1)
+///   %3::(8,4) = Store(%2)
+/// }
+/// ----------
+void EliminateReshape(BasicBlock &bb);
+
+/// @brief Optimize memory transfer operations, especially from UB (Unified Buffer) to GM (Global Memory), by
+/// reorganizing non-continuous memory segments within the UB into a continuous memory layout. This significantly speeds
+/// up the data transfer process to the GM.
+void InsertRemovePad(BasicBlock &block);
+
 using Pass = void (*)(BasicBlock &);
+extern std::vector<Pass> passes;
 }  // namespace dvm::pass
 
 #endif  // _DVM_PASS_H_

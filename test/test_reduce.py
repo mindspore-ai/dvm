@@ -13,9 +13,9 @@
 # limitations under the License.
 # ============================================================================
 
-import os
 import pytest
 import numpy as np
+import dvm
 from dvm.tester import Tester
 
 @pytest.mark.parametrize('dim', [64, 256, 251])
@@ -75,6 +75,7 @@ def test_reduce_atomic(dim):
 
 @pytest.mark.parametrize('in_shape, dims', [[[511, 1024],(1,)], [[521, 1024],(1,)],
     [[35053], (0,)],
+    [[120, 1], (0,)], # lead 1 not include
     [[11, 6000], (0,)]]) # reducey red_size = 1
 def test_reduce(in_shape, dims):
     t = Tester()
@@ -85,7 +86,7 @@ def test_reduce(in_shape, dims):
     t.store_expect(y, res, 1e-4)
     assert(t.run_check())
 
-@pytest.mark.skipif(os.getenv("TEST_TARGET") != '910', reason = "only support 910 tiling")
+@pytest.mark.skipif(dvm.device.arch() != "AscendC100", reason = "only support 910 tiling")
 def test_reduce_store_with_lead_dim_tiling():
     in_shape = [521, 1024]
     dims = (1,)
@@ -95,8 +96,7 @@ def test_reduce_store_with_lead_dim_tiling():
     y = t.reduce("sum", x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     t.store_expect(y, res, 1e-4)
-    k = t.get()
-    k.tile(1, 1, 20);
+    t.tile(1, 1, 20);
     assert(t.run_check())
 
 def test_reduce_x_tail():
@@ -108,7 +108,7 @@ def test_reduce_x_tail():
     y = t.reduce("sum", x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     t.store_expect(y, res)
-    t.get().tile(0, 0, 122)
+    t.tile(0, 0, 122)
     assert(t.run_check())
 
 def test_reduce_y_tail():
@@ -120,5 +120,5 @@ def test_reduce_y_tail():
     y = t.reduce("sum", x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     t.store_expect(y, res, 1e-4)
-    t.get().tile(1, 1, 122);
+    t.tile(1, 1, 122);
     assert(t.run_check())

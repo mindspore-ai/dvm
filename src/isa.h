@@ -80,6 +80,29 @@ struct vUnary {
     return size;
   }
 };
+
+struct vRemovePad {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t repeat;
+  uint64_t iter_num;
+  // pc[0]: xd
+  // pc[1]: xn(18) << 46 | iter_num(16) << 16 | repeat(16)
+  __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vRemovePad &op) {
+    op.xd = head >> V_HEAD_EXT_OFFSET;
+    uint64_t data = pc[1];
+    op.repeat = data & 0xfffful;
+    op.iter_num = (data >> 16) & 0xfffful;
+    op.xn = data >> 46;
+  }
+  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vRemovePad &op) {
+    uint32_t size = 2;
+    pc[0] = vMakeHead(id, op.xd, size, 1);
+    pc[1] = op.xn << 46 | op.iter_num << 16 | op.repeat ;
+    return size;
+  }
+};
+
 template<typename T>
 struct vBinaryS {
   uint64_t head; // ext: xd(18) << 18 | xn(18)
@@ -341,7 +364,7 @@ struct vDMA {
   }
 };
 
-struct vSliceLoad2D {
+struct vSliceLoad {
   __gm__ uint8_t *gm;
   uint64_t xn;
   uint64_t tile_stride;
@@ -351,8 +374,9 @@ struct vSliceLoad2D {
   uint64_t slice_n;
   uint64_t slice_m;
   uint64_t pad_size;
+  uint64_t slice_k;
 
-  __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vSliceLoad2D &op) {
+  __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vSliceLoad &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     op.tile_stride = head >> (V_HEAD_EXT_OFFSET + 18);
@@ -362,15 +386,16 @@ struct vSliceLoad2D {
     op.slice_n = (data >> 32) & 0xfffful;
     op.slice_m = (data >> 48) & 0xfffful;
     data = pc[3];
-    op.pad_size = data;
+    op.pad_size = data & 0xfffffffful;
+    op.slice_k = (data >> 48) & 0xfffful;
   }
 
-  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vSliceLoad2D &op) {
+  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vSliceLoad &op) {
     uint64_t size = 4;
     pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, 0);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_m << 48 | op.slice_n << 32 | op.src_m << 16 | op.src_n;
-    pc[3] = op.pad_size;
+    pc[3] = op.slice_k << 48 | op.pad_size;
     return size;
   }
   __aicore_inline__ void Reloc(bcode_t pc, uint8_t *gm) {
@@ -478,23 +503,25 @@ struct vElementAny {
   uint64_t xd;
   uint64_t xn;
   uint64_t rs;
-  uint64_t burst_len;
+  uint64_t iter_size;
   uint64_t repeat;
+  uint64_t tail_size;
 
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vElementAny &op) {
     op.xd = (head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK;
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.rs = data >> 60;
-    op.burst_len = (data >> 18) & 0xfffffffful;
-    op.repeat = data & V_X_MASK;
+    op.tail_size = (data >> 32) & 0xfffful;
+    op.iter_size = (data >> 16) & 0xfffful;
+    op.repeat = data & 0xfffful;
   }
 
   __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vElementAny &op) {
     uint64_t size = 2;
     uint64_t ext = op.xd << V_X_BITS | op.xn;
     pc[0] = vMakeHead(id, ext, size, 1);
-    pc[1] = op.rs << 60 | op.burst_len << 18 | op.repeat;
+    pc[1] = op.rs << 60 | op.tail_size  << 32 | op.iter_size << 16 | op.repeat;
     return size;
   }
 }INSN_ATTR;
@@ -514,8 +541,8 @@ enum vMemInsnID {
   V_STORE_ATOMIC,
   V_STORE_STATUS,
   V_LOAD_DUMMY,
-  V_SLICE_LOAD_2D,
-  V_SLICE_LOAD_2D_FP16,
+  V_SLICE_LOAD,
+  V_SLICE_LOAD_U16,
 };
 
 enum vOpInsnID {
@@ -541,16 +568,15 @@ enum vOpInsnID {
   V_CMP,
   V_CAST_FP32_TO_FP16,
   V_CAST_FP32_TO_INT32,
+  V_CAST_FP32_TO_BF16,
   V_RSUM_X,
   V_RSUM_Y,
   V_SEL,
   V_POW,
-  V_NOT,
-  V_OR,
-  V_AND,
   V_ISFINITE,
   V_CLR_PAD,
   V_ELEMENT_ANY,
+  V_REMOVEPAD,
   // float16
   V_BROADCAST_X_FP16,
   V_BROADCAST_S_FP16,
@@ -575,11 +601,9 @@ enum vOpInsnID {
   V_CMP_FP16,
   V_SEL_FP16,
   V_POW_FP16,
-  V_NOT_FP16,
-  V_OR_FP16,
-  V_AND_FP16,
   V_ISFINITE_FP16,
   V_ELEMENT_ANY_FP16,
+  V_REMOVEPAD_U16,
   // int8
   V_CAST_INT8_TO_FP16,
   V_NOT_INT8,
@@ -597,8 +621,12 @@ enum vOpInsnID {
   V_MUL_INT32,
   V_MIN_INT32,
   V_MAX_INT32,
+  V_SEL_INT32,
   V_CAST_INT32_TO_FP16,
   V_CAST_INT32_TO_FP32,
+  // bfloat16
+  V_CAST_BF16_TO_FP32,
+  V_CAST_BF16_TO_INT32,
   V_NONE,
 };
 

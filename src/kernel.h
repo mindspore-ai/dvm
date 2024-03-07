@@ -21,15 +21,18 @@
 #include <vector>
 #include "code.h"
 #include "ops.h"
+#include "pass.h"
 
 namespace dvm {
+template<typename T>
+static inline T CeilDiv(T a, T b)  { return (a - 1) / b + 1; }
+
 class VKernelBase;
 class PropDomainBuilder;
 class PropDomain {
  public:
   PropDomain(NDObject *head = nullptr) : head_(head) {}
-  virtual ~PropDomain() { Clear(); }
-  void Clear() {
+  virtual ~PropDomain() {
     for (auto dom : subdoms_) {
       delete dom;
     }
@@ -39,6 +42,9 @@ class PropDomain {
   virtual void AlignProp(PropRange &range);
   virtual void FoldProp(PropRange &range);
   virtual void TileProp(const TileParam &tp);
+
+  NDObject* DomObject() const { return dom_; }
+
  protected:
   NDObject* head_;
   NDObject* dom_;
@@ -75,13 +81,18 @@ class VKernel {
   CodeBase *GetCode() const { return code_ptr_; }
 
   virtual std::string DumpGraph() = 0;
-  std::string& DisAssemble();
+  std::string DisAssemble();
   KernelType KType() const { return ktype_; }
 
  protected:
   CodeBase* code_ptr_{nullptr};
-  std::string das_str_;
   KernelType ktype_;
+};
+
+struct Metrics {
+  float mem_usage{0.0f};  // total_use_ub / ub_mem_size
+  float core_usage{0.0f}; // load * tile_num / (per_core_load * core_num)
+  float simd_usage{0.0f}; // tiled_shape_size / (repeat_num * max_simd_width)
 };
 
 class CodeGenHelper;
@@ -91,6 +102,8 @@ class VKernelBase : public VKernel {
   virtual ~VKernelBase();
 
   std::string DumpGraph() override;
+  void CollectMetrics(Metrics &metrics) const;
+
   void Reserve(size_t size) {
     build_ops_.reserve(size);
     objects_.reserve(size * 2);
@@ -99,15 +112,15 @@ class VKernelBase : public VKernel {
   void SetTile(int start, int end, int64_t num) {
     tiles_.emplace_back(DimTile{start, end, num});
   }
-  uint64_t MaxTypeSize() const { return ITEM_SIZE[max_type_]; }
-  uint64_t MinTypeSize() const { return ITEM_SIZE[max_type_]; }
+  int MaxType() const { return max_type_; }
+  int MinType() const { return min_type_; }
   uint64_t BlockAlign() const { return SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_]; }
   uint64_t ReserveCodeSize() const { return (objects_.size() * V_INSN_SIZE_MAX + 511ul) & ~511ul; } // 512B align
 
-  void BuildDomain();
+  void BuildDomain(const std::vector<NDObject *> &objects);
   void NormalizeDomain() { root_dom_.Normalize(this); }
 
-  int Analyze(CodeGenHelper &codegen);
+  int Analyze();
   void DoCodeGen(uint64_t core_limit);
 
   std::vector<NDObject *> objects_;
@@ -118,6 +131,10 @@ class VKernelBase : public VKernel {
  protected:
   int max_type_{-1};
   int min_type_{-1};
+
+  std::vector<NDObject*> static_ops_;
+  NDObject* back_set_{nullptr};
+  NDObject* back_wait_{nullptr};
 
   struct DimTile {
     int start;
@@ -134,6 +151,8 @@ class VKernelS : public VKernelBase {
   void Append(NDObject *obj) override;
   void Optimize();
   void CodeGen() override;
+
+  static std::vector<pass::Pass> passes;
 };
 
 class VKernelD : public VKernelBase {
@@ -141,6 +160,9 @@ class VKernelD : public VKernelBase {
   VKernelD() : VKernelBase(KernelType::kDynShape) {}
   void Append(NDObject *obj) override { build_ops_.push_back(obj); }
   void CodeGen() override;
+
+ private:
+  std::vector<NDObject*> pd_nexts_;
 };
 
 class VKernelP : public VKernel {
@@ -153,7 +175,10 @@ class VKernelP : public VKernel {
       delete k;
     }
   }
-  void AppendNext() { children_.push_back(new VKernelS()); }
+  void AppendNext() {
+    children_.push_back(new VKernelS());
+    EXCEPTION_IF(children_.size() > 8, "total sub-kernels of parallel kernel exceed limit(8)");
+  }
   void Append(NDObject *obj) override { children_.back()->Append(obj); }
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 

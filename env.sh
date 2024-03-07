@@ -1,5 +1,3 @@
-export TEST_TARGET=910
-
 if [[ -z "${ASCEND_CUSTOM_PATH}" ]]; then
   if [[ -z "${ASCEND_PATH}" ]]; then
     export ASCEND_PATH="/usr/local/Ascend"

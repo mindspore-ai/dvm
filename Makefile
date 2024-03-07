@@ -20,10 +20,10 @@ endif
 
 HEADERS = $(OBJ:.o=.h) isa.h acl_ext.h
 
-all: builder.so
+all: _dvm_py.so
 
-builder.so: pybind_api.o libdvm.a
-	g++ -shared $^ $(LD_FLAGS) -o $@
+_dvm_py.so: pybind_api.o libdvm.a
+	g++ -shared  $^ $(LD_FLAGS) -o $@
 	cp $@ ./python/dvm
 
 libdvm.a: $(OBJ) vm.o

@@ -18,13 +18,13 @@ import numpy as np
 from dvm.tester import Tester
 
 @pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])
-@pytest.mark.parametrize('type, eps', [(np.float32, 1e-5),(np.float16, 1e-3)])
-def test_select(shape, type, eps):
+@pytest.mark.parametrize('type', [np.float32, np.float16, np.int32])
+def test_select(shape, type):
     t = Tester()
-    a = np.random.rand(*shape).astype(type)
-    b = np.random.rand(*shape).astype(type)
-    c = np.random.rand(*shape).astype(type)
-    d = np.random.rand(*shape).astype(type)
+    a = np.random.randint(1024, size=shape).astype(type)
+    b = np.random.randint(1024, size=shape).astype(type)
+    c = np.random.randint(1024, size=shape).astype(type)
+    d = np.random.randint(1024, size=shape).astype(type)
     e = t.load(a)
     f = t.load(b)
     g = t.load(c)
@@ -33,7 +33,7 @@ def test_select(shape, type, eps):
     j = t.binary("Add", e, f)
     k = t.binary("Add", g, h)
     l = t.select(i, j, k)
-    t.store_expect(l, np.select([np.greater(a, b),~np.greater(a, b)], [a+b,c+d]).astype(type), eps)
+    t.store_expect(l, np.select([np.greater(a, b),~np.greater(a, b)], [a+b,c+d]).astype(type))
     assert(t.run_check())
 
 @pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])

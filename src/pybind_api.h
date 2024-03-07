@@ -16,8 +16,8 @@
 
 #ifndef _DVM_PYBIND_API_H_
 #define _DVM_PYBIND_API_H_
-#include <memory>
-#include <fstream>
+#include <vector>
+#include <unordered_map>
 #include "pybind11/pybind11.h"
 #include "code.h"
 #include "dvm.h"
@@ -25,9 +25,9 @@
 namespace dvm {
 namespace py = pybind11;
 
-class NDOpPy {
+class NDObjectPy {
  public:
-  NDOpPy(NDObject *obj): obj_(obj) {}
+  NDObjectPy(NDObject *obj): obj_(obj) {}
   py::object GetShape() {
     py::tuple out(obj_->shape_ref_->size);
     for (size_t i = 0; i < obj_->shape_ref_->size; ++i) {
@@ -40,53 +40,12 @@ class NDOpPy {
   NDObject *obj_;
 };
 
-class DvmKernelBuilderPy;
-class VKernelPy {
+class KernelPy {
  public:
-  VKernelPy(int dev_id, KernelType ker_type);
-  ~VKernelPy();
+  using NDOpPyPtr = std::shared_ptr<NDObjectPy>;
 
-  void Tile(int start, int end, int64_t num);
-  py::object CodeGen(const std::string &path);
-  py::object DisAssemble();
-  py::object DumpGraph();
-  py::object Perf();
-  void Run();
-
-  struct Store {
-    NDObject* obj;
-    void *host;
-    void *dev;
-    std::vector<int64_t> shape;
-  };
-
-  void* ToDev(void* host, size_t size);
-  void FromDev(void* host, size_t size);
-
- protected:
-  CodeBase* GetCode();
-  bool codegen_{false};
-  Kernel kernel_;
-  std::vector<Store> stores_;
-  std::vector<std::vector<int64_t>> shape_vec_;
-  std::vector<ShapeRef*> shape_;
-  std::unordered_map<void*, void*> host_dev_map_;
-  int dev_id_{0};
-  friend DvmKernelBuilderPy;
-};
-
-class DvmKernelBuilderPy {
- public:
-  using NDOpPyPtr = std::shared_ptr<NDOpPy>;
-
-  DvmKernelBuilderPy(int dev_id, const std::string &ker_type) {
-    KernelType type = kStaticShape;
-    if (ker_type == "parallel") {
-      type = kStaticParallel;
-    }
-    kernel_ = std::make_shared<VKernelPy>(dev_id, type);
-  }
-  ~DvmKernelBuilderPy() = default;
+  KernelPy(int dev_id, const std::string &ker_type);
+  ~KernelPy();
 
   py::object Load(const py::object &array);
   py::object SliceLoad(const py::object &array, const py::object &start, const py::object &size);
@@ -102,10 +61,37 @@ class DvmKernelBuilderPy {
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
   void ParallelNext();
-  py::object Get();
+
+  void Tile(int start, int end, int64_t num);
+  void Optimize();
+  py::object CodeGen(const std::string &path);
+  py::object DisAssemble();
+  py::object DumpGraph();
+  py::object Perf();
+  py::object Measure();
+  void Run();
+
+  void ResetPasses(const py::object& pass_names);
+
+  struct StoreInfo {
+    NDObject* obj;
+    void *host;
+    void *dev;
+    std::vector<int64_t> shape;
+  };
+
+  void* ToDev(void* host, size_t size);
+  void FromDev(void* host, size_t size);
 
  protected:
-  std::shared_ptr<VKernelPy> kernel_; 
+  CodeBase* GetCode();
+  bool codegen_{false};
+  Kernel kernel_;
+  std::vector<StoreInfo> stores_;
+  std::vector<std::vector<int64_t>> shape_vec_;
+  std::vector<ShapeRef*> shape_;
+  std::unordered_map<void*, void*> host_dev_map_;
+  int dev_id_{0};
 };
 }
 #endif // _DVM_PYBIND_API_H_

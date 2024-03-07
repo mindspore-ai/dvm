@@ -37,8 +37,7 @@ def test_tile_unalign(type):
     y = t.load(b)
     r = t.binary("Add", x, y)
     t.store_expect(r, 0.7)
-    k = t.get()
-    k.tile(1, 1, 8)
+    t.tile(1, 1, 8)
     assert(t.run_check())
 
 def test_tile_unalign_loadstore2():
@@ -49,8 +48,7 @@ def test_tile_unalign_loadstore2():
     y = t.load(b)
     r = t.binary("Add", x, y)
     t.store_expect(r, 0.7)
-    k = t.get()
-    k.tile(1, 1, 8)
+    t.tile(1, 1, 8)
     assert(t.run_check())
 
 def test_tile_unalign_leaddim():
@@ -59,6 +57,5 @@ def test_tile_unalign_leaddim():
     x = t.load(a)
     r = t.binary("Add", x, 0.3)
     t.store_expect(r, 0.5)
-    k = t.get()
-    k.tile(0, 0, 32)
+    t.tile(0, 0, 32)
     assert(t.run_check())

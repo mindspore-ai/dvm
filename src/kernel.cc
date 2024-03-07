@@ -23,69 +23,140 @@
 #include "pass.h"
 
 namespace dvm {
+static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
+
 class CodeGenHelper {
  public:
+  enum CodeGenType {
+    kGenSimd0 = 0,
+    kGenSimd1,
+    kGenSimd2,
+    kGenSimd3,
+    kGenLoad,
+    kGenStore,
+  };
   CodeGenHelper() {}
   bool Generate(VKernelBase *kernel) {
+    static const CodeGenType codegen_types[ObjectType::kObjectBulk] = {
+      kGenLoad,  // loaddummy
+      kGenLoad,  // load
+      kGenStore, // store
+      kGenSimd1, // reshape
+      kGenSimd1, // copy
+      kGenSimd1, // unary
+      kGenSimd2, // binary
+      kGenSimd1, // cast
+      kGenSimd1, // binarys
+      kGenSimd1, // broadcastto
+      kGenSimd0, // broadcasts
+      kGenSimd1, // reduce
+      kGenSimd3, // select
+      kGenSimd1, // elementany
+      kGenSimd1, // RemovePad
+    };
     auto &code = kernel->code_;
     auto code_reserved = kernel->ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
     uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
     static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize() + code_reserved;
-    for (auto op : static_ops_) {
+    for (auto op : kernel->static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     }
     for (auto op: kernel->objects_) {
-      auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
-      if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-        free_xbuf_.emplace(op->lhs_, op);
-      }
-      if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-        free_xbuf_.emplace(op->rhs_, op);
-      }
       op->UpdateStride(code.simd_width_);
       op->tail_insn_ = op->insn_ = code_ptr;
-      code_ptr += op->Emit(code);
-      if (anti_dep) {
-        InjectBar(anti_dep, op);
-      }
-      if (op->GetObjectType() == kSelect) {
-        SelectOpPostProc(op);
-      } else if (op->lhs_) {
-        if (op->rhs_ == nullptr)  {
-          InjectSync(op->lhs_, op);
-        } else {
-          if (op->rhs_->index_ > op->lhs_->index_) {
-            InjectSync(op->rhs_, op);
-            InjectSync(op->lhs_, op);
-          } else {
-            InjectSync(op->lhs_, op);
-            InjectSync(op->rhs_, op);
+      switch (codegen_types[op->obj_id_]) {
+        case kGenSimd0: {
+          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          code_ptr += op->Emit(code);
+          if (anti_dep) {
+            SimdBarrier(anti_dep, op);
           }
+          break;
         }
-      }
-    }
-    *(back_set_->tail_insn_) |= 0x1ul << V_HEAD_BACK_SET_OFFSET;
-    *(back_wait_->insn_) |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET;
+        case kGenSimd1: {
+          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.emplace(op->lhs_, op);
+          }
+          code_ptr += op->Emit(code);
+          if (anti_dep) {
+            SimdBarrier(anti_dep, op);
+          }
+          SimdSync(op->lhs_, op);
+          break;
+        }
+        case kGenSimd2: {
+          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.emplace(op->lhs_, op);
+          }
+          if (op->flags_ & OBJ_FLAG_FREE_RHS) {
+            free_xbuf_.emplace(op->rhs_, op);
+          }
+          code_ptr += op->Emit(code);
+          if (anti_dep) {
+            SimdBarrier(anti_dep, op);
+          }
+          if (op->rhs_->index_ > op->lhs_->index_) {
+            SimdSync(op->rhs_, op);
+            SimdSync(op->lhs_, op);
+          } else {
+            SimdSync(op->lhs_, op);
+            SimdSync(op->rhs_, op);
+          }
+          break;
+        }
+        case kGenSimd3: {
+          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.emplace(op->lhs_, op);
+          }
+          if (op->flags_ & OBJ_FLAG_FREE_RHS) {
+            free_xbuf_.emplace(op->rhs_, op);
+          }
+          code_ptr += op->Emit(code);
+          if (anti_dep) {
+            SimdBarrier(anti_dep, op);
+          }
+          SelectOpPostProc(op);
+          break;
+        }
+        case kGenLoad: {
+          code_ptr += op->Emit(code);
+          break;
+        }
+        case kGenStore: {
+          code_ptr += op->Emit(code);
+          StoreSync(op->lhs_, op);
+          break;
+        }
+        default:
+          ASSERT(0);
+          break;
+      } // end switch
+    } // end for op
+    *(kernel->back_set_->tail_insn_) |= 0x1ul << V_HEAD_BACK_SET_OFFSET;
+    *(kernel->back_wait_->insn_) |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET;
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
-      OverWriteCoreLimit(code);
+      OverWriteCoreLimit(code, kernel);
     }
     code.FillHead();
     return true;
   }
 
  private:
-  void OverWriteCoreLimit(Code &code) {
-    for (auto op : static_ops_) {
+  void OverWriteCoreLimit(Code &code, VKernelBase *kernel) {
+    for (auto op : kernel->static_ops_) {
       if (op->obj_id_ <= kLoad || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && static_cast<ReduceOp*>(op)->factor_ > 1)) {
         continue;
       }
       // producer node for Store
       uint64_t size = op->strides_.back() / op->LeadAlign() * op->nd_[op->lead_dim_] * ITEM_SIZE[op->type_id_];
       if (size < SIMD_BLOCK_SIZE) {
-        code.ApplyTileLimit((SIMD_BLOCK_SIZE + size - 1) / size);
+        code.ApplyTileLimit(CeilDiv(SIMD_BLOCK_SIZE, size));
       }
     }
   }
@@ -106,7 +177,7 @@ class CodeGenHelper {
       std::swap(inputs[1],inputs[2]);
     }
     for (size_t i = 0; i < 3; i++) {
-      InjectSync(inputs[i], op);
+      SimdSync(inputs[i], op);
     }
   }
 
@@ -117,6 +188,12 @@ class CodeGenHelper {
     }
     if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
       obj->xbuf_ = obj->rhs_->xbuf_;
+      return nullptr;
+    }
+    if (!free_xbuf_.empty() && free_xbuf_.front().second->pipe_idx < vector_vector_sync) {
+      // roughly reuse for simplify: ignore inputs barrier to be inserted
+      obj->xbuf_ = free_xbuf_.front().first->xbuf_;
+      free_xbuf_.pop();
       return nullptr;
     }
     if (static_xbuf_ + xbuf_size_ <= DeviceInfo::Instance().LocalMemSize()) {
@@ -132,43 +209,44 @@ class CodeGenHelper {
     return  anti_dep;
   }
 
-  void InjectBar(NDObject *from, NDObject *to) {
+  inline void SimdBarrier(NDObject *from, NDObject *to) {
     if (from->pipe_idx >= vector_vector_sync) {
       *(to->insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
       vector_vector_sync = to->pipe_idx;
     }
   }
 
-  void InjectSync(NDObject *from, NDObject *to) {
+  void SimdSync(NDObject *from, NDObject *to) {
+    if (from->Pipe() == V_PIPE_SIMD) {
+      SimdBarrier(from, to);
+      return;
+    }
     int from_pipe_idx = from->pipe_idx;
+    if (from_pipe_idx <= load_vector_sync) return;
     auto from_insn = from->tail_insn_;
     auto to_insn = to->insn_;
-    uint64_t event;
-    if (from->Pipe() == V_PIPE_LOAD) { // load -vector
-      if (from_pipe_idx <= load_vector_sync) {
-        return; 
-      } 
-      event = load_vector_event;
-      load_vector_event = (load_vector_event + 1) % DeviceInfo::Instance().EventNum();
-      load_vector_sync = from_pipe_idx;
-    } else if (to->Pipe() == V_PIPE_SIMD) {  // vector - vector
-      InjectBar(from, to);
-      return;
-    } else { // vector - store
-      if (from_pipe_idx <= vector_store_sync) return;
-      event = vector_store_event;
-      vector_store_event = (vector_store_event + 1) % DeviceInfo::Instance().EventNum();
-      vector_store_sync = from_pipe_idx;
-    }
+    uint64_t event = load_vector_event;
+    load_vector_event = (load_vector_event + 1) % DeviceInfo::Instance().EventNum();
+    load_vector_sync = from_pipe_idx;
     *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET;
     *from_insn |= event << V_HEAD_SET_EVENT_OFFSET;
     *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET;
     *to_insn |= event << V_HEAD_WAIT_EVENT_OFFSET;
   }
 
-  std::vector<NDObject*> static_ops_;
-  NDObject* back_set_{nullptr};
-  NDObject* back_wait_{nullptr};
+  inline void StoreSync(NDObject *from, NDObject *to) {
+    int from_pipe_idx = from->pipe_idx;
+    if (from_pipe_idx <= vector_store_sync) return;
+    auto from_insn = from->tail_insn_;
+    auto to_insn = to->insn_;
+    uint64_t event = vector_store_event;
+    vector_store_event = (vector_store_event + 1) % DeviceInfo::Instance().EventNum();
+    vector_store_sync = from_pipe_idx;
+    *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET;
+    *from_insn |= event << V_HEAD_SET_EVENT_OFFSET;
+    *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET;
+    *to_insn |= event << V_HEAD_WAIT_EVENT_OFFSET;
+  }
 
   uint32_t xbuf_size_{0};
   uint64_t static_xbuf_{0};
@@ -193,21 +271,32 @@ void PropDomain::Normalize() {
     auto size = op->nd_.size();
     if (nd_size > size) {
       op->nd_.resize(nd_size, 1);
-    } else if (nd_size > size) {
+    } else if (nd_size < size) {
       nd_size = size;
       for (auto op2 = head_; op2 != op; op2 = op2->pd_next_) {
-        op->nd_.resize(nd_size, 1);
+        op2->nd_.resize(nd_size, 1);
       }
     }
     auto obj_type = op->GetObjectType();
-    if (obj_type != kLoadDummy && obj_type != kStore) {
-      if (obj_type == kReduce || obj_type == kElementAny) {
+    if (obj_type == kStore || obj_type == kReduce || obj_type == kElementAny) {
+      if (dom_ != nullptr) {
+        auto &dom_nd = dom_->nd_;
+        auto &lhs_nd = op->lhs_->nd_;
+        for (size_t i = 0; i < nd_size; ++i) {
+          if (dom_nd[i] < lhs_nd[i]) {
+            dom_ = op->lhs_;
+            break;
+          }
+          if (dom_nd[i] > lhs_nd[i]) break;
+        }
+      } else {
         dom_ = op->lhs_;
-      } else if (dom_ == nullptr) {
-        dom_ = op;
       }
+    } else if (dom_ == nullptr && obj_type != kLoadDummy) { // reshape domain etc.
+      dom_ = op;
     }
   }
+  ASSERT(dom_ != nullptr);
   if (!subdoms_.empty()) {
     for (auto sd: subdoms_) {
       sd->Normalize();
@@ -282,13 +371,13 @@ int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
   tp.start = start;
   tp.end = end;
   tp.num = num;
-  tp.tile = (space + num - 1) / num;
+  tp.tile = CeilDiv(space, num);
   tp.tail = space % tp.tile;
   PropDomain::TileProp(tp);
   if (start > 0) {
-    tile_size_ = tile_size_ / space * ((space + num - 1) / num);
+    tile_size_ = tile_size_ / space * CeilDiv(space, num);
   } else {
-    auto align_size = (tp.tile + block_align_ - 1) / block_align_ * block_align_;
+    auto align_size = CeilDiv<int64_t>(tp.tile, block_align_) * block_align_;
     tile_size_ = tile_size_ / align_.space * align_size;
     align_.space = align_size;
   }
@@ -392,8 +481,8 @@ class ReshapeDomain : public PropDomain {
 class ShapeTiling {
  public:
   ShapeTiling(VKernelBase *kernel, RootDomain &prim_dom, int64_t core_limit)
-  : prim_dom_(prim_dom), core_limit_(core_limit) {
-    repeat_size_ = SIMD_REPEAT_SIZE / kernel->MinTypeSize();
+  : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {
+    repeat_size_ = ITEM_SIMD_WIDTH_MAX[kernel->MaxType()];
   }
   ~ShapeTiling() = default;
   void Run(int64_t tile_size_limit) {
@@ -418,17 +507,20 @@ class ShapeTiling {
         }
         fold.base = start_dim - 1;
       } else {
-        int64_t num = CalcTileAlign(tile_size, prim_dom_.align_);
+        int64_t num = CalcLeadTile(tile_size, prim_dom_.align_);
         if (num > 1) {
           tile_size = prim_dom_.Tile(0, fold.base, prim_dom_.align_.space, num);
+          return;
         }
-        return;
       }
     } while(tile_size > tile_size_limit_);
     if (align_depth > 1) {
       prim_dom_.Tile(0, align_depth - 1, prim_dom_.align_.space, 1);
     }
   }
+
+  int64_t proposal_sw_{0};
+
  protected:
   int64_t GetDivision(int64_t val, int64_t min) {
     int64_t div = min;
@@ -450,8 +542,8 @@ class ShapeTiling {
     ASSERT(0);
     return -1;
   }
-  int64_t CostMeasure(int64_t space, int64_t tile_num) {
-    return ((tile_num - 1) / core_limit_ + 1) * (std::max((space - 1) / repeat_size_, 3L) + 2);
+  int64_t CostMeasure(int64_t factor, int64_t tile_num) {
+    return CeilDiv(tile_num, core_limit_) * (factor + 2);
   }
   int64_t CalcTile(int64_t tile_size, const PropRange &range) {
     // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
@@ -465,53 +557,131 @@ class ShapeTiling {
     //    tile_num++;
     //  }
     int64_t space = range.space;
-    int64_t tile_num, tile_factor;
+    int64_t tile_num;
     if (tile_size > tile_size_limit_) {
       int64_t max_factor = tile_size_limit_ / (tile_size / space);
       if (max_factor <= 1) {
        return space;
       }
-      tile_num = std::max((space + max_factor - 1) / max_factor, (tile_size_limit_ + tile_size - 1) / tile_size);
-      tile_factor = (space - 1) / tile_num + 1;
-    } else if (range.affine >= PropRange::REDUCE) {
-      return 1;
+      tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(tile_size_limit_, tile_size));
     } else {
       tile_num = 1;
-      tile_factor = space;
     }
-    int64_t space_unit = prim_dom_.TileSize() / space;
-    int64_t tile_num_base = prim_dom_.TileNum();
-    int64_t best_cost = CostMeasure(space_unit * tile_factor, tile_num * tile_num_base);
-    int64_t max_tile_num = std::min(int64_t(tile_num + DeviceInfo::Instance().CoreNum() - 1), space);
-    for (int64_t t_num = tile_num + 1; t_num <= max_tile_num; ++t_num) {
-      tile_factor = (space - 1) / t_num + 1;
-      int64_t cost = CostMeasure(space_unit * tile_factor, tile_num * tile_num_base);
-      if (cost < best_cost) {
-        tile_num = t_num;
-        best_cost = cost;
+    if (prim_dom_.TileNum() > 1) { // avoid tile range pad
+      tile_num = GetDivision(space, tile_num);
+      if (tile_num < space && range.affine < PropRange::REDUCE) {
+        int64_t tile_num_base = prim_dom_.TileNum();
+        int64_t cost = CostMeasure(space / tile_num, tile_num * tile_num_base);
+        int64_t div_tile = tile_num;
+        while (div_tile < space) {
+          div_tile = GetDivision(space, div_tile + 1);
+          int64_t div_cost = CostMeasure(space / div_tile, div_tile * tile_num_base);
+          if (div_cost >= cost) break;
+          cost = div_cost;
+          tile_num = div_tile;
+        }
+      }
+    } else {
+      int64_t init_factor = CeilDiv(space, tile_num);
+      int64_t best_cost = CostMeasure(init_factor, tile_num);
+      int64_t start_num = tile_num + 1;
+      while (true) {
+        int64_t align_tile = CeilDiv(start_num, core_limit_) * core_limit_;
+        int64_t factor = CeilDiv(space, align_tile);
+        int64_t t_num = CeilDiv(space, factor);
+        int64_t cost = CostMeasure(factor, t_num);
+        if (cost < best_cost) {
+          best_cost = cost;
+          tile_num = t_num;
+          if (t_num % core_limit_ == 0) break;
+        }
+        if (factor == 1 || cost > best_cost * 2) break;
+        start_num = std::max(align_tile + core_limit_, CeilDiv(space, factor - 1));
       }
     }
     return tile_num;
   }
 
-  int64_t CalcTileAlign(int64_t tile_size, const PropRange &range) {
+  int64_t CostMeasure2(int64_t repeat_num, int64_t tile_num) {
+    int64_t core_tile = CeilDiv(tile_num, core_limit_);
+    return core_tile * (repeat_num + 2);
+  }
+
+  int64_t CalcLeadDivision(int64_t tile_size, const PropRange &range) {
+    int64_t block_size = kernel_->BlockAlign();
     int64_t space = range.space;
-    int64_t tile_num = GetDivision(space, (tile_size - 1) / tile_size_limit_ + 1);
+    auto ProposalSimdWidth = [this, block_size, space](int64_t tile_num, int64_t &best_cost) -> bool {
+      int64_t factor = space / tile_num;
+      int64_t last_cost = INT_MAX;
+      bool selected = false;
+      for (int64_t sw = repeat_size_; sw > 0; sw -= block_size) {
+        int64_t align_repeat = CeilDiv(factor, sw);
+        int64_t align_factor = align_repeat * sw;
+        if (align_factor > tile_size_limit_) continue;
+        int64_t cost = CostMeasure2(align_repeat, tile_num * prim_dom_.TileNum());
+        if (cost > last_cost) break;
+        last_cost = cost;
+        if (cost <= best_cost) {
+          proposal_sw_ = sw;
+          best_cost = cost;
+          selected = true;
+        }
+      }
+      return selected;
+    };
+    int64_t tile_num = GetDivision(space, CeilDiv(tile_size, tile_size_limit_));
     if (tile_num < space && range.affine < PropRange::REDUCE) {
-      int64_t tile_num_base = prim_dom_.TileNum();
-      int64_t cost = CostMeasure(space / tile_num, tile_num * tile_num_base);
+      int64_t best_cost = INT_MAX;
+      ProposalSimdWidth(tile_num, best_cost);
       int64_t div_tile = tile_num;
       while (div_tile < space) {
         div_tile = GetDivision(space, div_tile + 1);
-        int64_t div_cost = CostMeasure(space / div_tile, div_tile * tile_num_base);
-        if (div_cost >= cost) break;
-        cost = div_cost;
+        if (!ProposalSimdWidth(div_tile, best_cost)) break;
         tile_num = div_tile;
       }
     }
-    ASSERT(space % tile_num == 0);
     return tile_num;
   }
+
+  int64_t CalcLeadTile(int64_t tile_size, const PropRange &range) {
+    if (prim_dom_.TileNum() > 1) { // avoid tile range pad
+      return CalcLeadDivision(tile_size, range);
+    }
+    int64_t space = range.space;
+    int64_t init_repeat = space > repeat_size_ ? std::min(tile_size_limit_, space) / repeat_size_ : 1L;
+    int64_t best_tile = (space -1) / (init_repeat * repeat_size_)+ 1;
+    int64_t best_cost = CostMeasure2(init_repeat, best_tile);
+    int64_t start_num = best_tile + 1;
+    int64_t block_size = kernel_->BlockAlign();
+    while (true) {
+      int64_t align_tile = CeilDiv(start_num, core_limit_) * core_limit_;
+      int64_t factor = CeilDiv(space, align_tile);
+      if (factor < repeat_size_ * 4) break;
+      start_num = align_tile + core_limit_;
+      int64_t last_cost = INT_MAX;
+      int64_t selected = 0;
+      for (int64_t sw = repeat_size_; sw > 0; sw -= block_size) {
+        int64_t repeat = CeilDiv(factor, sw);
+        int64_t align_factor = repeat * sw;
+        if (align_factor > tile_size_limit_) continue;
+        int64_t tile_num = CeilDiv(space, align_factor);
+        int64_t cost = CostMeasure2(repeat, tile_num);
+        if (cost > last_cost) break;
+        last_cost = cost;
+        if (cost <= best_cost) {
+          best_cost = cost;
+          best_tile = tile_num;
+          selected = sw;
+        }
+      }
+      if (selected > 0) {
+        proposal_sw_ = selected;
+        if (best_tile % core_limit_ == 0) break;
+      }
+    }
+    return best_tile;
+  }
+
   VKernelBase* kernel_;
   RootDomain &prim_dom_;
   int64_t tile_size_limit_;
@@ -519,11 +689,10 @@ class ShapeTiling {
   int64_t core_limit_;
 };
 
-std::string& VKernel::DisAssemble() {
+std::string VKernel::DisAssemble() {
   std::ostringstream oss;
   code_ptr_->DisAssemble(oss);
-  das_str_ = oss.str();
-  return das_str_;
+  return oss.str();
 }
 
 VKernelBase::~VKernelBase() {
@@ -532,16 +701,13 @@ VKernelBase::~VKernelBase() {
   }
 }
 
-static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 64, 64};
 void VKernelBase::DoCodeGen(uint64_t core_limit) {
-  code_.Reset();
-  CodeGenHelper helper;
-  int peak_live = Analyze(helper);
-  uint64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize() - ReserveCodeSize();
-  uint64_t tile_size_limit = free_mem / (MaxTypeSize() * peak_live);
+  int peak_live = Analyze();
+  int64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize() - ReserveCodeSize();
+  int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);
   // tiling
+  ShapeTiling tiling(this, root_dom_, core_limit);
   if (tiles_.empty()) {
-    ShapeTiling tiling(this, root_dom_, core_limit);
     tiling.Run(tile_size_limit);
   } else {
     auto &dims = root_dom_.DimSpace();
@@ -553,42 +719,65 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
       root_dom_.Tile(t.start, t.end, space, t.num);
     }
   }
-  // simd_width
-  auto lead_dim = root_dom_.DimSpace().front();
-  uint64_t tile_outer = root_dom_.TileSize() / lead_dim;
-  uint64_t max_sw = ITEM_SIMD_WIDTH_MAX[max_type_];
-  uint64_t block_sw = BlockAlign();
-  uint64_t best_repeat = 0xfffffffful;
-  for (uint64_t sw = max_sw; sw > 0; sw -= block_sw) {
-    uint64_t repeat = (lead_dim + sw - 1) / sw * tile_outer;
-    if (repeat * sw <= tile_size_limit && repeat <= best_repeat) {
-      code_.simd_width_ = sw;
-      best_repeat = repeat;
-    }
-  }
+  code_.Reset();
   code_.tile_num_ = root_dom_.TileNum();
   code_.UpdateBlockDim(core_limit);
+  // simd_width
+  int64_t lead_dim = root_dom_.DimSpace().front();
+  int64_t block_sw = BlockAlign();
+  int64_t align_lead_dim = CeilDiv(lead_dim, block_sw) *  block_sw;
+  int64_t tile_outer = root_dom_.TileSize() / align_lead_dim;
+  int64_t best_repeat;
+  if (tiling.proposal_sw_) {
+    best_repeat = CeilDiv(lead_dim, tiling.proposal_sw_) * tile_outer;
+    code_.simd_width_ = tiling.proposal_sw_;
+  } else {
+    code_.simd_width_ = block_sw;
+    best_repeat = CeilDiv(lead_dim, block_sw) * tile_outer;
+    for (int64_t sw = ITEM_SIMD_WIDTH_MAX[max_type_]; sw > block_sw; sw -= block_sw) {
+      int64_t repeat = CeilDiv(lead_dim, sw) * tile_outer;
+      if (repeat * sw <= tile_size_limit && repeat <= best_repeat) {
+        code_.simd_width_ = sw;
+        best_repeat = repeat;
+      }
+    }
+  }
   // codegen
-  helper.xbuf_size_ = best_repeat * code_.simd_width_ * MaxTypeSize();
+  CodeGenHelper helper;
+  helper.xbuf_size_ = best_repeat * code_.simd_width_ * ITEM_SIZE[max_type_];
   helper.Generate(this);
 }
 
 std::string VKernelBase::DumpGraph() {
-  static std::unordered_map<ObjectType, std::string> obj_name = {
-    {kLoad, "Load"},
-    {kLoadDummy, "LoadDummy"},
-    {kStore, "Store"},
-    {kCopy, "Copy"},
-    {kReshape, "Reshape"},
-    {kUnary, "Unary"},
-    {kBinary, "Binary"},
-    {kBinaryS, "BinaryS"},
-    {kBroadcastTo, "BroadcastTo"},
-    {kBroadcastS, "BroadcastS"},
-    {kReduce, "Reduce"},
-    {kSelect, "Select"},
-    {kCast, "Cast"},
+  static const char* obj_names[ObjectType::kObjectBulk] = {
+    "LoadDummy",
+    "Load",
+    "Store",
+    "Reshape",
+    "Copy",
+    "Unary",
+    "Binary",
+    "Cast",
+    "BinaryS",
+    "BroadcastTo",
+    "BroadcastS",
+    "Reduce",
+    "Select",
+    "ElemAny",
+    "RemovePad"
   };
+  static const char* dtype_names[DType::kTypeEnd] = {
+    "Bool",
+    "Float16",
+    "BFloat16",
+    "Float32",
+    "Int32"
+  };
+  if (code_.data_ == nullptr) {
+    for (size_t i = 0; i < objects_.size(); ++i) {
+      objects_[i]->index_ = i;
+    }
+  }
   std::ostringstream oss;
   auto dump_op = [&oss](NDObject *op) {
     oss << "%" << op->index_<< "[";
@@ -598,15 +787,15 @@ std::string VKernelBase::DumpGraph() {
       }
       oss << op->nd_.back();
     }
-    oss << "]";
+    oss << "]<" << dtype_names[op->type_id_] << ">";
   };
-  oss << "vkernel.graph(tile_num=" << code_.tile_num_ << ", simd_width="<<code_.simd_width_ << ", insn_num="
+  oss << "vgraph(tile_num=" << code_.tile_num_ << ", simd_width="<<code_.simd_width_ << ", insn_num="
       << code_.insn_num_ << ") {" << std::endl;
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
     oss << "  ";
     dump_op(op);
-    oss << " = " << obj_name[op->GetObjectType()] << "(";
+    oss << " = " << obj_names[op->GetObjectType()] << "(";
     if (op->GetObjectType() == kSelect) {
       dump_op(static_cast<SelectOp*>(op)->cond_);
       oss << ", ";
@@ -618,17 +807,44 @@ std::string VKernelBase::DumpGraph() {
         dump_op(op->rhs_);
       }
     }
-    oss << ") // stride = [";
+    oss << ") // stride=[";
     if (!op->strides_.empty()) {
       for (size_t i = 0; i < op->strides_.size() - 1; ++i) {
         oss << op->strides_[i] << ",";
       }
       oss << op->strides_.back();
     }
+    if (op->shape_ref_ != nullptr && op->shape_ref_->size > 0) {
+      oss << "], shape_ref=[";
+      auto last_idx = op->shape_ref_->size - 1;
+      for (size_t i = 0; i < last_idx; ++i) {
+        oss << op->shape_ref_->data[i] << ",";
+      }
+      oss << op->shape_ref_->data[last_idx];
+    }
     oss << "]" << std::endl;
   }
   oss << "}";
   return oss.str();
+}
+
+void VKernelBase::CollectMetrics(Metrics &metrics) const {
+  ASSERT(code_.data_ != nullptr);
+  uint64_t max_xbuf_ = 0;
+  for (auto op : objects_) {
+    if (op->xbuf_ > max_xbuf_) {
+      max_xbuf_ = op->xbuf_;
+    }
+  }
+  NDObject *dom = root_dom_.DomObject();
+  metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(DeviceInfo::Instance().LocalMemSize() - ReserveCodeSize());
+  uint64_t tile_per_block = CeilDiv(code_.tile_num_, code_.block_dim_);
+  metrics.core_usage = float(code_.tile_num_) / float(tile_per_block  * DeviceInfo::Instance().CoreNum());
+  uint64_t tiled_shape_size = 1;
+  for (auto d : dom->nd_) {
+    tiled_shape_size *= d;
+  }
+  metrics.simd_usage = float(tiled_shape_size) / float(dom->strides_.back() / code_.simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
 }
 
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
@@ -637,36 +853,11 @@ std::string VKernelBase::DumpGraph() {
 #define OP_KILL(op) do { op->lead_dim_ = 0; } while(0)
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
-int VKernelBase::Analyze(CodeGenHelper &codegen) {
-  int cur_live = 0;
-  int load_pipe_idx = 0;
-  int store_pipe_idx = 0;
-  int vector_pipe_idx = 0;
-  int back_wait_idx = INT_MAX;
-  int op_index_ = 0;
-  for (auto op : objects_) {
-    op->index_ = op_index_++;
-    if (op->Pipe() == V_PIPE_LOAD) {
-      cur_live++;
-      codegen.static_ops_.push_back(op);
-      op->pipe_idx = load_pipe_idx++;
-    } else if (op->Pipe() == V_PIPE_STORE) {
-      int prod_idx = op->lhs_->index_;
-      if (prod_idx < back_wait_idx) {
-        back_wait_idx = prod_idx;
-      }
-      OP_GEN_S(op->lhs_);
-      codegen.static_ops_.push_back(op->lhs_);
-      op->xbuf_ = -1; // donot need
-      cur_live++;
-      op->pipe_idx = store_pipe_idx++;
-    } else {
-      op->pipe_idx = vector_pipe_idx++;
-    }
-  }
+int VKernelBase::Analyze() {
+  int vector_pipe_idx = objects_.size() - static_ops_.size();
+  int op_index = objects_.size();
+  int cur_live = static_ops_.size();
   int live_peak = cur_live;
-  ASSERT(back_wait_idx > 0);
-  codegen.back_wait_ = objects_[back_wait_idx];
   int back_set_idx = -1;
   auto LivenessEnd = [&back_set_idx, &cur_live](NDObject *op, NDObject *end) {
     if (end->Pipe() == V_PIPE_SIMD && !OP_LIVE(end)) {
@@ -678,8 +869,14 @@ int VKernelBase::Analyze(CodeGenHelper &codegen) {
     }
     return false;
   };
+  for (auto op : static_ops_) {
+    if (op->Pipe() == V_PIPE_SIMD) {
+      OP_GEN_S(op);
+    }
+  }
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
+    op->index_ = --op_index;
     if (op->Pipe() == V_PIPE_SIMD) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
@@ -714,10 +911,11 @@ int VKernelBase::Analyze(CodeGenHelper &codegen) {
       }
       OP_KILL(op);
       op->xbuf_ = 0;
+      op->pipe_idx = --vector_pipe_idx;
     }
   }
   ASSERT(back_set_idx > 0);
-  codegen.back_set_ = objects_[back_set_idx];
+  back_set_ = objects_[back_set_idx];
   return live_peak;
 }
 
@@ -808,11 +1006,16 @@ class PropDomainBuilder {
   int link_num_;
 };
 
-void VKernelBase::BuildDomain() {
-  max_type_ = objects_.front()->type_id_;
-  min_type_ = objects_.front()->type_id_;
+void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
+  max_type_ = objects.front()->type_id_;
+  min_type_ = objects.front()->type_id_;
   bool slow_build_path = false;
-  for (auto op : objects_) {
+  int load_pipe_idx = 0;
+  int store_pipe_idx = 0;
+  int op_index = 0;
+  int back_wait_idx = INT_MAX;
+  for (auto op : objects) {
+    op->index_ = op_index++;
     auto type = op->GetObjectType();
     if (type == kReshape) {
       slow_build_path = true;
@@ -824,13 +1027,27 @@ void VKernelBase::BuildDomain() {
         min_type_ = type;
       }
     }
+    if (op->Pipe() == V_PIPE_LOAD) {
+      static_ops_.push_back(op);
+      op->pipe_idx = load_pipe_idx++;
+    } else if (op->Pipe() == V_PIPE_STORE) {
+      int prod_idx = op->lhs_->index_;
+      if (prod_idx < back_wait_idx) {
+        back_wait_idx = prod_idx;
+      }
+      static_ops_.push_back(op->lhs_);
+      op->xbuf_ = -1;
+      op->pipe_idx = store_pipe_idx++;
+    }
   }
+  ASSERT(back_wait_idx > 0);
+  back_wait_ = objects[back_wait_idx];
   if (slow_build_path) {
     PropDomainBuilder builder;
-    builder.Build(objects_, root_dom_);
+    builder.Build(objects, root_dom_);
   } else {
     NDObject *next = nullptr;
-    for (auto obj: objects_) {
+    for (auto obj: objects) {
       obj->pd_next_ = next;
       next = obj;
     }
@@ -844,30 +1061,47 @@ void VKernelS::Append(NDObject *obj) {
   objects_.emplace_back(obj);
 }
 
-static std::vector<pass::Pass> passes = {&pass::ReorderStore};
 void VKernelS::Optimize() {
-  auto bb = pass::BasicBlock(objects_);
-  for (auto pass : passes) {
+  auto bb = pass::BasicBlock(objects_, build_ops_);
+  for (auto pass : pass::passes) {
     pass(bb);
   }
   objects_ = bb.ToVector();
+  bb.Clear();
 }
 
 void VKernelS::CodeGen() {
   Optimize();
-  BuildDomain();
+  BuildDomain(objects_);
   NormalizeDomain();
   DoCodeGen(DeviceInfo::Instance().CoreNum());
+  EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
 }
 
 void VKernelD::CodeGen() {
-  objects_.clear();
-  root_dom_.Clear();
-  for (auto op : build_ops_) {
-    op->Normalize(objects_);
-    objects_.emplace_back(op);
+  if (pd_nexts_.empty()) { // first
+    BuildDomain(build_ops_);
+    for (auto op : build_ops_) {
+      pd_nexts_.push_back(op->pd_next_);
+    }
   }
-  BuildDomain();
+  objects_.clear();
+  size_t start = 0;
+  for (size_t i = 0; i < build_ops_.size(); ++i) {
+    auto op = build_ops_[i];
+    op->Normalize(objects_);
+    auto pd_next = pd_nexts_[i];
+    size_t size = objects_.size();
+    if (size > start) {
+      for (size_t j = start; j < size; ++j) {
+        objects_[j]->pd_next_ = pd_next;
+        pd_next = objects_[j];
+      }
+    }
+    objects_.emplace_back(op);
+    op->pd_next_ = pd_next;
+    start = size + 1;
+  }
   NormalizeDomain();
   DoCodeGen(DeviceInfo::Instance().CoreNum());
 }
@@ -876,7 +1110,7 @@ void VKernelP::CodeGen() {
   auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
   uint64_t total_workload = 0;
   for (auto k : children_) {
-    k->BuildDomain();
+    k->BuildDomain(k->objects_);
     k->NormalizeDomain();
     total_workload += WorkLoad(k);
   }
@@ -885,7 +1119,8 @@ void VKernelP::CodeGen() {
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
     auto workload = WorkLoad(k);
-    uint64_t core_limit = core_num * workload / total_workload;
+    // If workload is inbalanced, make sure that each workload occupies at least one core
+    uint64_t core_limit = std::max(core_num * workload / total_workload, 1ul);
     k->DoCodeGen(core_limit);
     code_.children_.push_back(&k->code_);
     total_workload -= workload;
@@ -906,6 +1141,7 @@ void VKernelP::CodeGen() {
       }
     }
   }
+  EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
 }
 
 std::string VKernelP::DumpGraph() {

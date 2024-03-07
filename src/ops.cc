@@ -114,8 +114,8 @@ void NDObject::UpdateStride(uint64_t simd_width) {
     strides_[i] = 1;
   }
   lead_dim_ = i;
-  uint64_t align = simd_width;
-  strides_[i] = (nd_[i] + align - 1) / align * align;
+  int64_t align = simd_width;
+  strides_[i] = CeilDiv(nd_[i], align) * align;
   for (++i; i < nd_.size(); ++i) {
     strides_[i] = nd_[i] * strides_[i - 1];
   }
@@ -141,7 +141,7 @@ void NDLoad::Tile(const TileParam &tp) {
         factor_ = tp.num;
         round_ = 1;
       } else {
-        ASSERT(round_ == 1); // restrict: only continuous broadcast
+        EXCEPTION_IF(round_ > 1, "multi-broadcast tiling is not supported");
         factor_ *= tp.num;
       }
     } else if (factor_ > 1) {
@@ -158,9 +158,9 @@ void NDLoad::Tile(const TileParam &tp) {
 }
 
 int NDLoad::Emit(Code &code) {
-  uint64_t lead_align = LeadAlign();
+  int64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  if (lead_align == static_cast<uint64_t>(nd_[lead_dim_]) || lead_dim_ + 1 == static_cast<int>(nd_.size())) {
+  if (lead_align == nd_[lead_dim_] || lead_align == strides_.back()) {
     vDMA op;
     op.gm = src_;
     op.xn = xbuf_;
@@ -223,15 +223,25 @@ void NDLoad::Reloc(void *src, bool update_insn) {
 }
 
 void NDSliceLoad::AlignProp(PropRange &range) {
-  if(size_ref_->size > 1 && size_ref_->data[1] * ITEM_SIZE[type_id_] % 32) {
-    range.depth = 1;
-  }
+  range.depth = 1;
 }
 
 void NDSliceLoad::FoldProp(PropRange &range) {
-  if(size_ref_->size > 1 && size_ref_->data[1] * ITEM_SIZE[type_id_] % 32) {
-    range.depth = 1;
+  range.depth = size_ref_->size - 1;
+}
+
+int64_t NDSliceLoad::CalcOffset() {
+  uint64_t src_offset = 0;
+  if (src_ref_->size == 1) {
+    src_offset = start_ref_->data[0];
+  } else if (src_ref_->size == 2) {
+    src_offset = start_ref_->data[0] * src_ref_->data[1] + start_ref_->data[1];
+  } else {
+    src_offset = start_ref_->data[0] * src_ref_->data[1] * src_ref_->data[2] + start_ref_->data[1] * src_ref_->data[2] +
+                 start_ref_->data[2];
   }
+  src_offset *= ITEM_SIZE[type_id_];
+  return src_offset;
 }
 
 void NDSliceLoad::Reloc(void *src, bool update_insn) {
@@ -240,19 +250,12 @@ void NDSliceLoad::Reloc(void *src, bool update_insn) {
     return;
   }
   uint64_t id = (*insn_ >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK;
-  uint64_t src_offset = 0;
-  if(src_ref_->size == 1) {
-    src_offset = start_ref_->data[0];
-  } else {
-    src_offset = start_ref_->data[0] * src_ref_->data[1] + start_ref_->data[1];
-  }
-  src_offset *= ITEM_SIZE[type_id_];
   if (id == V_LOAD) {
-    vDMA::Reloc(insn_, src_ + src_offset);
-  } else if(id == V_LOAD_2){
-    vLoad::Reloc(insn_, src_ + src_offset);
+    vDMA::Reloc(insn_, src_ + CalcOffset());
+  } else if (id == V_LOAD_2) {
+    vLoad::Reloc(insn_, src_ + CalcOffset());
   } else {
-    vSliceLoad2D::Reloc(insn_, src_ + src_offset);
+    vSliceLoad::Reloc(insn_, src_ + CalcOffset());
   }
 }
 
@@ -263,18 +266,27 @@ int NDSliceLoad::Emit(Code &code) {
   }
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  vSliceLoad2D op;
-  op.gm = src_ + (start_ref_->data[0] * src_ref_->data[1] + start_ref_->data[1]) * ITEM_SIZE[type_id_];
+  vSliceLoad op;
+  op.gm = src_ + CalcOffset();
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
-  op.slice_n = size_ref_->data[0];
-  op.slice_m = size_ref_->data[1];
-  op.src_n = src_ref_->data[0];
-  op.src_m = src_ref_->data[1];
   op.pad_size = lead_align - nd_[lead_dim_];
+  if (nd_.size() == 2) {
+    op.slice_k = 1;
+    op.slice_n = size_ref_->data[0];
+    op.slice_m = size_ref_->data[1];
+    op.src_n = src_ref_->data[0];
+    op.src_m = src_ref_->data[1];
+  } else {
+    op.slice_k = size_ref_->data[0];
+    op.slice_n = size_ref_->data[1];
+    op.slice_m = size_ref_->data[2];
+    op.src_n = src_ref_->data[1];
+    op.src_m = src_ref_->data[2];
+  }
   code.insn_num_++;
-  return vSliceLoad2D::Encode(
-    insn_, type_id_ == kFloat16 ? vMemInsnID::V_SLICE_LOAD_2D_FP16 : vMemInsnID::V_SLICE_LOAD_2D, op);
+  return vSliceLoad::Encode(
+    insn_, ITEM_SIZE[type_id_] == sizeof(uint16_t) ? vMemInsnID::V_SLICE_LOAD_U16 : vMemInsnID::V_SLICE_LOAD, op);
 }
 
 void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
@@ -335,9 +347,9 @@ int NDStore::Emit(Code &code) {
     op->head = MakeHead(V_PIPE_STORE, sizeof(vStoreStatus), lhs_->xbuf_, V_STORE_STATUS);
     code.insn_num_++;
     return sizeof(vStoreStatus) / sizeof(uint64_t);
-  }
-  if (lhs_->obj_id_ == kReduce) {
-    auto red_op = static_cast<ReduceOp*>(lhs_);
+  } else if (lhs_->obj_id_ == kReduce || (lhs_->obj_id_ == kRemovePad && lhs_->lhs_->obj_id_ == kReduce)) {
+    auto reduce_op = lhs_->obj_id_ == kRemovePad ? lhs_->lhs_ : lhs_;
+    auto red_op = static_cast<ReduceOp *>(reduce_op);
     if (red_op->factor_ > 1) {
       vStoreAtomic op;
       op.to = reinterpret_cast<uint64_t>(dst_);
@@ -353,6 +365,9 @@ int NDStore::Emit(Code &code) {
       op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
       op.round = red_op->round_;
       op.factor = red_op->factor_;
+      if (lhs_->obj_id_ == kRemovePad) {
+        op.pad_size = 0;
+      }
       if (clear_kernel_ == nullptr) {
         clear_kernel_ = new VKernelD();
         auto dummy_load = new NDLoadDummy(type_id_);
@@ -387,7 +402,20 @@ int NDStore::Emit(Code &code) {
     uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
     uint64_t body_iter = strides_.back() / lead_align;
     uint64_t lead_tiling, tail_iter;
-    if (body_iter == 1) {
+    if (lhs_->obj_id_ == ObjectType::kRemovePad) {
+      if (tail_dim_ < 0) {
+        iter_size *= body_iter;
+        tail_iter = iter_size;
+      } else if (body_iter == 1) {
+        tail_iter = tail_size_ * ITEM_SIZE[type_id_];
+      } else {
+        tail_iter = body_iter / nd_[tail_dim_] * tail_size_ * iter_size;
+        iter_size *= body_iter;
+      }
+      lead_tiling = 1;
+      body_iter = 1;
+      pad_size = 0;
+    } else if (body_iter == 1) {
       lead_tiling = 1;
       tail_iter = tail_dim_ < 0 ? iter_size : tail_size_ * ITEM_SIZE[type_id_];
     } else {
@@ -435,16 +463,21 @@ void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
   }
 }
 
-UnaryOp::UnaryOp(int op_type, NDObject *input)
-    : NDObject(input, nullptr, input->type_id_, ObjectType::kUnary) {
-  static const vOpInsnID id_list[][kTypeEnd] = {  // must keep consistent order with UnaryOpType
-    {V_NONE, V_SQRT_FP16, V_SQRT, V_NONE},
-    {V_NONE, V_ABS_FP16, V_ABS, V_NONE},
-    {V_NONE, V_LOG_FP16, V_LOG, V_NONE},
-    {V_NONE, V_EXP_FP16, V_EXP, V_NONE},
-    {V_NONE, V_REC_FP16, V_REC, V_NONE},
-    {V_NONE, V_ISFINITE_FP16, V_ISFINITE, V_NONE},
-    {V_NOT_INT8, V_NOT_FP16, V_NOT, V_NONE}};
+int ReshapeOp::Emit(Code &code) {
+  EXCEPTION_IF(lhs_->nd_[lhs_->lead_dim_] != nd_[lead_dim_],"Reshape with diffrent leading pad is not support");
+  return CopyOp::Emit(code);
+}
+
+UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kUnary) {
+  static const vOpInsnID id_list[][kTypeEnd] = {
+    // must keep consistent order with UnaryOpType
+    {V_NONE, V_SQRT_FP16, V_NONE, V_SQRT, V_NONE},
+    {V_NONE, V_ABS_FP16, V_NONE, V_ABS, V_NONE},
+    {V_NONE, V_LOG_FP16, V_NONE, V_LOG, V_NONE},
+    {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE},
+    {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE},
+    {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE},
+    {V_NOT_INT8, V_NONE, V_NONE, V_NONE, V_NONE}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   shape_ref_ = input->shape_ref_;
@@ -459,6 +492,33 @@ int UnaryOp::Emit(Code &code) {
   return vUnary::Encode(insn_, id_, op);
 }
 
+RemovePadOp::RemovePadOp(NDObject *input) : CopyOp(input) {
+  ASSERT(ITEM_SIZE[type_id_] != 1);
+  obj_id_ = ObjectType::kRemovePad;
+}
+
+int RemovePadOp::Emit(Code &code) {
+  const static vOpInsnID id_list[kTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
+  if (nd_[lead_dim_] == strides_[lead_dim_] || strides_.back() == strides_[lead_dim_]) {
+    return CopyOp::Emit(code);
+  }
+  vRemovePad op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.repeat = strides_.back() / code.simd_width_;
+  op.iter_num = nd_[lead_dim_];
+  code.insn_num_++;
+  return vRemovePad::Encode(insn_, id_list[type_id_], op);
+}
+
+void ElementAnyOp::Tile(const TileParam &tp) {
+  if (tp.tail > 0) {
+    tail_dim_ = tp.start;
+    tail_size_ = tp.tail;
+  }
+  NDObject::Tile(tp);
+}
+
 int ElementAnyOp::Emit(Code &code) {
   uint32_t insn_num = 1;
   uint32_t size = 0;
@@ -471,7 +531,11 @@ int ElementAnyOp::Emit(Code &code) {
   op.xn = lhs_->xbuf_ ; 
   op.xd = xbuf_;
   op.rs = GetBlocks(code.simd_width_);
-  op.burst_len = GetBlocks(lhs_->strides_.back());
+  op.iter_size = lhs_->strides_.back();
+  op.tail_size = tail_dim_ < 0
+                    ? lhs_->strides_.back()
+                    : lhs_->strides_.back() / lhs_->nd_[tail_dim_] * tail_size_;
+
   op.repeat = lhs_->strides_.back() / code.simd_width_;
   size += vElementAny::Encode(tail_insn_, type_id_ == kFloat32 ? V_ELEMENT_ANY : V_ELEMENT_ANY_FP16, op);
 
@@ -484,10 +548,12 @@ int ElementAnyOp::Emit(Code &code) {
 
 int _CastOp::Emit(Code &code) {
   static const vOpInsnID id_list[][kTypeEnd] = {
-    {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE},
-    {V_CAST_FP16_TO_INT8, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},
-    {V_NONE, V_CAST_FP32_TO_FP16, V_NONE, V_CAST_FP32_TO_INT32},
-    {V_NONE, V_CAST_INT32_TO_FP16, V_CAST_INT32_TO_FP32, V_NONE}};
+    {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_INT8
+    {V_CAST_FP16_TO_INT8, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
+    {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32},               // V_BFLOAT16
+    {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
+    {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
+  };
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -497,32 +563,36 @@ int _CastOp::Emit(Code &code) {
 }
 
 static const int g_cast_staff_type[kTypeEnd][kTypeEnd] = {
-  {-1,        -1,    kFloat16, kFloat16},  // V_INT8
-  {-1,        -1,    -1,        -1},       // V_FLOAT16
-  {kFloat16,  -1,    -1,        -1},       // V_FLOAT32
-  {kFloat16,  -1,    -1,        -1},       // V_INT32
+  {-1, -1, kFloat16, kFloat16, kFloat16},  // V_INT8
+  {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
+  {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
+  {kFloat16, -1, -1, -1, -1},              // V_FLOAT32
+  {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
 };
 
 CastOp::CastOp(NDObject *input, DType type_id) : _CastOp(input, type_id) {
   shape_ref_ = input->shape_ref_;
   auto stuff_type = g_cast_staff_type[input->type_id_][type_id_];
-  if (stuff_type != -1) {
-    stuff_op_ = new _CastOp(input, static_cast<DType>(stuff_type));
-    lhs_ = stuff_op_;
+  while (stuff_type != -1) {
+    auto stuff_op = new _CastOp(input, static_cast<DType>(stuff_type));
+    stuff_ops_.push_back(stuff_op);
+    lhs_ = stuff_op;
+    input = stuff_op;
+    stuff_type = g_cast_staff_type[input->type_id_][type_id_];
   }
 }
 
 CastOp::~CastOp() {
-  if (stuff_op_) {
-    delete stuff_op_;
+  for (auto op : stuff_ops_) {
+    delete op;
   }
 }
 
 void CastOp::Normalize(std::vector<NDObject*> &run_ops) {
   auto input = Input();
-  if (stuff_op_ != nullptr)  {
-    stuff_op_->nd_ = input->nd_;
-    run_ops.push_back(stuff_op_);
+  for (auto op : stuff_ops_) {
+    op->nd_ = input->nd_;
+    run_ops.push_back(op);
   }
   nd_ = input->nd_;
 }
@@ -531,10 +601,10 @@ template <typename T>
 BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
     : NDObject(input, nullptr, input->type_id_, ObjectType::kBinaryS), scalar_(scalar) {
   static const vOpInsnID id_list[][kTypeEnd] = {  // must keep consistent order with BinarySOpType
-    {V_NONE, V_ADDS_FP16, V_ADDS, V_ADDS_INT32},
-    {V_NONE, V_MULS_FP16, V_MULS, V_MULS_INT32},
-    {V_NONE, V_MAXS_FP16, V_MAXS, V_MAXS_INT32},
-    {V_NONE, V_MINS_FP16, V_MINS, V_MINS_INT32}};
+    {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32},
+    {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32},
+    {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32},
+    {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   shape_ref_ = input->shape_ref_;
@@ -559,14 +629,21 @@ template class BinaryScalarOp<int32_t>;
 BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary) {
   static const vOpInsnID id_list[][kTypeEnd] = {
     // must keep consistent order with BinaryOpType
-    {V_NONE, V_CMP_FP16, V_CMP, V_NONE},      {V_NONE, V_CMP_FP16, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_CMP, V_NONE},      {V_NONE, V_CMP_FP16, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_CMP, V_NONE},      {V_NONE, V_CMP_FP16, V_CMP, V_NONE},
-    {V_NONE, V_ADD_FP16, V_ADD, V_ADD_INT32}, {V_NONE, V_SUB_FP16, V_SUB, V_SUB_INT32},
-    {V_NONE, V_MUL_FP16, V_MUL, V_MUL_INT32}, {V_NONE, V_DIV_FP16, V_DIV, V_NONE},
-    {V_NONE, V_POW_FP16, V_POW, V_NONE},      {V_NONE, V_MAX_FP16, V_MAX, V_MAX_INT32},
-    {V_NONE, V_MIN_FP16, V_MIN, V_MIN_INT32}, {V_AND_INT8, V_AND_FP16, V_AND, V_NONE},
-    {V_OR_INT8, V_OR_FP16, V_OR, V_NONE}};
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32},
+    {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32},
+    {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32},
+    {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE},
+    {V_NONE, V_POW_FP16, V_NONE, V_POW, V_NONE},
+    {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
+    {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+    {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+    {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   // compare op in BinaryOpType must keep consistent order with vCompareType
@@ -684,7 +761,7 @@ SelectOp::~SelectOp() {
 
 void SelectOp::Normalize(std::vector<NDObject*> &run_ops) {
   auto cond = cond_stuff_ == nullptr ? cond_ : cond_stuff_->Input();
-  if (cond->type_id_ == kInt8) {
+  if (cond->type_id_ != lhs_->type_id_) {
     if (cond_stuff_ == nullptr) {
       cond_stuff_  = new CastOp(cond, lhs_->type_id_);
     }
@@ -698,7 +775,8 @@ void SelectOp::Normalize(std::vector<NDObject*> &run_ops) {
 int SelectOp::Emit(Code &code) {
   vSelect *op = reinterpret_cast<vSelect *>(insn_);
   uint64_t ext = xbuf_ << V_X_BITS | lhs_->xbuf_;
-  op->head = MakeHead(V_PIPE_SIMD, sizeof(vSelect), ext, type_id_ == kFloat32? V_SEL : V_SEL_FP16);
+  const static vOpInsnID id_list[kTypeEnd] = {V_NONE, V_SEL_FP16, V_NONE, V_SEL, V_SEL_INT32};
+  op->head = MakeHead(V_PIPE_SIMD, sizeof(vSelect), ext, id_list[type_id_]);
   uint64_t stride = GetBlocks(code.simd_width_);
   int64_t repeat = strides_.back() / code.simd_width_;
   op->data = stride << 60 | repeat << 36 | rhs_->xbuf_ << 18 | cond_->xbuf_;
@@ -777,7 +855,8 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_widt
   int64_t rank_size = static_cast<int64_t>(strides_.size());
   op.lead_num = end_dim + 1 < rank_size ? nd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 <  rank_size ? strides_.back() / strides_[end_dim + 1] : 1;
-  return vBroadcastX::Encode(p, type_id_ == kFloat32 ? V_BROADCAST_X:V_BROADCAST_X_FP16, op);
+  const static vOpInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_FP16, V_NONE, V_BROADCAST_X, V_BROADCAST_X_INT32};
+  return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
 
 int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim, int64_t simd_width) {
@@ -823,9 +902,9 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
 template <typename T>
 int BroadcastScalarOp<T>::Emit(Code &code) {
   vBroadcastS<T> *op = reinterpret_cast<vBroadcastS<T> *>(insn_);
-  auto id = type_id_ == kFloat32 ? V_BROADCAST_S : (type_id_ == kInt32 ? V_BROADCAST_S_INT32 : V_BROADCAST_S_FP16);
-  op->head = MakeHead(V_PIPE_SIMD, sizeof(vBroadcastS<T>), xbuf_, id);
-  op->scalar = this->scalar_;
+  const static vOpInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_S_FP16, V_NONE, V_BROADCAST_S, V_BROADCAST_S_INT32};
+  op->head = MakeHead(V_PIPE_SIMD, sizeof(vBroadcastS<T>), xbuf_, id_list[type_id_]);
+  op->scalar = scalar_;
   uint64_t stride = GetBlocks(code.simd_width_);
   int64_t repeat = strides_.back() / code.simd_width_;
   op->data = stride << 18 | repeat;
@@ -941,6 +1020,8 @@ ReduceOp::~ReduceOp() {
 
 void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   ASSERT(dims_ref_ != nullptr);
+  factor_ = 0;
+  round_ = 0;
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
   auto input_shape_ref = input->shape_ref_;
   //update dims
@@ -965,6 +1046,11 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
       dims_set.insert(n);
     });
     shape_dims_.assign(dims_set.begin(), dims_set.end());
+    int back_idx = shape_dims_.back() + 1;
+    int back_end = input->nd_.size() - 1;
+    while (back_idx <= back_end && input->nd_[back_end - back_idx] == 1) { // align fold may flip dims
+      shape_dims_.push_back(back_idx++);
+    }
     auto size = shape_dims_.size();
     dims_.resize(size);
     for (size_t i = 0; i < size; ++i) {
@@ -1036,7 +1122,8 @@ void ReduceOp::Tile(const TileParam &tp) {
 
 int ReduceOp::Emit(Code &code) {
   auto num = _ReduceOp::Emit(code);
-  if (factor_ > 0 && nd_[lead_dim_] != strides_[lead_dim_]) {
+  if (DeviceInfo::Instance().Arch() != kAiCore_C220 && factor_ > 0 &&
+      nd_[lead_dim_] != strides_[lead_dim_]) {
     tail_insn_ = insn_ + num;
     auto size = EmitClearPad(tail_insn_, this, code.simd_width_);
     *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;

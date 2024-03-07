@@ -137,6 +137,9 @@ class Kernel {
   ShapeRef *GetShape(NDObject *op) const;
   DType GetDType(NDObject *op) const;
 
+  const char *Dump() const;
+  const char *Das() const;
+
   VKernel *GetImpl() const { return kernel_; }
 
  private:

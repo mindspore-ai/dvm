@@ -344,4 +344,14 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
 int Kernel::Launch(NDObject **op, int size, void* stream) {
   return 0;
 }
+
+const char* Kernel::Dump() const {
+  std::string &graph = kernel_->DumpGraph();
+  return graph.c_str();
+}
+
+const char* Kernel::Das() const {
+  std::string &das = kernel_->DisAssemble();
+  return das.c_str();
+}
 } // namespace dvm

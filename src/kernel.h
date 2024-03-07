@@ -80,13 +80,14 @@ class VKernel {
   virtual void CodeGen() = 0;
   CodeBase *GetCode() const { return code_ptr_; }
 
-  virtual std::string DumpGraph() = 0;
-  std::string DisAssemble();
+  virtual std::string& DumpGraph() = 0;
+  std::string& DisAssemble();
   KernelType KType() const { return ktype_; }
 
  protected:
   CodeBase* code_ptr_{nullptr};
   KernelType ktype_;
+  std::string dump_str_;
 };
 
 struct Metrics {
@@ -101,7 +102,7 @@ class VKernelBase : public VKernel {
   VKernelBase(KernelType ktype) : VKernel(&code_, ktype) {}
   virtual ~VKernelBase();
 
-  std::string DumpGraph() override;
+  std::string& DumpGraph() override;
   void CollectMetrics(Metrics &metrics) const;
 
   void Reserve(size_t size) {
@@ -183,7 +184,7 @@ class VKernelP : public VKernel {
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 
   void CodeGen() override;
-  std::string DumpGraph() override;
+  std::string& DumpGraph() override;
 
  protected:
   std::vector<VKernelS*> children_;

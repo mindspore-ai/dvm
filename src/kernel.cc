@@ -262,41 +262,43 @@ class CodeGenHelper {
 };
 
 void PropDomain::Normalize() {
-  auto nd_size = head_->nd_.size();
-  if (nd_size == 0) {
-    nd_size = 1;
-  }
+  size_t nd_size = 1;
   dom_ = nullptr;
+  auto select_dom = [this](NDObject *cand) -> bool {
+    auto &dom_nd = dom_->nd_;
+    auto &cand_nd = cand->nd_;
+    if (cand_nd.size() != dom_nd.size()) {
+      return cand_nd.size() > dom_nd.size();
+    }
+    for (size_t i = 0; i < dom_nd.size(); ++i) {
+      if (cand_nd[i] > dom_nd[i]) return true;
+    }
+    return false;
+  };
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     auto size = op->nd_.size();
-    if (nd_size > size) {
-      op->nd_.resize(nd_size, 1);
-    } else if (nd_size < size) {
+    if (size > nd_size) {
       nd_size = size;
-      for (auto op2 = head_; op2 != op; op2 = op2->pd_next_) {
-        op2->nd_.resize(nd_size, 1);
-      }
     }
+    NDObject *cand = nullptr;
     auto obj_type = op->GetObjectType();
     if (obj_type == kStore || obj_type == kReduce || obj_type == kElementAny) {
-      if (dom_ != nullptr) {
-        auto &dom_nd = dom_->nd_;
-        auto &lhs_nd = op->lhs_->nd_;
-        for (size_t i = 0; i < nd_size; ++i) {
-          if (dom_nd[i] < lhs_nd[i]) {
-            dom_ = op->lhs_;
-            break;
-          }
-          if (dom_nd[i] > lhs_nd[i]) break;
-        }
-      } else {
-        dom_ = op->lhs_;
-      }
-    } else if (dom_ == nullptr && obj_type != kLoadDummy) { // reshape domain etc.
+      if (op->lhs_ != dom_) cand = op->lhs_;
+    } else if (obj_type == kBroadcastTo) {
+      if (op != dom_) cand = op;
+    }
+    if (cand) {
+      if (dom_ == nullptr || select_dom(cand)) dom_ = cand;
+    } else if (dom_ == nullptr && obj_type != kStore && obj_type != kLoadDummy) {
       dom_ = op;
     }
   }
   ASSERT(dom_ != nullptr);
+  for (auto op = head_; op != nullptr; op = op->pd_next_) {
+    if (op->nd_.size() < nd_size) {
+      op->nd_.resize(nd_size, 1);
+    }
+  }
   if (!subdoms_.empty()) {
     for (auto sd: subdoms_) {
       sd->Normalize();
@@ -689,10 +691,11 @@ class ShapeTiling {
   int64_t core_limit_;
 };
 
-std::string VKernel::DisAssemble() {
+std::string& VKernel::DisAssemble() {
   std::ostringstream oss;
   code_ptr_->DisAssemble(oss);
-  return oss.str();
+  dump_str_ = oss.str();
+  return dump_str_;
 }
 
 VKernelBase::~VKernelBase() {
@@ -748,7 +751,7 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
   helper.Generate(this);
 }
 
-std::string VKernelBase::DumpGraph() {
+std::string& VKernelBase::DumpGraph() {
   static const char* obj_names[ObjectType::kObjectBulk] = {
     "LoadDummy",
     "Load",
@@ -825,7 +828,8 @@ std::string VKernelBase::DumpGraph() {
     oss << "]" << std::endl;
   }
   oss << "}";
-  return oss.str();
+  dump_str_ = oss.str();
+  return dump_str_;
 }
 
 void VKernelBase::CollectMetrics(Metrics &metrics) const {
@@ -1144,13 +1148,14 @@ void VKernelP::CodeGen() {
   EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
 }
 
-std::string VKernelP::DumpGraph() {
+std::string& VKernelP::DumpGraph() {
   std::ostringstream oss;
   oss << "vgraph.parallel() {" << std::endl;
   for (auto k : children_) {
     oss << k->DumpGraph() << std::endl;
   }
   oss << "}";
-  return oss.str();
+  dump_str_ = oss.str();
+  return dump_str_;
 }
 } // namespace dvm

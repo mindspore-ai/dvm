@@ -63,3 +63,18 @@ def test_slice_load_3d(type, shape, start, size):
     t.store_expect(
         z, 2*(a[start[0]:start[0]+size[0], start[1]:start[1]+size[1], start[2]:start[2]+size[2]]))
     assert (t.run_check())
+
+
+@pytest.mark.parametrize('type', [np.float32, np.float16, np.int32])
+@pytest.mark.parametrize('shape, start, end', [((32, 32, 4), 1, -2),
+                                               ((32, 7, 7), -30, 12),
+                                               ((14, 4097, 20), -4, -1)])
+def test_slice_start_end(type, shape, start, end):
+    t = Tester()
+    a = np.random.normal(0, 1, shape).astype(type)
+    x = t.stridedslice_load(
+        a, (start, 0, 0), (end, shape[1], shape[2]), (1, 1, 1))
+    z = t.binary("Mul", x, 2)
+    t.store_expect(
+        z, 2*(a[start:end]))
+    assert (t.run_check())

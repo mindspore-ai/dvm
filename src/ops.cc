@@ -232,13 +232,16 @@ void NDSliceLoad::FoldProp(PropRange &range) {
 
 int64_t NDSliceLoad::CalcOffset() {
   uint64_t src_offset = 0;
+  std::vector<int64_t> start(src_ref_->size);
+  for (size_t i = 0; i < src_ref_->size; i++) {
+    start[i] = start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i];
+  }
   if (src_ref_->size == 1) {
-    src_offset = start_ref_->data[0];
+    src_offset = start[0];
   } else if (src_ref_->size == 2) {
-    src_offset = start_ref_->data[0] * src_ref_->data[1] + start_ref_->data[1];
+    src_offset = start[0] * src_ref_->data[1] + start[1];
   } else {
-    src_offset = start_ref_->data[0] * src_ref_->data[1] * src_ref_->data[2] + start_ref_->data[1] * src_ref_->data[2] +
-                 start_ref_->data[2];
+    src_offset = start[0] * src_ref_->data[1] * src_ref_->data[2] + start[1] * src_ref_->data[2] + start[2];
   }
   src_offset *= ITEM_SIZE[type_id_];
   return src_offset;
@@ -293,7 +296,9 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(std::all_of(step_ref_->data, step_ref_->data + step_ref_->size, [](int64_t i) { return i == 1; }));
   shape_.resize(src_ref_->size);
   for (size_t i = 0; i < src_ref_->size; i++) {
-    shape_[i] = end_ref_->data[i] - start_ref_->data[i];
+    int64_t end = end_ref_->data[i] < 0 ? end_ref_->data[i] + src_ref_->data[i] : end_ref_->data[i];
+    int64_t start = start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i];
+    shape_[i] = end - start;
   }
   *shape_ref_ = shape_;
   size_ref_ = shape_ref_;

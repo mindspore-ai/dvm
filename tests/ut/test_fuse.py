@@ -63,7 +63,7 @@ def test_backward_sync_overlap():
     assert np.allclose(h, a0-a1, 1e-5, 1e-5)
 
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-def test_concat_pad_01(type):
+def test_remove_pad_01(type):
     t = Tester()
     a = np.random.normal(0, 1, (32, 26, 26, 3, 1, 2)).astype(type)
     b = np.random.normal(0, 1, (32, 26, 26, 3, 1, 2)).astype(type)
@@ -89,7 +89,7 @@ def test_concat_pad_01(type):
     t.run_perf()
     assert(t.run_check())
 
-def test_concat_pad_02():
+def test_remove_pad_02():
     t = Tester()
     a = np.random.normal(0, 1, (32, 1)).astype(np.float32)
     b = np.random.normal(0, 1, (32, 44)).astype(np.float32)
@@ -103,7 +103,7 @@ def test_concat_pad_02():
     t.run_perf()
     assert(t.run_check())
 
-def test_concat_pad_03():
+def test_remove_pad_03():
     t = Tester()
     tile_space = 40+39
     b = np.full([tile_space, 1, 1], 0.3, np.float32)

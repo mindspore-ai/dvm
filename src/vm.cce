@@ -191,7 +191,7 @@ __aicore_inline__ void vCAdd(__ubuf__ half *dst, __ubuf__ half *src, uint8_t rep
 
 __aicore_inline__ void vCMax(__ubuf__ float *dst, __ubuf__ float *src, uint8_t repeat, uint16_t dstRepeatStride, uint16_t srcRepeatStride) {
 #ifdef AICORE_ARCH_C220
-  vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride, VALUE_INDEX);
+  vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride, ONLY_VALUE);
 #else
   vcadd(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride);
   vector_dup((__ubuf__ float *)WORKSPACE, (float)1, 1, 1, 1, 0, 0);
@@ -202,7 +202,7 @@ __aicore_inline__ void vCMax(__ubuf__ float *dst, __ubuf__ float *src, uint8_t r
 
 __aicore_inline__ void vCMax(__ubuf__ half *dst, __ubuf__ half *src, uint8_t repeat, uint16_t dstRepeatStride, uint16_t srcRepeatStride) {
 #ifdef AICORE_ARCH_C220
-  vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride, VALUE_INDEX);
+  vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride, ONLY_VALUE);
 #else
   vcadd(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride);
   vector_dup((__ubuf__ half *)WORKSPACE, (half)1, 1, 1, 1, 0, 0);

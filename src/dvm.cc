@@ -383,7 +383,7 @@ int Kernel::Launch(void* stream) {
   auto stub_func = VKernelHolder::Instance().StubFunc();
   if (!code->atomic_clean_.empty()) {
     for (auto atomic: code->atomic_clean_) {
-      auto ret = rtKernelLaunch(stub_func, atomic->block_dim_, atomic->data_, atomic->data_size_, nullptr, stream);
+      auto ret = VKernelHolder::Instance().Launch(stub_func, atomic->block_dim_, atomic->data_, atomic->data_size_, nullptr, stream);
       if (ret != RT_ERROR_NONE) {
         return ret;
       }

@@ -14,9 +14,42 @@
  * limitations under the License.
  */
 
+#include <dlfcn.h>
 #include "dvm.h"
 #include "kernel.h"
-#include "acl_ext.h"
+
+// rts_runtime
+#if defined(__cplusplus)
+extern "C" {
+#endif
+#define RT_DEV_BINARY_MAGIC_ELF        0x43554245U
+#define RT_DEV_BINARY_MAGIC_ELF_AICPU  0x41415243U
+#define RT_DEV_BINARY_MAGIC_ELF_AIVEC  0x41415246U
+#define RT_DEV_BINARY_MAGIC_ELF_AICUBE 0x41494343U
+
+typedef int32_t rtError_t;
+typedef char char_t;
+const int32_t RT_ERROR_NONE = 0; // success
+typedef void *rtStream_t;
+struct tagRtSmCtrl;
+typedef struct tagRtSmCtrl rtSmDesc_t;
+
+typedef struct tagRtDevBinary {
+    uint32_t magic;    // magic number
+    uint32_t version;  // version of binary
+    const void *data;  // binary data
+    uint64_t length;   // binary length
+} rtDevBinary_t;
+
+rtError_t rtDevBinaryRegister(const rtDevBinary_t *bin, void **hdl);
+rtError_t rtDevBinaryUnRegister(void *hdl);
+rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName,
+                         const void *kernelInfoExt, uint32_t funcMode);
+rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
+                         rtSmDesc_t *smDesc, rtStream_t stm);
+#if defined(__cplusplus)
+}
+#endif
 
 extern const unsigned char g_vkernel_bin[];
 extern unsigned int  g_vkernel_bin_len;
@@ -38,9 +71,24 @@ class VKernelHolder {
     return instance;
   }
   void *StubFunc() { return reinterpret_cast<void*>(this); }
+
+  rtError_t (*Launch)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
+                              rtSmDesc_t *smDesc, rtStream_t stm);
 };
 
 VKernelHolder::VKernelHolder() {
+  void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
+  EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
+  auto rt_binary_register = reinterpret_cast<rtError_t(*)(const rtDevBinary_t*, void **)>(
+      dlsym(handle, "rtDevBinaryRegister"));
+  EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
+  auto rt_function_register = reinterpret_cast<rtError_t(*)(void*, const void*, const char_t*, const void*, uint32_t)>(
+      dlsym(handle, "rtFunctionRegister"));
+  EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
+  Launch = reinterpret_cast<rtError_t(*)(const void*, uint32_t, void*, uint32_t, rtSmDesc_t*, rtStream_t)>(
+      dlsym(handle, "rtKernelLaunch"));
+  EXCEPTION_IF(Launch == nullptr, "load rt_kernel_launch symbol failed");
+
   void *module = nullptr;
   rtDevBinary_t dev_bin;
   if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
@@ -54,12 +102,12 @@ VKernelHolder::VKernelHolder() {
   }
   dev_bin.version = 0;
   auto stub_func = reinterpret_cast<void*>(this);
-  rtError_t err = rtDevBinaryRegister(&dev_bin, &module);
+  rtError_t err = rt_binary_register(&dev_bin, &module);
   if (err != RT_ERROR_NONE) {
     std::cerr << "reg binary failed: " << static_cast<int>(err) << std::endl;
     exit(0);
   }
-  err = rtFunctionRegister(module, stub_func, FUNC_NAME, FUNC_NAME, 0);
+  err = rt_function_register(module, stub_func, FUNC_NAME, FUNC_NAME, 0);
   if (err != RT_ERROR_NONE) {
     std::cerr << "reg function failed: " << static_cast<int>(err) << std::endl;
     exit(0);
@@ -325,7 +373,7 @@ int Kernel::Launch(void* stream) {
       }
     }
   }
-  auto ret = rtKernelLaunch(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
+  auto ret = VKernelHolder::Instance().Launch(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
   return ret;
 }
 

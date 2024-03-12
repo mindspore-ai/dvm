@@ -19,15 +19,14 @@
 #include "pybind11/numpy.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
-#include "acl_ext.h"
 #include "acl/acl_rt.h"
 #include "kernel.h"
 #include "pybind_api.h"
 
 #define ASCEND_CALL(func)                                                                               \
   do {                                                                                                  \
-    rtError_t err = (func);                                                                             \
-    if (err != RT_ERROR_NONE) {                                                                         \
+    auto err = (func);                                                                                  \
+    if (err != 0) {                                                                                     \
       std::cerr << "Ascend error in function " << #func << " : " << static_cast<int>(err) << std::endl; \
       exit(0);                                                                                          \
     }                                                                                                   \

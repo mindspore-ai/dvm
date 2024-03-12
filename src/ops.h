@@ -145,11 +145,7 @@ class NDLoad : public NDObject {
  private:
   int tail_dim_{-1};
   int tail_size_{0};
-
-  // tile offset:  tile_idx / factor_ * round_ + tile_idx % round;
-  uint64_t factor_{0};
-  uint64_t round_{0};
-  std::vector<int64_t> shape_;
+  std::vector<int64_t> round_tile_;
 };
 
 class NDSliceLoad : public NDLoad {

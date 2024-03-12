@@ -320,43 +320,34 @@ struct vClearPad {
 };
 
 struct vDMA {
+  enum { ROUND_OFFSET = 3 };
   __gm__ uint8_t *gm;
   uint64_t xn;
   uint64_t tile_stride;
   uint64_t lenburst;
   uint64_t tail_lenburst;
-  uint64_t has_round;
-  uint64_t round;
-  uint64_t factor;
-  uint64_t last_tile_idx;
-  // pc[0]: has_round(1) << 20 | xn(18)
+  uint64_t round_rank;
+  // pc[0]: round_rank(4) << 20 | xn(18)
   // pc[1]: gm
   // pc[2]: tile_stride(32) << 32 | tail_lenburst(16) << 16 | lenburst(16)
-  // pc[3]: last_tile_idx(24) << 40 | round(20) << 20 | factor(20)
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vDMA &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.has_round = head >> (V_HEAD_EXT_OFFSET + 20);
+    op.round_rank = head >> (V_HEAD_EXT_OFFSET + 20);
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
     op.lenburst = data & 0xfffful;
     op.tail_lenburst = (data >> 16) & 0xfffful;
     op.tile_stride = data >> 32;
   }
-  __aicore_inline__ void DecodeRound(bcode_t pc, vDMA &op) {
-    uint64_t data = pc[3];
-    op.last_tile_idx = data >> 40;
-    op.round = (data >> 20) & 0xffffful;
-    op.factor = data & 0xffffful;
-  }
-  __aicore_inline__ void UpdateTileIdx(bcode_t pc, uint64_t idx) {
-    pc[3] = (pc[3] & 0xfffffffffful) | idx << 40;
-  }
-  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vDMA &op) {
-    uint64_t size = 4;
-    pc[0] = vMakeHead(id, op.has_round << 20 | op.xn, size, 0);
+  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vDMA &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vDMA::ROUND_OFFSET + round_size;
+    pc[0] = vMakeHead(id, op.round_rank << 20 | op.xn, size, 0);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.tile_stride << 32 | op.tail_lenburst << 16 | op.lenburst;
-    pc[3] = 0xfffffful << 40 | op.round << 20 | op.factor;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vDMA::ROUND_OFFSET + i] = rounds[i];
+    }
     return size;
   }
   __aicore_inline__ void Reloc(bcode_t pc, uint8_t *gm) {
@@ -404,6 +395,7 @@ struct vSliceLoad {
 };
 
 struct vLoad {
+  enum { ROUND_OFFSET = 3 };
   __gm__ void *from;
   uint64_t xn;
   uint64_t tile_stride;
@@ -411,40 +403,30 @@ struct vLoad {
   uint64_t tail_iter;
   uint64_t iter_size;
   uint64_t pad_size;
-  uint64_t has_round;
-  uint64_t round;
-  uint64_t factor;
-  uint64_t last_tile_idx;
+  uint64_t round_rank;
   // pc[0]: tile_stride(18) << 18 | xn(18)
   // pc[1]: from
-  // pc[2]: // has_round(1) << 62 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
-  // pc[3]: last_tile_idx(24) << 40 | round(20) << 20 | factor(20)
+  // pc[2]: // round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vLoad &op) {
     op.tile_stride = head >> (V_HEAD_EXT_OFFSET + 18);
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.from = reinterpret_cast<__gm__ void *>(pc[1]);
     uint64_t data = pc[2];
-    op.has_round = data >> 62;
+    op.round_rank = data >> 60;
     op.pad_size = (data >> 50) & 0xfful;
     op.iter_size = (data >> 32) & 0x3fffful;
     op.tail_iter = (data >> 16) & 0xfffful;
     op.body_iter = data & 0xfffful;
   }
-  __aicore_inline__ void DecodeRound(bcode_t pc, vLoad &op) {
-    uint64_t data = pc[3];
-    op.last_tile_idx = data >> 40;
-    op.round = (data >> 20) & 0xffffful;
-    op.factor = data & 0xffffful;
-  }
-  __aicore_inline__ void UpdateTileIdx(bcode_t pc, uint64_t idx) {
-    pc[3] = (pc[3] & 0xfffffffffful) | idx << 40;
-  }
-  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vLoad &op) {
-    uint32_t size = 4;
+  __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vLoad &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vLoad::ROUND_OFFSET + round_size;
     pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, 0);
     pc[1] = reinterpret_cast<uint64_t>(op.from);
-    pc[2] = op.has_round << 62 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
-    pc[3] = 0xfffffful << 40 | op.round << 20 | op.factor;
+    pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vDMA::ROUND_OFFSET + i] = rounds[i];
+    }
     return size;
   }
   __aicore_inline__ void Reloc(bcode_t pc, __gm__ void *gm) {

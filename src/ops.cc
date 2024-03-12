@@ -137,27 +137,66 @@ void NDLoad::Tile(const TileParam &tp) {
       }
     }
     if (is_broadcast) {
-      if (round_ == 0) {
-        factor_ = tp.num;
-        round_ = 1;
+      if (round_tile_.size() % 2 == 0) {
+        round_tile_.push_back(tp.num);
       } else {
-        EXCEPTION_IF(round_ > 1, "multi-broadcast tiling is not supported");
-        factor_ *= tp.num;
+        round_tile_.back() *= tp.num;
       }
-    } else if (factor_ > 1) {
-      round_ *= tp.num;
-      factor_ *= tp.num;
-    }
-    if (!is_broadcast && tp.tail > 0) {
-      ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
-      tail_dim_ = tp.start;
-      tail_size_ = tp.tail;
+    } else {
+      if (!round_tile_.empty()) {
+        if (round_tile_.size() % 2 == 0) {
+          round_tile_.back() *= tp.num;
+        } else {
+          round_tile_.push_back(tp.num);
+        }
+      }
+      if (tp.tail > 0) {
+        ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
+        tail_dim_ = tp.start;
+        tail_size_ = tp.tail;
+      }
     }
   }
   NDObject::Tile(tp);
 }
 
 int NDLoad::Emit(Code &code) {
+  uint64_t rounds[2];
+  if (!round_tile_.empty()) {
+    switch (round_tile_.size()) {
+      case 1: {
+        auto r1 = round_tile_[0];
+        rounds[0] = 0xfffffffful << 32 | r1;
+        break;
+      }
+      case 2: {
+        auto r1 = round_tile_[0] * round_tile_[1];
+        auto r2 = round_tile_[1];
+        rounds[0] = r2 << 32 | r1;
+        break;
+      }
+      case 3: {
+        auto r1 = round_tile_[0] * round_tile_[1] * round_tile_[2];
+        auto r2 = round_tile_[1];
+        auto r3 = round_tile_[2];
+        rounds[0] = r2 << 32 | r1;
+        rounds[1] = 0xfffffffful << 32 | r3;
+        break;
+      }
+      case 4: {
+        auto r1 = round_tile_[0] * round_tile_[1] * round_tile_[2] * round_tile_[3];
+        auto r2 = round_tile_[1];
+        auto r3 = round_tile_[2] * round_tile_[3];
+        auto r4 = round_tile_[3];
+        rounds[0] = r2 << 32 | r1;
+        rounds[1] = r4 << 32 | r3;
+        break;
+      }
+      default:
+        EXCEPTION_IF(true, "multi-broadcast rank exceed max limit(4)");
+        break;
+    }
+  }
   int64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   if (lead_align == nd_[lead_dim_] || lead_align == strides_.back()) {
@@ -167,15 +206,9 @@ int NDLoad::Emit(Code &code) {
     op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
     op.lenburst = GetBlocks(src_tile_stride_);
     op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(src_tile_stride_ / nd_[tail_dim_] * tail_size_);
-    if (factor_) {
-      op.round = round_;
-      op.factor = factor_;
-      op.has_round = 1;
-    } else {
-      op.round = op.factor = op.has_round = 0;
-    }
+    op.round_rank = round_tile_.size();
     code.insn_num_++;
-    return vDMA::Encode(insn_, vMemInsnID::V_LOAD, op);
+    return vDMA::Encode(insn_, vMemInsnID::V_LOAD, op, rounds);
   } else { // align
     vLoad op;
     op.from = src_;
@@ -185,15 +218,9 @@ int NDLoad::Emit(Code &code) {
     op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
     op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
     op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-    if (factor_) {
-      op.round = round_;
-      op.factor = factor_;
-      op.has_round = 1;
-    } else {
-      op.round = op.factor = op.has_round = 0;
-    }
+    op.round_rank = round_tile_.size();
     code.insn_num_++;
-    return vLoad::Encode(insn_, vMemInsnID::V_LOAD_2, op);
+    return vLoad::Encode(insn_, vMemInsnID::V_LOAD_2, op, rounds);
   }
 }
 
@@ -205,8 +232,7 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   }
   tail_dim_ = -1;
   tail_size_ = 0;
-  factor_ = 0;
-  round_ = 0;
+  round_tile_.clear();
 }
 
 void NDLoad::Reloc(void *src, bool update_insn) {
@@ -395,9 +421,9 @@ int NDStore::Emit(Code &code) {
     op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
     op.lenburst = GetBlocks(dst_tile_stride_);
     op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(dst_tile_stride_/ nd_[tail_dim_] * tail_size_);
-    op.round = op.factor = op.has_round = 0;
+    op.round_rank = 0;
     code.insn_num_++;
-    return vDMA::Encode(insn_, vMemInsnID::V_STORE, op);
+    return vDMA::Encode(insn_, vMemInsnID::V_STORE, op, nullptr);
   } else {
     vStore *op = reinterpret_cast<vStore*>(insn_);
     uint64_t ext = (dst_tile_stride_ * ITEM_SIZE[type_id_]) << V_X_BITS | lhs_->xbuf_;

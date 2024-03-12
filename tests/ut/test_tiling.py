@@ -47,6 +47,45 @@ def test_tiling_broadcast_all():
     t.store_expect(z0, expect)
     assert(t.run_check())
 
+def test_tiling_broadcast_round_2():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [2, 1, 512]).astype(np.float32)
+    la0 = t.load(a0)
+    z0 = t.broadcast(la0, [2, 3, 512])
+    expect = np.broadcast_to(a0, (2, 3, 512))
+    t.store_expect(z0, expect)
+    t.tile(2, 2, 2)
+    t.tile(1, 1, 3)
+    t.tile(0, 0, 4)
+    assert(t.run_check())
+
+def test_tiling_broadcast_round_3():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [2, 1, 4, 1, 512]).astype(np.float32)
+    la0 = t.load(a0)
+    z0 = t.broadcast(la0, [2, 3, 4, 6, 512])
+    expect = np.broadcast_to(a0, (2, 3, 4, 6, 512))
+    t.store_expect(z0, expect)
+    t.tile(4, 4, 2)
+    t.tile(3, 3, 3)
+    t.tile(2, 2, 4)
+    t.tile(1, 1, 3)
+    assert(t.run_check())
+
+def test_tiling_broadcast_round_4():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [2, 1, 4, 1, 512]).astype(np.float32)
+    la0 = t.load(a0)
+    z0 = t.broadcast(la0, [2, 3, 4, 5, 512])
+    expect = np.broadcast_to(a0, (2, 3, 4, 5, 512))
+    t.store_expect(z0, expect)
+    t.tile(4, 4, 2)
+    t.tile(3, 3, 3)
+    t.tile(2, 2, 4)
+    t.tile(1, 1, 5)
+    t.tile(0, 1, 2)
+    assert(t.run_check())
+
 def test_tiling_broadcast_multi():
     t = Tester()
     a0 = np.full((1), 1.1, np.float32)

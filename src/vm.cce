@@ -1046,17 +1046,51 @@ static inline [aicore] void ClearPad(__ubuf__ uint64_t *pc, uint64_t head) {
   set_vector_mask(0, simd_mask);
 }
 
+__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank, __ubuf__ uint64_t *rounds) {
+  if (round_rank == 1) {
+    uint64_t lastidx_r1 = rounds[0];
+    uint64_t r1 = lastidx_r1 & MASK_32;
+    uint64_t lastidx = lastidx_r1 >> 32;
+    tile_idx = tile_idx / r1;
+    if (tile_idx == lastidx) return -1;
+    *((__ubuf__ uint32_t*)rounds + 1) = tile_idx;
+    return tile_idx;
+  } else if (round_rank == 2) {
+    uint64_t r2_r1 = rounds[0];
+    uint64_t r1 = r2_r1 & MASK_32;
+    uint64_t r2 = r2_r1 >> 32;
+    return tile_idx / r1 * r2 + tile_idx % r2;
+  } else if (round_rank == 3) {
+    uint64_t r2_r1 = rounds[0];
+    uint64_t r1 = r2_r1 & MASK_32;
+    uint64_t r2 = r2_r1 >> 32;
+    uint64_t lastidx_r3 = rounds[1];
+    uint64_t r3 = lastidx_r3 & MASK_32;
+    uint64_t lastidx = lastidx_r3 >> 32;
+    tile_idx = tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3;
+    if (tile_idx == lastidx) return -1;
+    *((__ubuf__ uint32_t*)rounds + 3) = tile_idx;
+    return tile_idx;
+  } else {
+    uint64_t r2_r1 = rounds[0];
+    uint64_t r1 = r2_r1 & MASK_32;
+    uint64_t r2 = r2_r1 >> 32;
+    uint64_t r4_r3 = rounds[1];
+    uint64_t r3 = r4_r3 & MASK_32;
+    uint64_t r4 = r4_r3 >> 32;
+    return (tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3) * r4 + tile_idx % r4;
+  }
+}
+
 static inline [aicore] void Load(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
   vDMA op;
   vDMA::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
-  if (op.has_round) {
-    vDMA::DecodeRound(pc, op);
-    tile_idx = tile_idx / op.factor * op.round + tile_idx % op.round;
-    if (tile_idx == op.last_tile_idx) {
+  if (op.round_rank) {
+    tile_idx = RoundUpTileIdx(tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET);
+    if (tile_idx == -1) {
       return;
     }
-    vDMA::UpdateTileIdx(pc, tile_idx);
   }
   uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
   __gm__ void* gm = (__gm__ uint8_t*)op.gm + op.tile_stride * tile_idx;
@@ -1156,13 +1190,11 @@ static inline [aicore] void Load2(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   vLoad op;
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
-  if (op.has_round) {
-    vLoad::DecodeRound(pc, op);
-    tile_idx = tile_idx / op.factor * op.round + tile_idx % op.round;
-    if (tile_idx == op.last_tile_idx) {
+  if (op.round_rank > 0) {
+    tile_idx = RoundUpTileIdx(tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET);
+    if (tile_idx == -1) {
       return;
     }
-    vDMA::UpdateTileIdx(pc, tile_idx);
   }
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + op.tile_stride * tile_idx;
   __ubuf__ uint8_t* dst = (__ubuf__ uint8_t*)(op.xn);

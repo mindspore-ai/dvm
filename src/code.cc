@@ -58,6 +58,20 @@ struct DumpInfo {
       : insn(insn_in), ext(ext_in), simd_width(simd_width_in) {}
 };
 
+void DumpRounds(uint64_t rank, uint64_t *rounds, std::ostringstream &oss) {
+  oss << "rounds(";
+  for (uint64_t i = 0; i < (rank - 1) / 2; ++i) {
+    uint64_t round = *rounds++;
+    oss << (round & 0xfffffffful) << "," << (round >> 32) << ",";
+  }
+  uint64_t round = *rounds;
+  oss << (round & 0xfffffffful);
+  if ((rank & 1ul) == 0) {
+    oss << "," << (round >> 32);
+  }
+  oss << ")";
+}
+
 void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vDMA op;
   vDMA::Decode(dump_info.insn, *dump_info.insn, op);
@@ -67,12 +81,9 @@ void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tile_stride", op.tile_stride, oss);
   oss << ", ";
   DumpVal("tail_lenburst", op.tail_lenburst, oss);
-  if (op.has_round) {
-    vDMA::DecodeRound(dump_info.insn, op);
+  if (op.round_rank > 0) {
     oss << ", ";
-    DumpVal("factor", op.factor, oss);
-    oss << ", ";
-    DumpVal("round", op.round, oss);
+    DumpRounds(op.round_rank, dump_info.insn + vDMA::ROUND_OFFSET, oss);
   }
 }
 
@@ -108,12 +119,9 @@ void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
   DumpVal("iter_tail", op.tail_iter, oss);
-  if (op.has_round) {
-    vLoad::DecodeRound(dump_info.insn, op);
+  if (op.round_rank > 0) {
     oss << ", ";
-    DumpVal("factor", op.factor, oss);
-    oss << ", ";
-    DumpVal("round", op.round, oss);
+    DumpRounds(op.round_rank, dump_info.insn + vLoad::ROUND_OFFSET, oss);
   }
 }
 

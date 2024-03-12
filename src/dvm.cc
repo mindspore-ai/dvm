@@ -262,12 +262,28 @@ template NDObject *Kernel::Binary<float>(int op_type, float val, NDObject *rhs);
 template NDObject *Kernel::Binary<int32_t>(int op_type, int32_t val, NDObject *rhs);
 
 NDObject* Kernel::Select(NDObject* cond, NDObject* lhs, NDObject* rhs) {
+  if (cond->type_id_ != lhs->type_id_) {
+    cond = this->Cast(cond, lhs->type_id_);
+  }
   auto obj = new SelectOp(cond, lhs, rhs);
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject* Kernel::Cast(NDObject* input, DType type) {
+  static const int g_cast_staff_type[kTypeEnd][kTypeEnd] = {
+    {-1, -1, kFloat16, kFloat16, kFloat16},  // V_INT8
+    {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
+    {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
+    {kFloat16, -1, -1, -1, -1},              // V_FLOAT32
+    {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
+  };
+  auto stuff_type = g_cast_staff_type[input->type_id_][type];
+  while (stuff_type != -1) {
+    input = new CastOp(input, static_cast<DType>(stuff_type));
+    kernel_->Append(input);
+    stuff_type = g_cast_staff_type[input->type_id_][type];
+  }
   auto obj = new CastOp(input, type);
   kernel_->Append(obj);
   return obj;

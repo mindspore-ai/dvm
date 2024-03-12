@@ -577,7 +577,7 @@ int ElementAnyOp::Emit(Code &code) {
   return size;
 }
 
-int _CastOp::Emit(Code &code) {
+int CastOp::Emit(Code &code) {
   static const vOpInsnID id_list[][kTypeEnd] = {
     {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_INT8
     {V_CAST_FP16_TO_INT8, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
@@ -591,41 +591,6 @@ int _CastOp::Emit(Code &code) {
   op.repeat = strides_.back() / code.simd_width_;
   code.insn_num_++;
   return vUnary::Encode(insn_, id_list[lhs_->type_id_][type_id_], op);
-}
-
-static const int g_cast_staff_type[kTypeEnd][kTypeEnd] = {
-  {-1, -1, kFloat16, kFloat16, kFloat16},  // V_INT8
-  {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
-  {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
-  {kFloat16, -1, -1, -1, -1},              // V_FLOAT32
-  {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
-};
-
-CastOp::CastOp(NDObject *input, DType type_id) : _CastOp(input, type_id) {
-  shape_ref_ = input->shape_ref_;
-  auto stuff_type = g_cast_staff_type[input->type_id_][type_id_];
-  while (stuff_type != -1) {
-    auto stuff_op = new _CastOp(input, static_cast<DType>(stuff_type));
-    stuff_ops_.push_back(stuff_op);
-    lhs_ = stuff_op;
-    input = stuff_op;
-    stuff_type = g_cast_staff_type[input->type_id_][type_id_];
-  }
-}
-
-CastOp::~CastOp() {
-  for (auto op : stuff_ops_) {
-    delete op;
-  }
-}
-
-void CastOp::Normalize(std::vector<NDObject*> &run_ops) {
-  auto input = Input();
-  for (auto op : stuff_ops_) {
-    op->nd_ = input->nd_;
-    run_ops.push_back(op);
-  }
-  nd_ = input->nd_;
 }
 
 template <typename T>
@@ -782,25 +747,6 @@ int BinaryOp::Emit(Code &code) {
     code.insn_num_++;
     return vBinary::Encode(insn_, id_, op);
   }
-}
-
-SelectOp::~SelectOp() {
-  if (cond_stuff_ != nullptr) {
-    delete cond_stuff_;
-  }
-}
-
-void SelectOp::Normalize(std::vector<NDObject*> &run_ops) {
-  auto cond = cond_stuff_ == nullptr ? cond_ : cond_stuff_->Input();
-  if (cond->type_id_ != lhs_->type_id_) {
-    if (cond_stuff_ == nullptr) {
-      cond_stuff_  = new CastOp(cond, lhs_->type_id_);
-    }
-    cond_stuff_->Normalize(run_ops);
-    run_ops.push_back(cond_stuff_);
-    cond_ = cond_stuff_;
-  }
-  nd_ = lhs_->nd_;
 }
 
 int SelectOp::Emit(Code &code) {

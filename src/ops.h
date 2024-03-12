@@ -273,24 +273,15 @@ class ElementAnyOp: public NDObject {
   int tail_size_{0};
 };
 
-class _CastOp : public NDObject {
+class CastOp : public NDObject {
  public:
-  _CastOp(NDObject *input, DType type_id)
+  CastOp(NDObject *input, DType type_id)
       : NDObject(input, nullptr, type_id, ObjectType::kCast) {
     ASSERT(type_id != lhs_->type_id_);
+    shape_ref_ = input->shape_ref_;
   }
+  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(Code &code) override;
-};
-
-class CastOp : public _CastOp {
- public:
-  CastOp(NDObject *input, DType type_id);
-  ~CastOp();
-  void Normalize(std::vector<NDObject*> &run_ops) override;
-  NDObject *Input() const { return stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_; }
-
- private:
-  std::vector<_CastOp*> stuff_ops_;
 };
 
 enum BinarySOpType {
@@ -334,14 +325,10 @@ class SelectOp : public NDObject {
       : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kSelect), cond_(cond) {
     shape_ref_ = lhs->shape_ref_;
   }
-  ~SelectOp();
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(Code &code) override;
   NDObject *cond_{nullptr};
   bool free_cond{false};
-
- private:
-  CastOp* cond_stuff_{nullptr};
 };
 
 class _BroadcastOp : public NDObject {

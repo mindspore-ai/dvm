@@ -34,10 +34,10 @@ def test_basic(shape1, shape2, shape3):
     a = t.load(b0)
     b = t.binary("Add", a, 0.3)
     c = t.store_expect(b, 0.1+0.3)
-     #kernel 3
+    #kernel 3
     t.p_next()
     c0 = np.full(shape3, 0.1, np.float32)
     a = t.load(c0)
     b = t.binary("Add", a, 0.3)
     c = t.store_expect(b, 0.1+0.3)
-    t.run_check()
+    assert(t.run_check())

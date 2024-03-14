@@ -541,14 +541,16 @@ void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
     config |= (children_[k]->simd_width_ - 1) << (8 * k);
     // summary
     uint64_t lenburst = (code->data_size_ - sizeof(uint64_t) + 31) / 32;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | k << 46 | code->insn_num_ << 40;
+    uint64_t body_tile_flag = 1ul << 39;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | k << 46 | code->insn_num_ << 40 | body_tile_flag;
     uint64_t tile_per_block = (code->tile_num_ - 1) / code->block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
       data_64[summary_idx++] = summary | (tile_per_block - 1) << 20 | start_idx;
       start_idx += tile_per_block;
     }
-    data_64[summary_idx++] = summary | 1ul << 39 | (code->tile_num_ - start_idx - 1) << 20 | start_idx;
+    summary &= ~body_tile_flag;
+    data_64[summary_idx++] = summary | (code->tile_num_ - start_idx - 1) << 20 | start_idx;
     // data
     offsets.push_back(offset - sizeof(uint64_t));
     uint64_t cpy_size = code->data_size_ - sizeof(uint64_t);

@@ -1,0 +1,5 @@
+*.o
+*.a
+*_bin
+*.so
+*__pycache__*

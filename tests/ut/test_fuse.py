@@ -86,7 +86,6 @@ def test_remove_pad_01(type):
     y9 = t.binary("Maximum",y8, 0)
     t.store_expect(y9, ret)
     t.set_passes("InsertRemovePad")
-    t.run_perf()
     assert(t.run_check())
 
 def test_remove_pad_02():
@@ -100,7 +99,6 @@ def test_remove_pad_02():
     t.store_expect(y0, 0.5*a)
     t.store_expect(y1, a+b)
     t.set_passes("InsertRemovePad")
-    t.run_perf()
     assert(t.run_check())
 
 def test_remove_pad_03():

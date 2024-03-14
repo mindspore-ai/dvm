@@ -1,7 +1,7 @@
 VPATH = ./src:./include
 OBJ = ops.o kernel.o code.o dvm.o pass.o
 
-CFLGAS = --std=c++17 -Werror -Wall -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC
+CFLGAS = --std=c++17 -Werror -Wall -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC -fvisibility=hidden
 ifneq ($(dbg),)
 CFLGAS += -g -O0 -DDEBUG
 else
@@ -33,7 +33,7 @@ pybind_api.o: pybind_api.cc pybind_api.h $(HEADERS)
 	g++ -c $(CFLGAS) $< -o $@
 
 ${OBJ}: %.o: %.cc $(HEADERS)
-	g++ -fvisibility=hidden -c $(CFLGAS) $< -o $@
+	g++ -c $(CFLGAS) $< -o $@
 
 vm.o: vm.cce isa.h
 	ccec -c -O2 $(CCE_FLGAS_C100) src/vm.cce -o g_vkernel_bin
@@ -42,7 +42,7 @@ vm.o: vm.cce isa.h
 	xxd -i g_vkernel_bin >> vm.cc
 	echo "extern const" >> vm.cc
 	xxd -i g_vkernel_910b_bin >> vm.cc
-	g++ -fvisibility=hidden -c $(CFLGAS) vm.cc -o vm.o
+	g++ -c $(CFLGAS) vm.cc -o vm.o
 
 clean:
 	rm *.o *.so *.a *bin vm.cc

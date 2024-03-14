@@ -112,3 +112,20 @@ def test_remove_pad_03():
     out = t.store_expect(z, 0.4)
     t.set_passes("InsertRemovePad")
     assert(t.run_check())
+
+
+def test_input_array_early_free():
+    t = Tester()
+    a = np.random.normal(0, 1, (32, 1)).astype(np.float32)
+    b = np.random.normal(0, 1, (32, 44)).astype(np.float16)
+    c = np.random.normal(0, 1, (32, 44)).astype(np.float16)
+    expect = (c - a.astype(np.float16))*b*1.2
+    a = t.load(a)
+    b = t.load(b)
+    c = t.load(c)
+    y0 = t.cast(a, "float16")
+    y1 = t.binary("Sub", c, y0)
+    y2 = t.binary("Mul", b, y1)
+    y3 = t.binary("Mul", 1.2, y2)
+    out = t.store_expect(y3, expect)
+    assert (t.run_check())

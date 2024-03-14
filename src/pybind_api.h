@@ -80,7 +80,7 @@ class KernelPy {
     std::vector<int64_t> shape;
   };
 
-  void* ToDev(void* host, size_t size);
+  void *ToDev(void *host, size_t size, bool need_malloc = false);
   void FromDev(void* host, size_t size);
 
  protected:

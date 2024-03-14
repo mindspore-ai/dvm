@@ -1226,13 +1226,7 @@ static inline [aicore] void Store2(__ubuf__ uint64_t *pc, uint64_t head, uint64_
   uint64_t pad_size = (config >> 54) & 0xfful;
   uint64_t iter_size = (config >> 36) & V_X_MASK;
 #if AICORE_ARCH_C220
-  if (iter_size & 1) {
-    copy_ubuf_to_gm_align_b8(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
-  } else if (iter_size & 3) {
-    copy_ubuf_to_gm_align_b16(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
-  } else {
-    copy_ubuf_to_gm_align_b32(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
-  }
+  copy_ubuf_to_gm_align_b8(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
 #else
   uint64_t len_burst = (iter_size + 31) >> 5;
   __gm__ uint8_t *dst_guard = (__gm__ uint8_t *)op->to + (TileEnd(tile) + 1) * tile_stride;

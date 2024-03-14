@@ -321,6 +321,7 @@ struct vClearPad {
 
 struct vDMA {
   enum { ROUND_OFFSET = 3 };
+  enum { RELOC_OFFSET = 1 };
   __gm__ uint8_t *gm;
   uint64_t xn;
   uint64_t tile_stride;
@@ -350,12 +351,10 @@ struct vDMA {
     }
     return size;
   }
-  __aicore_inline__ void Reloc(bcode_t pc, uint8_t *gm) {
-    pc[1] = reinterpret_cast<uint64_t>(gm);
-  }
 };
 
 struct vSliceLoad {
+  enum { RELOC_OFFSET = 1 };
   __gm__ uint8_t *gm;
   uint64_t xn;
   uint64_t tile_stride;
@@ -389,13 +388,11 @@ struct vSliceLoad {
     pc[3] = op.slice_k << 48 | op.pad_size;
     return size;
   }
-  __aicore_inline__ void Reloc(bcode_t pc, uint8_t *gm) {
-    pc[1] = reinterpret_cast<uint64_t>(gm);
-  }
 };
 
 struct vLoad {
   enum { ROUND_OFFSET = 3 };
+  enum { RELOC_OFFSET = 1 };
   __gm__ void *from;
   uint64_t xn;
   uint64_t tile_stride;
@@ -429,14 +426,12 @@ struct vLoad {
     }
     return size;
   }
-  __aicore_inline__ void Reloc(bcode_t pc, __gm__ void *gm) {
-    pc[1] = reinterpret_cast<uint64_t>(gm);
-  }
 };
 
 // complete lead_dim: [iter_num/iter_tail, iter_size+pad_size]
 // tiling lead_dim:   [iter_size/iter_tail+pad_size]
 struct vStore {
+  enum { RELOC_OFFSET = 2 };
   uint64_t head;   // tile_stride(18) << 18 | xn(18)
   uint64_t config; // lead_tiling(1) << 62 | pad_size(8) << 54 | iter_size(18) << 36 | iter_tail(18) << 18 | iter_num(18)
   __gm__ void *to;
@@ -444,6 +439,7 @@ struct vStore {
 
 // [iter_num/iter_tail, iter_size+pad_size]
 struct vStoreAtomic {
+  enum { RELOC_OFFSET = 3 };
   uint64_t to;
   uint64_t xn;
   uint64_t iter_size;
@@ -456,7 +452,7 @@ struct vStoreAtomic {
   // pc[0]: tile_stride(18) << 18 | xn(18)
   // pc[1]: pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
   // pc[2]: round(32) << 32 | factor(32)
-  // pc[4]: to
+  // pc[3]: to
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vStoreAtomic &op) {
     op.tile_stride = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
@@ -509,6 +505,7 @@ struct vElementAny {
 }INSN_ATTR;
 
 struct vStoreStatus {
+  enum { RELOC_OFFSET = 1 };
   uint64_t head;   // tile_stride(18) << 18 | xn(18)
   __gm__ void *to;
 }INSN_ATTR;

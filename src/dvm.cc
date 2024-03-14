@@ -394,13 +394,13 @@ int Kernel::Launch(void* stream) {
 }
 
 int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void* stream) {
+  auto loads = reinterpret_cast<NDLoad**>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    auto load = static_cast<NDLoad*>(reloc_table.inputs[i]);
-    load->Reloc(*inputs++, true);
+    (*loads++)->Reloc(*inputs++);
   }
+  auto stores = reinterpret_cast<NDStore**>(reloc_table.outputs);
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    auto store = static_cast<NDStore*>(reloc_table.outputs[i]);
-    store->Reloc(*outputs++, true);
+    (*stores++)->Reloc(*outputs++);
   }
   return Launch(stream);
 }

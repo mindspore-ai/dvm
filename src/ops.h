@@ -137,10 +137,15 @@ class NDLoad : public NDObject {
     shape_ref_ = shape_ref;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  virtual void Reloc(void *src, bool update_insn);
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
+  inline void Reloc(void *src) {
+    *reloc_addr_ = reinterpret_cast<uint64_t>(static_cast<uint8_t *>(src) + reloc_offset_);
+  }
+
   uint8_t *src_;
+  uint64_t *reloc_addr_{nullptr};
+  uint64_t reloc_offset_{0};
 
  private:
   int tail_dim_{-1};
@@ -158,7 +163,6 @@ class NDSliceLoad : public NDLoad {
   }
 
   int Emit(Code &code) override;
-  void Reloc(void *src, bool update_insn) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
 
@@ -195,7 +199,10 @@ class NDStore : public NDObject {
     shape_ref_ = src->shape_ref_;
   }
   ~NDStore() override;
-  void Reloc(void *dst, bool update_insn = false);
+  void Reloc(void *dst) {
+    *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
+    if (clear_store_) clear_store_->Reloc(dst);
+  }
   void Normalize(std::vector<NDObject*> &run_ops) override {
     nd_ = lhs_->nd_;
     tail_dim_ = -1;
@@ -204,6 +211,7 @@ class NDStore : public NDObject {
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
   uint8_t *dst_;
+  uint64_t *reloc_addr_{nullptr};
 
  private:
   int tail_dim_{-1};

@@ -208,6 +208,7 @@ int NDLoad::Emit(Code &code) {
     op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(src_tile_stride_ / nd_[tail_dim_] * tail_size_);
     op.round_rank = round_tile_.size();
     code.insn_num_++;
+    reloc_addr_ = insn_ + vDMA::RELOC_OFFSET;
     return vDMA::Encode(insn_, vMemInsnID::V_LOAD, op, rounds);
   } else { // align
     vLoad op;
@@ -220,6 +221,7 @@ int NDLoad::Emit(Code &code) {
     op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
     op.round_rank = round_tile_.size();
     code.insn_num_++;
+    reloc_addr_ = insn_ + vLoad::RELOC_OFFSET;
     return vLoad::Encode(insn_, vMemInsnID::V_LOAD_2, op, rounds);
   }
 }
@@ -233,19 +235,6 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   tail_dim_ = -1;
   tail_size_ = 0;
   round_tile_.clear();
-}
-
-void NDLoad::Reloc(void *src, bool update_insn) {
-  src_ = static_cast<uint8_t *>(src);
-  if (!update_insn) {
-    return;
-  }
-  uint64_t id = (*insn_ >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK;
-  if (id == V_LOAD) {
-    vDMA::Reloc(insn_, src_);
-  } else {
-    vLoad::Reloc(insn_, src_);
-  }
 }
 
 void NDSliceLoad::AlignProp(PropRange &range) {
@@ -273,30 +262,16 @@ int64_t NDSliceLoad::CalcOffset() {
   return src_offset;
 }
 
-void NDSliceLoad::Reloc(void *src, bool update_insn) {
-  src_ = static_cast<uint8_t *>(src);
-  if (!update_insn) {
-    return;
-  }
-  uint64_t id = (*insn_ >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK;
-  if (id == V_LOAD) {
-    vDMA::Reloc(insn_, src_ + CalcOffset());
-  } else if (id == V_LOAD_2) {
-    vLoad::Reloc(insn_, src_ + CalcOffset());
-  } else {
-    vSliceLoad::Reloc(insn_, src_ + CalcOffset());
-  }
-}
-
 int NDSliceLoad::Emit(Code &code) {
+  reloc_offset_ = CalcOffset();
   if (nd_.size() == 1) {
-    src_ += start_ref_->data[0] * ITEM_SIZE[type_id_];
+    src_ += reloc_offset_;
     return NDLoad::Emit(code);
   }
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   vSliceLoad op;
-  op.gm = src_ + CalcOffset();
+  op.gm = src_ + reloc_offset_;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
@@ -314,6 +289,7 @@ int NDSliceLoad::Emit(Code &code) {
     op.src_m = src_ref_->data[2];
   }
   code.insn_num_++;
+  reloc_addr_ = insn_ + vSliceLoad::RELOC_OFFSET;
   return vSliceLoad::Encode(
     insn_, ITEM_SIZE[type_id_] == sizeof(uint16_t) ? vMemInsnID::V_SLICE_LOAD_U16 : vMemInsnID::V_SLICE_LOAD, op);
 }
@@ -329,28 +305,6 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   *shape_ref_ = shape_;
   size_ref_ = shape_ref_;
   NDSliceLoad::Normalize(run_ops);
-}
-
-void NDStore::Reloc(void *dst, bool update_insn) {
-  dst_ = static_cast<uint8_t *>(dst);
-  if (!update_insn) {
-    return;
-  }
-  uint64_t id = (*insn_ >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK;
-  if (id == V_STORE) {
-    vDMA::Reloc(insn_, dst_);
-  } else if (id == V_STORE_ATOMIC) {
-    insn_[3] = reinterpret_cast<uint64_t>(dst);
-    if (clear_store_) {
-      clear_store_->Reloc(dst, update_insn);
-    }
-  } else if(id == V_STORE_STATUS) {
-    vStoreStatus *op = reinterpret_cast<vStoreStatus *>(insn_);
-    op->to = dst_;
-  } else {
-    vStore *op = reinterpret_cast<vStore *>(insn_);
-    op->to = dst_;
-  }
 }
 
 NDStore::~NDStore() {
@@ -377,6 +331,7 @@ int NDStore::Emit(Code &code) {
     op->to = dst_;
     op->head = MakeHead(V_PIPE_STORE, sizeof(vStoreStatus), lhs_->xbuf_, V_STORE_STATUS);
     code.insn_num_++;
+    reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
     return sizeof(vStoreStatus) / sizeof(uint64_t);
   } else if (lhs_->obj_id_ == kReduce || (lhs_->obj_id_ == kRemovePad && lhs_->lhs_->obj_id_ == kReduce)) {
     auto reduce_op = lhs_->obj_id_ == kRemovePad ? lhs_->lhs_ : lhs_;
@@ -411,6 +366,7 @@ int NDStore::Emit(Code &code) {
       clear_kernel_->CodeGen();
       code.atomic_clean_.push_back(clear_kernel_->GetCode());
       code.insn_num_++;
+      reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
       return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op);
     }
   }
@@ -423,6 +379,7 @@ int NDStore::Emit(Code &code) {
     op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(dst_tile_stride_/ nd_[tail_dim_] * tail_size_);
     op.round_rank = 0;
     code.insn_num_++;
+    reloc_addr_ = insn_ + vDMA::RELOC_OFFSET;
     return vDMA::Encode(insn_, vMemInsnID::V_STORE, op, nullptr);
   } else {
     vStore *op = reinterpret_cast<vStore*>(insn_);
@@ -455,6 +412,7 @@ int NDStore::Emit(Code &code) {
     }
     op->config = lead_tiling << 62 | pad_size << 54 | iter_size << 36 | tail_iter << 18 | body_iter;
     code.insn_num_++;
+    reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
     return sizeof(vStore) / sizeof(uint64_t);
   }
 }

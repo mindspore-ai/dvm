@@ -1138,10 +1138,10 @@ void VKernelP::CodeGen() {
     for (auto op :  children_[i]->objects_) {
       if (op->obj_id_ == kLoad) {
         auto load = static_cast<NDLoad*>(op);
-        load->insn_ = new_base + (load->insn_ - old_base);
+        load->reloc_addr_ = new_base + (load->reloc_addr_ - old_base);
       } else if (op->obj_id_ == kStore) {
         auto store = static_cast<NDStore*>(op);
-        store->insn_ = new_base + (store->insn_ - old_base);
+        store->reloc_addr_ = new_base + (store->reloc_addr_ - old_base);
       }
     }
   }

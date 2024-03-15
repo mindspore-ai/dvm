@@ -204,10 +204,7 @@ __aicore_inline__ void vCMax(__ubuf__ half *dst, __ubuf__ half *src, uint8_t rep
 #ifdef AICORE_ARCH_C220
   vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride, ONLY_VALUE);
 #else
-  vcadd(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride);
-  vector_dup((__ubuf__ half *)WORKSPACE, (half)1, 1, 1, 1, 0, 0);
-  pipe_barrier(PIPE_V);
-  vmin(dst, dst, (__ubuf__ half *)WORKSPACE, repeat, 1, 1, 1, srcRepeatStride, srcRepeatStride, 0);
+  vcmax(dst, src, repeat, dstRepeatStride, 1, srcRepeatStride);
 #endif
 }
 
@@ -1168,10 +1165,9 @@ static inline[aicore] void RemovePad(__ubuf__ uint64_t *pc, uint64_t head, uint6
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint64_t simd_width = TileSimdWidth(tile);
-  uint64_t rs = GetRepeatStride(tile, T);
   set_mask_count();
   set_vector_mask(0x0, op.iter_num);
-  vReducev2(xd, xn, xn, op.repeat, 1, 7, rs, 0);
+  vReducev2(xd, xn, xn, op.repeat, 1, 7, op.rs, 0);
   set_mask_norm();
   SetVectorMask(simd_width);
 }

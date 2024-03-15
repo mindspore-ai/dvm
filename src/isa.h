@@ -86,19 +86,21 @@ struct vRemovePad {
   uint64_t xn;
   uint64_t repeat;
   uint64_t iter_num;
+  uint64_t rs;
   // pc[0]: xd
-  // pc[1]: xn(18) << 46 | iter_num(16) << 16 | repeat(16)
+  // pc[1]: xn(18) << 46 | rs(8) << 32 | iter_num(16) << 16 | repeat(16)
   __aicore_inline__ void Decode(bcode_t pc, uint64_t head, vRemovePad &op) {
     op.xd = head >> V_HEAD_EXT_OFFSET;
     uint64_t data = pc[1];
     op.repeat = data & 0xfffful;
     op.iter_num = (data >> 16) & 0xfffful;
     op.xn = data >> 46;
+    op.rs = (data >> 32) & 0xfful;
   }
   __aicore_inline__ uint32_t Encode(bcode_t pc, uint64_t id, const vRemovePad &op) {
     uint32_t size = 2;
     pc[0] = vMakeHead(id, op.xd, size, 1);
-    pc[1] = op.xn << 46 | op.iter_num << 16 | op.repeat ;
+    pc[1] = op.xn << 46 | op.rs << 32 | op.iter_num << 16 | op.repeat;
     return size;
   }
 };

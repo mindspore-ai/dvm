@@ -184,6 +184,8 @@ void DumpRemovePad(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " // ";
   DumpVal("iter_num", op.iter_num, oss);
+  oss << ", ";
+  DumpVal("rs", op.rs, oss);
 }
 
 template <typename T = float>

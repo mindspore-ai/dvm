@@ -494,8 +494,9 @@ int RemovePadOp::Emit(Code &code) {
   vRemovePad op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.repeat = strides_.back() / code.simd_width_;
+  op.repeat = strides_.back() / strides_[lead_dim_];
   op.iter_num = nd_[lead_dim_];
+  op.rs = GetBlocks(strides_[lead_dim_]);
   code.insn_num_++;
   return vRemovePad::Encode(insn_, id_list[type_id_], op);
 }

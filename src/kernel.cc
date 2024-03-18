@@ -1114,6 +1114,7 @@ void VKernelP::CodeGen() {
   auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
   uint64_t total_workload = 0;
   for (auto k : children_) {
+    k->Optimize();
     k->BuildDomain(k->objects_);
     k->NormalizeDomain();
     total_workload += WorkLoad(k);

@@ -644,6 +644,9 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
   if (need_reshape.find(obj) != need_reshape.end()) {
     return true;
   }
+  if (obj->nd_ == new_shape) {
+    return true;
+  }
   std::vector<int64_t> forward_shape;
   std::vector<int64_t> backward_shape;
   auto type = obj->GetObjectType();

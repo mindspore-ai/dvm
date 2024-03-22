@@ -122,3 +122,12 @@ def test_reduce_y_tail():
     t.store_expect(y, res, 1e-4)
     t.tile(1, 1, 122);
     assert(t.run_check())
+
+def test_reduce_fake_atomic():
+    t = Tester()
+    a = np.full([1, 640, 64, 64], 1.0, np.float32)
+    x1 = t.load(a)
+    x2 = t.reduce("sum", x1, [2, 3], True)
+    x3 = t.reduce("sum", x2, [0], True)
+    t.store_expect(x3, 4096.0)
+    assert(t.run_check())

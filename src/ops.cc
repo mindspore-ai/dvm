@@ -1043,8 +1043,14 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
 void ReduceOp::Tile(const TileParam &tp) {
   if (!(tp.end < start_dim_ || tp.start > end_dim_)) {
     if (round_ == 0) {
-      factor_ = tp.num;
-      round_ = 1;
+      auto end = std::min(end_dim_, tp.end);
+      for (auto i = std::max(start_dim_, tp.start); i <= end; ++i) {
+        if (lhs_->nd_[i] > 1) {
+          factor_ = tp.num;
+          round_ = 1;
+          break;
+        }
+      }
     } else {
       ASSERT(round_ == 1); // restrict: only continuous reduce
       factor_ *= tp.num;

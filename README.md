@@ -14,6 +14,11 @@ DVM实现了业界首创的微秒级算子实时编译和执行技术，具有�
 2. make
 3. python test_xxx.py
 
+#### Profiling说明
+1. source env.sh
+2. cd tests/profiling
+3. export ASCEND_TOOLKIT_HOME = xxx
+4. bash build.sh test_reduce_0.cc 910B1
 
 #### 更新dvm仓代码至mindspore仓
 流程：dvm仓代码会预先编译成二进制文件libdvm.a，并通过git lfs上传至mindspore仓。具体步骤：

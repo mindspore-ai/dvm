@@ -18,21 +18,28 @@
 #include <vector>
 #include <cstring>
 #include <stdexcept>
+#ifndef VK_SIM_MODEL
 #include "acl/acl_base.h"
+#endif
 #include "code.h"
 
 namespace dvm {
 namespace {
 std::string GetSocName() {
+  std::string res;
+#ifdef VK_SIM_MODEL
+  const char *sim = getenv("sim");
+  res = "Ascend" + std::string(sim);
+#else
   const char *soc_name = getenv("DVM_SOC_NAME");
   if (soc_name == nullptr) {
     soc_name = aclrtGetSocName();
   }
-  std::string res;
   if (soc_name == nullptr) {
     return res;
   }
   res = soc_name;
+#endif
   return res;
 }
 

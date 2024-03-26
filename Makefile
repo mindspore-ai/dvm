@@ -12,7 +12,7 @@ CCE_FLGAS_C100 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100 -
 CCE_FLGAS_C220 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-aicore-arch=dav-c220-vec --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
 
 ifneq ($(sim),)
-LD_FLAGS = -L${ASCEND_PATH}/latest/toolkit/tools/simulator/Ascend$(sim)/lib -L${ASCEND_PATH}/latest/lib64 -lascendcl
+LD_FLAGS = -L${ASCEND_PATH}/latest/toolkit/tools/simulator/Ascend$(sim)/lib -lruntime_camodel
 CFLGAS += -DVK_SIM_MODEL
 else
 LD_FLAGS = -L${ASCEND_PATH}/latest/lib64 -lascendcl

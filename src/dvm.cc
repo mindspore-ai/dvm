@@ -77,17 +77,24 @@ class VKernelHolder {
 };
 
 VKernelHolder::VKernelHolder() {
+#ifdef VK_SIM_MODEL
+  auto rt_binary_register = rtDevBinaryRegister;
+  auto rt_function_register = rtFunctionRegister;
+  Launch = rtKernelLaunch;
+#else
   void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
   EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
-  auto rt_binary_register = reinterpret_cast<rtError_t(*)(const rtDevBinary_t*, void **)>(
-      dlsym(handle, "rtDevBinaryRegister"));
+  auto rt_binary_register =
+    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(handle, "rtDevBinaryRegister"));
   EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
-  auto rt_function_register = reinterpret_cast<rtError_t(*)(void*, const void*, const char_t*, const void*, uint32_t)>(
+  auto rt_function_register =
+    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
       dlsym(handle, "rtFunctionRegister"));
   EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
-  Launch = reinterpret_cast<rtError_t(*)(const void*, uint32_t, void*, uint32_t, rtSmDesc_t*, rtStream_t)>(
-      dlsym(handle, "rtKernelLaunch"));
+  Launch = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
+    dlsym(handle, "rtKernelLaunch"));
   EXCEPTION_IF(Launch == nullptr, "load rt_kernel_launch symbol failed");
+#endif
 
   void *module = nullptr;
   rtDevBinary_t dev_bin;

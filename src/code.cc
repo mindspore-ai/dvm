@@ -27,19 +27,18 @@ namespace dvm {
 namespace {
 std::string GetSocName() {
   std::string res;
-#ifdef VK_SIM_MODEL
-  const char *sim = getenv("sim");
-  res = "Ascend" + std::string(sim);
-#else
   const char *soc_name = getenv("DVM_SOC_NAME");
   if (soc_name == nullptr) {
+#ifdef VK_SIM_MODEL
+    DvmException("simulator must set environment variable DVM_SOC_NAME");
+#else
     soc_name = aclrtGetSocName();
+#endif
   }
   if (soc_name == nullptr) {
     return res;
   }
   res = soc_name;
-#endif
   return res;
 }
 
@@ -591,14 +590,14 @@ void CodeP::DisAssemble(std::ostringstream &oss) {
     uint64_t end_idx = start_idx + ((sum_data >> 20) & 0x7fffful);
     uint64_t ker_idx = (sum_data >> 46) & 0x7ul;
     uint64_t offset = ((sum_data >> 49) & 0x1fful) * 32;
-    uint64_t tail = (sum_data >> 39) & 0x1ul;
+    uint64_t body_flag = (sum_data >> 39) & 0x1ul;
     auto &summary = summays[ker_idx];
     if (summary.block_start == -1) {
       summary.block_start = i;
       summary.block_step = end_idx - start_idx + 1;
       summary.bcode = data_ + offset;
     }
-    if (tail) {
+    if (!body_flag) {
       summary.block_end = i;
       summary.block_tail = end_idx - start_idx + 1;
     }

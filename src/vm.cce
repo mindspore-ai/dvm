@@ -399,7 +399,7 @@ DELCARE_BINARYS(vadds, int16_t)
 #endif
 
 template <typename T>
-__aicore_inline__ void Reciprocal(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void Reciprocal(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vUnary op;
   vUnary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, T);
@@ -416,7 +416,7 @@ __aicore_inline__ void Reciprocal(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
 }
 
 template <typename T>
-__aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vElementAny op;
   vElementAny::Decode(pc, head, op);
   uint64_t simd_width = op.rs * TYPE_SHIFT(T);
@@ -529,7 +529,7 @@ __aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
 
 #define BINARYS(pc, builtin, head, VTYPE)                                               \
   do {                                                                                  \
-    __ubuf__ vBinaryS<float> *op = (__ubuf__ vBinaryS<float>*)pc;                                     \
+    __ubuf__ vBinaryS<float> *__restrict__ op = (__ubuf__ vBinaryS<float>*)pc;          \
     uint64_t data = static_cast<uint64_t>(op->data);                                    \
     uint64_t rs = data >> 18;                                                           \
     uint64_t repeat = data & V_X_MASK;                                                  \
@@ -549,9 +549,9 @@ __aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
     }                                                                                   \
   } while (0)
 
-#define BINARYS_INT(pc, builtin, head, VTYPE)                                               \
+#define BINARYS_INT(pc, builtin, head, VTYPE)                                           \
   do {                                                                                  \
-    __ubuf__ vBinaryS<int32_t> *op = (__ubuf__ vBinaryS<int32_t>*)pc;                                     \
+    __ubuf__ vBinaryS<int32_t> * __restrict__ op = (__ubuf__ vBinaryS<int32_t>*)pc;     \
     uint64_t data = static_cast<uint64_t>(op->data);                                    \
     uint64_t rs = data >> 18;                                                           \
     uint64_t repeat = data & V_X_MASK;                                                  \
@@ -572,7 +572,7 @@ __aicore_inline__ void ElementAny(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   } while (0)
 
 template <typename T>
-__aicore_inline__ void BinCompare(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 #define CMP_DISPATCH(op_type, builtin) case op_type : do {                     \
     for (uint64_t i = 0; i < op.repeat; i++) {                                 \
       builtin(xn, xm, 1, rs);                                                  \
@@ -602,7 +602,7 @@ __aicore_inline__ void BinCompare(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   }
 }
 
-static inline[aicore] void IsFiniteFp16(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline[aicore] void IsFiniteFp16(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vUnary op;
   vUnary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, half);
@@ -624,7 +624,7 @@ static inline[aicore] void IsFiniteFp16(__ubuf__ uint64_t *pc, uint64_t head, ui
 }
 
 #ifdef AICORE_ARCH_C220
-static inline[aicore] void IsFinite(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline[aicore] void IsFinite(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vUnary op;
   vUnary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, uint32_t);
@@ -659,7 +659,7 @@ static inline[aicore] void IsFinite(__ubuf__ uint64_t *pc, uint64_t head, uint64
 #endif
 
 template <typename T>
-__aicore_inline__ void Power(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void Power(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBinary op;
   vBinary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, T);
@@ -723,7 +723,7 @@ __aicore_inline__ void vBinLogic(__ubuf__ uint16_t *dst, __ubuf__ uint16_t *src0
 }
 
 template <BinLogicType type>
-__aicore_inline__ void LogicalBinary(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void LogicalBinary(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBinary op;
   vBinary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, uint8_t);
@@ -761,7 +761,7 @@ __aicore_inline__ void LogicalBinary(__ubuf__ uint64_t *pc, uint64_t head, uint6
   }
 }
 
-static inline[aicore] void LogicalNot(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline[aicore] void LogicalNot(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vUnary op;
   vUnary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, uint8_t);
@@ -785,8 +785,8 @@ static inline[aicore] void LogicalNot(__ubuf__ uint64_t *pc, uint64_t head, uint
 }
 
 template <typename T>
-__aicore_inline__ void BroadcastS(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vBroadcastS<float> *op = (__ubuf__ vBroadcastS<float> *)pc;
+__aicore_inline__ void BroadcastS(bcodeptr_t pc, uint64_t head) {
+  __ubuf__ vBroadcastS<float> * __restrict__ op = (__ubuf__ vBroadcastS<float> *)pc;
   uint64_t data = static_cast<uint64_t>(op->data);
   uint64_t rs = data >> 18;
   uint64_t repeat = data & V_X_MASK;
@@ -805,8 +805,8 @@ __aicore_inline__ void BroadcastS(__ubuf__ uint64_t *pc, uint64_t head) {
 }
 
 template <typename T>
-__aicore_inline__ void BroadcastS_Int(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vBroadcastS<int32_t> *op = (__ubuf__ vBroadcastS<int32_t> *)pc;
+__aicore_inline__ void BroadcastS_Int(bcodeptr_t pc, uint64_t head) {
+  __ubuf__ vBroadcastS<int32_t> *__restrict__ op = (__ubuf__ vBroadcastS<int32_t> *)pc;
   uint64_t data = static_cast<uint64_t>(op->data);
   uint64_t rs = data >> 18;
   uint64_t repeat = data & V_X_MASK;
@@ -825,7 +825,7 @@ __aicore_inline__ void BroadcastS_Int(__ubuf__ uint64_t *pc, uint64_t head) {
 }
 
 template <typename T>
-__aicore_inline__ void BroadcastX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBroadcastX op;
   vBroadcastX::Decode(pc, head, op);
   set_flag(PIPE_V, PIPE_S, EVENT_ID0);
@@ -858,7 +858,7 @@ __aicore_inline__ void BroadcastX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   }
 }
 
-static inline [aicore] void BroadcastY(__ubuf__ uint64_t *pc, uint64_t head) {
+static inline [aicore] void BroadcastY(bcodeptr_t pc, uint64_t head) {
   vBroadcastY op;
   vBroadcastY::Decode(pc, head, op);
   __ubuf__ uint8_t *xd = (__ubuf__ uint8_t*)(op.xd);
@@ -869,7 +869,7 @@ static inline [aicore] void BroadcastY(__ubuf__ uint64_t *pc, uint64_t head) {
   }
 }
 
-__aicore_inline__ void ReduceSumX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vReduceX op;
   vReduceX::Decode(pc, head, op);
   if (IsLastTile(tile)) {
@@ -925,7 +925,7 @@ __aicore_inline__ void ReduceSumX(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   }
 }
 
-__aicore_inline__ void ReduceSumY(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vReduceY op;
   vReduceY::Decode(pc, head, op);
   __ubuf__ float *xn = (__ubuf__ float*)(op.xn);
@@ -975,8 +975,8 @@ __aicore_inline__ void ReduceSumY(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
 }
 
 template <typename T>
-__aicore_inline__ void Select(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vSelect *op = (__ubuf__ vSelect *)pc;
+__aicore_inline__ void Select(bcodeptr_t pc, uint64_t head) {
+  __ubuf__ vSelect *__restrict__ op = (__ubuf__ vSelect *)pc;
   uint64_t data = op->data;
   uint64_t rs = data >> 60;
   uint64_t repeat = (data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
@@ -998,8 +998,8 @@ __aicore_inline__ void Select(__ubuf__ uint64_t *pc, uint64_t head) {
   }
 }
 
-__aicore_inline__ void Select_Int(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vSelect *op = (__ubuf__ vSelect *)pc;
+__aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head) {
+  __ubuf__ vSelect * __restrict__ op = (__ubuf__ vSelect *)pc;
   uint64_t data = op->data;
   uint64_t rs = data >> 60;
   uint64_t repeat = (data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
@@ -1022,14 +1022,14 @@ __aicore_inline__ void Select_Int(__ubuf__ uint64_t *pc, uint64_t head) {
   }
 }
 
-static inline [aicore] void Copy(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vCopy *op = (__ubuf__ vCopy*)pc;
+static inline [aicore] void Copy(bcodeptr_t pc, uint64_t head) {
+  __ubuf__ vCopy * __restrict__ op = (__ubuf__ vCopy*)pc;
   __ubuf__ void *xd = (__ubuf__ void*)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK);
   __ubuf__ void *xn = (__ubuf__ void*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
   copy_ubuf_to_ubuf(xd, xn, op->config);
 }
 
-static inline [aicore] void ClearPad(__ubuf__ uint64_t *pc, uint64_t head) {
+static inline [aicore] void ClearPad(bcodeptr_t pc, uint64_t head) {
   vClearPad op;
   vClearPad::Decode(pc, head, op);
   uint64_t simd_mask = 0xffffffffffffffffllu >> (64 - op.simd_width);
@@ -1079,7 +1079,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank
   }
 }
 
-static inline [aicore] void Load(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vDMA op;
   vDMA::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
@@ -1116,7 +1116,7 @@ static inline[aicore] void SliceMove2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *sr
   }
 }
 
-static inline[aicore] void SliceLoad(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile, uint64_t type_size) {
+static inline[aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile, uint64_t type_size) {
   vSliceLoad op;
   vSliceLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
@@ -1159,7 +1159,7 @@ static inline[aicore] void SliceLoad(__ubuf__ uint64_t *pc, uint64_t head, uint6
 
 #ifdef AICORE_ARCH_C220
 template <typename T>
-static inline[aicore] void RemovePad(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline[aicore] void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vRemovePad op;
   vRemovePad::Decode(pc, head, op);
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
@@ -1173,7 +1173,7 @@ static inline[aicore] void RemovePad(__ubuf__ uint64_t *pc, uint64_t head, uint6
 }
 #endif
 
-static inline [aicore] void Store(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vDMA op;
   vDMA::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
@@ -1182,7 +1182,7 @@ static inline [aicore] void Store(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   copy_ubuf_to_gm(gm, (__ubuf__ void*)op.xn, 0, 1, len_burst, 0, 0);
 }
 
-static inline [aicore] void Load2(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Load2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vLoad op;
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
@@ -1203,8 +1203,8 @@ static inline [aicore] void Load2(__ubuf__ uint64_t *pc, uint64_t head, uint64_t
   }
 }
 
-static inline [aicore] void Store2(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
-  __ubuf__ vStore *op = (__ubuf__ vStore*)pc;
+static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  __ubuf__ vStore * __restrict__ op = (__ubuf__ vStore*)pc;
   uint64_t config = op->config;
   uint64_t iter_body = config & V_X_MASK;
   __ubuf__ uint8_t *src = (__ubuf__ uint8_t*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
@@ -1270,7 +1270,7 @@ static inline [aicore] void Store2(__ubuf__ uint64_t *pc, uint64_t head, uint64_
 #endif
 }
 
-static inline [aicore] void StoreAtomic(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreAtomic op;
   vStoreAtomic::Decode(pc, head, op);
   set_atomic_f32();
@@ -1302,8 +1302,8 @@ static inline [aicore] void StoreAtomic(__ubuf__ uint64_t *pc, uint64_t head, ui
   set_atomic_none();
 }
 
-__aicore_inline__ void StoreStatus(__ubuf__ uint64_t *pc, uint64_t head) {
-  __ubuf__ vStoreStatus *op = (__ubuf__ vStoreStatus *)pc;
+__aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
+  __ubuf__ vStoreStatus * __restrict__ op = (__ubuf__ vStoreStatus *)pc;
   __ubuf__ uint32_t *x = (__ubuf__ uint32_t *)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
   set_flag(PIPE_V, PIPE_S, EVENT_ID0);
   wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
@@ -1314,7 +1314,7 @@ __aicore_inline__ void StoreStatus(__ubuf__ uint64_t *pc, uint64_t head) {
 
 #define DISPATCH(op, func)  case op: do { func; } while (0); break
 
-static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
     DISPATCH(V_COPY, Copy(pc, head));
     DISPATCH(V_BROADCAST_X, BroadcastX<float>(pc, head, tile));
@@ -1413,7 +1413,7 @@ static inline [aicore] void Dispatch_SIMD(__ubuf__ uint64_t *pc, uint64_t head, 
   }
 }
 
-static inline [aicore] void Dispatch_LoadStore(__ubuf__ uint64_t *pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Dispatch_LoadStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
     DISPATCH(V_LOAD, Load(pc, head, tile));
     DISPATCH(V_STORE, Store(pc, head, tile));
@@ -1488,7 +1488,7 @@ extern "C"  __global__ [aicore] void vmain(uint64_t config) {
   pipe_barrier(PIPE_ALL);
   for (uint64_t tile = tile_start; tile <= tile_end; ++tile) {
     set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
-    __ubuf__ uint64_t *pc = PC_BASE;
+    bcodeptr_t pc = PC_BASE;
     for (uint64_t insn_idx = 0; insn_idx < insn_num; ++insn_idx) {
       uint64_t head = *pc;
       if (head & (0x1ul << V_HEAD_IS_SIMD_OFFSET)) {

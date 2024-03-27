@@ -1020,6 +1020,7 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
   int back_wait_idx = INT_MAX;
   for (auto op : objects) {
     op->index_ = op_index++;
+    op->flags_ = 0;
     auto type = op->GetObjectType();
     if (type == kReshape) {
       slow_build_path = true;

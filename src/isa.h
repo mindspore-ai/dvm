@@ -42,7 +42,6 @@ enum vLoadInsnID {
   V_LOAD_2,
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
-  V_SLICE_LOAD_U16,
   V_EXIT,
 };
 
@@ -476,6 +475,7 @@ struct vSliceLoad {
   uint64_t slice_m;
   uint64_t pad_size;
   uint64_t slice_k;
+  uint64_t type_size;
 
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceLoad &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
@@ -487,7 +487,8 @@ struct vSliceLoad {
     op.slice_n = (data >> 32) & 0xfffful;
     op.slice_m = (data >> 48) & 0xfffful;
     data = pc[3];
-    op.pad_size = data & 0xfffffffful;
+    op.type_size = data & 0xfffful;
+    op.pad_size = (data >> 32) & 0xfffful;
     op.slice_k = (data >> 48) & 0xfffful;
   }
 
@@ -496,7 +497,7 @@ struct vSliceLoad {
     pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_m << 48 | op.slice_n << 32 | op.src_m << 16 | op.src_n;
-    pc[3] = op.slice_k << 48 | op.pad_size;
+    pc[3] = op.slice_k << 48 | op.pad_size << 32 | op.type_size;
     return size;
   }
 };

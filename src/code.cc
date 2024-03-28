@@ -101,6 +101,8 @@ void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("body_size", op.pad_size, oss);
   oss << ", ";
   DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("type_size", op.type_size, oss);
 }
 
 void DumpExit(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -333,7 +335,6 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_LOAD_2, &DumpLoad2},
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
-  {V_SLICE_LOAD_U16, &DumpSliceLoad},
   {V_EXIT, &DumpExit},
 };
 

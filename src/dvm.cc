@@ -396,6 +396,7 @@ int Kernel::Launch(void* stream) {
       }
     }
   }
+  //auto ret = VKernelHolder::Instance().Launch(stub_func, 1, code->data_, code->data_size_, nullptr, stream);
   auto ret = VKernelHolder::Instance().Launch(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
   return ret;
 }

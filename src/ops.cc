@@ -275,9 +275,9 @@ int NDSliceLoad::Emit(Code &code) {
     op.src_n = src_ref_->data[1];
     op.src_m = src_ref_->data[2];
   }
+  op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSliceLoad::RELOC_OFFSET;
-  return vSliceLoad::Encode(
-    insn_, ITEM_SIZE[type_id_] == sizeof(uint16_t) ? vLoadInsnID::V_SLICE_LOAD_U16 : vLoadInsnID::V_SLICE_LOAD, op);
+  return vSliceLoad::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, op);
 }
 
 void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {

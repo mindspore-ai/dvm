@@ -80,17 +80,16 @@ class KernelPy {
     std::vector<int64_t> shape;
   };
 
-  void *ToDev(void *host, size_t size, bool need_malloc = false);
-  void FromDev(void* host, size_t size);
-
  protected:
+  void *ToDev(void *host, size_t size);
+
   CodeBase* GetCode();
   bool codegen_{false};
   Kernel kernel_;
   std::vector<StoreInfo> stores_;
   std::vector<std::vector<int64_t>> shape_vec_;
   std::vector<ShapeRef*> shape_;
-  std::unordered_map<void*, void*> host_dev_map_;
+  std::vector<void*> dev_mem_;
   int dev_id_{0};
 };
 }

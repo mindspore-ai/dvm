@@ -120,8 +120,8 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
 }
 
 KernelPy::~KernelPy() {
-  for (auto it = host_dev_map_.begin(); it != host_dev_map_.end(); ++it) {
-    ASCEND_CALL(aclrtFree(it->second));
+  for (auto dev : dev_mem_) {
+    ASCEND_CALL(aclrtFree(dev));
   }
 #ifdef VK_SIM_MODEL
   aclrtResetDevice(dev_id_);
@@ -224,7 +224,7 @@ py::object KernelPy::Copy(const py::object &input) {
 py::object KernelPy::Load(const py::object &array) {
   auto input = py::array(array);
   py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size, true);
+  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
   std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
   for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
     shape_vec[i] = buf.shape[i];
@@ -237,7 +237,7 @@ py::object KernelPy::Load(const py::object &array) {
 py::object KernelPy::SliceLoad(const py::object &array, const py::object &start, const py::object &size) {
   auto input = py::array(array);
   py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size, true);
+  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
   std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
   for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
     shape_vec[i] = buf.shape[i];
@@ -258,7 +258,7 @@ py::object KernelPy::SliceLoad(const py::object &array, const py::object &start,
 py::object KernelPy::StridedSliceLoad(const py::object &array, const py::object &start, const py::object &end, const py::object &step) {
   auto input = py::array(array);
   py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size, true);
+  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
   std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
   for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
     shape_vec[i] = buf.shape[i];
@@ -291,7 +291,7 @@ py::object KernelPy::Store(const py::object &obj) {
   }
   store.host = std::malloc(size);
   std::memset(store.host, 0, size);
-  store.dev = ToDev(store.host, size, true);
+  store.dev = ToDev(store.host, size);
   auto op = kernel_.Store(reinterpret_cast<void *>(store.dev), in_obj);
   store.obj = op;
 
@@ -326,23 +326,12 @@ void KernelPy::Tile(int start, int end, int64_t num) {
   static_cast<VKernelBase*>(kernel_.GetImpl())->SetTile(start, end, num);
 }
 
-void *KernelPy::ToDev(void *host, size_t size, bool need_malloc) {
+void *KernelPy::ToDev(void *host, size_t size) {
   void *dev = nullptr;
-  auto it = host_dev_map_.find(host);
-  if (need_malloc || it == host_dev_map_.end()) {
-    ASCEND_CALL(aclrtMalloc(&dev, size, ACL_MEM_MALLOC_NORMAL_ONLY));
-    host_dev_map_[host] = dev;
-  } else {
-    dev = it->second;
-  }
+  ASCEND_CALL(aclrtMalloc(&dev, size, ACL_MEM_MALLOC_NORMAL_ONLY));
   ASCEND_CALL(aclrtMemcpy(dev, size, host, size, ACL_MEMCPY_HOST_TO_DEVICE));
+  dev_mem_.push_back(dev);
   return dev;
-}
-
-void KernelPy::FromDev(void* host, size_t size) {
-  auto it = host_dev_map_.find(host);
-  ASSERT(it != host_dev_map_.end());
-  ASCEND_CALL(aclrtMemcpy(host, size, it->second, size, ACL_MEMCPY_DEVICE_TO_HOST));
 }
 
 void KernelPy::Optimize() {
@@ -381,7 +370,7 @@ void KernelPy::Run() {
     for (size_t i = 0; i < s.shape.size(); ++i) {
       size *= s.shape[i];
     }
-    FromDev(s.host, size);
+    ASCEND_CALL(aclrtMemcpy(s.host, size, s.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
   }
 }
 
@@ -406,7 +395,7 @@ py::object KernelPy::Perf() {
       for (size_t i = 0; i < s.shape.size(); ++i) {
         size *= s.shape[i];
       }
-      ToDev(s.host, size);
+      ASCEND_CALL(aclrtMemcpy(s.dev, size, s.host, size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
     ASCEND_CALL(aclrtRecordEvent(start, nullptr));
     ASCEND_CALL(kernel_.Launch(nullptr));

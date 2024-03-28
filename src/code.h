@@ -99,7 +99,6 @@ struct CodeBase {
 
 struct Code : public CodeBase {
   void Reset() {
-    insn_num_ = 0;
     simd_width_ = 0;
     tile_num_ = 0;
     atomic_clean_.clear();
@@ -107,7 +106,7 @@ struct Code : public CodeBase {
 
   void FillHead() {
     uint64_t *ptr = reinterpret_cast<uint64_t*>(data_);
-    *ptr = (tile_num_ - 1) << 40 | simd_width_ << 32 | insn_num_ << 16 | (data_size_ - sizeof(uint64_t) + 31) / 32;
+    *ptr = (tile_num_ - 1) << 40 | simd_width_ << 32 | (data_size_ - sizeof(uint64_t) + 31) / 32;
   }
   uint64_t HeadSize() const { return sizeof(uint64_t); }
 
@@ -120,7 +119,6 @@ struct Code : public CodeBase {
     while (block_dim_ > 1 && ((tile_num_ - 1) / block_dim_ + 1 < core_tile_least)) block_dim_--; // TODO: optimize me
   }
   void DisAssemble(std::ostringstream &oss) override;
-  uint64_t insn_num_{0};
   uint64_t simd_width_{0};
   uint64_t tile_num_{0};
 };

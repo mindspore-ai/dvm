@@ -103,6 +103,10 @@ void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("pad_size", op.pad_size, oss);
 }
 
+void DumpExit(const DumpInfo &dump_info, std::ostringstream &oss) {
+  oss << "exit 0";
+}
+
 void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vDMA op;
   vDMA::Decode(dump_info.insn, *dump_info.insn, op);
@@ -324,16 +328,20 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 
-std::unordered_map<uint64_t, DumpFunc *> mem_dump_func_table = {
+std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_LOAD, &DumpLoad},
-  {V_STORE, &DumpStore},
   {V_LOAD_2, &DumpLoad2},
-  {V_STORE_2, &DumpStore2},
-  {V_STORE_ATOMIC, &DumpStoreAtomic},
-  {V_STORE_STATUS, &DumpStoreStatus},
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
   {V_SLICE_LOAD_U16, &DumpSliceLoad},
+  {V_EXIT, &DumpExit},
+};
+
+std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
+  {V_STORE, &DumpStore},
+  {V_STORE_2, &DumpStore2},
+  {V_STORE_ATOMIC, &DumpStoreAtomic},
+  {V_STORE_STATUS, &DumpStoreStatus},
 };
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
@@ -422,7 +430,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
   uint64_t ext = (head >> V_HEAD_EXT_OFFSET) & V_HEAD_EXT_MASK;
   uint64_t offset = (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
   DumpInfo info{insn, ext, simd_width};
-  if (head & (1ul << V_HEAD_IS_SIMD_OFFSET)) {
+  if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
     if (op_dump_info_table.find(id) != op_dump_info_table.end()) {
       auto [dump_func, name, dtype_str] = op_dump_info_table[id];
       oss << name << "." << dtype_str << ".";
@@ -431,14 +439,21 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
       oss << "Unknown insn: ";
       DumpVal("id", id, oss);
     }
-  } else {
-    if (mem_dump_func_table.find(id) != mem_dump_func_table.end()) {
-      mem_dump_func_table[id](info, oss);
+  } else if (head & (1ul << V_HEAD_LOAD_FLAG_OFFSET)) {
+    if (load_dump_func_table.find(id) != load_dump_func_table.end()) {
+      load_dump_func_table[id](info, oss);
     } else {
       oss << "Unknown insn: ";
       DumpVal("id", id, oss);
     }
-  }  // end else
+  } else {
+    if (store_dump_func_table.find(id) != store_dump_func_table.end()) {
+      store_dump_func_table[id](info, oss);
+    } else {
+      oss << "Unknown insn: ";
+      DumpVal("id", id, oss);
+    }
+  }
   return offset;
 }
 
@@ -459,7 +474,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
   auto find_wait = [&insn_dump](bool is_simd, uint64_t event, int from_idx) -> int {
     for (size_t i = from_idx; i < insn_dump.size(); ++i){
       auto head = *(insn_dump[i].first);
-      if ((is_simd != bool(head & (1ul << V_HEAD_IS_SIMD_OFFSET))) && 
+      if (is_simd != bool(head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) &&
           (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) && 
           (((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) == event))
         return i;
@@ -470,9 +485,18 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
   for (size_t i = 0; i < insn_dump.size(); ++i) {
     auto &dump = insn_dump[i];
     auto head = *(dump.first);
-    bool is_simd = bool(head & (1ul << V_HEAD_IS_SIMD_OFFSET));
+    bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
+    bool simd_flag = bool(head & (1ul << V_HEAD_SIMD_FLAG_OFFSET));
     oss << indent << i << ": " << dump.second << std::endl;
-    oss << indent << "  { simd(" << is_simd << ")";
+    if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) == vLoadInsnID::V_EXIT) break;
+    oss << indent << "  {";
+    if (load_flag) {
+      oss << "load";
+    } else if (simd_flag) {
+      oss << "simd";
+    } else {
+      oss << "store";
+    }
     if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
       auto it = wait_map.find(i);
       int from = it != wait_map.end() ? it->second : -1;
@@ -486,7 +510,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
     }
     if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
       auto event = (head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK;
-      auto wait_idx = find_wait(is_simd, event, i + 1);
+      auto wait_idx = find_wait(simd_flag, event, i + 1);
       if (wait_idx > 0) wait_map[wait_idx] = i;
       oss << ", set(" << wait_idx << ", event_"<< event << ")";
     }
@@ -522,7 +546,7 @@ DeviceInfo::DeviceInfo() {
 
 void Code::DisAssemble(std::ostringstream &oss) {
   oss << "vmain(tile_num=" << tile_num_ << ", block_dim=" << block_dim_ <<
-      ", simd_width="<<simd_width_ << ", insn_num=" << insn_num_ << ") {" << std::endl;
+      ", simd_width="<<simd_width_ << ") {" << std::endl;
   DasBody(oss, data_ + HeadSize(), data_size_ - HeadSize(), simd_width_, " "); 
   oss << "}";
 }
@@ -544,13 +568,13 @@ void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
   int summary_idx = 1;
   for (size_t k = 0; k < children_.size(); ++k) {
     Code *code = children_[k];
-    ASSERT(code->tile_num_ <= 0xffffful && code->insn_num_ <= 0x3ful);
+    ASSERT(code->tile_num_ <= 0xffffful);
     // config
     config |= (children_[k]->simd_width_ - 1) << (8 * k);
     // summary
     uint64_t lenburst = (code->data_size_ - sizeof(uint64_t) + 31) / 32;
     uint64_t body_tile_flag = 1ul << 39;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | k << 46 | code->insn_num_ << 40 | body_tile_flag;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | k << 46 | body_tile_flag;
     uint64_t tile_per_block = (code->tile_num_ - 1) / code->block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
@@ -606,7 +630,7 @@ void CodeP::DisAssemble(std::ostringstream &oss) {
   for (uint64_t i = 0; i < children_.size(); ++i) {
     auto code = children_[i];
     auto &summary = summays[i];
-    oss << " kernel_" << i << "(tile_num=" << code->tile_num_ << ", simd_width="<<code->simd_width_ << ", insn_num=" << code->insn_num_ <<
+    oss << " kernel_" << i << "(tile_num=" << code->tile_num_ << ", simd_width="<<code->simd_width_ <<
           ", block_range=[" << summary.block_start << ", " << summary.block_end << "], block_step=" << summary.block_step <<
           ", block_tail=" << summary.block_tail << ") {" << std::endl;
     DasBody(oss, summary.bcode, code->data_size_ - code->HeadSize(), code->simd_width_, "  ");

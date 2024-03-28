@@ -137,6 +137,7 @@ class CodeGenHelper {
           break;
       } // end switch
     } // end for op
+    *code_ptr++ = vMakeHead(vLoadInsnID::V_EXIT, 0, 1, V_PIPE_LOAD);
     *(kernel->back_set_->tail_insn_) |= 0x1ul << V_HEAD_BACK_SET_OFFSET;
     *(kernel->back_wait_->insn_) |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET;
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
@@ -792,8 +793,7 @@ std::string& VKernelBase::DumpGraph() {
     }
     oss << "]<" << dtype_names[op->type_id_] << ">";
   };
-  oss << "vgraph(tile_num=" << code_.tile_num_ << ", simd_width="<<code_.simd_width_ << ", insn_num="
-      << code_.insn_num_ << ") {" << std::endl;
+  oss << "vgraph(tile_num=" << code_.tile_num_ << ", simd_width="<<code_.simd_width_ << ") {" << std::endl;
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
     oss << "  ";

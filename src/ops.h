@@ -251,7 +251,7 @@ class UnaryOp : public NDObject {
   int Emit(Code &code) override;
 
  protected:
-  vOpInsnID id_;
+  vSimdInsnID id_;
 };
 
 class RemovePadOp : public CopyOp {
@@ -308,7 +308,7 @@ class BinaryScalarOp : public NDObject {
   int Emit(Code &code) override;
 
  private:
-  vOpInsnID id_;
+  vSimdInsnID id_;
   T scalar_;
 };
 
@@ -320,7 +320,7 @@ class BinaryOp : public NDObject {
   int Emit(Code &code) override;
 
  protected:
-  vOpInsnID id_;
+  vSimdInsnID id_;
   int cmp_op_;
   std::vector<NDObject*> lhs_stuff_ops_;
   std::vector<NDObject*> rhs_stuff_ops_;

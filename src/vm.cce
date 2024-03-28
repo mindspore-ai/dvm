@@ -1043,14 +1043,14 @@ static inline [aicore] void ClearPad(bcodeptr_t pc, uint64_t head) {
   set_vector_mask(0, simd_mask);
 }
 
-__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank, __ubuf__ uint64_t *rounds) {
+__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank, __ubuf__ uint64_t * __restrict__ rounds) {
   if (round_rank == 1) {
     uint64_t lastidx_r1 = rounds[0];
     uint64_t r1 = lastidx_r1 & MASK_32;
     uint64_t lastidx = lastidx_r1 >> 32;
     tile_idx = tile_idx / r1;
     if (tile_idx == lastidx) return -1;
-    *((__ubuf__ uint32_t*)rounds + 1) = tile_idx;
+    *((__ubuf__ uint32_t* __restrict__)rounds + 1) = tile_idx;
     return tile_idx;
   } else if (round_rank == 2) {
     uint64_t r2_r1 = rounds[0];
@@ -1066,7 +1066,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank
     uint64_t lastidx = lastidx_r3 >> 32;
     tile_idx = tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3;
     if (tile_idx == lastidx) return -1;
-    *((__ubuf__ uint32_t*)rounds + 3) = tile_idx;
+    *((__ubuf__ uint32_t* __restrict__)rounds + 3) = tile_idx;
     return tile_idx;
   } else {
     uint64_t r2_r1 = rounds[0];
@@ -1413,26 +1413,9 @@ static inline [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t
   }
 }
 
-static inline [aicore] void Dispatch_LoadStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
-    DISPATCH(V_LOAD, Load(pc, head, tile));
-    DISPATCH(V_STORE, Store(pc, head, tile));
-    DISPATCH(V_LOAD_2, Load2(pc, head, tile));
-    DISPATCH(V_STORE_2, Store2(pc, head, tile));
-    DISPATCH(V_STORE_ATOMIC, StoreAtomic(pc, head, tile));
-    DISPATCH(V_STORE_STATUS, StoreStatus(pc, head));
-    DISPATCH(V_SLICE_LOAD, SliceLoad(pc, head, tile, sizeof(uint32_t)));
-    DISPATCH(V_SLICE_LOAD_U16, SliceLoad(pc, head, tile, sizeof(uint16_t)));
-    DISPATCH(V_LOAD_DUMMY, void(0));
-    default:
-      trap();
-      break;
-  }
-}
-
 extern "C"  __global__ [aicore] void vmain(uint64_t config) {
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
-  uint64_t tile_start, tile_end, insn_num;
+  uint64_t tile_start, tile_end;
   if ((config >> 63) == 0) {
     // config: last_tile(23) << 40 | simd_width(32) | insn_num(16) << 16 | lenburst(16)
     uint64_t len_burst = config & 0xfffful;
@@ -1443,7 +1426,6 @@ extern "C"  __global__ [aicore] void vmain(uint64_t config) {
 #endif
     uint64_t simd_width = (config >> 32) & 0xfful;
     SetVectorMask(simd_width);
-    insn_num = (config >> 16) & 0xfffful;
     uint64_t last_tile = config >> 40;
     uint64_t tile_per_block = (last_tile + block_num) / block_num;
     uint64_t tile_start_idx = tile_per_block * block_idx;
@@ -1477,7 +1459,6 @@ extern "C"  __global__ [aicore] void vmain(uint64_t config) {
     } else {
       set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
     }
-    insn_num = (summary >> 40) & 0x3ful;
     uint64_t start_idx = summary & 0xffffful;
     uint64_t end_idx = ((summary >> 20) & 0x7fffful) + start_idx;
     uint64_t tail_tile = summary & (0x1ul << 39);
@@ -1489,9 +1470,9 @@ extern "C"  __global__ [aicore] void vmain(uint64_t config) {
   for (uint64_t tile = tile_start; tile <= tile_end; ++tile) {
     set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
     bcodeptr_t pc = PC_BASE;
-    for (uint64_t insn_idx = 0; insn_idx < insn_num; ++insn_idx) {
+    while (1) {
       uint64_t head = *pc;
-      if (head & (0x1ul << V_HEAD_IS_SIMD_OFFSET)) {
+      if (head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
         if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
           pipe_barrier(PIPE_V);
         }
@@ -1510,19 +1491,35 @@ extern "C"  __global__ [aicore] void vmain(uint64_t config) {
         if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
           set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         }
-      } else { // LOAD/STORE
-        if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) { // V_PIPE_STORE
+      } else if (head & (0x1ul << V_HEAD_LOAD_FLAG_OFFSET)) {
+        switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
+          DISPATCH(V_LOAD, Load(pc, head, tile));
+          DISPATCH(V_LOAD_2, Load2(pc, head, tile));
+          DISPATCH(V_LOAD_DUMMY, void(0));
+          DISPATCH(V_SLICE_LOAD, SliceLoad(pc, head, tile, sizeof(uint32_t)));
+          DISPATCH(V_SLICE_LOAD_U16, SliceLoad(pc, head, tile, sizeof(uint16_t)));
+          default: goto INSN_END;
+        }
+        if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
+          event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+          set_flag(PIPE_MTE2, PIPE_V, event);
+        }
+      } else {
+        if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
           event_t event = event_t((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           wait_flag(PIPE_V, PIPE_MTE3, event);
         }
-        Dispatch_LoadStore(pc, head, tile);
-        if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) { // V_PIPE_LOAD
-          event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
-          set_flag(PIPE_MTE2, PIPE_V, event);
+        switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
+          DISPATCH(V_STORE, Store(pc, head, tile));
+          DISPATCH(V_STORE_2, Store2(pc, head, tile));
+          DISPATCH(V_STORE_ATOMIC, StoreAtomic(pc, head, tile));
+          DISPATCH(V_STORE_STATUS, StoreStatus(pc, head));
+          default: goto INSN_END;
         }
       }
       pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
     }
+INSN_END:
     wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
   }
   pipe_barrier(PIPE_ALL);

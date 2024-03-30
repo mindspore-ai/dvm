@@ -11,9 +11,12 @@ endif
 CCE_FLGAS_C100 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100 --cce-aicore-arch=dav-c100
 CCE_FLGAS_C220 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-aicore-arch=dav-c220-vec --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
 
+LINK :=
 ifneq ($(sim),)
 LD_FLAGS = -L${ASCEND_PATH}/latest/toolkit/tools/simulator/Ascend$(sim)/lib -lruntime_camodel
 CFLGAS += -DVK_SIM_MODEL
+CCE_FLGAS_C220 += -g
+LINK = ld.lld -Ttext=0 g_vkernel_910b_bin -static -o g_vkernel_910b_bin
 else
 LD_FLAGS = -L${ASCEND_PATH}/latest/lib64 -lascendcl
 endif
@@ -38,6 +41,7 @@ ${OBJ}: %.o: %.cc $(HEADERS)
 vm.o: vm.cce isa.h
 	ccec -c -O2 $(CCE_FLGAS_C100) src/vm.cce -o g_vkernel_bin
 	ccec -c -O2 $(CCE_FLGAS_C220) src/vm.cce -o g_vkernel_910b_bin
+	${LINK}
 	echo "extern const" > vm.cc
 	xxd -i g_vkernel_bin >> vm.cc
 	echo "extern const" >> vm.cc

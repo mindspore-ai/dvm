@@ -1195,12 +1195,16 @@ static inline [aicore] void Load2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + op.tile_stride * tile_idx;
   __ubuf__ uint8_t* dst = (__ubuf__ uint8_t*)(op.xn);
   uint64_t truck_num = IsLastTile(tile) ? op.tail_iter : op.body_iter;
+#if AICORE_ARCH_C220
+  copy_gm_to_ubuf_align_b8(dst, src, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
+#else
   uint64_t len_burst = (op.iter_size + 31) >> 5;
   for (uint64_t i = 0; i < truck_num; ++i) {
     copy_gm_to_ubuf(dst, src, 0, 1, len_burst, 0, 0);
     dst += op.iter_size + op.pad_size;
     src += op.iter_size;
   }
+#endif
 }
 
 static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) {

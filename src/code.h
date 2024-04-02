@@ -72,6 +72,7 @@ const uint64_t SIMD_REPEAT_SIZE = 256;
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
 
 struct CodeBase {
+  enum { kTargetVec = 0, kTargetCube, kTargetMix };
   CodeBase() = default;
   CodeBase(const CodeBase &obj) = delete;
   CodeBase &operator=(const CodeBase &) = delete;
@@ -94,7 +95,8 @@ struct CodeBase {
   unsigned char *data_{nullptr};
   size_t data_size_{0};
   uint64_t block_dim_{0};
-  std::vector<CodeBase*> atomic_clean_{nullptr};
+  std::vector<CodeBase*> atomic_clean_;
+  int target_{0};
 };
 
 struct Code : public CodeBase {
@@ -127,6 +129,12 @@ struct CodeP : public CodeBase {
  void LinkAll(std::vector<uint64_t> &offsets);
  void DisAssemble(std::ostringstream &oss) override;
  std::vector<Code*> children_;
+};
+
+struct MixCode : public CodeBase {
+  void DisAssemble(std::ostringstream &oss) override {
+    oss << "Mix kernel disassemble..." <<std::endl;
+  }
 };
 
 } // namespace dvm 

@@ -39,6 +39,7 @@ enum ObjectType {
   kSelect,
   kElementAny,
   kRemovePad,
+  kCubeOp,
   kObjectBulk
 };
 

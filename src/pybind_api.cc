@@ -110,7 +110,14 @@ static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", Binar
                                                                    {"LogicalOr", BinaryOpType::kLogicalOr}};
 
 KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
-  KernelType type = type_str != "parallel" ? kStaticShape : kStaticParallel;
+  KernelType type;
+  if (type_str == "parallel") {
+    type = kStaticParallel;
+  } else if (type_str == "mix") {
+    type = kStaticMix;
+  } else {
+    type = kStaticShape;
+  }
   uint32_t dev_count = 0;
   ASCEND_CALL(aclrtGetDeviceCount(&dev_count));
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
@@ -318,6 +325,13 @@ py::object KernelPy::ElementAny(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
+py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b) {
+  auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
+  auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.MatMul(lhs_obj, rhs_obj, trans_a, trans_b);
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
 void KernelPy::ParallelNext() {
   kernel_.ParallelNext();
 }
@@ -487,6 +501,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("reshape", &KernelPy::Reshape, "emit reshape op")
       .def("reduce", &KernelPy::Reduce, "emit reduce op")
       .def("copy", &KernelPy::Copy, "emit copy op")
+      .def("matmul", &KernelPy::MatMul, "emit matmul op")
       .def("p_next", &KernelPy::ParallelNext, "parallel next")
       .def("tile", &KernelPy::Tile, "set tiling")
       .def("optimize", &KernelPy::Optimize, "optimize code")

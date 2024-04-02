@@ -1160,4 +1160,42 @@ std::string& VKernelP::DumpGraph() {
   dump_str_ = oss.str();
   return dump_str_;
 }
+
+MixKernel::~MixKernel() {
+  if (pre_fusion_) delete pre_fusion_;
+  if (post_fusion_) delete post_fusion_;
+  if (cube_op_) delete cube_op_;
+}
+
+void MixKernel::Append(NDObject *obj) {
+  if (obj->obj_id_ == kCubeOp) {
+    EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
+    cube_op_ = static_cast<CubeOp*>(obj);
+    return;
+  }
+  if (cube_op_ == nullptr) {
+    if (pre_fusion_ == nullptr) {
+      pre_fusion_ = new VKernelS();
+    }
+    pre_fusion_->Append(obj);
+  } else {
+    if (post_fusion_ == nullptr) {
+      post_fusion_ = new VKernelS();
+    }
+    post_fusion_->Append(obj);
+  }
+}
+
+void MixKernel::CodeGen() {
+  // only for testing
+  code_.Alloc(sizeof(uint64_t) + sizeof(vCubeOp));
+  code_.target_ = CodeBase::kTargetCube;
+  code_.block_dim_ = 4;
+  code_.data_size_ = sizeof(uint64_t) + sizeof(vCubeOp);
+}
+
+std::string& MixKernel::DumpGraph() {
+  dump_str_ = "matmul graph";
+  return dump_str_;
+}
 } // namespace dvm

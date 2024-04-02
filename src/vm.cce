@@ -1417,7 +1417,7 @@ static __noinline__ [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, ui
   }
 }
 
-extern "C"  __global__ [aicore] void vmain(uint64_t config) {
+extern "C"  __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
   uint64_t tile_start, tile_end;
   if ((config >> 63) == 0) {

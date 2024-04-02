@@ -190,5 +190,32 @@ class VKernelP : public VKernel {
   std::vector<VKernelS*> children_;
   CodeP code_;
 };
+
+class CubeOp : public NDObject {
+ public:
+  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
+   : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {}
+  int Emit(Code &code) override { return 0; }
+
+ protected:
+  bool trans_a_{false};
+  bool trans_b_{false};
+};
+
+class MixKernel : public VKernel {
+ public:
+  MixKernel() : VKernel(&code_, KernelType::kStaticMix) {}
+  ~MixKernel() override;
+
+  void Append(NDObject *obj) override;
+  void CodeGen() override;
+  std::string& DumpGraph() override;
+
+ protected:
+  MixCode code_;
+  VKernel *pre_fusion_{nullptr};
+  VKernel *post_fusion_{nullptr};
+  CubeOp *cube_op_{nullptr};
+};
 } // namespace dvm
 #endif // _DVM_KERNEL_H_

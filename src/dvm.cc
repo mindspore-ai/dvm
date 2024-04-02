@@ -58,7 +58,6 @@ extern unsigned int  g_vkernel_910b_bin_len;
 
 namespace dvm {
 namespace {
-const char FUNC_NAME[] = "vmain";
 using namespace dvm;
 
 class VKernelHolder {
@@ -70,9 +69,21 @@ class VKernelHolder {
     static VKernelHolder instance;
     return instance;
   }
-  void *StubFunc() { return reinterpret_cast<void*>(this); }
 
-  rtError_t (*Launch)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
+  int Launch(CodeBase* code, void* stream) {
+    if (!code->atomic_clean_.empty()) {
+      for (auto a : code->atomic_clean_) {
+        uint8_t* a_stub = reinterpret_cast<uint8_t*>(this) + a->target_;
+        auto ret = launch_func_(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
+        if (ret != RT_ERROR_NONE) return ret;
+      }
+    }
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + code->target_;
+    return launch_func_(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
+  }
+
+ private:
+  rtError_t (*launch_func_)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
                               rtSmDesc_t *smDesc, rtStream_t stm);
 };
 
@@ -80,7 +91,7 @@ VKernelHolder::VKernelHolder() {
 #ifdef VK_SIM_MODEL
   auto rt_binary_register = rtDevBinaryRegister;
   auto rt_function_register = rtFunctionRegister;
-  Launch = rtKernelLaunch;
+  launch_func_ = rtKernelLaunch;
 #else
   void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
   EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
@@ -91,33 +102,46 @@ VKernelHolder::VKernelHolder() {
     reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
       dlsym(handle, "rtFunctionRegister"));
   EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
-  Launch = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
+  launch_func_ = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
     dlsym(handle, "rtKernelLaunch"));
-  EXCEPTION_IF(Launch == nullptr, "load rt_kernel_launch symbol failed");
+  EXCEPTION_IF(launch_func_ == nullptr, "load rt_kernel_launch symbol failed");
 #endif
-
+  rtError_t err;
   void *module = nullptr;
   rtDevBinary_t dev_bin;
-  if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-    dev_bin.data = g_vkernel_910b_bin;
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-    dev_bin.length = g_vkernel_910b_bin_len;
-  } else {
+  dev_bin.version = 0;
+  if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
     dev_bin.data = g_vkernel_bin;
     dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
     dev_bin.length = g_vkernel_bin_len;
-  }
-  dev_bin.version = 0;
-  auto stub_func = reinterpret_cast<void*>(this);
-  rtError_t err = rt_binary_register(&dev_bin, &module);
-  if (err != RT_ERROR_NONE) {
-    std::cerr << "reg binary failed: " << static_cast<int>(err) << std::endl;
-    exit(0);
-  }
-  err = rt_function_register(module, stub_func, FUNC_NAME, FUNC_NAME, 0);
-  if (err != RT_ERROR_NONE) {
-    std::cerr << "reg function failed: " << static_cast<int>(err) << std::endl;
-    exit(0);
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg binary failed");
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
+    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg function failed");
+  } else {
+    dev_bin.data = g_vkernel_910b_bin;
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
+    dev_bin.length = g_vkernel_910b_bin_len;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
+    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
+
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
+    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetCube;
+    err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
+
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
+    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetMix;
+    err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
   }
 }
 
@@ -167,6 +191,8 @@ void Kernel::Reset(KernelType type) {
     kernel_ = new VKernelD();
   } else if (type == kStaticParallel) {
     kernel_ = new VKernelP();
+  } else if (type == kStaticMix) {
+    kernel_ = new MixKernel();
   } else {
     ASSERT(0);
   }
@@ -350,6 +376,12 @@ NDObject* Kernel::Store(void *addr, NDObject* input) {
   return obj;
 }
 
+NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b) {
+  auto obj = new CubeOp(lhs, rhs, trans_a, trans_b);
+  kernel_->Append(obj);
+  return obj;
+}
+
 void Kernel::Reserve(size_t size) {
   auto ktype = kernel_->KType();
   if (ktype == KernelType::kStaticParallel) {
@@ -383,22 +415,7 @@ uint64_t Kernel::CodeGen() {
 }
 
 int Kernel::Launch(void* stream) {
-  CodeBase* code = kernel_->GetCode();
-  if (code->data_ == nullptr) {
-    return -1;
-  }
-  auto stub_func = VKernelHolder::Instance().StubFunc();
-  if (!code->atomic_clean_.empty()) {
-    for (auto atomic: code->atomic_clean_) {
-      auto ret = VKernelHolder::Instance().Launch(stub_func, atomic->block_dim_, atomic->data_, atomic->data_size_, nullptr, stream);
-      if (ret != RT_ERROR_NONE) {
-        return ret;
-      }
-    }
-  }
-  //auto ret = VKernelHolder::Instance().Launch(stub_func, 1, code->data_, code->data_size_, nullptr, stream);
-  auto ret = VKernelHolder::Instance().Launch(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
-  return ret;
+  return VKernelHolder::Instance().Launch(kernel_->GetCode(), stream);
 }
 
 int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void* stream) {
@@ -410,7 +427,7 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
     (*stores++)->Reloc(*outputs++);
   }
-  return Launch(stream);
+  return VKernelHolder::Instance().Launch(kernel_->GetCode(), stream);
 }
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {

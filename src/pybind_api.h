@@ -60,6 +60,7 @@ class KernelPy {
   py::object Select(const py::object &cond, const py::object &lhs, const py::object &rhs);
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
+  py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b);
   void ParallelNext();
 
   void Tile(int start, int end, int64_t num);

@@ -155,7 +155,7 @@ int NDLoad::Emit(Code &code) {
     switch (round_tile_.size()) {
       case 1: {
         auto r1 = round_tile_[0];
-        rounds[0] = 0xfffffffful << 32 | r1;
+        rounds[0] = r1;
         break;
       }
       case 2: {
@@ -169,7 +169,7 @@ int NDLoad::Emit(Code &code) {
         auto r2 = round_tile_[1];
         auto r3 = round_tile_[2];
         rounds[0] = r2 << 32 | r1;
-        rounds[1] = 0xfffffffful << 32 | r3;
+        rounds[1] = r3;
         break;
       }
       case 4: {

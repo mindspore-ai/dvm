@@ -58,7 +58,10 @@ class CodeGenHelper {
     auto code_reserved = kernel->ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
     uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
-    static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize() + code_reserved;
+    static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize();
+    if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
+      static_xbuf_ += code_reserved;
+    }
     for (auto op : kernel->static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
@@ -707,7 +710,10 @@ VKernelBase::~VKernelBase() {
 
 void VKernelBase::DoCodeGen(uint64_t core_limit) {
   int peak_live = Analyze();
-  int64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize() - ReserveCodeSize();
+  int64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize();
+  if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
+      free_mem -= ReserveCodeSize();
+  }
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);
   // tiling
   ShapeTiling tiling(this, root_dom_, core_limit);
@@ -841,7 +847,7 @@ void VKernelBase::CollectMetrics(Metrics &metrics) const {
     }
   }
   NDObject *dom = root_dom_.DomObject();
-  metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(DeviceInfo::Instance().LocalMemSize() - ReserveCodeSize());
+  metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(DeviceInfo::Instance().LocalMemSize());
   uint64_t tile_per_block = CeilDiv(code_.tile_num_, code_.block_dim_);
   metrics.core_usage = float(code_.tile_num_) / float(tile_per_block  * DeviceInfo::Instance().CoreNum());
   uint64_t tiled_shape_size = 1;

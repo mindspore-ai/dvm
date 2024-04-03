@@ -1,6 +1,9 @@
 import numpy as np
+import dvm
+import pytest
 from dvm.tester import Tester
 
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason = "matmul not support 910a")
 def test_matmul():
     t = Tester("mix")
     g0 = np.full([32, 128], 0.1, np.float32)

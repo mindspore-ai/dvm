@@ -22,7 +22,12 @@
 #ifdef _CCE_KERNEL_
 #define INSN_ATTR __attribute__((device_immutable))
 #define __aicore_inline__ static inline [aicore]
-#define bcodeptr_t __ubuf__ uint64_t* __restrict__
+#ifdef AICORE_ARCH_C100
+#define __bcode__ __ubuf__
+#else
+#define __bcode__ __gm__
+#endif
+#define bcodeptr_t __bcode__ uint64_t* __restrict__
 #else
 #define __gm__
 #define INSN_ATTR

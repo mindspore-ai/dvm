@@ -194,7 +194,7 @@ class CodeGenHelper {
       obj->xbuf_ = obj->rhs_->xbuf_;
       return nullptr;
     }
-    if (!free_xbuf_.empty() && free_xbuf_.front().second->pipe_idx < vector_vector_sync) {
+    if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
       obj->xbuf_ = free_xbuf_.front().first->xbuf_;
       free_xbuf_.pop();
@@ -214,9 +214,9 @@ class CodeGenHelper {
   }
 
   inline void SimdBarrier(NDObject *from, NDObject *to) {
-    if (from->pipe_idx >= vector_vector_sync) {
+    if (from->index_ >= vector_vector_sync) {
       *(to->insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-      vector_vector_sync = to->pipe_idx;
+      vector_vector_sync = to->index_;
     }
   }
 
@@ -225,7 +225,7 @@ class CodeGenHelper {
       SimdBarrier(from, to);
       return;
     }
-    int from_pipe_idx = from->pipe_idx;
+    int from_pipe_idx = from->index_;
     if (from_pipe_idx <= load_vector_sync) return;
     auto from_insn = from->tail_insn_;
     auto to_insn = to->insn_;
@@ -239,7 +239,7 @@ class CodeGenHelper {
   }
 
   inline void StoreSync(NDObject *from, NDObject *to) {
-    int from_pipe_idx = from->pipe_idx;
+    int from_pipe_idx = from->index_;
     if (from_pipe_idx <= vector_store_sync) return;
     auto from_insn = from->tail_insn_;
     auto to_insn = to->insn_;
@@ -864,7 +864,6 @@ void VKernelBase::CollectMetrics(Metrics &metrics) const {
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
 int VKernelBase::Analyze() {
-  int vector_pipe_idx = objects_.size() - static_ops_.size();
   int op_index = objects_.size();
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
@@ -921,7 +920,6 @@ int VKernelBase::Analyze() {
       }
       OP_KILL(op);
       op->xbuf_ = 0;
-      op->pipe_idx = --vector_pipe_idx;
     }
   }
   ASSERT(back_set_idx > 0);
@@ -1020,8 +1018,6 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
   max_type_ = objects.front()->type_id_;
   min_type_ = objects.front()->type_id_;
   bool slow_build_path = false;
-  int load_pipe_idx = 0;
-  int store_pipe_idx = 0;
   int op_index = 0;
   int back_wait_idx = INT_MAX;
   for (auto op : objects) {
@@ -1040,7 +1036,6 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
     }
     if (op->Pipe() == V_PIPE_LOAD) {
       static_ops_.push_back(op);
-      op->pipe_idx = load_pipe_idx++;
     } else if (op->Pipe() == V_PIPE_STORE) {
       int prod_idx = op->lhs_->index_;
       if (prod_idx < back_wait_idx) {
@@ -1048,7 +1043,6 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
       }
       static_ops_.push_back(op->lhs_);
       op->xbuf_ = -1;
-      op->pipe_idx = store_pipe_idx++;
     }
   }
   ASSERT(back_wait_idx > 0);

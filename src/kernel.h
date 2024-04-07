@@ -78,9 +78,15 @@ class VKernel {
 
   virtual void Append(NDObject *obj) = 0;
   virtual void CodeGen() = 0;
-  CodeBase *GetCode() const { return code_ptr_; }
+  virtual void DumpKernel(std::ostringstream &oss) = 0;
 
-  virtual std::string& DumpGraph() = 0;
+  CodeBase *GetCode() const { return code_ptr_; }
+  std::string& DumpGraph() {
+    std::ostringstream oss;
+    DumpKernel(oss);
+    dump_str_ = oss.str();
+    return dump_str_;
+  }
   std::string& DisAssemble();
   KernelType KType() const { return ktype_; }
 
@@ -102,7 +108,7 @@ class VKernelBase : public VKernel {
   VKernelBase(KernelType ktype) : VKernel(&code_, ktype) {}
   virtual ~VKernelBase();
 
-  std::string& DumpGraph() override;
+  void DumpKernel(std::ostringstream &oss) override;
   void CollectMetrics(Metrics &metrics) const;
 
   void Reserve(size_t size) {
@@ -184,7 +190,7 @@ class VKernelP : public VKernel {
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 
   void CodeGen() override;
-  std::string& DumpGraph() override;
+  void DumpKernel(std::ostringstream &oss) override;
 
  protected:
   std::vector<VKernelS*> children_;
@@ -193,13 +199,18 @@ class VKernelP : public VKernel {
 
 class CubeOp : public NDObject {
  public:
-  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
-   : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {}
+  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   int Emit(Code &code) override { return 0; }
+  void CodeGen(vCubeOp *code);
+
+  NDObject *output_{nullptr};
+  int block_dim_{0};
 
  protected:
   bool trans_a_{false};
   bool trans_b_{false};
+  std::vector<int64_t> shape_;
+  ShapeRef shape_ref_data_;
 };
 
 class MixKernel : public VKernel {
@@ -209,7 +220,7 @@ class MixKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   void CodeGen() override;
-  std::string& DumpGraph() override;
+  void DumpKernel(std::ostringstream &oss) override;
 
  protected:
   MixCode code_;

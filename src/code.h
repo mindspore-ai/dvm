@@ -132,9 +132,7 @@ struct CodeP : public CodeBase {
 };
 
 struct MixCode : public CodeBase {
-  void DisAssemble(std::ostringstream &oss) override {
-    oss << "Mix kernel disassemble..." <<std::endl;
-  }
+  void DisAssemble(std::ostringstream &oss) override;
 };
 
 } // namespace dvm 

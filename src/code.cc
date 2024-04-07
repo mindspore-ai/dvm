@@ -639,4 +639,12 @@ void CodeP::DisAssemble(std::ostringstream &oss) {
   }
   oss << "}";
 }
+
+void MixCode::DisAssemble(std::ostringstream &oss) {
+  vCubeOp *op = reinterpret_cast<vCubeOp*>(data_ + sizeof(uint64_t));
+  oss << "vmain.mix(block_dim=" << block_dim_ << ") {" << std::endl;
+  oss << " [cube] MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
+       " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
+  oss << "}";
+}
 }  // namespace dvm

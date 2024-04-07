@@ -758,7 +758,7 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
   helper.Generate(this);
 }
 
-std::string& VKernelBase::DumpGraph() {
+void VKernelBase::DumpKernel(std::ostringstream &oss) {
   static const char* obj_names[ObjectType::kObjectBulk] = {
     "LoadDummy",
     "Load",
@@ -788,7 +788,6 @@ std::string& VKernelBase::DumpGraph() {
       objects_[i]->index_ = i;
     }
   }
-  std::ostringstream oss;
   auto dump_op = [&oss](NDObject *op) {
     oss << "%" << op->index_<< "[";
     if (!op->nd_.empty()) {
@@ -834,8 +833,6 @@ std::string& VKernelBase::DumpGraph() {
     oss << "]" << std::endl;
   }
   oss << "}";
-  dump_str_ = oss.str();
-  return dump_str_;
 }
 
 void VKernelBase::CollectMetrics(Metrics &metrics) const {
@@ -1150,15 +1147,41 @@ void VKernelP::CodeGen() {
   EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
 }
 
-std::string& VKernelP::DumpGraph() {
-  std::ostringstream oss;
+void VKernelP::DumpKernel(std::ostringstream &oss) {
   oss << "vgraph.parallel() {" << std::endl;
   for (auto k : children_) {
-    oss << k->DumpGraph() << std::endl;
+    k->DumpKernel(oss);
+    oss << std::endl;
   }
   oss << "}";
-  dump_str_ = oss.str();
-  return dump_str_;
+}
+
+CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
+  : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
+  int64_t m = trans_a ? lhs->nd_[0] : lhs->nd_[1];
+  int64_t n = trans_b ? rhs->nd_[1] : rhs->nd_[0];
+  if (lhs->nd_.size() == 2 && rhs->nd_.size() == 2) {
+    nd_ = {n, m};
+    shape_ = {m, n};
+  } else {
+    int64_t batch = lhs->nd_.size() == 3 ? lhs->nd_[2] : rhs->nd_[2];
+    nd_ = {n, m, batch};
+    shape_ = {batch, m, n};
+  }
+  shape_ref_data_ = shape_;
+}
+
+void CubeOp::CodeGen(vCubeOp *op) {
+  op->m = nd_[1];
+  op->n = nd_[0];
+  op->k = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
+  op->gm_a = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(lhs_)->src_);
+  op->gm_b = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(rhs_)->src_);
+  op->gm_c = reinterpret_cast<uint64_t>(static_cast<NDStore*>(output_)->dst_);
+  op->m0 = 1;
+  op->n0 = 1;
+  op->k0 = 1;
+  block_dim_ = 4;
 }
 
 MixKernel::~MixKernel() {
@@ -1183,19 +1206,44 @@ void MixKernel::Append(NDObject *obj) {
       post_fusion_ = new VKernelS();
     }
     post_fusion_->Append(obj);
+    if (obj->obj_id_ == kStore && obj->lhs_ == cube_op_) {
+      cube_op_->output_ = obj;
+    }
   }
 }
 
 void MixKernel::CodeGen() {
-  // only for testing
-  code_.Alloc(sizeof(uint64_t) + sizeof(vCubeOp));
+  size_t size = sizeof(uint64_t) + sizeof(vCubeOp);
+  code_.Alloc(size);
   code_.target_ = CodeBase::kTargetCube;
-  code_.block_dim_ = 4;
-  code_.data_size_ = sizeof(uint64_t) + sizeof(vCubeOp);
+  code_.data_size_ = size;
+  cube_op_->CodeGen(reinterpret_cast<vCubeOp*>(code_.data_ + sizeof(uint64_t)));
+  code_.block_dim_ = cube_op_->block_dim_;
 }
 
-std::string& MixKernel::DumpGraph() {
-  dump_str_ = "matmul graph";
-  return dump_str_;
+void MixKernel::DumpKernel(std::ostringstream &oss) {
+  auto dump_nd = [&oss](const std::vector<int64_t> &nd) {
+    oss << "[";
+    if (!nd.empty()) {
+      for (size_t i = 0; i < nd.size() - 1; ++i) {
+        oss << nd[i] << ",";
+      }
+      oss << nd.back();
+    }
+    oss << "]";
+  };
+  oss << "vgraph.mix() {\n// pre_fusion" << std::endl;
+  pre_fusion_->DumpKernel(oss);
+  oss << std::endl;
+  oss << "// cube\n%" << cube_op_->output_->index_;
+  dump_nd(cube_op_->output_->nd_);
+  oss << " = MatMul(%" << cube_op_->lhs_->index_;
+  dump_nd(cube_op_->lhs_->nd_);
+  oss << ", %" << cube_op_->rhs_->index_;
+  dump_nd(cube_op_->rhs_->nd_);
+  oss << ")\n// post_fusion" << std::endl;
+  post_fusion_->DumpKernel(oss);
+  oss << std::endl;
+  oss << "}";
 }
 } // namespace dvm

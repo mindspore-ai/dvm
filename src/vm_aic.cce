@@ -14,6 +14,8 @@ __aicore_inline__ void Swap(T &x, T &y) {
 
 constexpr uint32_t L0_PINGPONG_BUFFER_LEN = 16384;
 constexpr uint32_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint32_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
+constexpr uint32_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
 constexpr int32_t BLOCK_SIZE = 16;
 
 // TODO: only support fp16 now
@@ -144,52 +146,99 @@ class MatMul {
 
 template <typename M, typename T>
 __aicore_inline__ void CutMKN(__gm__ vCubeOp *op, uint64_t tile_begin, uint64_t tile_end) {
+  set_padding((uint64_t)0);
+  set_atomic_none();
+  uint64_t config = 0x1;
+  set_nd_para(config);
   M mat(op);
   uint64_t batch_offset = 0;
   __gm__ T *gm_a = reinterpret_cast<__gm__ T*>(op->gm_a + batch_offset);
   __gm__ T *gm_b = reinterpret_cast<__gm__ T*>(op->gm_b + batch_offset);
   __gm__ T *gm_c = reinterpret_cast<__gm__ T*>(op->gm_c + batch_offset);
+  int64_t offset = (op->m0 * op->k0 * sizeof(T) + 256 - 1) / 256 * 256;  // TODO: int8 is 512
   __cbuf__ T *l1a = reinterpret_cast<__cbuf__ T*>(0);
-  __cbuf__ T *l1b = reinterpret_cast<__cbuf__ T*>((op->m0 * op->k0 * sizeof(T) + 512 - 1) / 512 * 512);
-  __cbuf__ T *n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_LEN);
-  __cbuf__ T *n_l1b = reinterpret_cast<__cbuf__ T*>(l1b + L1_PINGPONG_BUFFER_LEN / sizeof(T));
-  int64_t k_loop = op->k / op->k0;
-  int64_t k_part_loop = mat.k0 / mat.k0_part_len;
-  int64_t pingpong = 0;
+  __cbuf__ T *l1b = reinterpret_cast<__cbuf__ T*>(offset);
+  __cbuf__ T *n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE);
+  __cbuf__ T *n_l1b = n_l1a + offset / sizeof(T);
+  __ca__ T *l0a_base = reinterpret_cast<__ca__ T*>(0);
+  __cb__ T *l0b_base = reinterpret_cast<__cb__ T*>(0);
+  __ca__ T *l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
+  __cb__ T *l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
+  int64_t k_loop = (op->k + op->k0 - 1) / op->k0;
+  int64_t k_part_loop = (op->k0 + mat.k0_part_len - 1) / mat.k0_part_len;
+  int64_t pingpong = 1;
   //if (op->forward_fusion) { wait_flag_dev(flag_id); }
-  int64_t midx, nidx;
-  mat.TileMap(0, midx, nidx);
-  mat.LoadA(l1a, gm_a, midx, 0);
-  mat.LoadB(l1b, gm_b, 0, nidx);
-  set_flag(PIPE_MTE2, PIPE_MTE1, pingpong);
-  set_flag(PIPE_MTE1, PIPE_MTE2, pingpong);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
+  set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
   for (uint64_t tile = tile_begin; tile <= tile_end; ++tile) {
     __cc__ float *l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
+    int64_t midx, nidx;
+    mat.TileMap(tile, midx, nidx);
+    if (tile == tile_begin) {
+      auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
+      wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+      mat.LoadA(l1a, gm_a, midx, 0);
+      set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+      wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+      mat.LoadB(l1b, gm_b, 0, nidx);
+      set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+    }
     for (uint64_t k = 0; k < k_loop; ++k) {
+      auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
+      auto event_id_next = pingpong ? EVENT_ID1 : EVENT_ID0;
       if (k < k_loop - 1) {
-        mat.LoadA(n_l1a, gm_a, midx, k);
-        mat.LoadB(n_l1b, gm_b, k, nidx);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
+        mat.LoadA(n_l1a, gm_a, midx, k + 1);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
+        mat.LoadB(n_l1b, gm_b, k + 1, nidx);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       } else if (tile < tile_end) {
         int64_t n_midx, n_nidx;
         mat.TileMap(tile + 1, n_midx, n_nidx);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         mat.LoadA(n_l1a, gm_a, n_midx, 0);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
         mat.LoadB(n_l1b, gm_b, 0, n_nidx);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
-      set_flag(PIPE_MTE2, PIPE_MTE1, (pingpong + 1) & 1ul);
-      wait_flag(PIPE_MTE2, PIPE_MTE1, pingpong);
+      set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+      set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
       for (int64_t k_part = 0; k_part < k_part_loop; ++k_part) { // TODO: double buffer
-        __ca__ T *l0a = 0;
-        __cb__ T *l0b = 0;
+        __ca__ T *l0a = (k_part & 1) ? l0a_next : l0a_base;
+        __cb__ T *l0b = (k_part & 1) ? l0b_next : l0b_base;
+        auto mte1_mad_event_id = (k_part & 1) ? EVENT_ID1 : EVENT_ID0;
+        if (k_part == 0) {
+          wait_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+        }
+        wait_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
         mat.LoadL0A(l0a, l1a, k_part_loop, k_part);
+        if (k_part == k_part_loop - 1) {
+          set_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+        }
+        if (k_part == 0) {
+          wait_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+        }
         mat.LoadL0B(l0b, l1b, k_part_loop, k_part);
-        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
-        mat.Mad(l0c, l0a, l0b, k == 0 && k_part == 0);
-        set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
-        wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+        if (k_part == k_part_loop - 1) {
+          set_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+        }
+        set_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
+        wait_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
+        bool init_c = (k == 0 && k_part == 0);
+        if (init_c) {
+          wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+        }
+        mat.Mad(l0c, l0a, l0b, init_c);
+        pipe_barrier(PIPE_M);
+        set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
-      set_flag(PIPE_MTE1, PIPE_MTE2, (pingpong + 1) & 1);
-      wait_flag(PIPE_MTE1, PIPE_MTE2, pingpong);
+      wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+      wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
       pingpong = (pingpong + 1) & 1ul;
       Swap(l1a, n_l1a);
       Swap(l1b, n_l1b);
@@ -198,11 +247,13 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *op, uint64_t tile_begin, uint64_t 
     wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
     mat.StoreC(gm_c, l0c, midx, nidx);
     set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
-    wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
     //if (op->post_fusion) { ffts_cross_core_sync(MTE3, inner_group);}
   }
-  wait_flag(PIPE_MTE2, PIPE_MTE1, pingpong);
-  wait_flag(PIPE_MTE1, PIPE_MTE2, pingpong);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
+  wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
 }
 
 extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
@@ -214,6 +265,9 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
     uint64_t tile_end = tile_start + tile_per_block - 1;
     if (tile_end >= last_tile) {
       tile_end = last_tile;
+    }
+    if (tile_start >= last_tile) {
+      tile_start = tile_end + 1;
     }
     __gm__ vCubeOp *op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
     CutMKN<MatMul<half>, half>(op, tile_start, tile_end);

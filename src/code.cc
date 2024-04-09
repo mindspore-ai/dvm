@@ -202,14 +202,10 @@ void DumpRemovePad(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 template <typename T = float>
 void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vBinaryS<T> *op = reinterpret_cast<vBinaryS<T> *>(dump_info.insn);
-  auto rs = op->data >> 18;
-  auto repeat = op->data & V_X_MASK;
-  auto xn = dump_info.ext & V_X_MASK;
-  auto xd = (dump_info.ext >> V_X_BITS) & V_X_MASK;
-  oss << dump_info.simd_width << "x" << repeat;
-  oss << " " << reinterpret_cast<void *>(xd) << ", " << reinterpret_cast<void *>(xn) << ", " << op->scalar << " //";
-  DumpVal("rs", rs, oss);
+  vBinaryS<T> op;
+  vBinaryS<T>::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << ", " << op.scalar.val;
 }
 
 void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -237,28 +233,19 @@ void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 template <typename T = float>
 void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vBroadcastS<T> *op = reinterpret_cast<vBroadcastS<T> *>(dump_info.insn);
-  uint64_t data = op->data;
-  uint64_t rs = data >> 18;
-  uint64_t repeat = data & V_X_MASK;
-  oss << dump_info.simd_width << "x" << repeat;
-  oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op->scalar << " //";
-  DumpVal("rs", rs, oss);
+  vBroadcastS<T> op;
+  vBroadcastS<T>::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op.scalar.val;
 }
 
 void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vSelect *op = reinterpret_cast<vSelect *>(dump_info.insn);
-  auto rs = op->data >> 60;
-  auto repeat = (op->data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
-  auto cond = op->data & V_X_MASK;
-  auto xm = (op->data >> V_X_BITS) & V_X_MASK;
-  auto xn = dump_info.ext & V_X_MASK;
-  auto xd = (dump_info.ext >> V_X_BITS) & V_X_MASK;
-  oss << dump_info.simd_width << "x" << repeat;
-  oss << " " << reinterpret_cast<void *>(cond) << ", " << reinterpret_cast<void *>(xd) << ", "
-      << reinterpret_cast<void *>(xn);
-  oss << ", " << reinterpret_cast<void *>(xm) << " //";
-  DumpVal("rs", rs, oss);
+  vSelect op;
+  vSelect::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.cond) << ", " << reinterpret_cast<void *>(op.xd) << ", "
+      << reinterpret_cast<void *>(op.xn);
+  oss << ", " << reinterpret_cast<void *>(op.xm);
 }
 
 void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -299,12 +286,12 @@ void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
 }
 
 void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vCopy *op = reinterpret_cast<vCopy *>(dump_info.insn);
-  auto xn = dump_info.ext & V_X_MASK;
-  auto xd = (dump_info.ext >> V_X_BITS) & V_X_MASK;
-  auto lenburst = (op->config) >> 16 & 0xfffful;
+  vCopy op;
+  auto head = *dump_info.insn;
+  vCopy::Decode(dump_info.insn, head, op);
+  auto lenburst = (op.config) >> 16 & 0xfffful;
   oss << "32x" << lenburst;
-  oss << " " << reinterpret_cast<void *>(xd) << ", " << reinterpret_cast<void *>(xn);
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
 void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {

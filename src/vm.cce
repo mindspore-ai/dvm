@@ -525,48 +525,25 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     }                                                                                   \
   } while (0)
 
-#define BINARYS(pc, builtin, head, VTYPE)                                               \
-  do {                                                                                  \
-    __bcode__ vBinaryS<float> *__restrict__ op = (__bcode__ vBinaryS<float>*)pc;          \
-    uint64_t data = static_cast<uint64_t>(op->data);                                    \
-    uint64_t rs = data >> 18;                                                           \
-    uint64_t repeat = data & V_X_MASK;                                                  \
-    __ubuf__ VTYPE *xd = (__ubuf__ VTYPE*)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK); \
-    __ubuf__ VTYPE *xn = (__ubuf__ VTYPE*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);     \
-    VTYPE val = op->scalar;                                                             \
-    if (repeat <= 255) {                                                                \
-      builtin(xd, xn, val, repeat, 1, 1, rs, rs);                                       \
-    } else {                                                                            \
-      uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);                                 \
-      for (; repeat > 255; repeat -= 255) {                                             \
-        builtin(xd, xn, val, 255, 1, 1, rs, rs);                                        \
-        xd += 255 * simd_width;                                                         \
-        xn += 255 * simd_width;                                                         \
-      }                                                                                 \
-      builtin(xd, xn, val, repeat, 1, 1, rs, rs);                                       \
-    }                                                                                   \
-  } while (0)
-
-#define BINARYS_INT(pc, builtin, head, VTYPE)                                           \
-  do {                                                                                  \
-    __bcode__ vBinaryS<int32_t> * __restrict__ op = (__bcode__ vBinaryS<int32_t>*)pc;     \
-    uint64_t data = static_cast<uint64_t>(op->data);                                    \
-    uint64_t rs = data >> 18;                                                           \
-    uint64_t repeat = data & V_X_MASK;                                                  \
-    __ubuf__ VTYPE *xd = (__ubuf__ VTYPE*)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK); \
-    __ubuf__ VTYPE *xn = (__ubuf__ VTYPE*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);     \
-    VTYPE val = op->scalar;                                                             \
-    if (repeat <= 255) {                                                                \
-      builtin(xd, xn, val, repeat, 1, 1, rs, rs);                                       \
-    } else {                                                                            \
-      uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);                                 \
-      for (; repeat > 255; repeat -= 255) {                                             \
-        builtin(xd, xn, val, 255, 1, 1, rs, rs);                                        \
-        xd += 255 * simd_width;                                                         \
-        xn += 255 * simd_width;                                                         \
-      }                                                                                 \
-      builtin(xd, xn, val, repeat, 1, 1, rs, rs);                                       \
-    }                                                                                   \
+#define BINARYS(pc, builtin, head, VTYPE, CTYPE)               \
+  do {                                                  \
+    vBinaryS<CTYPE> op;                                 \
+    vBinaryS<CTYPE>::Decode(pc, head, op);              \
+    uint16_t rs = GetRepeatStride(tile, VTYPE);         \
+    __ubuf__ VTYPE *xd = (__ubuf__ VTYPE *)(op.xd);     \
+    __ubuf__ VTYPE *xn = (__ubuf__ VTYPE *)(op.xn);     \
+    VTYPE val = op.scalar.val;                          \
+    if (op.repeat <= 255) {                             \
+      builtin(xd, xn, val, op.repeat, 1, 1, rs, rs);    \
+    } else {                                            \
+      uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn); \
+      for (; op.repeat > 255; op.repeat -= 255) {       \
+        builtin(xd, xn, val, 255, 1, 1, rs, rs);        \
+        xd += 255 * simd_width;                         \
+        xn += 255 * simd_width;                         \
+      }                                                 \
+      builtin(xd, xn, val, op.repeat, 1, 1, rs, rs);    \
+    }                                                   \
   } while (0)
 
 template <typename T>
@@ -783,42 +760,40 @@ static inline[aicore] void LogicalNot(bcodeptr_t pc, uint64_t head, uint64_t til
 }
 
 template <typename T>
-__aicore_inline__ void BroadcastS(bcodeptr_t pc, uint64_t head) {
-  __bcode__ vBroadcastS<float> * __restrict__ op = (__bcode__ vBroadcastS<float> *)pc;
-  uint64_t data = static_cast<uint64_t>(op->data);
-  uint64_t rs = data >> 18;
-  uint64_t repeat = data & V_X_MASK;
-  __ubuf__ T*xd = (__ubuf__ T*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
-  T val = op->scalar;
-  if (repeat <= 255) {
-    vDup(xd, val, repeat, rs);
+__aicore_inline__ void BroadcastS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vBroadcastS<float> op;
+  vBroadcastS<float>::Decode(pc, head, op);
+  uint64_t rs = GetRepeatStride(tile, T);
+  __ubuf__ T*xd = (__ubuf__ T*)(op.xd);
+  T val = op.scalar.val;
+  if (op.repeat <= 255) {
+    vDup(xd, val, op.repeat, rs);
   } else {
     uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xd);
-    for (; repeat > 255; repeat -= 255) {
+    for (; op.repeat > 255; op.repeat -= 255) {
       vDup(xd, val, 255, rs);
       xd += 255 * simd_width;
     }
-    vDup(xd, val, repeat, rs);
+    vDup(xd, val, op.repeat, rs);
   }
 }
 
 template <typename T>
-__aicore_inline__ void BroadcastS_Int(bcodeptr_t pc, uint64_t head) {
-  __bcode__ vBroadcastS<int32_t> *__restrict__ op = (__bcode__ vBroadcastS<int32_t> *)pc;
-  uint64_t data = static_cast<uint64_t>(op->data);
-  uint64_t rs = data >> 18;
-  uint64_t repeat = data & V_X_MASK;
-  __ubuf__ T*xd = (__ubuf__ T*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
-  T val = op->scalar;
-  if (repeat <= 255) {
-    vDup(xd, val, repeat, rs);
+__aicore_inline__ void BroadcastS_Int(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vBroadcastS<int32_t> op;
+  vBroadcastS<int32_t>::Decode(pc, head, op);
+  uint64_t rs = GetRepeatStride(tile, int32_t);
+  __ubuf__ T*xd = (__ubuf__ T*)(op.xd);
+  T val = op.scalar.val;
+  if (op.repeat <= 255) {
+    vDup(xd, val, op.repeat, rs);
   } else {
     uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xd);
-    for (; repeat > 255; repeat -= 255) {
+    for (; op.repeat > 255; op.repeat -= 255) {
       vDup(xd, val, 255, rs);
       xd += 255 * simd_width;
     }
-    vDup(xd, val, repeat, rs);
+    vDup(xd, val, op.repeat, rs);
   }
 }
 
@@ -856,7 +831,7 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-static inline [aicore] void BroadcastY(bcodeptr_t pc, uint64_t head) {
+__aicore_inline__ void BroadcastY(bcodeptr_t pc, uint64_t head) {
   vBroadcastY op;
   vBroadcastY::Decode(pc, head, op);
   __ubuf__ uint8_t *xd = (__ubuf__ uint8_t*)(op.xd);
@@ -908,7 +883,7 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       xn = next_xn;
       xd = next_xd;
     }
-    xn = xd = (__ubuf__ float*)(head >> (V_HEAD_EXT_OFFSET + V_X_BITS));
+    xn = xd = (__ubuf__ float*)(vReduceX::GetXd(pc, op));
     pipe_barrier(PIPE_V);
   }
   vReduceX::DecodeBlock(pc, op);
@@ -968,25 +943,24 @@ __aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       xn += dup_stride;
       pipe_barrier(PIPE_V);
     } // end for dup
-    xn = xd = (__ubuf__ float*)(head >> (V_HEAD_EXT_OFFSET + V_X_BITS));
+    xn = xd = (__ubuf__ float*)(vReduceY::GetXd(pc, op));
   } // end while iter_num
 }
 
 template <typename T>
-__aicore_inline__ void Select(bcodeptr_t pc, uint64_t head) {
-  __bcode__ vSelect *__restrict__ op = (__bcode__ vSelect *)pc;
-  uint64_t data = op->data;
-  uint64_t rs = data >> 60;
-  uint64_t repeat = (data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
-  __ubuf__ T *xm = (__ubuf__ T*)((data >> V_X_BITS) & V_X_MASK);
-  __ubuf__ T *cond = (__ubuf__ T*)(data & V_X_MASK);
-  __ubuf__ T *xd = (__ubuf__ T*)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK);
-  __ubuf__ T *xn = (__ubuf__ T*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
+__aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vSelect op;
+  vSelect::Decode(pc, head, op);
+  uint64_t rs = GetRepeatStride(tile, T);
+  __ubuf__ T *xm = (__ubuf__ T*)(op.xm);
+  __ubuf__ T *cond = (__ubuf__ T*)(op.cond);
+  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
   uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);
   pipe_barrier(PIPE_V);
   vDup((__ubuf__ T*)WORKSPACE, (T)0.0, 1, rs);
   pipe_barrier(PIPE_V);
-  for (uint64_t i = 0; i < repeat; i++) {
+  for (uint64_t i = 0; i < op.repeat; i++) {
     vCmpNe(cond, (__ubuf__ T*)WORKSPACE, 1, rs);
     vSel(xd, xn, xm, 1, rs);
     xn += simd_width;
@@ -996,21 +970,20 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head) {
   }
 }
 
-__aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head) {
-  __bcode__ vSelect * __restrict__ op = (__bcode__ vSelect *)pc;
-  uint64_t data = op->data;
-  uint64_t rs = data >> 60;
-  uint64_t repeat = (data >> (V_X_BITS + V_X_BITS)) & V_X_MASK;
-  __ubuf__ float *xm = (__ubuf__ float *)((data >> V_X_BITS) & V_X_MASK);
-  __ubuf__ int32_t *cond = (__ubuf__ int32_t *)(data & V_X_MASK);
-  __ubuf__ float *xd = (__ubuf__ float *)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK);
-  __ubuf__ float *xn = (__ubuf__ float *)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
+__aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vSelect op;
+  vSelect::Decode(pc, head, op);
+  uint64_t rs = GetRepeatStride(tile, int32_t);
+  __ubuf__ float *xm = (__ubuf__ float *)(op.xm);
+  __ubuf__ int32_t *cond = (__ubuf__ int32_t *)(op.cond);
+  __ubuf__ float *xd = (__ubuf__ float *)(op.xd);
+  __ubuf__ float *xn = (__ubuf__ float *)(op.xn);
   uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);
   pipe_barrier(PIPE_V);
   vector_dup((__ubuf__ float *)WORKSPACE, (float)0, 1, 1, 1, rs, rs);
-  repeat_vconv_s322f32(xd, cond, repeat, 1, 1, rs, rs);
+  repeat_vconv_s322f32(xd, cond, op.repeat, 1, 1, rs, rs);
   pipe_barrier(PIPE_V);
-  for (uint64_t i = 0; i < repeat; i++) {
+  for (uint64_t i = 0; i < op.repeat; i++) {
     vcmp_ne(xd, (__ubuf__ float *)WORKSPACE, 1, 1, 1, 1, rs, rs, rs);
     vsel(xd, xn, xm, 1, 1, 1, 1, rs, rs, rs);
     xn += simd_width;
@@ -1021,13 +994,12 @@ __aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head) {
 }
 
 static inline [aicore] void Copy(bcodeptr_t pc, uint64_t head) {
-  __bcode__ vCopy * __restrict__ op = (__bcode__ vCopy*)pc;
-  __ubuf__ void *xd = (__ubuf__ void*)((head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK);
-  __ubuf__ void *xn = (__ubuf__ void*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
-  copy_ubuf_to_ubuf(xd, xn, op->config);
+  vCopy op;
+  vCopy::Decode(pc, head, op);
+  copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, op.config);
 }
 
-static inline [aicore] void ClearPad(bcodeptr_t pc, uint64_t head) {
+__aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head) {
   vClearPad op;
   vClearPad::Decode(pc, head, op);
   uint64_t simd_mask = 0xffffffffffffffffllu >> (64 - op.simd_width);
@@ -1149,7 +1121,7 @@ static inline[aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile
 
 #ifdef AICORE_ARCH_C220
 template <typename T>
-static inline[aicore] void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vRemovePad op;
   vRemovePad::Decode(pc, head, op);
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
@@ -1308,24 +1280,26 @@ __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
 
 #define DISPATCH(op, func)  case op: do { func; } while (0); break
 
+#ifdef AICORE_ARCH_C220
+typedef void (*OpFunc) (__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
+__aicore_inline__ uint64_t GetFunc(uint64_t head) {
+  return head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
+}
+#else
 static __noinline__ [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
     DISPATCH(V_COPY, Copy(pc, head));
     DISPATCH(V_BROADCAST_X, BroadcastX<float>(pc, head, tile));
     DISPATCH(V_BROADCAST_Y, BroadcastY(pc, head));
-    DISPATCH(V_BROADCAST_S, BroadcastS<float>(pc, head));
+    DISPATCH(V_BROADCAST_S, BroadcastS<float>(pc, head, tile));
     DISPATCH(V_SQRT, UNARY(pc, vsqrt, head, tile, float));
     DISPATCH(V_ABS, UNARY(pc, vabs, head, tile, float));
     DISPATCH(V_LOG, UNARY(pc, vln, head, tile, float));
     DISPATCH(V_EXP, UNARY(pc, vexp, head, tile, float));
     DISPATCH(V_REC, Reciprocal<float>(pc, head, tile));
-    DISPATCH(V_ADDS, BINARYS(pc, vadds, head, float));
-    DISPATCH(V_MULS, BINARYS(pc, vmuls, head, float));
-#ifdef AICORE_ARCH_C220
-    DISPATCH(V_ISFINITE, IsFinite(pc, head, tile));
-    DISPATCH(V_MAXS, BINARYS(pc, vmaxs, head, float));
-    DISPATCH(V_MINS, BINARYS(pc, vmins, head, float));
-#endif
+    DISPATCH(V_ADDS, BINARYS(pc, vadds, head, float, float));
+    DISPATCH(V_MULS, BINARYS(pc, vmuls, head, float, float));
+
     DISPATCH(V_ADD, BINARY(pc, vadd, head, tile, float));
     DISPATCH(V_SUB, BINARY(pc, vsub, head, tile, float));
     DISPATCH(V_MUL, BINARY(pc, vmul, head, tile, float));
@@ -1334,31 +1308,25 @@ static __noinline__ [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, ui
     DISPATCH(V_MAX, BINARY(pc, vmax, head, tile, float));
     DISPATCH(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, half));
     DISPATCH(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t));
-#ifdef AICORE_ARCH_C220
-    DISPATCH(V_CAST_FP32_TO_BF16, CAST(pc, vconv_f322bf16r, head, tile, float, bfloat16_t));
-#endif
+
     DISPATCH(V_RSUM_X, ReduceSumX(pc, head, tile));
     DISPATCH(V_RSUM_Y, ReduceSumY(pc, head, tile));
     DISPATCH(V_CMP, BinCompare<float>(pc, head, tile));
-    DISPATCH(V_SEL, Select<float>(pc, head));
+    DISPATCH(V_SEL, Select<float>(pc, head, tile));
     DISPATCH(V_POW, Power<float>(pc, head, tile));
     DISPATCH(V_CLR_PAD, ClearPad(pc, head));
     DISPATCH(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile));
     // float16
     DISPATCH(V_BROADCAST_X_FP16, BroadcastX<half>(pc, head, tile));
-    DISPATCH(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head));
+    DISPATCH(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head, tile));
     DISPATCH(V_SQRT_FP16, UNARY(pc, vsqrt, head, tile, half));
     DISPATCH(V_ABS_FP16, UNARY(pc, vabs, head, tile, half));
     DISPATCH(V_LOG_FP16, UNARY(pc, vln, head, tile, half));
     DISPATCH(V_EXP_FP16, UNARY(pc, vexp, head, tile, half));
     DISPATCH(V_REC_FP16, Reciprocal<half>(pc, head, tile));
-    DISPATCH(V_ADDS_FP16, BINARYS(pc, vadds, head, half));
-    DISPATCH(V_MULS_FP16, BINARYS(pc, vmuls, head, half));
-#ifdef AICORE_ARCH_C220
-    DISPATCH(V_MAXS_FP16, BINARYS(pc, vmaxs, head, half));
-    DISPATCH(V_MINS_FP16, BINARYS(pc, vmins, head, half));
-    DISPATCH(V_REMOVEPAD_U16, RemovePad<uint16_t>(pc, head, tile));
-#endif
+    DISPATCH(V_ADDS_FP16, BINARYS(pc, vadds, head, half, float));
+    DISPATCH(V_MULS_FP16, BINARYS(pc, vmuls, head, half, float));
+
     DISPATCH(V_ADD_FP16, BINARY(pc, vadd, head, tile, half));
     DISPATCH(V_SUB_FP16, BINARY(pc, vsub, head, tile, half));
     DISPATCH(V_MUL_FP16, BINARY(pc, vmul, head, tile, half));
@@ -1369,7 +1337,7 @@ static __noinline__ [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, ui
     DISPATCH(V_CAST_FP16_TO_FP32, CAST(pc, vconv_f162f32, head, tile, half, float));
     DISPATCH(V_CAST_FP16_TO_INT32, CAST(pc, vconv_f162s32z, head, tile, half, int32_t));
     DISPATCH(V_CMP_FP16, BinCompare<half>(pc, head, tile));
-    DISPATCH(V_SEL_FP16, Select<half>(pc, head));
+    DISPATCH(V_SEL_FP16, Select<half>(pc, head, tile));
     DISPATCH(V_POW_FP16, Power<half>(pc, head, tile));
     DISPATCH(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile));
     DISPATCH(V_ELEMENT_ANY_FP16, ElementAny<half>(pc, head, tile));
@@ -1380,34 +1348,29 @@ static __noinline__ [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, ui
     DISPATCH(V_CAST_INT8_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half));
     // int32
     DISPATCH(V_BROADCAST_X_INT32, BroadcastX<int32_t>(pc, head, tile));
-    DISPATCH(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head));
-#ifdef AICORE_ARCH_C220
-    DISPATCH(V_ADDS_INT32, BINARYS_INT(pc, vadds, head, int32_t));
-    DISPATCH(V_MULS_INT32, BINARYS_INT(pc, vmuls, head, int32_t));
-    DISPATCH(V_MAXS_INT32, BINARYS_INT(pc, vmaxs, head, int32_t));
-    DISPATCH(V_MINS_INT32, BINARYS_INT(pc, vmins, head, int32_t));
-    DISPATCH(V_REMOVEPAD, RemovePad<uint32_t>(pc, head, tile));
-#endif
+    DISPATCH(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head, tile));
+
     DISPATCH(V_ADD_INT32, BINARY(pc, vadd, head, tile, int32_t));
     DISPATCH(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t));
     DISPATCH(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t));
     DISPATCH(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t));
     DISPATCH(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t));
-    DISPATCH(V_SEL_INT32, Select_Int(pc, head));
+    DISPATCH(V_SEL_INT32, Select_Int(pc, head, tile));
     DISPATCH(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0); CAST(pc, vconv_deq, head, tile, int32_t, half));
     DISPATCH(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float));
-    // bfloat16
-#ifdef AICORE_ARCH_C220
-    DISPATCH(V_CAST_BF16_TO_FP32, CAST(pc, vconv_bf162f32, head, tile, bfloat16_t, float));
-    DISPATCH(V_CAST_BF16_TO_INT32, CAST(pc, vconv_bf162s32z, head, tile, bfloat16_t, int32_t));
-#endif
     default:
       trap();
       break;
   }
 }
+#endif
 
-extern "C"  __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
+extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
+#ifdef AICORE_ARCH_C220
+// Note: vmain_mix_aiv should be the first function in this file(inline function is not included)
+// We need that fact to calculate the right offset of dispatch functions
+  uint8_t* main_addr = (uint8_t*)(get_pc() & (~0xfff));
+#endif
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
   uint64_t tile_start, tile_end;
   bcodeptr_t pc_base;
@@ -1438,7 +1401,7 @@ extern "C"  __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     tile_fill |= simd_width << 42 | tile_end_idx << 21;
     tile_start = tile_fill | tile_start_idx;
     tile_end = tile_fill | tile_end_idx;
-  } else { // parallel fusion
+} else { // parallel fusion
     // bytecode format:
     // config(1) + summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
     // config = parallel(1) << 63 | simdwidth7(7) << 56 | .. | simdwidth1(7) << 7 | simdwidth0(7)
@@ -1487,7 +1450,11 @@ extern "C"  __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           event_t event = event_t((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           wait_flag(PIPE_MTE2, PIPE_V, event);
         }
+#ifdef AICORE_ARCH_C220
+        ((OpFunc)(GetFunc(head) + main_addr))(pc, head, tile);
+#else
         Dispatch_SIMD(pc, head, tile);
+#endif
         if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
           event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           set_flag(PIPE_V, PIPE_MTE3, event);
@@ -1501,7 +1468,8 @@ extern "C"  __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           DISPATCH(V_LOAD_2, Load2(pc, head, tile));
           DISPATCH(V_LOAD_DUMMY, void(0));
           DISPATCH(V_SLICE_LOAD, SliceLoad(pc, head, tile));
-          default: goto INSN_END;
+          default:
+            goto INSN_END;
         }
         if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
           event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
@@ -1517,13 +1485,105 @@ extern "C"  __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           DISPATCH(V_STORE_2, Store2(pc, head, tile));
           DISPATCH(V_STORE_ATOMIC, StoreAtomic(pc, head, tile));
           DISPATCH(V_STORE_STATUS, StoreStatus(pc, head));
-          default: goto INSN_END;
+          default:
+            goto INSN_END;
         }
       }
       pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
     }
-INSN_END:
+  INSN_END:
     wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
   }
   pipe_barrier(PIPE_ALL);
 }
+
+#ifdef AICORE_ARCH_C220
+#define DEF_DISP_FUNC(OP, func)  __attribute__((used)) static __noinline__ [aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
+DEF_DISP_FUNC(V_COPY, Copy(pc, head))
+DEF_DISP_FUNC(V_BROADCAST_X, BroadcastX<float>(pc, head, tile))
+DEF_DISP_FUNC(V_BROADCAST_Y, BroadcastY(pc, head))
+DEF_DISP_FUNC(V_BROADCAST_S, BroadcastS<float>(pc, head, tile))
+DEF_DISP_FUNC(V_SQRT, UNARY(pc, vsqrt, head, tile, float))
+DEF_DISP_FUNC(V_ABS, UNARY(pc, vabs, head, tile, float))
+DEF_DISP_FUNC(V_LOG, UNARY(pc, vln, head, tile, float))
+DEF_DISP_FUNC(V_EXP, UNARY(pc, vexp, head, tile, float))
+DEF_DISP_FUNC(V_REC, Reciprocal<float>(pc, head, tile))
+
+DEF_DISP_FUNC(V_ADDS, BINARYS(pc, vadds, head, float, float))
+DEF_DISP_FUNC(V_MULS, BINARYS(pc, vmuls, head, float, float))
+DEF_DISP_FUNC(V_ADD, BINARY(pc, vadd, head, tile, float))
+DEF_DISP_FUNC(V_SUB, BINARY(pc, vsub, head, tile, float))
+DEF_DISP_FUNC(V_MUL, BINARY(pc, vmul, head, tile, float))
+DEF_DISP_FUNC(V_DIV, BINARY(pc, vdiv, head, tile, float))
+DEF_DISP_FUNC(V_MIN, BINARY(pc, vmin, head, tile, float))
+DEF_DISP_FUNC(V_MAX, BINARY(pc, vmax, head, tile, float))
+
+DEF_DISP_FUNC(V_CMP, BinCompare<float>(pc, head, tile))
+DEF_DISP_FUNC(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, half))
+DEF_DISP_FUNC(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t))
+DEF_DISP_FUNC(V_RSUM_X, ReduceSumX(pc, head, tile))
+DEF_DISP_FUNC(V_RSUM_Y, ReduceSumY(pc, head, tile))
+DEF_DISP_FUNC(V_SEL, Select<float>(pc, head, tile))
+DEF_DISP_FUNC(V_POW, Power<float>(pc, head, tile))
+DEF_DISP_FUNC(V_CLR_PAD, ClearPad(pc, head))
+DEF_DISP_FUNC(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile))
+
+DEF_DISP_FUNC(V_BROADCAST_X_FP16, BroadcastX<half>(pc, head, tile))
+DEF_DISP_FUNC(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head, tile))
+DEF_DISP_FUNC(V_SQRT_FP16, UNARY(pc, vsqrt, head, tile, half))
+DEF_DISP_FUNC(V_ABS_FP16, UNARY(pc, vabs, head, tile, half))
+DEF_DISP_FUNC(V_LOG_FP16, UNARY(pc, vln, head, tile, half))
+DEF_DISP_FUNC(V_EXP_FP16, UNARY(pc, vexp, head, tile, half))
+DEF_DISP_FUNC(V_REC_FP16, Reciprocal<half>(pc, head, tile))
+
+DEF_DISP_FUNC(V_ADDS_FP16, BINARYS(pc, vadds, head, half, float))
+DEF_DISP_FUNC(V_MULS_FP16, BINARYS(pc, vmuls, head, half, float))
+DEF_DISP_FUNC(V_ADD_FP16, BINARY(pc, vadd, head, tile, half))
+DEF_DISP_FUNC(V_SUB_FP16, BINARY(pc, vsub, head, tile, half))
+DEF_DISP_FUNC(V_MUL_FP16, BINARY(pc, vmul, head, tile, half))
+DEF_DISP_FUNC(V_DIV_FP16, BINARY(pc, vdiv, head, tile, half))
+DEF_DISP_FUNC(V_MIN_FP16, BINARY(pc, vmin, head, tile, half))
+DEF_DISP_FUNC(V_MAX_FP16, BINARY(pc, vmax, head, tile, half))
+
+DEF_DISP_FUNC(V_CAST_FP16_TO_INT8, CAST(pc, vconv_f162s8, head, tile, half, int8_t))
+DEF_DISP_FUNC(V_CAST_FP16_TO_FP32, CAST(pc, vconv_f162f32, head, tile, half, float))
+DEF_DISP_FUNC(V_CAST_FP16_TO_INT32, CAST(pc, vconv_f162s32z, head, tile, half, int32_t))
+DEF_DISP_FUNC(V_CMP_FP16, BinCompare<half>(pc, head, tile))
+DEF_DISP_FUNC(V_SEL_FP16, Select<half>(pc, head, tile))
+DEF_DISP_FUNC(V_POW_FP16, Power<half>(pc, head, tile))
+DEF_DISP_FUNC(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile))
+DEF_DISP_FUNC(V_ELEMENT_ANY_FP16, ElementAny<half>(pc, head, tile))
+
+DEF_DISP_FUNC(V_CAST_INT8_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half))
+DEF_DISP_FUNC(V_NOT_INT8, LogicalNot(pc, head, tile))
+DEF_DISP_FUNC(V_OR_INT8, LogicalBinary<kBinOr>(pc, head, tile))
+DEF_DISP_FUNC(V_AND_INT8, LogicalBinary<kBinAnd>(pc, head, tile))
+
+DEF_DISP_FUNC(V_BROADCAST_X_INT32, BroadcastX<int32_t>(pc, head, tile))
+DEF_DISP_FUNC(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head, tile))
+
+
+DEF_DISP_FUNC(V_ADD_INT32, BINARY(pc, vadd, head, tile, int32_t))
+DEF_DISP_FUNC(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t))
+DEF_DISP_FUNC(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t))
+DEF_DISP_FUNC(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t))
+DEF_DISP_FUNC(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t))
+DEF_DISP_FUNC(V_SEL_INT32, Select_Int(pc, head, tile))
+DEF_DISP_FUNC(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0);CAST(pc, vconv_deq, head, tile, int32_t, half);)
+DEF_DISP_FUNC(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float))
+
+DEF_DISP_FUNC(V_ISFINITE, IsFinite(pc, head, tile))
+DEF_DISP_FUNC(V_MAXS, BINARYS(pc, vmaxs, head, float, float))
+DEF_DISP_FUNC(V_MINS, BINARYS(pc, vmins, head, float, float))
+DEF_DISP_FUNC(V_MAXS_FP16, BINARYS(pc, vmaxs, head, half, float))
+DEF_DISP_FUNC(V_MINS_FP16, BINARYS(pc, vmins, head, half, float))
+DEF_DISP_FUNC(V_ADDS_INT32, BINARYS(pc, vadds, head, int32_t, int32_t))
+DEF_DISP_FUNC(V_MULS_INT32, BINARYS(pc, vmuls, head, int32_t, int32_t))
+DEF_DISP_FUNC(V_MAXS_INT32, BINARYS(pc, vmaxs, head, int32_t, int32_t))
+DEF_DISP_FUNC(V_MINS_INT32, BINARYS(pc, vmins, head, int32_t, int32_t))
+DEF_DISP_FUNC(V_REMOVEPAD_U16, RemovePad<uint16_t>(pc, head, tile))
+DEF_DISP_FUNC(V_REMOVEPAD, RemovePad<uint32_t>(pc, head, tile))
+DEF_DISP_FUNC(V_CAST_BF16_TO_FP32, CAST(pc, vconv_bf162f32, head, tile, bfloat16_t, float))
+DEF_DISP_FUNC(V_CAST_BF16_TO_INT32, CAST(pc, vconv_bf162s32z, head, tile, bfloat16_t, int32_t))
+DEF_DISP_FUNC(V_CAST_FP32_TO_BF16, CAST(pc, vconv_f322bf16r, head, tile, float, bfloat16_t))
+#endif

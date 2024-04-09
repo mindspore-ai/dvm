@@ -69,8 +69,6 @@ enum vSimdInsnID {
   V_REC,
   V_ADDS,
   V_MULS,
-  V_MAXS,
-  V_MINS,
   V_ADD,
   V_SUB,
   V_MUL,
@@ -80,16 +78,12 @@ enum vSimdInsnID {
   V_CMP,
   V_CAST_FP32_TO_FP16,
   V_CAST_FP32_TO_INT32,
-  V_CAST_FP32_TO_BF16,
   V_RSUM_X,
   V_RSUM_Y,
   V_SEL,
   V_POW,
-  V_ISFINITE,
   V_CLR_PAD,
   V_ELEMENT_ANY,
-  V_REMOVEPAD,
-  // float16
   V_BROADCAST_X_FP16,
   V_BROADCAST_S_FP16,
   V_SQRT_FP16,
@@ -99,8 +93,6 @@ enum vSimdInsnID {
   V_REC_FP16,
   V_ADDS_FP16,
   V_MULS_FP16,
-  V_MAXS_FP16,
-  V_MINS_FP16,
   V_ADD_FP16,
   V_SUB_FP16,
   V_MUL_FP16,
@@ -115,19 +107,12 @@ enum vSimdInsnID {
   V_POW_FP16,
   V_ISFINITE_FP16,
   V_ELEMENT_ANY_FP16,
-  V_REMOVEPAD_U16,
-  // int8
   V_CAST_INT8_TO_FP16,
   V_NOT_INT8,
   V_OR_INT8,
   V_AND_INT8,
-  // int32
   V_BROADCAST_X_INT32,
   V_BROADCAST_S_INT32,
-  V_ADDS_INT32,
-  V_MULS_INT32,
-  V_MAXS_INT32,
-  V_MINS_INT32,
   V_ADD_INT32,
   V_SUB_INT32,
   V_MUL_INT32,
@@ -136,7 +121,19 @@ enum vSimdInsnID {
   V_SEL_INT32,
   V_CAST_INT32_TO_FP16,
   V_CAST_INT32_TO_FP32,
-  // bfloat16
+  // ASCEND 910B
+  V_ISFINITE,
+  V_MAXS,
+  V_MINS,
+  V_MAXS_FP16,
+  V_MINS_FP16,
+  V_ADDS_INT32,
+  V_MULS_INT32,
+  V_MAXS_INT32,
+  V_MINS_INT32,
+  V_REMOVEPAD_U16,
+  V_REMOVEPAD,
+  V_CAST_FP32_TO_BF16,
   V_CAST_BF16_TO_FP32,
   V_CAST_BF16_TO_INT32,
   V_NONE,
@@ -163,16 +160,28 @@ enum vSimdInsnID {
 #define V_HEAD_EVENT_MASK        0xful
 #define V_HEAD_ID_MASK           0x1fful
 
-__aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
-  return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | id << V_HEAD_ID_OFFSET |
-  (pipe == V_PIPE_LOAD ? 1 : 0) << V_HEAD_LOAD_FLAG_OFFSET | (pipe == V_PIPE_SIMD ? 1 : 0) << V_HEAD_SIMD_FLAG_OFFSET;
-}
 
 // common mask
 // ub address, loop ext, stride should not extent ub size limit
 #define V_X_BITS                 18
 #define V_X_MASK                 0x3fffful
 #define V_RS_MASK                0xful   // repeat stride
+
+extern const uint64_t func_offset[];
+__aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
+  if (pipe == V_PIPE_SIMD) {
+      ext |= func_offset[id] << V_X_BITS;
+  }
+  return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | id << V_HEAD_ID_OFFSET |
+         (pipe == V_PIPE_LOAD ? 1 : 0) << V_HEAD_LOAD_FLAG_OFFSET |
+         (pipe == V_PIPE_SIMD ? 1 : 0) << V_HEAD_SIMD_FLAG_OFFSET;
+}
+
+template <typename T>
+union Scalar {
+  T val;
+  uint32_t encode;
+};
 
 struct vUnary {
   uint64_t xd;
@@ -181,7 +190,7 @@ struct vUnary {
   // pc[0]: xd
   // pc[1]: xn(18) << 32 | repeat(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vUnary &op) {
-    op.xd = head >> V_HEAD_EXT_OFFSET;
+    op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.repeat = data & 0xfffful;
     op.xn = data >> 32;
@@ -203,7 +212,7 @@ struct vRemovePad {
   // pc[0]: xd
   // pc[1]: xn(18) << 46 | rs(8) << 32 | iter_num(16) << 16 | repeat(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vRemovePad &op) {
-    op.xd = head >> V_HEAD_EXT_OFFSET;
+    op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.repeat = data & 0xfffful;
     op.iter_num = (data >> 16) & 0xfffful;
@@ -218,31 +227,51 @@ struct vRemovePad {
   }
 };
 
-template<typename T>
+template <typename T>
 struct vBinaryS {
-  uint64_t head; // ext: xd(18) << 18 | xn(18)
-  T scalar;
-  uint32_t data; // rs(4) << 18 | repeat(18)
-}INSN_ATTR;
+  uint64_t xn;
+  uint64_t xd;
+  uint64_t repeat;
+  Scalar<T> scalar;
+  // pc[0]: xn
+  // pc[1]: xd(18) << 16 | repeat(16)
+  // pc[2]: scalar
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBinaryS &op) {
+    uint64_t data1 = pc[1];
+    op.repeat = data1 & 0xfffful;
+    op.xd = (data1 >> 16) & V_X_MASK;
+    op.scalar.encode = pc[2];
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryS &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[1] = op.xd << 16 | op.repeat;
+    pc[2] = op.scalar.encode;
+    return size;
+  }
+} INSN_ATTR;
 
 struct vBinary {
   uint64_t xd;
   uint64_t xn;
   uint64_t xm;
   uint64_t repeat;
-  // pc[0]: xd(18) << 18 | xn(18)
+  // pc[0]: xn(18)
   // pc[1]: xm(18) << 32 | repeat(16)
+  // pc[2]: xd(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBinary &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
+    op.xd = pc[2];
     uint64_t data = pc[1];
     op.xm = data >> 32;
     op.repeat = data & 0xfffful;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinary &op) {
-    uint32_t size = 2;
-    pc[0] = vMakeHead(id, op.xd << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    uint32_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.xm << 32 | op.repeat;
+    pc[2] = op.xd;
     return size;
   }
 };
@@ -265,32 +294,69 @@ struct vCompare {
   uint64_t repeat;
   // pc[0]: xd << 18 | xn
   // pc[1]: xm(18) << 32 | op(16) << 16 | repeat(16)
+  // pc[2]: xd
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCompare &op) {
     uint64_t data1 = pc[1];
     op.repeat = data1 & 0xfffful;
     op.type = (data1 >> 16) & 0xfffful;
     op.xm = data1 >> 32;
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
+    op.xd = pc[2];
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCompare &op) {
-    uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xd << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.xm << 32 | op.type << 16 | op.repeat;
+    pc[2] = op.xd;
     return size;
   }
 };
 
 template <typename T>
 struct vBroadcastS {
-  uint64_t head; // ext: xd(18)
-  T scalar;
-  uint32_t data;  // rs(4) << 16) | repeat(18)
-}INSN_ATTR;
+  uint64_t xd;
+  uint64_t repeat;
+  Scalar<T> scalar;
+  // pc[0]: xd
+  // pc[1]: val << 32 | repeat
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastS &op) {
+    uint64_t data1 = pc[1];
+    op.repeat = data1 & 0xfffful;
+    op.scalar.encode = data1 >> 32;
+    op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastS &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+    pc[1] = (uint64_t)op.scalar.encode << 32 | op.repeat;
+    return size;
+  }
+} INSN_ATTR;
 
-struct vSelect { //16B
-  uint64_t head; // ext: xd(18) << 18 | xn(18)
-  uint64_t data; // rs (4) << 60 | repeat(18) << 36 | xm(18) << 18 | cond(18)
+struct vSelect { //24B
+  uint64_t xn;
+  uint64_t xd;
+  uint64_t repeat;
+  uint64_t xm; 
+  uint64_t cond;
+  // pc[0]: xn
+  // pc[1]: repeat(16) << 48 | xm(18) << 18 | cond(18)
+  // pc[2]: xd
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSelect &op) {
+    uint64_t data1 = pc[1];
+    op.repeat = (data1 >> 48) & 0xfffful;
+    op.xm = (data1 >> 18) & V_X_MASK;
+    op.cond = data1 & V_X_MASK;
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.xd = pc[2];
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSelect &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[1] = op.repeat << 48 | op.xm << 18 | op.cond;
+    pc[2] = op.xd;
+    return size;
+  }
 }INSN_ATTR;
 
 // [iter_num, lead_num, repeat*simd_width] = Broadcast([iter_num, lead_num + pad, 1])
@@ -300,20 +366,22 @@ struct vBroadcastX {
   uint64_t repeat;
   uint64_t lead_num;
   uint64_t iter_num;
-  // pc[0]:  xd(18) << 18 | xn(18)
+  // pc[0]:  xn(18)
   // pc[1]:  iter_num(16) << 48 | lead_num(16) << 16 | repeat(16)
+  // pc[2]:  xd
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastX &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
     uint64_t data = pc[1];
     op.repeat = data & 0xfffful;
     op.lead_num = (data >> 16) & 0xfffful;
     op.iter_num = data >> 48;
+    op.xd = pc[2];
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastX &op) {
-    uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xd << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.iter_num << 48 | op.lead_num << 16 | op.repeat;
+    pc[2] = op.xd;
     return size;
   }
 };
@@ -325,8 +393,9 @@ struct vBroadcastY {
   uint64_t iter_num;
   uint64_t dup_num;
   uint64_t dup_stride;
-  // pc[0]:  xd(18) << 18 | xn(18)
+  // pc[0]:  xn(18)
   // pc[1]:  iter_num(16) << 48 | dup_num(16) << 16 | dup_stride(16)
+  // pc[2]:  xd
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastY &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
@@ -334,11 +403,13 @@ struct vBroadcastY {
     op.dup_stride = data & 0xfffful;
     op.dup_num = (data >> 16) & 0xfffful;
     op.iter_num = data >> 48;
+    op.xd = pc[2];
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastY &op) {
-    uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xd << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.iter_num << 48 | op.dup_num << 16 | op.dup_stride;
+    pc[2] = op.xd;
     return size;
   }
 };
@@ -352,27 +423,30 @@ struct vReduceX {
   uint64_t dup_size;
   uint64_t dup_pad;
   uint64_t dup_block;
-  // pc[0]: xd << 18 | xn
+  // pc[0]: xn
   // pc[1]: dup_size(16) << 32 | red_tail(16) << 16 | red_size(16)
-  // pc[2]: dup_pad << 16 | dup_block
+  // pc[2]: xd << 32 | dup_pad << 16 | dup_block
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vReduceX &op) {
     uint64_t data1 = pc[1];
     op.red_size = data1 & 0xfffful;
     op.red_tail = (data1 >> 16) & 0xfffful;
     op.dup_size = data1 >> 32;
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
+    op.xd = pc[2] >> 32;
+  }
+  __aicore_inline__ uint64_t GetXd(bcodeptr_t pc, vReduceX &op) {
+    return pc[2] >> 32;
   }
   __aicore_inline__ void DecodeBlock(bcodeptr_t pc, vReduceX &op) {
     uint64_t data2 = pc[2];
     op.dup_block = data2 & 0xfffful;
-    op.dup_pad = data2 >> 16;
+    op.dup_pad = (data2 >> 16) & 0xfffful;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vReduceX &op) {
     uint64_t size = 3;
-    pc[0] = vMakeHead(id, op.xd << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.dup_size << 32 | op.red_tail << 16 | op.red_size;
-    pc[2] = op.dup_pad << 16 | op.dup_block;
+    pc[2] = op.xd << 32 | op.dup_pad << 16 | op.dup_block;
     return size;
   }
 };
@@ -385,8 +459,9 @@ struct vReduceY {
   uint64_t red_size;
   uint64_t red_tail;
   uint64_t dup_num;
-  // pc[0]: xd << 18 | xn
+  // pc[0]: xn
   // pc[1]: dup_num(16) << 48 | red_tail(16) << 16 | red_size(16) << 16 | iter_size(16)
+  // pc[2]: xd
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vReduceY &op) {
     uint64_t data = pc[1];
     op.iter_size = data & 0xfffful;
@@ -394,19 +469,36 @@ struct vReduceY {
     op.red_tail = (data >> 32) & 0xfffful;
     op.dup_num = data >> 48;
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
+    op.xd = pc[2];
+  }
+  __aicore_inline__ uint64_t GetXd(bcodeptr_t pc, vReduceY &op) {
+    return pc[2];
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vReduceY &op) {
-    uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xd << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.dup_num << 48 | op.red_tail << 32 | op.red_size << 16 | op.iter_size;
+    pc[2] = op.xd;
     return size;
   }
 }INSN_ATTR;
 
 struct vCopy {
-  uint64_t head;  // ext: xd(18) << 18 | xn(18)
+  uint64_t xd;
+  uint64_t xn;
   uint64_t config;
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCopy &op) {
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.config = pc[1];
+    op.xd = pc[2];
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCopy &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeHead(V_COPY, op.xn, size, V_PIPE_SIMD);
+    pc[1] = op.config;
+    pc[2] = op.xd;
+    return size;
+  }
 } INSN_ATTR;
 
 // [iter_num, iter_size/iter_stride]
@@ -419,7 +511,7 @@ struct vClearPad {
   // pc[0]: xd
   // pc[1]: simd_width(8) << 48 | iter_stride(16) << 32 | iter_size(16) << 16 | iter_num(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vClearPad &op) {
-    op.xd = head >> V_HEAD_EXT_OFFSET;
+    op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.simd_width = data >> 48;
     op.iter_stride = (data >> 32) & 0xfffful;
@@ -485,24 +577,24 @@ struct vSliceLoad {
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceLoad &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
-    op.tile_stride = head >> (V_HEAD_EXT_OFFSET + 18);
     uint64_t data = pc[2];
     op.src_n = data & 0xfffful;
     op.src_m = (data >> 16) & 0xfffful;
     op.slice_n = (data >> 32) & 0xfffful;
     op.slice_m = (data >> 48) & 0xfffful;
     data = pc[3];
-    op.type_size = data & 0xfffful;
+    op.type_size = data & 0xfful;
+    op.tile_stride = (data >> 8) & 0xfffffful;
     op.pad_size = (data >> 32) & 0xfffful;
     op.slice_k = (data >> 48) & 0xfffful;
   }
 
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSliceLoad &op) {
     uint64_t size = 4;
-    pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, V_PIPE_LOAD);
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_m << 48 | op.slice_n << 32 | op.src_m << 16 | op.src_n;
-    pc[3] = op.slice_k << 48 | op.pad_size << 32 | op.type_size;
+    pc[3] = op.slice_k << 48 | op.pad_size << 32 | op.tile_stride << 8 | op.type_size;
     return size;
   }
 };
@@ -603,7 +695,7 @@ struct vElementAny {
   uint64_t tail_size;
 
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vElementAny &op) {
-    op.xd = (head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) & V_X_MASK;
+    op.xd = pc[2];
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.rs = data >> 60;
@@ -613,10 +705,10 @@ struct vElementAny {
   }
 
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vElementAny &op) {
-    uint64_t size = 2;
-    uint64_t ext = op.xd << V_X_BITS | op.xn;
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_SIMD);
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
     pc[1] = op.rs << 60 | op.tail_size  << 32 | op.iter_size << 16 | op.repeat;
+    pc[2] = op.xd;
     return size;
   }
 }INSN_ATTR;

@@ -400,12 +400,12 @@ int NDStore::Emit(Code &code) {
 }
 
 int CopyOp::Emit(Code &code) {
-  vCopy *op = reinterpret_cast<vCopy*>(insn_);
-  uint64_t ext = xbuf_ << V_X_BITS | lhs_->xbuf_;
-  op->head = vMakeHead(V_COPY, ext, sizeof(vCopy) / sizeof(uint64_t), V_PIPE_SIMD);
+  vCopy op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
   uint64_t lenburst = GetBlocks(strides_.back());
-  op->config = DMAConfig(0, 1, lenburst, 0, 0);
-  return sizeof(vCopy) / sizeof(uint64_t);
+  op.config = DMAConfig(0, 1, lenburst, 0, 0);
+  return vCopy::Encode(insn_, V_COPY, op);
 }
 
 void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -544,14 +544,12 @@ BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
 
 template <typename T>
 int BinaryScalarOp<T>::Emit(Code &code) {
-  vBinaryS<T> *op = reinterpret_cast<vBinaryS<T> *>(insn_);
-  uint64_t ext = xbuf_ << V_X_BITS | lhs_->xbuf_;
-  op->head = vMakeHead(id_, ext, sizeof(vBinaryS<T>) / sizeof(uint64_t), V_PIPE_SIMD);
-  uint64_t rs = GetBlocks(code.simd_width_);
-  int64_t repeat = strides_.back() / code.simd_width_;
-  op->data = rs << 18 | repeat;
-  op->scalar = scalar_;
-  return sizeof(vBinaryS<T>) / sizeof(uint64_t);
+  vBinaryS<T> op;
+  op.xn = lhs_->xbuf_;
+  op.xd = xbuf_;
+  op.repeat = strides_.back() / code.simd_width_;
+  op.scalar.val = scalar_;
+  return vBinaryS<T>::Encode(insn_, id_, op);
 }
 
 template class BinaryScalarOp<float>;
@@ -683,14 +681,14 @@ int BinaryOp::Emit(Code &code) {
 }
 
 int SelectOp::Emit(Code &code) {
-  vSelect *op = reinterpret_cast<vSelect *>(insn_);
-  uint64_t ext = xbuf_ << V_X_BITS | lhs_->xbuf_;
+  vSelect op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_SEL_FP16, V_NONE, V_SEL, V_SEL_INT32};
-  op->head = vMakeHead(id_list[type_id_], ext, sizeof(vSelect) / sizeof(uint64_t), V_PIPE_SIMD);
-  uint64_t stride = GetBlocks(code.simd_width_);
-  int64_t repeat = strides_.back() / code.simd_width_;
-  op->data = stride << 60 | repeat << 36 | rhs_->xbuf_ << 18 | cond_->xbuf_;
-  return sizeof(vSelect) / sizeof(uint64_t);
+  op.repeat = strides_.back() / code.simd_width_;
+  op.xm = rhs_->xbuf_;
+  op.cond =  cond_->xbuf_;
+  return vSelect::Encode(insn_, id_list[type_id_], op);
 }
 
 void _BroadcastOp::FoldProp(PropRange &range) {
@@ -809,14 +807,12 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
 
 template <typename T>
 int BroadcastScalarOp<T>::Emit(Code &code) {
-  vBroadcastS<T> *op = reinterpret_cast<vBroadcastS<T> *>(insn_);
+  vBroadcastS<T> op;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_S_FP16, V_NONE, V_BROADCAST_S, V_BROADCAST_S_INT32};
-  op->head = vMakeHead(id_list[type_id_], xbuf_, sizeof(vBroadcastS<T>) / sizeof(uint64_t), V_PIPE_SIMD);
-  op->scalar = scalar_;
-  uint64_t stride = GetBlocks(code.simd_width_);
-  int64_t repeat = strides_.back() / code.simd_width_;
-  op->data = stride << 18 | repeat;
-  return sizeof(vBroadcastS<T>) / sizeof(uint64_t);
+  op.scalar.val = scalar_;
+  op.xd = xbuf_;
+  op.repeat = strides_.back() / code.simd_width_;
+  return vBroadcastS<T>::Encode(insn_, id_list[type_id_], op);
 }
 
 template class BroadcastScalarOp<float>;

@@ -1178,6 +1178,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->gm_a = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(lhs_)->src_);
   op->gm_b = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(rhs_)->src_);
   op->gm_c = reinterpret_cast<uint64_t>(static_cast<NDStore*>(output_)->dst_);
+  op->transpose = trans_a_ << 16 | trans_b_;
   op->m0 = 1;
   op->n0 = 1;
   op->k0 = 1;

@@ -725,7 +725,7 @@ struct vCubeOp {
   uint32_t op_type;
   uint32_t m, n, k;
   uint32_t m0, n0, k0;
-  uint32_t reserved;
+  uint32_t transpose;
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;

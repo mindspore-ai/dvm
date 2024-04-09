@@ -29,6 +29,8 @@ class MatMul {
     m0 = op->m0;
     n0 = op->n0;
     k0 = op->k0;
+    trans_a = op->transpose >> 16;
+    trans_b = op->transpose & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
     k0_part_len = L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16;
     n0_col = (n + n0 - 1) / n0;
@@ -36,67 +38,127 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *dst, __gm__ T *src, int64_t midx, int64_t kidx) {
     // load GM to L1: ND -> zN
-    copy_gm_to_cbuf_multi_nd2nz_b16(
-      dst,
-      src + midx * m0 * k + kidx * k0,
-      0,                                 // sid
-      1,                                 // ndNum
-      m0,                                // nValue
-      k0,                                // dValue
-      0,                                 // srcNdMatrixStride, unused if nd_num=1
-      k,                                 // srcDValue
-      m0,                                // dstNzC0Stride
-      1,                                 // dstNzNStride
-      0                                  // dstNzMatrixStride, unused if nd_num=1
-    );
+    if (trans_a) {
+      copy_gm_to_cbuf_multi_nd2nz_b16(
+        dst,
+        src + kidx * k0 * m + midx * m0,
+        0,                                 // sid
+        1,                                 // ndNum
+        k0,                                // nValue
+        m0,                                // dValue
+        0,                                 // srcNdMatrixStride, unused if nd_num=1
+        m,                                 // srcDValue
+        k0,                                // dstNzC0Stride
+        1,                                 // dstNzNStride
+        0                                  // dstNzMatrixStride, unused if nd_num=1
+      );
+    } else {
+      copy_gm_to_cbuf_multi_nd2nz_b16(
+        dst,
+        src + midx * m0 * k + kidx * k0,
+        0,                                 // sid
+        1,                                 // ndNum
+        m0,                                // nValue
+        k0,                                // dValue
+        0,                                 // srcNdMatrixStride, unused if nd_num=1
+        k,                                 // srcDValue
+        m0,                                // dstNzC0Stride
+        1,                                 // dstNzNStride
+        0                                  // dstNzMatrixStride, unused if nd_num=1
+      );
+    }
   }
 
   __force_inline__ __aicore__ void LoadB(__cbuf__ T *dst, __gm__ T *src, int64_t kidx, int64_t nidx) {
     // load GM to L1: ND -> zN
-    copy_gm_to_cbuf_multi_nd2nz_b16(
-      dst,
-      src + kidx * k0 * n + nidx * n0,
-      0,                                 // sid
-      1,                                 // ndNum
-      k0,                                // nValue
-      n0,                                // dValue
-      0,                                 // srcNdMatrixStride, unused if nd_num=1
-      k,                                 // srcDValue
-      k0,                                // dstNzC0Stride
-      1,                                 // dstNzNStride
-      0                                  // dstNzMatrixStride, unused if nd_num=1
-    );
+    if (trans_b) {
+      copy_gm_to_cbuf_multi_nd2nz_b16(
+        dst,
+        src + nidx * n0 * k + kidx * k0,
+        0,                                 // sid
+        1,                                 // ndNum
+        n0,                                // nValue
+        k0,                                // dValue
+        0,                                 // srcNdMatrixStride, unused if nd_num=1
+        n,                                 // srcDValue
+        n0,                                // dstNzC0Stride
+        1,                                 // dstNzNStride
+        0                                  // dstNzMatrixStride, unused if nd_num=1
+      );
+    } else {
+      copy_gm_to_cbuf_multi_nd2nz_b16(
+        dst,
+        src + kidx * k0 * n + nidx * n0,
+        0,                                 // sid
+        1,                                 // ndNum
+        k0,                                // nValue
+        n0,                                // dValue
+        0,                                 // srcNdMatrixStride, unused if nd_num=1
+        k,                                 // srcDValue
+        k0,                                // dstNzC0Stride
+        1,                                 // dstNzNStride
+        0                                  // dstNzMatrixStride, unused if nd_num=1
+      );
+    }
   }
 
   __force_inline__ __aicore__ void LoadL0A(__ca__ T *dst, __cbuf__ T *src, int64_t total_k, int64_t k_part) {
     // load L1 to L0A: zN -> zZ
-    for (size_t i = 0; i < m0 / BLOCK_SIZE; i++) {
-      load_cbuf_to_ca(
-        dst + i * BLOCK_SIZE * k0 / total_k,
-        src + m0 * k0 / total_k * k_part + i * BLOCK_SIZE * BLOCK_SIZE,
-        0,
-        k0 / total_k / BLOCK_SIZE,       // repeat: number of fractal
-        m0 / BLOCK_SIZE,                 // srcstride: number of fractal
-        0,                               // dststride: number of fractal
-        0,
-        false, //transpose
-        inc);
+    if (trans_a) {
+      for (size_t i = 0; i < m0 / BLOCK_SIZE; i++) {
+        load_cbuf_to_ca(
+          dst + i * BLOCK_SIZE * k0 / total_k,
+          src + i * k0 * BLOCK_SIZE + k0 / total_k * k_part * BLOCK_SIZE,
+          0,
+          k0 / total_k / BLOCK_SIZE,       // repeat: number of fractal
+          1,                               // srcstride: number of fractal
+          0,                               // dststride: number of fractal
+          0,
+          true,                            // transpose
+          inc);
+      }
+    } else {
+      for (size_t i = 0; i < m0 / BLOCK_SIZE; i++) {
+        load_cbuf_to_ca(
+          dst + i * BLOCK_SIZE * k0 / total_k,
+          src + m0 * k0 / total_k * k_part + i * BLOCK_SIZE * BLOCK_SIZE,
+          0,
+          k0 / total_k / BLOCK_SIZE,       // repeat: number of fractal
+          m0 / BLOCK_SIZE,                 // srcstride: number of fractal
+          0,                               // dststride: number of fractal
+          0,
+          false,                           // transpose
+          inc);
+      }
     }
   }
 
   __force_inline__ __aicore__ void LoadL0B(__cb__ T *dst, __cbuf__ T *src, int64_t total_k, int64_t k_part) {
     // load L1 to L0A: zN -> nZ
-    for (size_t i = 0; i < k0 / total_k / BLOCK_SIZE; i++) {
+    if (trans_b) {
       load_cbuf_to_cb(
-        dst + i * BLOCK_SIZE * n0,
-        src + (k0 / total_k * k_part + i * BLOCK_SIZE) * BLOCK_SIZE,
+        dst,
+        src + k_part * k0 / total_k * n0,
         0,
-        n0 / BLOCK_SIZE,                 // repeat: number of fractal
-        k0 / BLOCK_SIZE,                 // srcStride: number of fractal
-        0,                               // dstStride: number of fractal
+        k0 * n0 / BLOCK_SIZE / BLOCK_SIZE, // repeat: number of fractal
+        1,                                 // srcStride: number of fractal
+        0,                                 // dstStride: number of fractal
         0,
-        true, //transpose
+        false,                             // transpose
         inc);
+    } else {
+      for (size_t i = 0; i < k0 / total_k / BLOCK_SIZE; i++) {
+        load_cbuf_to_cb(
+          dst + i * BLOCK_SIZE * n0,
+          src + (k0 / total_k * k_part + i * BLOCK_SIZE) * BLOCK_SIZE,
+          0,
+          n0 / BLOCK_SIZE,                 // repeat: number of fractal
+          k0 / BLOCK_SIZE,                 // srcStride: number of fractal
+          0,                               // dstStride: number of fractal
+          0,
+          true,                            // transpose
+          inc);
+      }
     }
   }
 
@@ -141,7 +203,8 @@ class MatMul {
   uint64_t k0_part_len;
   uint64_t m, n, k;
   uint64_t m0, n0, k0;
-  
+  bool trans_a;
+  bool trans_b;
 };
 
 template <typename M, typename T>
@@ -258,19 +321,17 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *op, uint64_t tile_begin, uint64_t 
 
 extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
-  if (config == 0) { // only for compile
-    uint64_t last_tile = config >> 40;
-    uint64_t tile_per_block = (last_tile + block_num) / block_num;
-    uint64_t tile_start = tile_per_block * block_idx;
-    uint64_t tile_end = tile_start + tile_per_block - 1;
-    if (tile_end >= last_tile) {
-      tile_end = last_tile;
-    }
-    if (tile_start >= last_tile) {
-      tile_start = tile_end + 1;
-    }
-    __gm__ vCubeOp *op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
-    CutMKN<MatMul<half>, half>(op, tile_start, tile_end);
+  uint64_t last_tile = config >> 40;
+  uint64_t tile_per_block = (last_tile + block_num) / block_num;
+  uint64_t tile_start = tile_per_block * block_idx;
+  uint64_t tile_end = tile_start + tile_per_block - 1;
+  if (tile_end >= last_tile) {
+    tile_end = last_tile;
   }
+  if (tile_start >= last_tile) {
+    tile_start = tile_end + 1;
+  }
+  __gm__ vCubeOp *op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
+  CutMKN<MatMul<half>, half>(op, tile_start, tile_end);
   pipe_barrier(PIPE_ALL);
 }

@@ -80,7 +80,7 @@ class MatMul {
         n0,                                // nValue
         k0,                                // dValue
         0,                                 // srcNdMatrixStride, unused if nd_num=1
-        n,                                 // srcDValue
+        k,                                 // srcDValue
         n0,                                // dstNzC0Stride
         1,                                 // dstNzNStride
         0                                  // dstNzMatrixStride, unused if nd_num=1
@@ -94,7 +94,7 @@ class MatMul {
         k0,                                // nValue
         n0,                                // dValue
         0,                                 // srcNdMatrixStride, unused if nd_num=1
-        k,                                 // srcDValue
+        n,                                 // srcDValue
         k0,                                // dstNzC0Stride
         1,                                 // dstNzNStride
         0                                  // dstNzMatrixStride, unused if nd_num=1
@@ -140,7 +140,7 @@ class MatMul {
         dst,
         src + k_part * k0 / total_k * n0,
         0,
-        k0 * n0 / BLOCK_SIZE / BLOCK_SIZE, // repeat: number of fractal
+        k0 / total_k * n0 / BLOCK_SIZE / BLOCK_SIZE, // repeat: number of fractal
         1,                                 // srcStride: number of fractal
         0,                                 // dstStride: number of fractal
         0,

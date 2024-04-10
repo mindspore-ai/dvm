@@ -883,7 +883,7 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       xn = next_xn;
       xd = next_xd;
     }
-    xn = xd = (__ubuf__ float*)(vReduceX::GetXd(pc, op));
+    xn = xd = (__ubuf__ float*)(vReduceX::GetXd(pc, head));
     pipe_barrier(PIPE_V);
   }
   vReduceX::DecodeBlock(pc, op);
@@ -943,7 +943,7 @@ __aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       xn += dup_stride;
       pipe_barrier(PIPE_V);
     } // end for dup
-    xn = xd = (__ubuf__ float*)(vReduceY::GetXd(pc, op));
+    xn = xd = (__ubuf__ float*)(vReduceY::GetXd(pc, head));
   } // end while iter_num
 }
 
@@ -1173,8 +1173,8 @@ static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   __bcode__ vStore * __restrict__ op = (__bcode__ vStore*)pc;
   uint64_t config = op->config;
   uint64_t iter_body = config & V_X_MASK;
-  __ubuf__ uint8_t *src = (__ubuf__ uint8_t*)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
-  uint64_t tile_stride = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
+  __ubuf__ uint8_t *src = (__ubuf__ uint8_t*)(vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS)));
+  uint64_t tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
   uint64_t tile_idx = TileIdx(tile);
   __gm__ uint8_t *dst = (__gm__ uint8_t*)op->to + tile_stride * tile_idx;
   if (IsLastTile(tile)) {
@@ -1269,12 +1269,13 @@ static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t t
 }
 
 __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
-  __bcode__ vStoreStatus * __restrict__ op = (__bcode__ vStoreStatus *)pc;
-  __ubuf__ uint32_t *x = (__ubuf__ uint32_t *)((head >> V_HEAD_EXT_OFFSET) & V_X_MASK);
+  vStoreStatus op;
+  vStoreStatus::Decode(pc, head, op);
+  __ubuf__ uint32_t *x = (__ubuf__ uint32_t *)(op.xn);
   set_flag(PIPE_V, PIPE_S, EVENT_ID0);
   wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
   if (static_cast<uint32_t>(*x) != 0) {
-    copy_ubuf_to_gm(op->to, (__ubuf__ void *)x, 0, 1, 1, 0, 0);
+    copy_ubuf_to_gm((__gm__ void *)op.to, (__ubuf__ void *)x, 0, 1, 1, 0, 0);
   }
 }
 
@@ -1283,7 +1284,7 @@ __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
 #ifdef AICORE_ARCH_C220
 typedef void (*OpFunc) (__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
 __aicore_inline__ uint8_t *GetFunc(uint64_t head, uint8_t *base_addr) {
-  return (head >> (V_HEAD_EXT_OFFSET + V_X_BITS)) + base_addr;
+  return (head >> V_HEAD_ID_OFFSET) + base_addr;
 }
 #else
 static __noinline__ [aicore] void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1441,10 +1442,11 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     uint64_t head = *pc;
     if (head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
       preload(GetFunc(head, main_addr), 1);
-    } else if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) == V_EXIT){
-      break;
+      pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
+    } else {
+      if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) == V_EXIT) break;
+      pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
     }
-    pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
   }
 #endif
   for (uint64_t tile = tile_start; tile <= tile_end; ++tile) {
@@ -1475,6 +1477,7 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
         if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
           set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
         }
+        pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
       } else if (head & (0x1ul << V_HEAD_LOAD_FLAG_OFFSET)) {
         switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
           DISPATCH(V_LOAD, Load(pc, head, tile));
@@ -1484,13 +1487,14 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           default:
             goto INSN_END;
         }
-        if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
-          event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+        if (head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) {
+          event_t event = event_t((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           set_flag(PIPE_MTE2, PIPE_V, event);
         }
+        pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
       } else {
-        if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
-          event_t event = event_t((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+        if (head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) {
+          event_t event = event_t((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           wait_flag(PIPE_V, PIPE_MTE3, event);
         }
         switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
@@ -1501,8 +1505,8 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           default:
             goto INSN_END;
         }
+        pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
       }
-      pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
     }
   INSN_END:
     wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
@@ -1511,7 +1515,7 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
 }
 
 #ifdef AICORE_ARCH_C220
-#define DEF_DISP_FUNC(OP, func)  __attribute__((used)) static __noinline__ [aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
+#define DEF_DISP_FUNC(OP, func)  extern "C" __noinline__ [aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
 DEF_DISP_FUNC(V_COPY, Copy(pc, head))
 DEF_DISP_FUNC(V_BROADCAST_X, BroadcastX<float>(pc, head, tile))
 DEF_DISP_FUNC(V_BROADCAST_Y, BroadcastY(pc, head))

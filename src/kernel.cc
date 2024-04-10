@@ -232,8 +232,8 @@ class CodeGenHelper {
     uint64_t event = load_vector_event;
     load_vector_event = (load_vector_event + 1) % DeviceInfo::Instance().EventNum();
     load_vector_sync = from_pipe_idx;
-    *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET;
-    *from_insn |= event << V_HEAD_SET_EVENT_OFFSET;
+    *from_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET;
+    *from_insn |= event << V_M_HEAD_SET_EVENT_OFFSET;
     *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET;
     *to_insn |= event << V_HEAD_WAIT_EVENT_OFFSET;
   }
@@ -248,8 +248,8 @@ class CodeGenHelper {
     vector_store_sync = from_pipe_idx;
     *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET;
     *from_insn |= event << V_HEAD_SET_EVENT_OFFSET;
-    *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET;
-    *to_insn |= event << V_HEAD_WAIT_EVENT_OFFSET;
+    *to_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET;
+    *to_insn |= event << V_M_HEAD_WAIT_EVENT_OFFSET;
   }
 
   uint32_t xbuf_size_{0};

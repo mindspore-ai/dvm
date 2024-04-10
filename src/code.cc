@@ -23,6 +23,8 @@
 #endif
 #include "code.h"
 
+extern uint64_t g_simd_func_offset[];
+
 namespace dvm {
 namespace {
 std::string GetSocName() {
@@ -139,8 +141,8 @@ void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStore *op = reinterpret_cast<vStore *>(dump_info.insn);
-  auto tile_stride = dump_info.ext >> V_X_BITS;
-  auto xn = dump_info.ext & V_X_MASK;
+  auto tile_stride = dump_info.ext >> V_C_X_BITS;
+  auto xn = vDeCompactX(vGetBitRange(dump_info.ext, 0, V_C_X_BITS));
   auto lead_tiling = op->config >> 62;
   auto pad_size = (op->config >> 54) & 0xfful;
   auto iter_size = (op->config >> 36) & V_X_MASK;
@@ -176,9 +178,9 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
 }
 
 void DumpStoreStatus(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vStoreStatus *op = reinterpret_cast<vStoreStatus *>(dump_info.insn);
-  auto xn = dump_info.ext & V_X_MASK;
-  oss << "store_status." << reinterpret_cast<void *>(op->to) << ", " << reinterpret_cast<void *>(xn);
+  vStoreStatus op;
+  vStoreStatus::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "store_status." << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
 void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
@@ -415,10 +417,17 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
 size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
   uint64_t head = *insn;
   uint64_t id = (head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK;
-  uint64_t ext = (head >> V_HEAD_EXT_OFFSET) & V_HEAD_EXT_MASK;
-  uint64_t offset = (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
-  DumpInfo info{insn, ext, simd_width};
+  uint64_t offset = 0;
   if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
+    uint64_t ext = (head >> V_HEAD_EXT_OFFSET) & V_HEAD_EXT_MASK;
+    offset = (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
+    DumpInfo info{insn, ext, simd_width};
+    for (uint64_t i = 0; i < V_NONE; ++i) {
+      if (g_simd_func_offset[i] == id) {
+        id = i;
+        break;
+      }
+    }
     if (op_dump_info_table.find(id) != op_dump_info_table.end()) {
       auto [dump_func, name, dtype_str] = op_dump_info_table[id];
       oss << name << "." << dtype_str << ".";
@@ -428,6 +437,9 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
       DumpVal("id", id, oss);
     }
   } else if (head & (1ul << V_HEAD_LOAD_FLAG_OFFSET)) {
+    uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
+    offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
+    DumpInfo info{insn, ext, simd_width};
     if (load_dump_func_table.find(id) != load_dump_func_table.end()) {
       load_dump_func_table[id](info, oss);
     } else {
@@ -435,6 +447,9 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
       DumpVal("id", id, oss);
     }
   } else {
+    uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
+    offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
+    DumpInfo info{insn, ext, simd_width};
     if (store_dump_func_table.find(id) != store_dump_func_table.end()) {
       store_dump_func_table[id](info, oss);
     } else {
@@ -446,64 +461,52 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
 }
 
 void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
-  unsigned char *insn = bcode;
-  unsigned char *insn_end = bcode + bcode_size;
-  std::vector<std::pair<uint64_t*, std::string>> insn_dump;
+  bcodeptr_t insn = reinterpret_cast<bcodeptr_t>(bcode);
+  bcodeptr_t insn_end = reinterpret_cast<bcodeptr_t>(bcode + bcode_size);
+  uint64_t insn_idx = 0;
   while (insn < insn_end) {
-    auto op = reinterpret_cast<uint64_t*>(insn);
-    std::ostringstream os;
-    size_t offset = DumpInsn(op, simd_width, os);
-    if (offset == 0) {
-      break;
-    }
-    insn_dump.emplace_back(std::make_pair(op, os.str()));
-    insn = insn + offset*8;
-  }
-  auto find_wait = [&insn_dump](bool is_simd, uint64_t event, int from_idx) -> int {
-    for (size_t i = from_idx; i < insn_dump.size(); ++i){
-      auto head = *(insn_dump[i].first);
-      if (is_simd != bool(head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) &&
-          (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) && 
-          (((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) == event))
-        return i;
-    }
-    return -1;
-  }; 
-  std::unordered_map<int, int> wait_map;
-  for (size_t i = 0; i < insn_dump.size(); ++i) {
-    auto &dump = insn_dump[i];
-    auto head = *(dump.first);
-    bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
-    bool simd_flag = bool(head & (1ul << V_HEAD_SIMD_FLAG_OFFSET));
-    oss << indent << i << ": " << dump.second << std::endl;
+    auto head = *insn;
+    oss << indent << insn_idx << ": ";
+    insn_idx++;
+    auto offset = DumpInsn(insn, simd_width, oss);
+    oss << "\n";
     if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) == vLoadInsnID::V_EXIT) break;
-    oss << indent << "  {";
-    if (load_flag) {
-      oss << "load";
-    } else if (simd_flag) {
+    insn = insn + offset;
+    oss <<  "  {";
+    bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
+    if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
       oss << "simd";
+      if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
+        oss << ", bar(1)";
+      }
+      if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
+        oss << ", load_simd_sync(wait, " << int((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
+      if (head & (0x1ul << V_HEAD_BACK_WAIT_OFFSET)) {
+        oss << ", store_simd_sync(wait, " << int((head >> V_HEAD_B_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
+      if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
+        oss << ", simd_store_sync(set, " << int((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
+      if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
+        oss << ", simd_load_sync(set, " << int((head >> V_HEAD_B_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
+    } else if (load_flag) {
+      oss << "load";
+      if (head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) {
+        oss << ", load_simd_sync(set, " << int((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
+      if (head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) {
+        oss << ", simd_load_sync(wait, " << int((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
     } else {
       oss << "store";
-    }
-    if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
-      auto it = wait_map.find(i);
-      int from = it != wait_map.end() ? it->second : -1;
-      oss << ", wait(" << from <<  ", event_" << int((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
-    }
-    if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
-      oss << ", bar(1)";
-    }
-    if (head & (0x1ul << V_HEAD_BACK_WAIT_OFFSET)) {
-      oss << ", wait_prev_store(1)";
-    }
-    if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
-      auto event = (head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK;
-      auto wait_idx = find_wait(simd_flag, event, i + 1);
-      if (wait_idx > 0) wait_map[wait_idx] = i;
-      oss << ", set(" << wait_idx << ", event_"<< event << ")";
-    }
-    if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
-      oss << ", set_next_load(1)";
+      if (head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) {
+        oss << ", simd_store_sync(wait, " << int((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
+      if (head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) {
+        oss << ", store_simd_sync(set, " << int((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
+      }
     }
     oss << " }" << std::endl;
   }
@@ -528,6 +531,9 @@ DeviceInfo::DeviceInfo() {
     local_mem_size_ = 256 * 1024;
     event_num_ = 4;
     core_num_ = 32;
+    for (int i = 0; i < V_NONE; ++i) {
+      g_simd_func_offset[i] = i;
+    }
   }
   ub_workspace_size_ = 1024;
 }

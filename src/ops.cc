@@ -313,11 +313,11 @@ int NDStore::Emit(Code &code) {
   ASSERT(lead_align == static_cast<uint64_t>(lhs_->LeadAlign()));
   uint64_t dst_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   if (lhs_->obj_id_ == kElementAny) {
-    vStoreStatus *op = reinterpret_cast<vStoreStatus *>(insn_);
-    op->to = dst_;
-    op->head = vMakeHead(V_STORE_STATUS, lhs_->xbuf_, sizeof(vStoreStatus) / sizeof(uint64_t), V_PIPE_STORE);
+    vStoreStatus op;
+    op.xn = lhs_->xbuf_;
+    op.to = reinterpret_cast<uint64_t>(dst_);
     reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
-    return sizeof(vStoreStatus) / sizeof(uint64_t);
+    return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);;
   } else if (lhs_->obj_id_ == kReduce || (lhs_->obj_id_ == kRemovePad && lhs_->lhs_->obj_id_ == kReduce)) {
     auto reduce_op = lhs_->obj_id_ == kRemovePad ? lhs_->lhs_ : lhs_;
     auto red_op = static_cast<ReduceOp *>(reduce_op);
@@ -366,7 +366,7 @@ int NDStore::Emit(Code &code) {
     return vDMA::Encode(insn_, vStoreInsnID::V_STORE, vPipe::V_PIPE_STORE, op, nullptr);
   } else {
     vStore *op = reinterpret_cast<vStore*>(insn_);
-    uint64_t ext = (dst_tile_stride_ * ITEM_SIZE[type_id_]) << V_X_BITS | lhs_->xbuf_;
+    uint64_t ext = (dst_tile_stride_ * ITEM_SIZE[type_id_]) << V_C_X_BITS | vCompactX(lhs_->xbuf_);
     op->head = vMakeHead(vStoreInsnID::V_STORE_2, ext, sizeof(vStore) / sizeof(uint64_t), V_PIPE_STORE);
     op->to = dst_;
     uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];

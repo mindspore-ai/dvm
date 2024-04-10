@@ -585,7 +585,7 @@ struct vDMA {
   // pc[2]: tile_stride(32) << 32 | tail_lenburst(16) << 16 | lenburst(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vDMA &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.round_rank = head >> (V_M_HEAD_EXT_OFFSET + 20);
+    op.round_rank = (head >> (V_M_HEAD_EXT_OFFSET + 20)) & 0xful;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
     op.lenburst = data & 0xfffful;

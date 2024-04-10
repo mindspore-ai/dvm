@@ -3,14 +3,16 @@ import dvm
 import pytest
 from dvm.tester import Tester
 
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason = "matmul not support 910a")
-def test_matmul():
+
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+@pytest.mark.parametrize('trans', [[False, False], [False, True], [True, False], [True, True]])
+def test_matmul(trans):
     t = Tester("mix")
-    g0 = np.full([32, 128], 0.1, np.float32)
-    g1 = np.full([128, 64], 0.1, np.float32)
+    g0 = np.random.normal(0, 1, [1024, 1024]).astype(np.float16)
+    g1 = np.random.normal(0, 1, [1024, 1024]).astype(np.float16)
+    expect = np.matmul(g0 if not trans[0] else g0.transpose(), g1 if not trans[1] else g1.transpose())
     a = t.load(g0)
     b = t.load(g1)
-    c = t.matmul(a, b, False, False)
-    t.store(c) #TODO: store_check
-    assert(t.run_check(True))
-
+    c = t.matmul(a, b, trans[0], trans[1])
+    t.store_expect(c, expect)
+    assert (t.run_check())

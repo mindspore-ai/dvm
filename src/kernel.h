@@ -201,14 +201,20 @@ class CubeOp : public NDObject {
  public:
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   int Emit(Code &code) override { return 0; }
+  float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
+  void Tile(vCubeOp *code);
   void CodeGen(vCubeOp *code);
 
   NDObject *output_{nullptr};
   int block_dim_{0};
+  uint64_t core_loop_{0};
 
  protected:
   bool trans_a_{false};
   bool trans_b_{false};
+  int64_t m_{0};
+  int64_t n_{0};
+  int64_t k_{0};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
 };

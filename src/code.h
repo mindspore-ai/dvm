@@ -43,6 +43,11 @@ enum AiCoreArch {
   kAiCore_C220,
 };
 
+enum CoreType {
+  kVector,
+  kCube,
+};
+
 class DeviceInfo {
  public:
   static DeviceInfo &Instance() {
@@ -53,7 +58,12 @@ class DeviceInfo {
   AiCoreArch Arch() const { return arch_; }
   uint64_t LocalMemSize() const { return local_mem_size_; }
   uint64_t UbWorkspaceSize() const { return ub_workspace_size_; }
-  uint64_t CoreNum() const { return core_num_; }
+  uint64_t L2Size() const { return l2_size_; }
+  uint64_t L1Size() const { return l1_size_; }
+  uint64_t L0CSize() const { return l0c_size_; }
+  uint64_t CoreNum(CoreType core_type = kVector) const {
+    return core_type == kVector ? vector_core_num_ : cube_core_num_;
+  }
   uint64_t EventNum() const { return event_num_; }
 
  private:
@@ -61,8 +71,12 @@ class DeviceInfo {
   AiCoreArch arch_;
   uint64_t local_mem_size_;
   uint64_t ub_workspace_size_;
+  uint64_t l2_size_;
+  uint64_t l1_size_;
+  uint64_t l0c_size_;
   uint64_t event_num_;
-  uint64_t core_num_;
+  uint64_t vector_core_num_;
+  uint64_t cube_core_num_;
 };
 
 const uint64_t SIMD_BLOCK_SIZE  = 32;

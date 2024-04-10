@@ -25,6 +25,26 @@
 namespace dvm {
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
 
+constexpr uint32_t FP32_SIZE = 4;
+constexpr uint32_t BLOCK_SIZE = 16;
+constexpr uint32_t AXES_ALIGN_SIZE = 512;
+constexpr uint32_t CUBE_BLOCK_SIZE = 256;
+constexpr uint32_t CONST_512 = 512;
+
+inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
+  if (rnd == 0) {
+      return 0;
+  }
+  return (num + rnd - 1) / rnd * rnd;
+}
+
+inline __attribute__((always_inline)) uint32_t RoundDown(uint32_t num, uint32_t rnd) {
+  if (rnd == 0) {
+    return 0;
+  }
+  return num / rnd * rnd;
+}
+
 class CodeGenHelper {
  public:
   enum CodeGenType {
@@ -1158,31 +1178,101 @@ void VKernelP::DumpKernel(std::ostringstream &oss) {
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
   : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
-  int64_t m = trans_a ? lhs->nd_[0] : lhs->nd_[1];
-  int64_t n = trans_b ? rhs->nd_[1] : rhs->nd_[0];
+  m_ = trans_a ? lhs->nd_[0] : lhs->nd_[1];
+  k_ = trans_a ? lhs->nd_[1] : lhs->nd_[0];
+  n_ = trans_b ? rhs->nd_[1] : rhs->nd_[0];
   if (lhs->nd_.size() == 2 && rhs->nd_.size() == 2) {
-    nd_ = {n, m};
-    shape_ = {m, n};
+    nd_ = {n_, m_};
+    shape_ = {m_, n_};
   } else {
     int64_t batch = lhs->nd_.size() == 3 ? lhs->nd_[2] : rhs->nd_[2];
-    nd_ = {n, m, batch};
-    shape_ = {batch, m, n};
+    nd_ = {n_, m_, batch};
+    shape_ = {batch, m_, n_};
   }
   shape_ref_data_ = shape_;
 }
 
+float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
+  float a_coef = 1.0f;
+  float b_coef = 1.0f;
+  float bw_coef = 5.0f;
+  auto m_loop = CeilDiv(op->m, m0);
+  auto n_loop = CeilDiv(op->n, n0);
+  if (m_loop == 0 || n_loop == 0) {
+    return 1.0f;
+  }
+  auto core_need = m_loop * n_loop;
+  auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
+  auto l2_num = DeviceInfo::Instance().L2Size() / ITEM_SIZE[type_id_];
+  uint32_t block_dim = core_need < core_num ? core_need : core_num;
+  uint32_t m_once = block_dim < n_loop ? m0 : block_dim / n_loop * m0;
+  uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n;
+  if (m_once * op->k > l2_num) {
+      a_coef = bw_coef;
+  }
+  if (n_once * op->k > l2_num) {
+      b_coef = bw_coef;
+  }
+  return 1.0f / (a_coef * static_cast<float>(n0)) + 1.0f / (b_coef * static_cast<float>(m0));
+}
+
+void CubeOp::Tile(vCubeOp *op) {
+  auto pri_flag = m_ < n_ ? false : true;
+  auto m_round = RoundUp(static_cast<uint32_t>(m_), BLOCK_SIZE);
+  auto n_round = RoundUp(static_cast<uint32_t>(n_), BLOCK_SIZE);
+  auto pri_axis = pri_flag ? m_round : n_round;
+  auto axis = pri_flag ? n_round : m_round;
+  auto axis_max = AXES_ALIGN_SIZE / ITEM_SIZE[type_id_];
+  auto pri_axis0_max = pri_axis < axis_max ? pri_axis : axis_max;
+  auto axis0_max = axis < axis_max ? axis : axis_max;
+  auto l0c_num = DeviceInfo::Instance().L0CSize() / FP32_SIZE;
+  uint32_t pri_axis0_init = BLOCK_SIZE;
+  uint32_t axis0_init = BLOCK_SIZE;
+  float min_cost = 1.0f;
+  // m0, n0
+  for (uint32_t pri_axis0 = pri_axis0_init; pri_axis0 <= pri_axis0_max; pri_axis0 *= 2) {
+    for (uint32_t axis0 = axis0_init; axis0 <= axis0_max; axis0 *= 2) {
+      if (pri_axis0 * axis0 > l0c_num) {
+        break;
+      }
+      auto m0 = pri_flag ? pri_axis0 : axis0;
+      auto n0 = pri_flag ? axis0 : pri_axis0;
+      auto cost = CostFunc(op, m0, n0);
+      if (cost < min_cost) {
+        min_cost = cost;
+        op->m0 = m0;
+        op->n0 = n0;
+      }
+    }
+  }
+  // k0
+  uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
+  uint32_t kBlockSize = BLOCK_SIZE;
+  auto l1_ping_pong_num = DeviceInfo::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
+  auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
+  op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
+  if (op->k0 > CONST_512) {
+    op->k0 = RoundDown(op->k0, CONST_512);
+  }
+  if (op->k0 > op->k) {
+    op->k0 = op->k;
+  }
+}
+
 void CubeOp::CodeGen(vCubeOp *op) {
-  op->m = nd_[1];
-  op->n = nd_[0];
-  op->k = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
+  op->m = m_;
+  op->n = n_;
+  op->k = k_;
   op->gm_a = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(lhs_)->src_);
   op->gm_b = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(rhs_)->src_);
   op->gm_c = reinterpret_cast<uint64_t>(static_cast<NDStore*>(output_)->dst_);
   op->transpose = trans_a_ << 16 | trans_b_;
-  op->m0 = 1;
-  op->n0 = 1;
-  op->k0 = 1;
-  block_dim_ = 4;
+  Tile(op);
+  auto m_loop = CeilDiv(op->m, op->m0);
+  auto n_loop = CeilDiv(op->n, op->n0);
+  core_loop_ = m_loop * n_loop;
+  auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
+  block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
 }
 
 MixKernel::~MixKernel() {
@@ -1220,6 +1310,8 @@ void MixKernel::CodeGen() {
   code_.data_size_ = size;
   cube_op_->CodeGen(reinterpret_cast<vCubeOp*>(code_.data_ + sizeof(uint64_t)));
   code_.block_dim_ = cube_op_->block_dim_;
+  auto *ptr = reinterpret_cast<uint64_t*>(code_.data_);
+  *ptr = (cube_op_->core_loop_ - 1) << 40;
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss) {

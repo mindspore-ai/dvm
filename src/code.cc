@@ -525,12 +525,25 @@ DeviceInfo::DeviceInfo() {
     arch_ = kAiCore_C220;
     local_mem_size_ = 192 * 1024;
     event_num_ = 8;
-    core_num_ = (soc_name == "Ascend910B1" || soc_name == "Ascend910B2") ? 48 : 40;
+    if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2") {
+      vector_core_num_ = 48;
+      cube_core_num_ = 24;
+    } else {
+      vector_core_num_ = 40;
+      cube_core_num_ = 20;
+    }
+    l2_size_ = soc_name == "Ascend910B4" ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
+    l1_size_ = 512 * 1024;
+    l0c_size_ = 128 * 1024;
   } else {
     arch_ = kAiCore_C100;
     local_mem_size_ = 256 * 1024;
     event_num_ = 4;
-    core_num_ = 32;
+    vector_core_num_ = 32;
+    cube_core_num_ = vector_core_num_;
+    l2_size_ = 32 * 1024 * 1024;
+    l1_size_ = 1024 * 1024;
+    l0c_size_ = 256 * 1024;
     for (int i = 0; i < V_NONE; ++i) {
       g_simd_func_offset[i] = i;
     }

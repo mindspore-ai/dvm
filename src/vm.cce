@@ -20,6 +20,8 @@
 #include "isa.h"
 
 const uint64_t UB_WORKSPACE_SIZE = 1024;
+#define PC_BASE UB_WORKSPACE_SIZE
+
 #define WORKSPACE (uint64_t)0
 #define MASK_32 0xfffffffful
 
@@ -1381,24 +1383,17 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
 // Note: vmain_mix_aiv should be the first function in this file(inline function is not included)
 // We need that fact to calculate the right offset of dispatch functions
   uint8_t* main_addr = (uint8_t*)(get_pc() & (~0xfff));
-  preload(main_addr, 2);
 #endif
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
   uint64_t tile, tile_loops;
-  bcodeptr_t pc_base;
-#ifdef AICORE_ARCH_C100
-  pc_base = (bcodeptr_t)UB_WORKSPACE_SIZE;
-#endif
   if ((config >> 63) == 0) {
     // config: last_tile(23) << 40 | simd_width(32) | insn_num(16) << 16 | lenburst(16)
-#ifdef AICORE_ARCH_C100
     uint64_t len_burst = config & 0xfffful;
-    copy_gm_to_ubuf(pc_base, base_addr + sizeof(config), 0, 1, len_burst, 0, 0);
-#else
-    pc_base = (bcodeptr_t)(base_addr + sizeof(config));
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), base_addr + sizeof(config), 0, 1, len_burst, 0, 0);
+    set_atomic_none();
+#ifdef AICORE_ARCH_C220
     set_mask_norm();
 #endif
-    set_atomic_none();
     uint64_t simd_width = (config >> 32) & 0xfful;
     SetVectorMask(simd_width);
     uint64_t last_tile = config >> 40;
@@ -1421,14 +1416,12 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     // codeseg = code(n)
     uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(base_addr + sizeof(config)) + block_idx);
     uint64_t offset = (summary >> (49 - 5)) & 0x3fe0ul;
-#ifdef AICORE_ARCH_C100
     uint64_t lenburst = summary >> 58;
-    copy_gm_to_ubuf(pc_base, base_addr + offset, 0, 1, lenburst, 0, 0);
-#else
-    pc_base = (bcodeptr_t)(base_addr + offset);
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), base_addr + offset, 0, 1, lenburst, 0, 0);
+    set_atomic_none();
+#ifdef AICORE_ARCH_C220
     set_mask_norm();
 #endif
-    set_atomic_none();
     uint64_t ker_idx = (summary >> 46) & 0x7ul;
     uint64_t simd_width = ((config >> (ker_idx * 8)) & 0x7ful) + 1;
     if (simd_width > 64) {
@@ -1443,28 +1436,19 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     tile = tile_fill | start_idx << V_TILE_CUR_IDX_OFFSET;
     tile_loops = end_idx - start_idx + 1;
   }
-#ifdef AICORE_ARCH_C100
-  pipe_barrier(PIPE_ALL);
-#endif
-  bcodeptr_t pc = pc_base;
 #ifdef AICORE_ARCH_C220
-  while(1){
-    uint64_t head = *pc;
-    if (head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
-      preload(GetFunc(head, main_addr), 1);
-      pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
-    } else {
-      if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) == V_EXIT) break;
-      pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
-    }
-  }
+  const uint64_t ub_va_offset = 0x80000;
+  bcodeptr_t pc_base = reinterpret_cast<bcodeptr_t>(get_sys_va_base() + ub_va_offset + PC_BASE);
+#else
+  bcodeptr_t pc_base = reinterpret_cast<bcodeptr_t>(PC_BASE);
 #endif
+  pipe_barrier(PIPE_ALL);
   while (tile_loops > 0) {
     tile_loops--;
     if (tile_loops == 0) {
       tile |= 1ul << V_TILE_END_FLAG_OFFSET;
     }
-    pc = pc_base;
+    bcodeptr_t pc = pc_base;
     while (1) {
       uint64_t head = *pc;
       if (head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) {

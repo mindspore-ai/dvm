@@ -28,13 +28,20 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TYPE_SHIFT(x) (32 / sizeof(x))
 #define BlockDataShift(x)  (5 - sizeof(x) / 2)   // 1B - 5, 2B - 4, 4B - 3, 8B - not support
 
-// tile : simd_width(8) << 42 | body_tile_flag(1) << 41 | tile_end(20) << 21 | 0(1) << 20 | tile_idx(20)
-#define TileIdx(tile)         (tile & 0xffffful)
-#define TileEnd(tile)         ((tile >> 21) & 0xffffful)
-#define IsLastTile(tile)      (((tile >> 21) & 0x1ffffful) == TileIdx(tile))
-#define IsLastBlockTile(tile) (((tile >> 21) & 0xffffful) == TileIdx(tile))
-#define TileSimdWidth(tile)   (tile >> 42)
-#define GetRepeatStride(tile, x)  (tile >> (42 + BlockDataShift(x)))
+// tile : simd_width(8) << 56 | tile_end(20) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+#define V_TILE_N_BEGIN_FLAG_OFFSET  0
+#define V_TILE_END_FLAG_OFFSET      1
+#define V_TILE_TAIL_FLAG_OFFSET     2
+#define V_TILE_CUR_IDX_OFFSET       4
+#define V_TILE_END_IDX_OFFSET       24
+#define V_TILE_SIMD_WIDTH_OFFSET    56
+
+#define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
+#define TileEnd(tile)         vGetBitRange(tile, V_TILE_END_IDX_OFFSET, 20)
+#define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
+#define IsBeginTile(tile)     ((tile & (1ul <<  V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
+#define TileSimdWidth(tile)   (tile >> V_TILE_SIMD_WIDTH_OFFSET)
+#define GetRepeatStride(tile, x)  (tile >> (V_TILE_SIMD_WIDTH_OFFSET + BlockDataShift(x)))
 
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
   return (stride * type_size + 31) >> 5;
@@ -1013,11 +1020,11 @@ __aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head) {
   set_vector_mask(0, simd_mask);
 }
 
-__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
+__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
   if (round_rank == 1) {
     uint64_t r1 = rounds[0];
-    tile_idx = tile_idx / r1;
-    return tile_idx;
+    uint64_t r_tile_idx = tile_idx / r1;
+    return r_tile_idx * r1 == tile_idx || IsBeginTile(tile)? r_tile_idx : -1;
   } else if (round_rank == 2) {
     uint64_t r2_r1 = rounds[0];
     uint64_t r1 = r2_r1 & MASK_32;
@@ -1028,8 +1035,10 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile_idx, uint64_t round_rank
     uint64_t r1 = r2_r1 & MASK_32;
     uint64_t r2 = r2_r1 >> 32;
     uint64_t r3 = rounds[1];
-    tile_idx = tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3;
-    return tile_idx;
+    uint64_t p1 = tile_idx / r1 * r2;
+    uint64_t p2 = tile_idx % (r2*r3);
+    uint64_t r_tile_idx = p1 + p2 / r3;
+    return (r_tile_idx - p1) * r3 == p2 || IsBeginTile(tile) ? r_tile_idx : -1;
   } else {
     uint64_t r2_r1 = rounds[0];
     uint64_t r1 = r2_r1 & MASK_32;
@@ -1046,7 +1055,7 @@ static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vDMA::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank) {
-    tile_idx = RoundUpTileIdx(tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET);
+    tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET);
     if (tile_idx == -1) {
       return;
     }
@@ -1149,7 +1158,7 @@ static inline [aicore] void Load2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
-    tile_idx = RoundUpTileIdx(tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET);
+    tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET);
     if (tile_idx == -1) {
       return;
     }
@@ -1374,7 +1383,7 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
   preload(main_addr, 2);
 #endif
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
-  uint64_t tile_start, tile_end;
+  uint64_t tile, tile_loops;
   bcodeptr_t pc_base;
 #ifdef AICORE_ARCH_C100
   pc_base = (bcodeptr_t)UB_WORKSPACE_SIZE;
@@ -1395,14 +1404,14 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     uint64_t tile_per_block = (last_tile + block_num) / block_num;
     uint64_t tile_start_idx = tile_per_block * block_idx;
     uint64_t tile_end_idx = tile_start_idx + tile_per_block - 1;
-    uint64_t tile_fill = 1ul << 41;
+    uint64_t tail_flag = 0;
     if (tile_end_idx >= last_tile) {
       tile_end_idx = last_tile;
-      tile_fill = 0;
+      tail_flag = 1ul << V_TILE_TAIL_FLAG_OFFSET;
     }
-    tile_fill |= simd_width << 42 | tile_end_idx << 21;
-    tile_start = tile_fill | tile_start_idx;
-    tile_end = tile_fill | tile_end_idx;
+    uint64_t tile_fill = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_end_idx << V_TILE_END_IDX_OFFSET | tail_flag;
+    tile = tile_fill | tile_start_idx << V_TILE_CUR_IDX_OFFSET;
+    tile_loops = tile_end_idx - tile_start_idx + 1;
 } else { // parallel fusion
     // bytecode format:
     // config(1) + summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
@@ -1428,10 +1437,10 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     }
     uint64_t start_idx = summary & 0xffffful;
     uint64_t end_idx = ((summary >> 20) & 0x7fffful) + start_idx;
-    uint64_t tail_tile = summary & (0x1ul << 39);
-    uint64_t tile_fill = simd_width << 42 | tail_tile << (41 - 39) | end_idx << 21;
-    tile_start = tile_fill | start_idx;
-    tile_end = tile_fill | end_idx;
+    uint64_t tile_fill = simd_width << V_TILE_SIMD_WIDTH_OFFSET | end_idx << V_TILE_END_IDX_OFFSET |
+                       (summary >> (39 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
+    tile = tile_fill | start_idx << V_TILE_CUR_IDX_OFFSET;
+    tile_loops = end_idx - start_idx + 1;
   }
 #ifdef AICORE_ARCH_C100
   pipe_barrier(PIPE_ALL);
@@ -1449,7 +1458,11 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     }
   }
 #endif
-  for (uint64_t tile = tile_start; tile <= tile_end; ++tile) {
+  while (tile_loops > 0) {
+    tile_loops--;
+    if (tile_loops == 0) {
+      tile |= 1ul << V_TILE_END_FLAG_OFFSET;
+    }
     set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
     pc = pc_base;
     while (1) {
@@ -1510,6 +1523,8 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     }
   INSN_END:
     wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+    tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
+    tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }
   pipe_barrier(PIPE_ALL);
 }

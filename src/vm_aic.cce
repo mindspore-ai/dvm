@@ -22,7 +22,7 @@ constexpr int32_t BLOCK_SIZE = 16;
 template <typename T>
 class MatMul {
  public:
-  __aicore__ MatMul(__gm__ vCubeOp *op) {
+  __aicore__ MatMul(__gm__ vCubeOp *__restrict__ op) {
     m = op->m;
     n = op->n;
     k = op->k;
@@ -36,7 +36,7 @@ class MatMul {
     n0_col = (n + n0 - 1) / n0;
   }
 
-  __force_inline__ __aicore__ void LoadA(__cbuf__ T *dst, __gm__ T *src, int64_t midx, int64_t kidx) {
+  __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst, __gm__ T *__restrict__ src, int64_t midx, int64_t kidx) {
     // load GM to L1: ND -> zN
     if (trans_a) {
       copy_gm_to_cbuf_multi_nd2nz_b16(
@@ -69,7 +69,7 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void LoadB(__cbuf__ T *dst, __gm__ T *src, int64_t kidx, int64_t nidx) {
+  __force_inline__ __aicore__ void LoadB(__cbuf__ T *__restrict__ dst, __gm__ T *__restrict__ src, int64_t kidx, int64_t nidx) {
     // load GM to L1: ND -> zN
     if (trans_b) {
       copy_gm_to_cbuf_multi_nd2nz_b16(
@@ -102,7 +102,7 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void LoadL0A(__ca__ T *dst, __cbuf__ T *src, int64_t total_k, int64_t k_part) {
+  __force_inline__ __aicore__ void LoadL0A(__ca__ T *__restrict__ dst, __cbuf__ T *__restrict__ src, int64_t total_k, int64_t k_part) {
     // load L1 to L0A: zN -> zZ
     if (trans_a) {
       for (size_t i = 0; i < m0 / BLOCK_SIZE; i++) {
@@ -133,7 +133,7 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void LoadL0B(__cb__ T *dst, __cbuf__ T *src, int64_t total_k, int64_t k_part) {
+  __force_inline__ __aicore__ void LoadL0B(__cb__ T *__restrict__ dst, __cbuf__ T *__restrict__ src, int64_t total_k, int64_t k_part) {
     // load L1 to L0A: zN -> nZ
     if (trans_b) {
       load_cbuf_to_cb(
@@ -162,7 +162,7 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void Mad(__cc__ float *c, __ca__ T *a, __cb__ T *b, bool init_c) {
+  __force_inline__ __aicore__ void Mad(__cc__ float *__restrict__ c, __ca__ T *__restrict__ a, __cb__ T *__restrict__ b, bool init_c) {
     mad(
       c,
       a,
@@ -177,7 +177,7 @@ class MatMul {
     );
   }
 
-  __force_inline__ __aicore__ void StoreC(__gm__ T *dst, __cc__ float *c, int64_t midx, int64_t nidx) {
+  __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst, __cc__ float *__restrict__ c, int64_t midx, int64_t nidx) {
     copy_matrix_cc_to_gm(
       dst + midx * m0 * n + nidx * n0,        // dst
       c,                                      // src
@@ -208,25 +208,25 @@ class MatMul {
 };
 
 template <typename M, typename T>
-__aicore_inline__ void CutMKN(__gm__ vCubeOp *op, uint64_t tile_begin, uint64_t tile_end) {
+__aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_begin, uint64_t tile_end) {
   set_padding((uint64_t)0);
   set_atomic_none();
   uint64_t config = 0x1;
   set_nd_para(config);
   M mat(op);
   uint64_t batch_offset = 0;
-  __gm__ T *gm_a = reinterpret_cast<__gm__ T*>(op->gm_a + batch_offset);
-  __gm__ T *gm_b = reinterpret_cast<__gm__ T*>(op->gm_b + batch_offset);
-  __gm__ T *gm_c = reinterpret_cast<__gm__ T*>(op->gm_c + batch_offset);
+  __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a + batch_offset);
+  __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b + batch_offset);
+  __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c + batch_offset);
   int64_t offset = (op->m0 * op->k0 * sizeof(T) + 256 - 1) / 256 * 256;  // TODO: int8 is 512
-  __cbuf__ T *l1a = reinterpret_cast<__cbuf__ T*>(0);
-  __cbuf__ T *l1b = reinterpret_cast<__cbuf__ T*>(offset);
-  __cbuf__ T *n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE);
-  __cbuf__ T *n_l1b = n_l1a + offset / sizeof(T);
-  __ca__ T *l0a_base = reinterpret_cast<__ca__ T*>(0);
-  __cb__ T *l0b_base = reinterpret_cast<__cb__ T*>(0);
-  __ca__ T *l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
-  __cb__ T *l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
+  __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);
+  __cbuf__ T *__restrict__ l1b = reinterpret_cast<__cbuf__ T*>(offset);
+  __cbuf__ T *__restrict__ n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE);
+  __cbuf__ T *__restrict__ n_l1b = n_l1a + offset / sizeof(T);
+  __ca__ T *__restrict__ l0a_base = reinterpret_cast<__ca__ T*>(0);
+  __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
+  __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
+  __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
   int64_t k_loop = (op->k + op->k0 - 1) / op->k0;
   int64_t k_part_loop = (op->k0 + mat.k0_part_len - 1) / mat.k0_part_len;
   int64_t pingpong = 1;
@@ -237,7 +237,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *op, uint64_t tile_begin, uint64_t 
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
   for (uint64_t tile = tile_begin; tile <= tile_end; ++tile) {
-    __cc__ float *l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
+    __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
     int64_t midx, nidx;
     mat.TileMap(tile, midx, nidx);
     if (tile == tile_begin) {
@@ -272,8 +272,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *op, uint64_t tile_begin, uint64_t 
       set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
       set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
       for (int64_t k_part = 0; k_part < k_part_loop; ++k_part) { // TODO: double buffer
-        __ca__ T *l0a = (k_part & 1) ? l0a_next : l0a_base;
-        __cb__ T *l0b = (k_part & 1) ? l0b_next : l0b_base;
+        __ca__ T *__restrict__ l0a = (k_part & 1) ? l0a_next : l0a_base;
+        __cb__ T *__restrict__ l0b = (k_part & 1) ? l0b_next : l0b_base;
         auto mte1_mad_event_id = (k_part & 1) ? EVENT_ID1 : EVENT_ID0;
         if (k_part == 0) {
           wait_flag(PIPE_MTE2, PIPE_MTE1, event_id);
@@ -331,7 +331,7 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
   if (tile_start >= last_tile) {
     tile_start = tile_end + 1;
   }
-  __gm__ vCubeOp *op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
+  __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
   CutMKN<MatMul<half>, half>(op, tile_start, tile_end);
   pipe_barrier(PIPE_ALL);
 }

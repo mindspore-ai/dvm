@@ -464,6 +464,30 @@ void ReorderStore(BasicBlock &block) {
   }
 }
 
+void ReorderLoad(BasicBlock &block) {
+  uint16_t idx = 0;
+  using ObjWithOrder = std::pair<uint16_t, NDObject *>;
+  std::priority_queue<ObjWithOrder> load_order;
+  std::unordered_set<NDObject *> load_set;
+  // Get order of Load by usage
+  for (auto iter = block.begin(); iter != block.end(); ++iter) {
+    if (iter->GetObjectType() != kLoad) {
+      for (auto pred : GetPreds(iter.get())) {
+        if (pred->GetObjectType() == kLoad && load_set.find(pred) == load_set.end()) {
+          load_set.insert(pred);
+          load_order.push({idx, pred});
+        }
+      }
+    }
+    idx++;
+  }
+  while (!load_order.empty()) {
+    auto load = load_order.top().second;
+    load_order.pop();
+    block.Move(block.begin(), load);
+  }
+}
+
 void InsertRemovePad(BasicBlock &block) {
   if (DeviceInfo::Instance().Arch() != kAiCore_C220) {
     return;
@@ -519,7 +543,7 @@ void CompactPeakLiveness(BasicBlock &bb) {
   auto new_order = ReorderObjectsHeuristic(bb);
   bb.Reinit(new_order);
   auto new_peak = MaxLive(bb);
-  if (new_peak > old_peak) {
+  if (new_peak >= old_peak) {
     // Reorder cause a bad result, rollback
     bb.Reinit(backup);
   }
@@ -840,5 +864,5 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderStore, &InsertRemovePad};
+std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
 }  // namespace dvm::pass

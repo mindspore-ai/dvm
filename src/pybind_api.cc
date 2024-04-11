@@ -461,6 +461,7 @@ void KernelPy::ResetPasses(const py::object &pass_names) {
   const static std::unordered_map<std::string, pass::Pass> pass_map = {
     {"PrintPeakLive", pass::PrintPeakLive},
     {"ReorderStore", pass::ReorderStore},
+    {"ReorderLoad", pass::ReorderLoad},
     {"CompactPeakLiveness", pass::CompactPeakLiveness},
     {"EliminateReshape", pass::EliminateReshape},
     {"InsertRemovePad", pass::InsertRemovePad}};

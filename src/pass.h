@@ -221,6 +221,30 @@ class BasicBlock {
 /// ----------
 void ReorderStore(BasicBlock &block);
 
+/// @brief Reorder Load, to bring the that were used earlier forward
+/// @example
+/// vkernel.graph() {
+///   %0 = Load()
+///   %1 = Load()
+///   %2 = Unary(%1)
+///   %3 = Binary(%0, %2)
+///   %4 = Load()
+///   %5 = Binary(%3, %4)
+///   %6 = Store(%5)
+/// }
+/// ---------->
+/// vkernel.graph() {
+///   %1 = Load()
+///   %0 = Load()
+///   %4 = Load()
+///   %2 = Unary(%1)
+///   %3 = Binary(%0, %2)
+///   %5 = Binary(%3, %4)
+///   %6 = Store(%5)
+/// }
+/// ----------
+void ReorderLoad(BasicBlock &block);
+
 // For debug
 void PrintPeakLive(BasicBlock &bb);
 

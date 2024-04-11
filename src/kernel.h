@@ -140,8 +140,6 @@ class VKernelBase : public VKernel {
   int min_type_{-1};
 
   std::vector<NDObject*> static_ops_;
-  NDObject* back_set_{nullptr};
-  NDObject* back_wait_{nullptr};
 
   struct DimTile {
     int start;

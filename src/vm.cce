@@ -39,7 +39,8 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
 #define TileEnd(tile)         vGetBitRange(tile, V_TILE_END_IDX_OFFSET, 20)
 #define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
-#define IsBeginTile(tile)     ((tile & (1ul <<  V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
+#define IsBeginTile(tile)     ((tile & (1ul << V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
+#define IsEndTile(tile)       ((tile) &(1ul << V_TILE_END_FLAG_OFFSET))
 #define TileSimdWidth(tile)   (tile >> V_TILE_SIMD_WIDTH_OFFSET)
 #define GetRepeatStride(tile, x)  (tile >> (V_TILE_SIMD_WIDTH_OFFSET + BlockDataShift(x)))
 
@@ -1463,7 +1464,6 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     if (tile_loops == 0) {
       tile |= 1ul << V_TILE_END_FLAG_OFFSET;
     }
-    set_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
     pc = pc_base;
     while (1) {
       uint64_t head = *pc;
@@ -1471,8 +1471,9 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
         if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
           pipe_barrier(PIPE_V);
         }
-        if (head & (0x1ul << V_HEAD_BACK_WAIT_OFFSET)) {
-          wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID0);
+        if ((head & (0x1ul << V_HEAD_BACK_WAIT_OFFSET)) && !IsBeginTile(tile)) {
+          event_t event = event_t((head >> V_HEAD_B_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+          wait_flag(PIPE_MTE3, PIPE_V, event);
         }
         if (head & (0x1ul << V_HEAD_WAIT_FLAG_OFFSET)) {
           event_t event = event_t((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
@@ -1487,11 +1488,16 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           set_flag(PIPE_V, PIPE_MTE3, event);
         }
-        if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
-          set_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
+        if ((head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) && !IsEndTile(tile)) {
+          event_t event = event_t((head >> V_HEAD_B_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+          set_flag(PIPE_V, PIPE_MTE2, event);
         }
         pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
       } else if (head & (0x1ul << V_HEAD_LOAD_FLAG_OFFSET)) {
+        if ((head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) && !IsBeginTile(tile)) {
+          event_t event = event_t((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+          wait_flag(PIPE_V, PIPE_MTE2, event);
+        }
         switch ((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) {
           DISPATCH(V_LOAD, Load(pc, head, tile));
           DISPATCH(V_LOAD_2, Load2(pc, head, tile));
@@ -1518,11 +1524,14 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
           default:
             goto INSN_END;
         }
+        if ((head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) && !IsEndTile(tile)) {
+          event_t event = event_t((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
+          set_flag(PIPE_MTE3, PIPE_V, event);
+        }
         pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
       }
     }
   INSN_END:
-    wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID0);
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }

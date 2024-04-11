@@ -161,8 +161,7 @@ class CodeGenHelper {
       } // end switch
     } // end for op
     *code_ptr++ = vMakeHead(vLoadInsnID::V_EXIT, 0, 1, V_PIPE_LOAD);
-    *(kernel->back_set_->tail_insn_) |= 0x1ul << V_HEAD_BACK_SET_OFFSET;
-    *(kernel->back_wait_->insn_) |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET;
+    BackwardSync(kernel->objects_);
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
       OverWriteCoreLimit(code, kernel);
@@ -172,6 +171,43 @@ class CodeGenHelper {
   }
 
  private:
+  void BackwardSync(const std::vector<NDObject *> &objects) {
+    int simd_load_sync_idx = static_cast<int>(objects.size());
+    int store_simd_sync_idx = simd_load_sync_idx;
+    uint64_t simd_load_event = 0;
+    uint64_t store_simd_event = 0;
+    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+      auto op = *it;
+      auto pipe = op->Pipe();
+      if (pipe == V_PIPE_STORE) {  // STORE -> SIMD
+        auto simd = op->lhs_;
+        if (simd->index_ < store_simd_sync_idx) {
+          *(op->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | store_simd_event << V_M_HEAD_SET_EVENT_OFFSET;
+          *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | store_simd_event << V_HEAD_B_WAIT_EVENT_OFFSET;
+          store_simd_event = (store_simd_event + 1) % DeviceInfo::Instance().EventNum();
+          store_simd_sync_idx = simd->index_;
+        }
+      } else if (pipe == V_PIPE_SIMD && op->lhs_) { // SIMD -> LOAD
+        NDObject *load = nullptr;
+        if (op->lhs_->Pipe() == V_PIPE_LOAD) load = op->lhs_;
+        auto rhs = op->rhs_;
+        if (rhs) {
+          if (rhs->Pipe() == V_PIPE_LOAD && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
+          if (op->obj_id_ == ObjectType::kSelect) {
+            NDObject *cond = reinterpret_cast<SelectOp*>(op)->cond_;
+            if (cond->Pipe() == V_PIPE_LOAD && (load == nullptr || cond->index_ < load->index_)) load = cond;
+          }
+        }
+        if (load != nullptr && load->index_ < simd_load_sync_idx) {
+          *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | simd_load_event << V_HEAD_B_SET_EVENT_OFFSET;
+          *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | simd_load_event << V_M_HEAD_WAIT_EVENT_OFFSET;
+          simd_load_event = (simd_load_event + 1) % DeviceInfo::Instance().EventNum();
+          simd_load_sync_idx = load->index_;
+        }
+      }
+    }
+  }
+
   void OverWriteCoreLimit(Code &code, VKernelBase *kernel) {
     for (auto op : kernel->static_ops_) {
       if (op->obj_id_ <= kLoad || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && static_cast<ReduceOp*>(op)->factor_ > 1)) {
@@ -884,14 +920,10 @@ int VKernelBase::Analyze() {
   int op_index = objects_.size();
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
-  int back_set_idx = -1;
-  auto LivenessEnd = [&back_set_idx, &cur_live](NDObject *op, NDObject *end) {
+  auto LivenessEnd = [&cur_live](NDObject *op, NDObject *end) {
     if (end->Pipe() == V_PIPE_SIMD && !OP_LIVE(end)) {
       OP_GEN_D(end);
       return true;
-    }
-    if (back_set_idx == -1 && end->Pipe() == V_PIPE_LOAD) {
-      back_set_idx = op->index_;
     }
     return false;
   };
@@ -903,6 +935,7 @@ int VKernelBase::Analyze() {
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
     op->index_ = --op_index;
+    op->flags_ = 0;
     if (op->Pipe() == V_PIPE_SIMD) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
@@ -939,8 +972,6 @@ int VKernelBase::Analyze() {
       op->xbuf_ = 0;
     }
   }
-  ASSERT(back_set_idx > 0);
-  back_set_ = objects_[back_set_idx];
   return live_peak;
 }
 
@@ -1035,11 +1066,7 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
   max_type_ = objects.front()->type_id_;
   min_type_ = objects.front()->type_id_;
   bool slow_build_path = false;
-  int op_index = 0;
-  int back_wait_idx = INT_MAX;
   for (auto op : objects) {
-    op->index_ = op_index++;
-    op->flags_ = 0;
     auto type = op->GetObjectType();
     if (type == kReshape) {
       slow_build_path = true;
@@ -1054,16 +1081,10 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
     if (op->Pipe() == V_PIPE_LOAD) {
       static_ops_.push_back(op);
     } else if (op->Pipe() == V_PIPE_STORE) {
-      int prod_idx = op->lhs_->index_;
-      if (prod_idx < back_wait_idx) {
-        back_wait_idx = prod_idx;
-      }
       static_ops_.push_back(op->lhs_);
       op->xbuf_ = -1;
     }
   }
-  ASSERT(back_wait_idx > 0);
-  back_wait_ = objects[back_wait_idx];
   if (slow_build_path) {
     PropDomainBuilder builder;
     builder.Build(objects, root_dom_);

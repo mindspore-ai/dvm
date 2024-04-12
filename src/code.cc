@@ -207,7 +207,7 @@ void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBinaryS<T> op;
   vBinaryS<T>::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
-  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << ", " << op.scalar.val;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << ", " << op.scalar;
 }
 
 void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -238,7 +238,7 @@ void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastS<T> op;
   vBroadcastS<T>::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
-  oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op.scalar.val;
+  oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op.scalar;
 }
 
 void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {

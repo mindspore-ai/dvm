@@ -542,7 +542,7 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     uint16_t rs = GetRepeatStride(tile, VTYPE);         \
     __ubuf__ VTYPE *xd = (__ubuf__ VTYPE *)(op.xd);     \
     __ubuf__ VTYPE *xn = (__ubuf__ VTYPE *)(op.xn);     \
-    VTYPE val = op.scalar.val;                          \
+    VTYPE val = op.scalar;                          \
     if (op.repeat <= 255) {                             \
       builtin(xd, xn, val, op.repeat, 1, 1, rs, rs);    \
     } else {                                            \
@@ -775,7 +775,7 @@ __aicore_inline__ void BroadcastS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBroadcastS<float>::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, T);
   __ubuf__ T*xd = (__ubuf__ T*)(op.xd);
-  T val = op.scalar.val;
+  T val = op.scalar;
   if (op.repeat <= 255) {
     vDup(xd, val, op.repeat, rs);
   } else {
@@ -794,7 +794,7 @@ __aicore_inline__ void BroadcastS_Int(bcodeptr_t pc, uint64_t head, uint64_t til
   vBroadcastS<int32_t>::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, int32_t);
   __ubuf__ T*xd = (__ubuf__ T*)(op.xd);
-  T val = op.scalar.val;
+  T val = op.scalar;
   if (op.repeat <= 255) {
     vDup(xd, val, op.repeat, rs);
   } else {

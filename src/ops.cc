@@ -548,7 +548,7 @@ int BinaryScalarOp<T>::Emit(Code &code) {
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
   op.repeat = strides_.back() / code.simd_width_;
-  op.scalar.val = scalar_;
+  op.scalar = scalar_;
   return vBinaryS<T>::Encode(insn_, id_, op);
 }
 
@@ -809,7 +809,7 @@ template <typename T>
 int BroadcastScalarOp<T>::Emit(Code &code) {
   vBroadcastS<T> op;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_S_FP16, V_NONE, V_BROADCAST_S, V_BROADCAST_S_INT32};
-  op.scalar.val = scalar_;
+  op.scalar = scalar_;
   op.xd = xbuf_;
   op.repeat = strides_.back() / code.simd_width_;
   return vBroadcastS<T>::Encode(insn_, id_list[type_id_], op);

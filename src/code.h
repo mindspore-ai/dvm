@@ -132,7 +132,7 @@ struct Code : public CodeBase {
   }
 
   void ApplyTileLimit(uint64_t core_tile_least) {
-    while (block_dim_ > 1 && ((tile_num_ - 1) / block_dim_ + 1 < core_tile_least)) block_dim_--; // TODO: optimize me
+    while (block_dim_ > 1 && core_tile_least * block_dim_ > tile_num_) block_dim_--; // TODO: optimize me
   }
   void DisAssemble(std::ostringstream &oss) override;
   uint64_t simd_width_{0};

@@ -1430,18 +1430,17 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     uint64_t simd_width = (config >> 32) & 0xfful;
     SetVectorMask(simd_width);
     uint64_t last_tile = config >> 40;
-    uint64_t tile_per_block = (last_tile + block_num) / block_num;
-    uint64_t tile_start_idx = tile_per_block * block_idx;
-    uint64_t tile_end_idx = tile_start_idx + tile_per_block - 1;
+    tile_loops = (last_tile + block_num) / block_num;
+    uint64_t tile_start_idx = tile_loops * block_idx;
+    uint64_t tile_end_idx = tile_start_idx + tile_loops - 1;
     uint64_t tail_flag = 0;
     if (tile_end_idx >= last_tile) {
       tile_end_idx = last_tile;
       tail_flag = 1ul << V_TILE_TAIL_FLAG_OFFSET;
+      tile_loops = tile_end_idx >= tile_start_idx ? tile_end_idx - tile_start_idx + 1 : 0;
     }
-    uint64_t tile_fill = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_end_idx << V_TILE_END_IDX_OFFSET | tail_flag;
-    tile = tile_fill | tile_start_idx << V_TILE_CUR_IDX_OFFSET;
-    tile_loops = tile_end_idx - tile_start_idx + 1;
-} else { // parallel fusion
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_end_idx << V_TILE_END_IDX_OFFSET | tile_start_idx << V_TILE_CUR_IDX_OFFSET | tail_flag;
+  } else { // parallel fusion
     // bytecode format:
     // config(1) + summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
     // config = parallel(1) << 63 | simdwidth7(7) << 56 | .. | simdwidth1(7) << 7 | simdwidth0(7)
@@ -1464,9 +1463,8 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
     }
     uint64_t start_idx = summary & 0xffffful;
     uint64_t end_idx = ((summary >> 20) & 0x7fffful) + start_idx;
-    uint64_t tile_fill = simd_width << V_TILE_SIMD_WIDTH_OFFSET | end_idx << V_TILE_END_IDX_OFFSET |
-                       (summary >> (39 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
-    tile = tile_fill | start_idx << V_TILE_CUR_IDX_OFFSET;
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | end_idx << V_TILE_END_IDX_OFFSET | start_idx << V_TILE_CUR_IDX_OFFSET |
+           (summary >> (39 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
     tile_loops = end_idx - start_idx + 1;
   }
 #ifdef AICORE_ARCH_C220

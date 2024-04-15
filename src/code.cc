@@ -24,6 +24,8 @@
 #include "code.h"
 
 extern uint64_t g_simd_func_offset[];
+extern uint64_t g_load_func_offset[];
+extern uint64_t g_store_func_offset[];
 
 namespace dvm {
 namespace {
@@ -107,7 +109,7 @@ void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("type_size", op.type_size, oss);
 }
 
-void DumpExit(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << "exit 0";
 }
 
@@ -324,7 +326,7 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_LOAD_2, &DumpLoad2},
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
-  {V_EXIT, &DumpExit},
+  {V_LOAD_NONE, &DumpLoadExit},
 };
 
 std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
@@ -415,6 +417,15 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
 };
 
 size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
+  auto convert_id = [](uint64_t offsets[], uint64_t none_idx, uint64_t id) -> uint64_t {
+    for (uint64_t i = 0; i <= none_idx; ++i) {
+      if (offsets[i] == id) {
+        return i;
+      }
+    }
+    ASSERT(0);
+    return 0;
+  };
   uint64_t head = *insn;
   uint64_t id = (head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK;
   uint64_t offset = 0;
@@ -422,12 +433,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
     uint64_t ext = (head >> V_HEAD_EXT_OFFSET) & V_HEAD_EXT_MASK;
     offset = (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
     DumpInfo info{insn, ext, simd_width};
-    for (uint64_t i = 0; i < V_NONE; ++i) {
-      if (g_simd_func_offset[i] == id) {
-        id = i;
-        break;
-      }
-    }
+    id = convert_id(g_simd_func_offset, V_NONE, id);
     if (op_dump_info_table.find(id) != op_dump_info_table.end()) {
       auto [dump_func, name, dtype_str] = op_dump_info_table[id];
       oss << name << "." << dtype_str << ".";
@@ -440,6 +446,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
     uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
     offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
     DumpInfo info{insn, ext, simd_width};
+    id = convert_id(g_load_func_offset, V_LOAD_NONE, id);
     if (load_dump_func_table.find(id) != load_dump_func_table.end()) {
       load_dump_func_table[id](info, oss);
     } else {
@@ -450,6 +457,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
     uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
     offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
     DumpInfo info{insn, ext, simd_width};
+    id = convert_id(g_store_func_offset, V_STORE_NONE, id);
     if (store_dump_func_table.find(id) != store_dump_func_table.end()) {
       store_dump_func_table[id](info, oss);
     } else {
@@ -470,7 +478,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
     insn_idx++;
     auto offset = DumpInsn(insn, simd_width, oss);
     oss << "\n";
-    if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) == vLoadInsnID::V_EXIT) break;
+    if (offset == 0) break;
     insn = insn + offset;
     oss <<  "  {";
     bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
@@ -544,9 +552,14 @@ DeviceInfo::DeviceInfo() {
     l2_size_ = 32 * 1024 * 1024;
     l1_size_ = 1024 * 1024;
     l0c_size_ = 256 * 1024;
-    for (int i = 0; i < V_NONE; ++i) {
-      g_simd_func_offset[i] = i;
-    }
+    auto set_func_ids = [](uint64_t offsets[], uint64_t size) {
+      for (uint64_t i = 0; i <= size; ++i) {
+        offsets[i] = i;
+      }
+    };
+    set_func_ids(g_simd_func_offset, V_NONE);
+    set_func_ids(g_load_func_offset, V_LOAD_NONE);
+    set_func_ids(g_store_func_offset, V_STORE_NONE);
   }
   ub_workspace_size_ = 1024;
 }

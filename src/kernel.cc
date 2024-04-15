@@ -157,7 +157,7 @@ class CodeGenHelper {
           break;
       } // end switch
     } // end for op
-    *code_ptr++ = vMakeHead(vLoadInsnID::V_EXIT, 0, 1, V_PIPE_LOAD);
+    *code_ptr++ = vMakeHead(vLoadInsnID::V_LOAD_NONE, 0, 0, V_PIPE_LOAD);
     BackwardSync(kernel->objects_);
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {

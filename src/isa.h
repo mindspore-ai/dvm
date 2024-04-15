@@ -48,7 +48,7 @@ enum vLoadInsnID {
   V_LOAD_2,
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
-  V_EXIT,
+  V_LOAD_NONE,
 };
 
 enum vStoreInsnID {
@@ -56,6 +56,7 @@ enum vStoreInsnID {
   V_STORE_2,
   V_STORE_ATOMIC,
   V_STORE_STATUS,
+  V_STORE_NONE,
 };
 
 enum vSimdInsnID {
@@ -191,11 +192,15 @@ enum vSimdInsnID {
 
 #ifndef _CCE_KERNEL_
 extern uint64_t g_simd_func_offset[];
+extern uint64_t g_load_func_offset[];
+extern uint64_t g_store_func_offset[];
 __aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
   if (pipe == V_PIPE_SIMD) {
     return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | g_simd_func_offset[id] << V_HEAD_ID_OFFSET | 1 << V_HEAD_SIMD_FLAG_OFFSET;
+  } else if (pipe == V_PIPE_LOAD) {
+    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_load_func_offset[id] << V_HEAD_ID_OFFSET | 1 << V_HEAD_LOAD_FLAG_OFFSET;
   } else {
-    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | id << V_HEAD_ID_OFFSET | (pipe == V_PIPE_LOAD ? 1 : 0) << V_HEAD_LOAD_FLAG_OFFSET;
+    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_store_func_offset[id] << V_HEAD_ID_OFFSET;
   }
 }
 #else
@@ -276,9 +281,9 @@ struct vBinaryS {
   // pc[0]: xn
   // pc[1]: scalar(32) << 32 | c_xd(13) << 16 | repeat(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBinaryS &op) {
-    uint64_t data1 = pc[1];
-    op.repeat = data1 & 0xfffful;
-    op.xd = vDeCompactX(vGetBitRange(data1, 16, 13));
+    uint32_t data = *((__bcode__ uint32_t *)pc + 2);
+    op.repeat = data & 0xffffu;
+    op.xd = vDeCompactX(data >> 16);
     op.scalar = DecodeScalar<T>((__bcode__ uint32_t *)pc + 3);
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
   }
@@ -354,9 +359,8 @@ struct vBroadcastS {
   // pc[0]: xd
   // pc[1]: val << 32 | repeat
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastS &op) {
-    __bcode__ uint32_t *data = (__bcode__ uint32_t *)pc + 2;
-    op.repeat = data[0];
-    op.scalar = DecodeScalar<T>(data + 1);
+    op.repeat = *((__bcode__ uint32_t *)pc + 2);
+    op.scalar = DecodeScalar<T>((__bcode__ uint32_t *)pc + 3);
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastS &op) {
@@ -427,7 +431,6 @@ struct vBroadcastY {
   // pc[1]:  c_xd(16) << 48 | iter_num(16) << 32 | dup_num(16) << 16 | dup_stride(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastY &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.xd = head >> (V_HEAD_EXT_OFFSET + V_X_BITS);
     uint64_t data = pc[1];
     op.dup_stride = data & 0xfffful;
     op.dup_num = (data >> 16) & 0xfffful;

@@ -55,27 +55,37 @@ if __name__ == '__main__':
     # Get arguments
     isa_file = sys.argv[1]
 
+    load_pipe, store_pipe, simd_pipe = 0, 1, 2
+    pipe_names = ("load", "store", "simd")
+    insn_names = ([], [], [])
+
     # Extract all SIMD instructions from the isa file
-    instruction_names = []
     with open(isa_file, 'r') as isa_file:
-        in_simd = False
+        cur_pipe = -1
         for line in isa_file:
-            if not in_simd and line.startswith('enum vSimdInsnID'):
-                in_simd = True
-            elif in_simd:
+            if cur_pipe == -1:
+                if line.startswith('enum vSimdInsnID'):
+                    cur_pipe = simd_pipe
+                elif line.startswith('enum vLoadInsnID'):
+                    cur_pipe = load_pipe
+                elif line.startswith('enum vStoreInsnID'):
+                    cur_pipe = store_pipe
+            else:
                 stripped_line = line.strip()
                 if not stripped_line.startswith("//"):
                     ins_name = extract_instruction_name(stripped_line)
-                    if ins_name is None or ins_name == "V_NONE":
-                        break
-                    instruction_names.append(ins_name)
+                    if ins_name != None:
+                        if ins_name.endswith("_NONE"):
+                            cur_pipe = -1
+                        else:
+                            insn_names[cur_pipe].append(ins_name)
 
     # Process symbol table to find function addresses
     try:
         vmain_in0 = False
         function_address_map = {}
         pattern = r'^([0-9a-f]+) .* D_(V_[\w]+)$'
-        vmain_pattern = r"^0000000000000000 .* vmain_mix_aiv\$local$"
+        vmain_pattern = r"^0000000000000000 .* vmain_mix_aiv$"
         while True:
             line = input()
             if not vmain_in0:
@@ -93,12 +103,14 @@ if __name__ == '__main__':
         raise ValueError("vmain_mix_aiv is not in 0x0000")
 
     # Ensure all instructions have been mapped
-    if len(function_address_map) != len(instruction_names):
+    total_insn_num = len(insn_names[0]) + len(insn_names[1]) + len(insn_names[2])
+    if len(function_address_map) != total_insn_num:
         raise ValueError("Mismatch between function addresses and instructions: {} : {}".format(
-            len(function_address_map), len(instruction_names)))
+            len(function_address_map), len(total_insn_num)))
 
-    # Output function addresses
-    print('unsigned long int g_simd_func_offset[] = {')
-    for ins_name in instruction_names:
-        print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
-    print('};')
+    for i in range(3):
+        # Output function addresses
+        print('unsigned long int g_{}_func_offset[] = {{'.format(pipe_names[i]))
+        for ins_name in insn_names[i]:
+            print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
+        print('0\n};')

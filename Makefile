@@ -41,7 +41,7 @@ vm.o: g_vkernel_bin g_vkernel_910b_bin
 	xxd -i g_vkernel_bin >> vm.cc
 	echo "extern const" >> vm.cc
 	xxd -i g_vkernel_910b_bin >> vm.cc
-	llvm-objdump -t g_vkernel_910b_bin | grep ".text" | python scripts/find_addrs.py src/isa.h >> vm.cc
+	llvm-objdump -t g_vkernel_910b_bin | grep " F " | python scripts/find_addrs.py src/isa.h >> vm.cc
 	g++ -c $(CFLGAS) vm.cc -o vm.o
 
 g_vkernel_910b_bin: vm_aiv_c220.o vm_aic_c220.o

@@ -1274,6 +1274,32 @@ void CubeOp::Tile(vCubeOp *op) {
   }
 }
 
+void CubeOp::GetSwizzleConfig(vCubeOp *op) {
+  uint32_t swizzle_cnt = 1;
+  uint32_t swizzle_dir = 0;
+  float mincost = op->m * op->k + op->k * op->n;
+  for (size_t i = 1; i <= block_dim_; i++) {
+    uint32_t c = (block_dim_ + i - 1) / i;
+    float cost;
+    if (i * op->n0 + op->m < op->m0 * c + op->n) {
+      swizzle_dir = 1; // Nz
+      cost = op->n0 * i + op->m0 * c;
+      if (cost <= mincost) {
+          mincost = cost;
+          swizzle_cnt = i;
+      }
+    } else {
+      swizzle_dir = 0; // Zn
+      cost = op->m0 * i + op->n0 * c;
+      if (cost < mincost) {
+          mincost = cost;
+          swizzle_cnt = i;
+      }
+    }
+  }
+  op->swizzle = swizzle_dir << 16 | swizzle_cnt;
+}
+
 void CubeOp::CodeGen(vCubeOp *op) {
   op->m = m_;
   op->n = n_;
@@ -1288,6 +1314,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   core_loop_ = m_loop * n_loop;
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
   block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+  GetSwizzleConfig(op);
 }
 
 MixKernel::~MixKernel() {

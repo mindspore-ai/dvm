@@ -768,7 +768,11 @@ struct vCubeOp {
   uint32_t op_type;
   uint32_t m, n, k;
   uint32_t m0, n0, k0;
+  // trans_a << 16 | trans_b
   uint32_t transpose;
+  // swizzle_dir << 16 | swizzle_cnt
+  uint32_t swizzle;
+  uint32_t reserved;
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;

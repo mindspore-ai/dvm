@@ -31,9 +31,12 @@ class MatMul {
     k0 = op->k0;
     trans_a = op->transpose >> 16;
     trans_b = op->transpose & 0xffff;
+    swizzle_dir = op->swizzle >> 16;
+    swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
     k0_part_len = L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16;
-    n0_col = (n + n0 - 1) / n0;
+    m_loop = (m + m0 - 1) / m0;
+    n_loop = (n + n0 - 1) / n0;
   }
 
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst, __gm__ T *__restrict__ src, int64_t midx, int64_t kidx) {
@@ -195,20 +198,48 @@ class MatMul {
   }
 
   __force_inline__ __aicore__ void TileMap(uint32_t tile, int64_t &midx, int64_t &nidx) {
-    // TODO: swizzle
-    midx = tile / n0_col;
-    nidx = tile % n0_col;
+    if (swizzle_dir == 0) {
+      uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
+      uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);
+      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * n_loop);
+
+      uint32_t n_row = swizzle_cnt;
+      if (tile_block_idx == tile_block_loop - 1) {
+          n_row = m_loop - swizzle_cnt * tile_block_idx;
+      }
+      midx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+      nidx = in_tile_block_idx / n_row;
+      if (tile_block_idx % 2 != 0) {
+          nidx = n_loop - nidx - 1;
+      }
+    } else {
+      uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
+      uint32_t tile_block_idx = tile / (swizzle_cnt * m_loop);
+      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * m_loop);
+
+      uint32_t n_col = swizzle_cnt;
+      if (tile_block_idx == tile_block_loop - 1) {
+          n_col = n_loop - swizzle_cnt * tile_block_idx;
+      }
+      midx = in_tile_block_idx / n_col;
+      nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+      if (tile_block_idx % 2 != 0) {
+          midx = m_loop - midx - 1;
+      }
+    }
   }
-  uint64_t n0_col;
+  uint64_t n_loop, m_loop;
   uint64_t k0_part_len;
   uint64_t m, n, k;
   uint64_t m0, n0, k0;
   bool trans_a;
   bool trans_b;
+  uint64_t swizzle_dir;
+  uint64_t swizzle_cnt;
 };
 
 template <typename M, typename T>
-__aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_begin, uint64_t tile_end) {
+__aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end) {
   set_padding((uint64_t)0);
   set_atomic_none();
   uint64_t config = 0x1;
@@ -236,11 +267,11 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_beg
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
-  for (uint64_t tile = tile_begin; tile <= tile_end; ++tile) {
+  for (uint64_t tile = block_idx; tile < tile_end; tile += block_num) {
     __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
     int64_t midx, nidx;
     mat.TileMap(tile, midx, nidx);
-    if (tile == tile_begin) {
+    if (tile == block_idx) {
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
       mat.LoadA(l1a, gm_a, midx, 0);
@@ -259,9 +290,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_beg
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
         mat.LoadB(n_l1b, gm_b, k + 1, nidx);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
-      } else if (tile < tile_end) {
+      } else if (tile + block_num < tile_end) {
         int64_t n_midx, n_nidx;
-        mat.TileMap(tile + 1, n_midx, n_nidx);
+        mat.TileMap(tile + block_num, n_midx, n_nidx);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         mat.LoadA(n_l1a, gm_a, n_midx, 0);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
@@ -323,15 +354,8 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
   __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
   uint64_t last_tile = config >> 40;
   uint64_t tile_per_block = (last_tile + block_num) / block_num;
-  uint64_t tile_start = tile_per_block * block_idx;
-  uint64_t tile_end = tile_start + tile_per_block - 1;
-  if (tile_end >= last_tile) {
-    tile_end = last_tile;
-  }
-  if (tile_start >= last_tile) {
-    tile_start = tile_end + 1;
-  }
+  uint64_t tile_end = last_tile + 1;
   __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
-  CutMKN<MatMul<half>, half>(op, tile_start, tile_end);
+  CutMKN<MatMul<half>, half>(op, tile_end);
   pipe_barrier(PIPE_ALL);
 }

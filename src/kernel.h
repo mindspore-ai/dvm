@@ -202,9 +202,10 @@ class CubeOp : public NDObject {
   float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
   void Tile(vCubeOp *code);
   void CodeGen(vCubeOp *code);
+  void GetSwizzleConfig(vCubeOp *code);
 
   NDObject *output_{nullptr};
-  int block_dim_{0};
+  uint64_t block_dim_{0};
   uint64_t core_loop_{0};
 
  protected:

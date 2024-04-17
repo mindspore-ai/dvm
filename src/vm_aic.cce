@@ -34,7 +34,7 @@ class MatMul {
     swizzle_dir = op->swizzle >> 16;
     swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
-    k0_part_len = L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16;
+    k0_part_len = min((uint64_t)(L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16), k0);
     m_loop = (m + m0 - 1) / m0;
     n_loop = (n + n0 - 1) / n0;
   }

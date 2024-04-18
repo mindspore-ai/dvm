@@ -319,6 +319,17 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tail_size", op.tail_size, oss);
 }
 
+void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vReshape op;
+  vReshape::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << op.xd_lead << "x" << op.dup_size << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  DumpVal("xd_pad", op.xd_pad, oss);
+  oss << ", ";
+  DumpVal("xn_lead", op.xn_lead, oss);
+  oss << ", ";
+  DumpVal("xn_pad", op.xn_pad, oss);
+}
+
 using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 
 std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
@@ -414,6 +425,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_ELEMENT_ANY_FP16, {&DumpElementAny, "ElementAny", "fp16"}},
   {V_REMOVEPAD, {&DumpRemovePad, "RemovePad", "u32"}},
   {V_REMOVEPAD_U16, {&DumpRemovePad, "RemovePad", "u16"}},
+  {V_RESHAPE_B32, {&DumpReshape, "Reshape", "u32"}},
+  {V_RESHAPE_B16, {&DumpReshape, "Reshape", "u16"}},
 };
 
 size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {

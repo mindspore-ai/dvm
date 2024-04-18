@@ -434,8 +434,18 @@ void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
 }
 
 int ReshapeOp::Emit(Code &code) {
-  EXCEPTION_IF(lhs_->nd_[lhs_->lead_dim_] != nd_[lead_dim_],"Reshape with diffrent leading pad is not support");
-  return CopyOp::Emit(code);
+  if (lhs_->nd_[lhs_->lead_dim_] == nd_[lead_dim_]) {
+    return CopyOp::Emit(code);
+  }
+  vReshape op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xd_lead = nd_[lead_dim_];
+  op.xn_lead = lhs_->nd_[lhs_->lead_dim_];
+  op.xd_pad = strides_[lead_dim_] - op.xd_lead;
+  op.xn_pad = lhs_->strides_[lhs_->lead_dim_] - op.xn_lead;
+  op.dup_size = lhs_->strides_.back() / strides_[lead_dim_];
+  return vReshape::Encode(insn_, (type_id_ == kFloat32 || type_id_ == kInt32) ? V_RESHAPE_B32 : V_RESHAPE_B32, op);
 }
 
 UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kUnary) {

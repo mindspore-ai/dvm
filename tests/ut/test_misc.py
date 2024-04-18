@@ -17,12 +17,15 @@ import pytest
 import numpy as np
 from dvm.tester import Tester
 
-def test_reshape():
+@pytest.mark.parametrize('shape1, shape2', [([2, 3, 64], [2, 6, 32]),
+  ([1000, 4], [100, 40]), # lead dim
+])
+def test_reshape(shape1, shape2):
     t = Tester()
-    a = np.full([2, 3, 64], 0.3, np.float32)
+    a = np.full(shape1, 0.3, np.float32)
     x = t.load(a)
     y = t.binary("Mul", x, 0.6)
-    z = t.reshape(y, [2, 6, 32])
+    z = t.reshape(y, shape2)
     r = t.unary("Sqrt", z)
     t.store_expect(r, 0.42426)
     assert(t.run_check())
@@ -43,4 +46,18 @@ def test_copy():
     x = t.load(a)
     y = t.copy(x)
     out = t.store_expect(y, 0.5)
+    assert(t.run_check())
+
+def test_event_overflow():
+    shape = [512]
+    t = Tester()
+    loads = []
+    x = t.load(np.full(shape, 0.1, np.float32))
+    for i in range(16):
+        loads.append(t.load(np.full(shape, 0.2, np.float32)))
+    result = 0.1
+    for i in range(16):
+        x = t.binary("Add", x, loads[i])
+        result += 0.2
+        t.store_expect(x, result)
     assert(t.run_check())

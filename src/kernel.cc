@@ -550,26 +550,27 @@ class ReshapeDomain : public PropDomain {
       dim_space -= tp.tile - tp.tail;
     }
     TileParam t;
+    int64_t dst_space = 1;
     if (tp.start == 0) {
       t.start = 0;
       t.end = 0;
       while (true) {
-        dim_space /= dst_[t.end];
-        if (dim_space <= 1 || t.end + 1 == static_cast<int>(dst_.size())) break;
+        dst_space *= dst_[t.end];
+        if (dst_space > dim_space || t.end + 1 == static_cast<int>(dst_.size())) break;
         t.end++;
       }
     } else {
       t.end = prop_base;
       t.start = t.end;
       while (true) {
-        dim_space /= dst_[t.start];
-        if (dim_space <= 1 || t.start == 0) break;
+        dst_space *= dst_[t.start];
+        if (dst_space >= dim_space || t.start == 0) break;
         t.start--;
       }
     }
     t.num = tp.num;
-    t.tile = tp.tile;
-    t.tail = tp.tail;
+    t.tile = CeilDiv(dst_space, t.num);
+    t.tail = dst_space % t.tile;
     PropDomain::TileProp(t);
   }
 

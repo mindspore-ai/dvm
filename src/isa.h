@@ -123,6 +123,8 @@ enum vSimdInsnID {
   V_SEL_INT32,
   V_CAST_INT32_TO_FP16,
   V_CAST_INT32_TO_FP32,
+  V_RESHAPE_B32,
+  V_RESHAPE_B16,
   // ASCEND 910B
   V_ISFINITE,
   V_MAXS,
@@ -580,6 +582,35 @@ struct vElementAny {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
     pc[1] = op.rs << 60 | op.tail_size  << 32 | op.iter_size << 16 | op.repeat;
+    return size;
+  }
+};
+
+// [dup_size, xd_lead+xd_pad] = Reshape([*, xn_lead+xn_pad])
+struct vReshape {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t xn_lead;
+  uint64_t xd_lead;
+  uint64_t xn_pad;
+  uint64_t xd_pad;
+  uint64_t dup_size;
+  // pc[0]: c_xd(13) << 13 | c_xn(13)
+  // pc[1]: xd_pad(8) << 56 | xn_pad(8) << 48 | dup_size(16) << 32 | xd_lead(16) << 16 | xn_lead(16)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vReshape &op) {
+    op.xd = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET + V_C_X_BITS, V_C_X_BITS));
+    op.xn = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET, V_C_X_BITS));
+    uint64_t data = pc[1];
+    op.xn_lead = data & 0xfffful;
+    op.xd_lead = (data >> 16) & 0xfffful;
+    op.dup_size = (data >> 32) & 0xfffful;
+    op.xn_pad = (data >> 48) & 0xfful;
+    op.xd_pad = data >> 56;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vReshape &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
+    pc[1] = op.xd_pad << 56 | op.xn_pad << 48 | op.dup_size << 32 | op.xd_lead << 16 | op.xn_lead;
     return size;
   }
 };

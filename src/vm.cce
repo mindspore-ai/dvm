@@ -1023,6 +1023,29 @@ __aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head) {
   set_vector_mask(0, simd_mask);
 }
 
+template <typename T>
+__aicore_inline__ void Reshape(bcodeptr_t pc, uint64_t head) {
+  vReshape op;
+  vReshape::Decode(pc, head, op);
+  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
+  uint64_t xn_cnt = op.xn_lead;
+  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  for (uint64_t dup = 0; dup < op.dup_size; ++dup) {
+    for (uint64_t i = 0; i < op.xd_lead; ++i) {
+      *xd++ = *xn++;
+      if (--xn_cnt == 0) {
+        xn += op.xn_pad;
+        xn_cnt = op.xn_lead;
+      }
+    }
+    xd += op.xd_pad;
+  }
+  set_flag(PIPE_S, PIPE_V, EVENT_ID0);
+  wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
+}
+
 __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
   if (round_rank == 1) {
     uint64_t r1 = rounds[0];
@@ -1345,6 +1368,7 @@ __aicore_inline__ void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t tile
     DISPATCH(V_POW, Power<float>(pc, head, tile));
     DISPATCH(V_CLR_PAD, ClearPad(pc, head));
     DISPATCH(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile));
+    DISPATCH(V_RESHAPE_B32, Reshape<uint32_t>(pc, head));
     // float16
     DISPATCH(V_BROADCAST_X_FP16, BroadcastX<half>(pc, head, tile));
     DISPATCH(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head, tile));
@@ -1370,6 +1394,7 @@ __aicore_inline__ void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t tile
     DISPATCH(V_POW_FP16, Power<half>(pc, head, tile));
     DISPATCH(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile));
     DISPATCH(V_ELEMENT_ANY_FP16, ElementAny<half>(pc, head, tile));
+    DISPATCH(V_RESHAPE_B16, Reshape<uint16_t>(pc, head));
     // int8
     DISPATCH(V_NOT_INT8, LogicalNot(pc, head, tile));
     DISPATCH(V_OR_INT8, LogicalBinary<kBinOr>(pc, head, tile));
@@ -1630,6 +1655,8 @@ DEF_DISP_FUNC(V_AND_INT8, LogicalBinary<kBinAnd>(pc, head, tile))
 DEF_DISP_FUNC(V_BROADCAST_X_INT32, BroadcastX<int32_t>(pc, head, tile))
 DEF_DISP_FUNC(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head, tile))
 
+DEF_DISP_FUNC(V_RESHAPE_B32, Reshape<uint32_t>(pc, head))
+DEF_DISP_FUNC(V_RESHAPE_B16, Reshape<uint16_t>(pc, head))
 
 DEF_DISP_FUNC(V_ADD_INT32, BINARY(pc, vadd, head, tile, int32_t))
 DEF_DISP_FUNC(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t))

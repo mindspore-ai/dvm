@@ -55,8 +55,15 @@ class CodeGenHelper {
     kGenLoad,
     kGenStore,
   };
-  CodeGenHelper() {}
-  bool Generate(VKernelBase *kernel) {
+  struct EventManager {
+    enum { MAX_EVENT_NUM = 8 };
+    int hold_idx[MAX_EVENT_NUM]{0};
+    int hold_event{-1};
+    int sync_idx{-1};
+  };
+
+  CodeGenHelper(VKernelBase *kernel): kernel_(kernel) {}
+  bool Generate() {
     static const CodeGenType codegen_types[ObjectType::kObjectBulk] = {
       kGenLoad,  // loaddummy
       kGenLoad,  // load
@@ -74,16 +81,16 @@ class CodeGenHelper {
       kGenSimd1, // elementany
       kGenSimd1, // RemovePad
     };
-    auto &code = kernel->code_;
-    auto code_reserved = kernel->ReserveCodeSize();
+    auto &code = kernel_->code_;
+    auto code_reserved = kernel_->ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
     uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
     static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize() + code_reserved;
-    for (auto op : kernel->static_ops_) {
+    for (auto op : kernel_->static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     }
-    for (auto op: kernel->objects_) {
+    for (auto op: kernel_->objects_) {
       op->UpdateStride(code.simd_width_);
       op->tail_insn_ = op->insn_ = code_ptr;
       switch (codegen_types[op->obj_id_]) {
@@ -158,31 +165,44 @@ class CodeGenHelper {
       } // end switch
     } // end for op
     *code_ptr++ = vMakeHead(vLoadInsnID::V_LOAD_NONE, 0, 0, V_PIPE_LOAD);
-    BackwardSync(kernel->objects_);
+    BackwardSync();
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
-      OverWriteCoreLimit(code, kernel);
+      OverWriteCoreLimit();
     }
     code.FillHead();
     return true;
   }
 
  private:
-  void BackwardSync(const std::vector<NDObject *> &objects) {
-    int simd_load_sync_idx = static_cast<int>(objects.size());
-    int store_simd_sync_idx = simd_load_sync_idx;
-    uint64_t simd_load_event = 0;
-    uint64_t store_simd_event = 0;
+  void BackwardSync() {
+    auto &objects = kernel_->objects_;
+    EventManager vl_event, sv_event;
+    auto alloc_event = [](EventManager &m, uint64_t &event) -> bool {
+      event = m.hold_event + 1;
+      if (event >= DeviceInfo::Instance().EventNum()) {
+        event = m.hold_event;
+        return false;
+      }
+      m.hold_event = event;
+      return true;
+    };
+    vl_event.sync_idx = sv_event.sync_idx = static_cast<int>(objects.size());
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
       auto op = *it;
       auto pipe = op->Pipe();
       if (pipe == V_PIPE_STORE) {  // STORE -> SIMD
         auto simd = op->lhs_;
-        if (simd->index_ < store_simd_sync_idx) {
-          *(op->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | store_simd_event << V_M_HEAD_SET_EVENT_OFFSET;
-          *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | store_simd_event << V_HEAD_B_WAIT_EVENT_OFFSET;
-          store_simd_event = (store_simd_event + 1) % DeviceInfo::Instance().EventNum();
-          store_simd_sync_idx = simd->index_;
+        if (simd->index_ < sv_event.sync_idx) {
+          uint64_t event;
+          if (alloc_event(sv_event, event)) {
+            *(op->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
+          } else {
+            auto to_sync = kernel_->objects_[sv_event.sync_idx]->insn_;
+            *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
+          }
+          *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
+          sv_event.sync_idx = simd->index_;
         }
       } else if (pipe == V_PIPE_SIMD && op->lhs_) { // SIMD -> LOAD
         NDObject *load = nullptr;
@@ -195,25 +215,30 @@ class CodeGenHelper {
             if (cond->Pipe() == V_PIPE_LOAD && (load == nullptr || cond->index_ < load->index_)) load = cond;
           }
         }
-        if (load != nullptr && load->index_ < simd_load_sync_idx) {
-          *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | simd_load_event << V_HEAD_B_SET_EVENT_OFFSET;
-          *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | simd_load_event << V_M_HEAD_WAIT_EVENT_OFFSET;
-          simd_load_event = (simd_load_event + 1) % DeviceInfo::Instance().EventNum();
-          simd_load_sync_idx = load->index_;
+        if (load != nullptr && load->index_ < vl_event.sync_idx) {
+          uint64_t event;
+          if (alloc_event(vl_event, event)) {
+            *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
+          } else {
+            auto to_sync = kernel_->objects_[vl_event.sync_idx]->insn_;
+            *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
+          }
+          *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
+          vl_event.sync_idx = load->index_;
         }
       }
     }
   }
 
-  void OverWriteCoreLimit(Code &code, VKernelBase *kernel) {
-    for (auto op : kernel->static_ops_) {
+  void OverWriteCoreLimit() {
+    for (auto op : kernel_->static_ops_) {
       if (op->obj_id_ <= kLoad || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && static_cast<ReduceOp*>(op)->factor_ > 1)) {
         continue;
       }
       // producer node for Store
       uint64_t size = op->strides_.back() / op->LeadAlign() * op->nd_[op->lead_dim_] * ITEM_SIZE[op->type_id_];
       if (size < SIMD_BLOCK_SIZE) {
-        code.ApplyTileLimit(CeilDiv(SIMD_BLOCK_SIZE, size));
+        kernel_->code_.ApplyTileLimit(CeilDiv(SIMD_BLOCK_SIZE, size));
       }
     }
   }
@@ -279,42 +304,59 @@ class CodeGenHelper {
       return;
     }
     int from_pipe_idx = from->index_;
-    if (from_pipe_idx <= load_vector_sync) return;
+    if (from_pipe_idx <= lv_event_.sync_idx) return;
     auto from_insn = from->tail_insn_;
     auto to_insn = to->insn_;
-    uint64_t event = load_vector_event;
-    load_vector_event = (load_vector_event + 1) % DeviceInfo::Instance().EventNum();
-    load_vector_sync = from_pipe_idx;
-    *from_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET;
-    *from_insn |= event << V_M_HEAD_SET_EVENT_OFFSET;
-    *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET;
-    *to_insn |= event << V_HEAD_WAIT_EVENT_OFFSET;
+    uint64_t event;
+    if (AllocForwardEvent(lv_event_, from_pipe_idx, to->index_, event)) {
+      *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | event << V_HEAD_WAIT_EVENT_OFFSET;
+    } else {
+      auto from_sync = kernel_->objects_[lv_event_.sync_idx]->tail_insn_;
+      *from_sync &= ~(0x1ul << V_M_HEAD_SET_FLAG_OFFSET);
+    }
+    *from_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
+    lv_event_.sync_idx = from_pipe_idx;
   }
 
   inline void StoreSync(NDObject *from, NDObject *to) {
     int from_pipe_idx = from->index_;
-    if (from_pipe_idx <= vector_store_sync) return;
+    if (from_pipe_idx <= vs_event_.sync_idx) return;
     auto from_insn = from->tail_insn_;
     auto to_insn = to->insn_;
-    uint64_t event = vector_store_event;
-    vector_store_event = (vector_store_event + 1) % DeviceInfo::Instance().EventNum();
-    vector_store_sync = from_pipe_idx;
-    *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET;
-    *from_insn |= event << V_HEAD_SET_EVENT_OFFSET;
-    *to_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET;
-    *to_insn |= event << V_M_HEAD_WAIT_EVENT_OFFSET;
+    uint64_t event;
+    if (AllocForwardEvent(vs_event_, from_pipe_idx, to->index_, event)) {
+      *to_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
+    } else {
+      auto from_sync = kernel_->objects_[vs_event_.sync_idx]->tail_insn_;
+      *from_sync &= ~(0x1ul << V_HEAD_SET_FLAG_OFFSET);
+    }
+    *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET | event << V_HEAD_SET_EVENT_OFFSET;
+    vs_event_.sync_idx = from_pipe_idx;
+  }
+
+  inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
+    int total = DeviceInfo::Instance().EventNum();
+    for (int i = 1; i <= total; ++i) {
+      event = (m.hold_event + i) % total;
+      if (from_idx >= m.hold_idx[event]) {
+        m.hold_idx[event] = to_idx;
+        m.hold_event = event;
+        return true;
+      }
+    }
+    event = m.hold_event;
+    return false;
   }
 
   uint32_t xbuf_size_{0};
   uint64_t static_xbuf_{0};
   std::queue<std::pair<NDObject*, NDObject*>> free_xbuf_;
 
-  int load_vector_sync = -1;
   int vector_vector_sync = 0;
-  int vector_store_sync = -1;
-  uint64_t load_vector_event = 0;
-  uint64_t vector_store_event = 0;
+  EventManager lv_event_;
+  EventManager vs_event_;
 
+  VKernelBase *kernel_;
   friend VKernelBase;
 };
 
@@ -803,9 +845,9 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
     }
   }
   // codegen
-  CodeGenHelper helper;
+  CodeGenHelper helper(this);
   helper.xbuf_size_ = best_repeat * code_.simd_width_ * ITEM_SIZE[max_type_];
-  helper.Generate(this);
+  helper.Generate();
 }
 
 void VKernelBase::DumpKernel(std::ostringstream &oss) {

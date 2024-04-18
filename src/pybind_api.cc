@@ -342,7 +342,7 @@ void KernelPy::Tile(int start, int end, int64_t num) {
 
 void *KernelPy::ToDev(void *host, size_t size) {
   void *dev = nullptr;
-  ASCEND_CALL(aclrtMalloc(&dev, size, ACL_MEM_MALLOC_NORMAL_ONLY));
+  ASCEND_CALL(aclrtMalloc(&dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
   ASCEND_CALL(aclrtMemcpy(dev, size, host, size, ACL_MEMCPY_HOST_TO_DEVICE));
   dev_mem_.push_back(dev);
   return dev;

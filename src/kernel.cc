@@ -1322,17 +1322,21 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   float mincost = op->m * op->k + op->k * op->n;
   for (size_t i = 1; i <= block_dim_; i++) {
     uint32_t c = (block_dim_ + i - 1) / i;
+    uint32_t mem_a_zN = c * op->m0 * op->k;
+    uint32_t mem_b_zN = i * op->n0 * op->k;
+    uint32_t mem_a_nZ = c * op->n0 * op->k;
+    uint32_t mem_b_nZ = i * op->m0 * op->k;
     float cost;
-    if (i * op->n0 + op->m < op->m0 * c + op->n) {
-      swizzle_dir = 1; // Nz
-      cost = op->n0 * i + op->m0 * c;
+    if (mem_a_zN + mem_b_zN < mem_a_nZ + mem_b_nZ) {
+      swizzle_dir = 1; // zN
+      cost = mem_a_zN + mem_b_zN;
       if (cost <= mincost) {
           mincost = cost;
           swizzle_cnt = i;
       }
     } else {
-      swizzle_dir = 0; // Zn
-      cost = op->m0 * i + op->n0 * c;
+      swizzle_dir = 0; // nZ
+      cost = mem_a_nZ + mem_b_nZ;
       if (cost < mincost) {
           mincost = cost;
           swizzle_cnt = i;

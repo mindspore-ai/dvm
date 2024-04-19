@@ -263,7 +263,7 @@ public:
 class ElementAnyOp: public NDObject {
  public:
   ElementAnyOp(NDObject *input): NDObject(input, nullptr, input->type_id_, ObjectType::kElementAny) {
-    ASSERT(type_id_ == kFloat32)
+    ASSERT(type_id_ == kFloat32);
     shape_ref_data_ = shape_;
     shape_ref_ = &shape_ref_data_;
   }

@@ -921,40 +921,25 @@ __aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   uint64_t simd_width = TileSimdWidth(tile);
   uint64_t repeat_stride = simd_width >> SIMD_WIDTH_SHIFT(xn);
+  uint64_t iter_repeat_num = op.iter_size / simd_width;
   while (red_size > 1) {
     uint64_t iter_tail = red_size & 1ul;
-    red_size >>= 1; // op.red_size /= 2
+    red_size >>= 1;  // op.red_size /= 2
     uint64_t dup_stride = op.iter_size * red_size;
     for (uint64_t dup = 0; dup < op.dup_num; ++dup) {
-      for (uint64_t iter = 0; iter < red_size; ++iter) {
-        uint64_t repeat = op.iter_size / simd_width;
-        for (; repeat > 255; repeat -= 255) {
-          vAdd(xd, xn, xn + dup_stride, 255, repeat_stride);
-          xd += 255 * simd_width;
-          xn += 255 * simd_width;
-        }
-        vAdd(xd, xn, xn + dup_stride, repeat, repeat_stride);
-        xd += repeat * simd_width;
-        xn += repeat * simd_width;
-      }
+      repeat_vadd(xd, xn, xn + dup_stride, red_size * iter_repeat_num, 1, 1, 1, repeat_stride, repeat_stride, repeat_stride);
       if (iter_tail) {
-        xd -= op.iter_size;
-        uint64_t repeat = op.iter_size / simd_width;
         pipe_barrier(PIPE_V);
-        for (; repeat > 255; repeat -= 255) {
-          vAdd(xd, xd, xn + dup_stride, 255, repeat_stride);
-          xd += 255 * simd_width;
-          xn += 255 * simd_width;
-        }
-        vAdd(xd, xd, xn + dup_stride, repeat, repeat_stride);
-        xd += repeat * simd_width;
-        xn += repeat * simd_width;
+        repeat_vadd(xd, xd, xn + dup_stride + dup_stride, iter_repeat_num, 1, 1, 1, repeat_stride, repeat_stride,
+                    repeat_stride);
+        xn += op.iter_size;
       }
-      xn += dup_stride;
+      xn += dup_stride * 2;
+      xd += dup_stride;
       pipe_barrier(PIPE_V);
-    } // end for dup
-    xn = xd = (__ubuf__ float*)(vReduceY::GetXd(pc, head));
-  } // end while iter_num
+    }  // end for dup
+    xn = xd = (__ubuf__ float *)(op.xd);
+  }  // end while iter_num
 }
 
 template <typename T>

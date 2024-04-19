@@ -38,11 +38,11 @@ def test_element_any_01():
     b = t.store(z)
     t.run_check()
     assert b[0] == 1
-@pytest.mark.parametrize('type', [np.float32, np.float16])
+
 @pytest.mark.parametrize("shape, tile",[((1001,), 32), ((3184,), 33), ((5231,), 33)])
-def test_element_any_02(type, shape, tile):
+def test_element_any_02(shape, tile):
     t = Tester()
-    a = np.full(shape, 0.0, type)
+    a = np.full(shape, 0.0, np.float32)
     x = t.load(a)
     z = t.element_any(x)
     b = t.store(z)

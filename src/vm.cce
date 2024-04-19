@@ -289,7 +289,7 @@ __aicore_inline__ void vCmpGe(__ubuf__ half *src0, __ubuf__ half *src1, uint8_t 
 __aicore_inline__ void repeat_vcadd(__ubuf__ float *dst, __ubuf__ float *src, uint8_t repeat, uint16_t dstRepeatStride,
                                     uint16_t srcRepeatStride) {
   for (; repeat > 255; repeat -= 255) {
-    vCAdd(dst, src, val, 255, dstRepeatStride, srcRepeatStride);
+    vCAdd(dst, src, 255, dstRepeatStride, srcRepeatStride);
     dst += 255 * dstRepeatStride;
     src += 255 * TYPE_SHIFT(float) * srcRepeatStride;
   }
@@ -1376,7 +1376,6 @@ __aicore_inline__ void Dispatch_SIMD(bcodeptr_t pc, uint64_t head, uint64_t tile
     DISPATCH(V_SEL_FP16, Select<half>(pc, head, tile));
     DISPATCH(V_POW_FP16, Power<half>(pc, head, tile));
     DISPATCH(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile));
-    DISPATCH(V_ELEMENT_ANY_FP16, ElementAny<half>(pc, head, tile));
     DISPATCH(V_RESHAPE_B16, Reshape<uint16_t>(pc, head));
     // int8
     DISPATCH(V_NOT_INT8, LogicalNot(pc, head, tile));
@@ -1628,7 +1627,6 @@ DEF_DISP_FUNC(V_CMP_FP16, BinCompare<half>(pc, head, tile))
 DEF_DISP_FUNC(V_SEL_FP16, Select<half>(pc, head, tile))
 DEF_DISP_FUNC(V_POW_FP16, Power<half>(pc, head, tile))
 DEF_DISP_FUNC(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile))
-DEF_DISP_FUNC(V_ELEMENT_ANY_FP16, ElementAny<half>(pc, head, tile))
 
 DEF_DISP_FUNC(V_CAST_INT8_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half))
 DEF_DISP_FUNC(V_NOT_INT8, LogicalNot(pc, head, tile))

@@ -516,7 +516,7 @@ int ElementAnyOp::Emit(Code &code) {
                     : lhs_->strides_.back() / lhs_->nd_[tail_dim_] * tail_size_;
 
   op.repeat = lhs_->strides_.back() / code.simd_width_;
-  size += vElementAny::Encode(tail_insn_, type_id_ == kFloat32 ? V_ELEMENT_ANY : V_ELEMENT_ANY_FP16, op);
+  size += vElementAny::Encode(tail_insn_, V_ELEMENT_ANY, op);
 
   if (insn_num > 1) {
     *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;

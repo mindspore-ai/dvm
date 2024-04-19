@@ -422,7 +422,6 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_RSUM_Y, {&DumpReduceY, "SumY", "fp32"}},
   {V_CLR_PAD, {&DumpClearPad, "ClrPad", "fp32"}},
   {V_ELEMENT_ANY, {&DumpElementAny, "ElementAny", "fp32"}},
-  {V_ELEMENT_ANY_FP16, {&DumpElementAny, "ElementAny", "fp16"}},
   {V_REMOVEPAD, {&DumpRemovePad, "RemovePad", "u32"}},
   {V_REMOVEPAD_U16, {&DumpRemovePad, "RemovePad", "u16"}},
   {V_RESHAPE_B32, {&DumpReshape, "Reshape", "u32"}},

@@ -406,6 +406,21 @@ void BasicBlock::Clear() {
   PREV_OBJ(iter)->insn_ = nullptr;
 }
 
+void BasicBlock::Export(std::vector<NDObject *> &objects) {
+  auto iter = begin();
+  objects.clear();
+  objects.reserve(size());
+  int i = 0;
+  while (iter != end()) {
+    iter->index_ = i++;
+    PREV_OBJ(iter)->insn_ = nullptr;
+    iter->tail_insn_ = nullptr;
+    objects.push_back(iter.get());
+    ++iter;
+  }
+  PREV_OBJ(iter)->insn_ = nullptr;
+}
+
 BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *object) {
   if (iter.get() == object) {
     return iter;

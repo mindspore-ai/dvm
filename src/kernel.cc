@@ -1146,8 +1146,7 @@ void VKernelS::Optimize() {
   for (auto pass : pass::passes) {
     pass(bb);
   }
-  objects_ = bb.ToVector();
-  bb.Clear();
+  bb.Export(objects_);
 }
 
 void VKernelS::CodeGen() {
@@ -1159,13 +1158,27 @@ void VKernelS::CodeGen() {
 }
 
 void VKernelD::CodeGen() {
+  objects_.clear();
+  if (elim_reshape_) {
+    for (auto op : build_ops_) {
+      op->Normalize(objects_);
+      objects_.emplace_back(op);
+    }
+    pass::BasicBlock bb(objects_, build_ops_); // build_ops_ is not used
+    pass::EliminateReshape(bb);
+    bb.Export(objects_);
+    BuildDomain(objects_);
+    NormalizeDomain();
+    DoCodeGen(DeviceInfo::Instance().CoreNum());
+    EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
+    return;
+  }
   if (pd_nexts_.empty()) { // first
     BuildDomain(build_ops_);
     for (auto op : build_ops_) {
       pd_nexts_.push_back(op->pd_next_);
     }
   }
-  objects_.clear();
   size_t start = 0;
   for (size_t i = 0; i < build_ops_.size(); ++i) {
     auto op = build_ops_[i];

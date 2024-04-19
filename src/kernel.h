@@ -163,11 +163,17 @@ class VKernelS : public VKernelBase {
 class VKernelD : public VKernelBase {
  public:
   VKernelD() : VKernelBase(KernelType::kDynShape) {}
-  void Append(NDObject *obj) override { build_ops_.push_back(obj); }
+  void Append(NDObject *obj) override {
+    build_ops_.push_back(obj);
+    if (obj->obj_id_ == ObjectType::kReshape) {
+      elim_reshape_ = true;
+    }
+  }
   void CodeGen() override;
 
  private:
   std::vector<NDObject*> pd_nexts_;
+  bool elim_reshape_{false};
 };
 
 class VKernelP : public VKernel {

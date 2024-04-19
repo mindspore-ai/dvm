@@ -444,7 +444,7 @@ int ReshapeOp::Emit(Code &code) {
   op.xn_lead = lhs_->nd_[lhs_->lead_dim_];
   op.xd_pad = strides_[lead_dim_] - op.xd_lead;
   op.xn_pad = lhs_->strides_[lhs_->lead_dim_] - op.xn_lead;
-  op.dup_size = lhs_->strides_.back() / strides_[lead_dim_];
+  op.dup_size = strides_.back() / strides_[lead_dim_];
   return vReshape::Encode(insn_, (type_id_ == kFloat32 || type_id_ == kInt32) ? V_RESHAPE_B32 : V_RESHAPE_B32, op);
 }
 

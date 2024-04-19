@@ -177,6 +177,8 @@ class BasicBlock {
 
   std::vector<NDObject *> ToVector();
 
+  void Export(std::vector<NDObject *> &objects);
+
   // Remove use of insn_ and tail_insn_
   void Clear();
 

@@ -1333,16 +1333,14 @@ void CubeOp::Tile(vCubeOp *op) {
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   uint32_t swizzle_cnt = 1;
   uint32_t swizzle_dir = 0;
-  float mincost = op->m * op->k + op->k * op->n;
+  float mincost = op->m + op->n;
   for (size_t i = 1; i <= block_dim_; i++) {
     uint32_t c = (block_dim_ + i - 1) / i;
-    uint32_t mem_a_zN = c * op->m0 * op->k;
-    uint32_t mem_b_zN = i * op->n0 * op->k;
-    uint32_t mem_a_nZ = c * op->n0 * op->k;
-    uint32_t mem_b_nZ = i * op->m0 * op->k;
     float cost;
-    if (mem_a_zN + mem_b_zN < mem_a_nZ + mem_b_nZ) {
+    if (i * op->n0 + op->m < op->m0 * c + op->n) {
       swizzle_dir = 1; // zN
+      uint32_t mem_a_zN = c * op->m0;
+      uint32_t mem_b_zN = i * op->n0;
       cost = mem_a_zN + mem_b_zN;
       if (cost <= mincost) {
           mincost = cost;
@@ -1350,6 +1348,8 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
       }
     } else {
       swizzle_dir = 0; // nZ
+      uint32_t mem_a_nZ = c * op->n0;
+      uint32_t mem_b_nZ = i * op->m0;
       cost = mem_a_nZ + mem_b_nZ;
       if (cost < mincost) {
           mincost = cost;

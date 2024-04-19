@@ -1364,9 +1364,15 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->m = m_;
   op->n = n_;
   op->k = k_;
-  op->gm_a = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(lhs_)->src_);
-  op->gm_b = reinterpret_cast<uint64_t>(static_cast<NDLoad*>(rhs_)->src_);
-  op->gm_c = reinterpret_cast<uint64_t>(static_cast<NDStore*>(output_)->dst_);
+  auto a = static_cast<NDLoad*>(lhs_);
+  op->gm_a = reinterpret_cast<uint64_t>(a->src_);
+  a->reloc_addr_ = &op->gm_a;
+  auto b = static_cast<NDLoad*>(rhs_);
+  op->gm_b = reinterpret_cast<uint64_t>(b->src_);
+  b->reloc_addr_ = &op->gm_b;
+  auto c = static_cast<NDStore*>(output_);
+  op->gm_c = reinterpret_cast<uint64_t>(c->dst_);
+  c->reloc_addr_ = &op->gm_c;
   op->transpose = trans_a_ << 16 | trans_b_;
   Tile(op);
   auto m_loop = CeilDiv(op->m, op->m0);

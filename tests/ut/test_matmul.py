@@ -4,6 +4,7 @@ import pytest
 from dvm.tester import Tester
 
 
+@pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('trans', [[False, False], [False, True], [True, False], [True, True]])
 def test_matmul(trans):

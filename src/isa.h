@@ -403,10 +403,12 @@ struct vBroadcastX {
   uint64_t repeat;
   uint64_t lead_num;
   uint64_t iter_num;
-  // pc[0]:  xn(18)
+  uint64_t lead_pad;
+  // pc[0]:  lead_pad(8) << 18 | xn(18)
   // pc[1]:  c_xd(16) << 48 | iter_num(16) << 32 | lead_num(16) << 16 | repeat(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastX &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.lead_pad = (head >> (V_HEAD_EXT_OFFSET + 18)) & 0xfful;
     uint64_t data = pc[1];
     op.repeat = data & 0xfffful;
     op.lead_num = (data >> 16) & 0xfffful;
@@ -415,7 +417,7 @@ struct vBroadcastX {
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastX &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeHead(id, op.lead_pad << 18 | op.xn, size, V_PIPE_SIMD);
     pc[1] = vCompactX(op.xd) << 48 | op.iter_num << 32 | op.lead_num << 16 | op.repeat;
     return size;
   }

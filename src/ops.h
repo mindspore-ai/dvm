@@ -405,7 +405,6 @@ class _ReduceOp : public NDObject {
   void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; tail_dim_ = -1; }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
- protected:
   int red_op_;
   int start_dim_{0};
   int end_dim_{0};

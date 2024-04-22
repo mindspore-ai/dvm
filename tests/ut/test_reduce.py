@@ -76,6 +76,8 @@ def test_reduce_atomic(dim):
 @pytest.mark.parametrize('in_shape, dims', [[[511, 1024],(1,)], [[521, 1024],(1,)],
     [[35053], (0,)],
     [[120, 1], (0,)], # lead 1 not include
+    [[1, 4, 120, 136], (0,2,3)], # reduce with 1
+    [[120, 20, 1], (2,)], # reduce one range with 1
     [[11, 6000], (0,)]]) # reducey red_size = 1
 def test_reduce(in_shape, dims):
     t = Tester()

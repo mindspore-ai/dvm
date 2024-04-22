@@ -830,24 +830,16 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   for (uint64_t i = 0; i < op.iter_num; ++i) {
     for (uint64_t j = 0; j < op.lead_num; ++j) {
       T val = static_cast<T>(*xn);
-      if (op.repeat <= 255) {
-        vDup(xd, val, op.repeat, rs);
-        xd += op.repeat * simd_width;
-      } else {
-        uint64_t mod = op.repeat / 255;
-        for (uint64_t m = 0; m < mod; ++m) {
-          vDup(xd, val, 255, rs);
-          xd += 255 * simd_width;
-        }
-        uint64_t remain = op.repeat % 255;
-        if (remain > 0) {
-          vDup(xd, val, remain, rs);
-          xd += remain * simd_width;
-        }
+      uint64_t repeat = op.repeat;
+      for (; repeat > 255; repeat -= 255) {
+        vDup(xd, val, 255, rs);
+        xd += 255 * simd_width;
       }
+      vDup(xd, val, repeat, rs);
+      xd += repeat * simd_width;
       xn += 1;
     }
-    if (op.lead_num % simd_width) xn += simd_width - op.lead_num % simd_width;
+    xn += op.lead_pad;
   }
 }
 

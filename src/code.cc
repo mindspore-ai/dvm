@@ -256,7 +256,8 @@ void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastX op;
   vBroadcastX::Decode(dump_info.insn, *dump_info.insn, op);
   oss << "[" << dump_info.simd_width << "x" << op.repeat << "]x" << op.lead_num << "x" << op.iter_num;
-  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  DumpVal("lead_pad", op.lead_pad, oss);
 }
 
 void DumpBroadcastY(const DumpInfo &dump_info, std::ostringstream &oss) {

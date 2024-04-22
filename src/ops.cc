@@ -29,6 +29,14 @@ inline uint64_t DMAConfig(uint64_t sid, uint64_t nBurst, uint64_t lenBurst,
   return dstStride << 48 | srcStride << 32 | lenBurst << 16 | nBurst << 4 | sid;
 }
 
+int EmitCopy(bcodeptr_t insn, uint64_t xd, uint64_t xn, uint64_t bytes) {
+  vCopy op;
+  op.xd = xd;
+  op.xn = xn;
+  op.config = DMAConfig(0, 1, (bytes + 31) >> 5, 0, 0);
+  return vCopy::Encode(insn, V_COPY, op);
+}
+
 NDObject* GetBroadcastOp(NDObject *obj, const std::vector<int64_t> &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
   dvm::_BroadcastOp *broadcast_op = nullptr;
   if (stuff_idx < stuff_ops.size()) {
@@ -400,12 +408,7 @@ int NDStore::Emit(Code &code) {
 }
 
 int CopyOp::Emit(Code &code) {
-  vCopy op;
-  op.xd = xbuf_;
-  op.xn = lhs_->xbuf_;
-  uint64_t lenburst = GetBlocks(strides_.back());
-  op.config = DMAConfig(0, 1, lenburst, 0, 0);
-  return vCopy::Encode(insn_, V_COPY, op);
+  return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
 }
 
 void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -771,6 +774,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_widt
   int64_t rank_size = static_cast<int64_t>(strides_.size());
   op.lead_num = end_dim + 1 < rank_size ? nd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 <  rank_size ? strides_.back() / strides_[end_dim + 1] : 1;
+  op.lead_pad = lhs_->strides_[lhs_->lead_dim_] - lhs_->nd_[lhs_->lead_dim_];
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_FP16, V_NONE, V_BROADCAST_X, V_BROADCAST_X_INT32};
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
@@ -1011,8 +1015,17 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
     red_ext = d + 1;
     while (red_ext < static_cast<int>(nd_.size()) && nd_[red_ext] == 1) red_ext++;
   }
-  lhs_ = input;
-  SetRange(red_start, red_ext-1);
+  if (real_reduce) {
+    lhs_ = input;
+    SetRange(red_start, red_ext-1);
+  } else if (stuff_idx > 0) {
+    _ReduceOp *last = stuff_ops_.back();
+    lhs_ = last->lhs_;
+    SetRange(last->start_dim_, last->end_dim_);
+    run_ops.pop_back();
+  } else {
+    start_dim_ = end_dim_ = -1;
+  }
 }
 
 void ReduceOp::Tile(const TileParam &tp) {
@@ -1038,7 +1051,8 @@ void ReduceOp::Tile(const TileParam &tp) {
 }
 
 int ReduceOp::Emit(Code &code) {
-  auto num = _ReduceOp::Emit(code);
+  auto num = start_dim_ >= 0 ? _ReduceOp::Emit(code) :
+        EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
   if (DeviceInfo::Instance().Arch() != kAiCore_C220 && factor_ > 0 &&
       nd_[lead_dim_] != strides_[lead_dim_]) {
     tail_insn_ = insn_ + num;

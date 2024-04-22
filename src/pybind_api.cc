@@ -291,10 +291,11 @@ py::object KernelPy::Store(const py::object &obj) {
   auto src = static_cast<NDObject*>(in_obj);
   KernelPy::StoreInfo store;
   size_t size = ITEM_SIZE[src->type_id_];
-  store.shape.resize(src->nd_.size());
-  for (size_t i =0 ;i< src->nd_.size();i++) {
-    size *= src->nd_[i];
-    store.shape[src->nd_.size() - i - 1] = src->nd_[i];
+  auto shape_ref = src->shape_ref_;
+  store.shape.resize(shape_ref->size);
+  for (size_t i = 0; i < shape_ref->size; i++) {
+    size *= shape_ref->data[i];
+    store.shape[i] = shape_ref->data[i];
   }
   store.host = std::malloc(size);
   std::memset(store.host, 0, size);

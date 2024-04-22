@@ -112,9 +112,9 @@ class Kernel {
 
   NDObject *Unary(int op_type, NDObject *input);
   NDObject *Binary(int op_type, NDObject *lhs, NDObject *rhs);
-  template<typename T>
+  template <typename T>
   NDObject *Binary(int op_type, T val, NDObject *rhs);
-  template<typename T>
+  template <typename T>
   NDObject *Binary(int op_type, NDObject *lhs, T val);
 
   NDObject *Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims);
@@ -123,7 +123,7 @@ class Kernel {
   NDObject *Cast(NDObject *input, DType type);
   NDObject *Broadcast(NDObject *input, ShapeRef *shape);
 
-  template<typename T>
+  template <typename T>
   NDObject *Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load);
   NDObject *Reshape(NDObject *input, ShapeRef *shape);
   NDObject *Copy(NDObject *input);

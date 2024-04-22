@@ -18,7 +18,7 @@ constexpr uint32_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
 constexpr uint32_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
 constexpr int32_t BLOCK_SIZE = 16;
 
-// TODO: only support fp16 now
+// TODO: only support fp16/bf16 now
 template <typename T>
 class MatMul {
  public:
@@ -180,6 +180,19 @@ class MatMul {
     );
   }
 
+  template <typename S>
+  struct QuantPRE {};
+
+  template <>
+  struct QuantPRE<half> {
+    static constexpr QuantMode_t type = F322F16;
+  };
+
+  template <>
+  struct QuantPRE<bfloat16_t> {
+    static constexpr QuantMode_t type = F322BF16;
+  };
+
   __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst, __cc__ float *__restrict__ c, int64_t midx, int64_t nidx) {
     copy_matrix_cc_to_gm(
       dst + midx * m0 * n + nidx * n0,        // dst
@@ -190,7 +203,7 @@ class MatMul {
       n,                                      // dstStride_dst_D
       m0,                                     // srcStride
       0,                                      // UnitFlagMode
-      F322F16,                                // QuantPRE
+      (QuantMode_t)QuantPRE<T>::type,         // QuantPRE
       0,                                      // ReLUPRE
       false,                                  // channelSplit
       true                                    // NZ2ND_EN
@@ -356,6 +369,16 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
   uint64_t tile_per_block = (last_tile + block_num) / block_num;
   uint64_t tile_end = last_tile + 1;
   __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
-  CutMKN<MatMul<half>, half>(op, tile_end);
+  switch (op->dtype)
+  {
+    case vCubeOp::FP16:
+      CutMKN<MatMul<half>, half>(op, tile_end);
+      break;
+    case vCubeOp::BF16:
+      CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_end);
+      break;
+    default: break;
+  }
+
   pipe_barrier(PIPE_ALL);
 }

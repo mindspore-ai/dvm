@@ -1374,6 +1374,9 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->gm_c = reinterpret_cast<uint64_t>(c->dst_);
   c->reloc_addr_ = &op->gm_c;
   op->transpose = trans_a_ << 16 | trans_b_;
+  auto dtype = lhs_->type_id_;
+  ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
+  op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
   Tile(op);
   auto m_loop = CeilDiv(op->m, op->m0);
   auto n_loop = CeilDiv(op->n, op->n0);

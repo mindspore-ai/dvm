@@ -165,7 +165,7 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void Mad(__cc__ float *__restrict__ c, __ca__ T *__restrict__ a, __cb__ T *__restrict__ b, bool init_c) {
+  __force_inline__ __aicore__ void Mad(__cc__ float *__restrict__ c, __ca__ T *__restrict__ a, __cb__ T *__restrict__ b, bool init_c, uint8_t unit_flag) {
     mad(
       c,
       a,
@@ -173,7 +173,7 @@ class MatMul {
       m0,               // m
       k0_part_len,      // k
       n0,               // n
-      0,                // unitFlag
+      unit_flag,        // unitFlag
       0,                // kDirectionAlign
       0,                // cmatrixSource
       init_c            // cmatrixInitVal
@@ -193,7 +193,7 @@ class MatMul {
     static constexpr QuantMode_t type = F322BF16;
   };
 
-  __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst, __cc__ float *__restrict__ c, int64_t midx, int64_t nidx) {
+  __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst, __cc__ float *__restrict__ c, int64_t midx, int64_t nidx, uint8_t unit_flag) {
     copy_matrix_cc_to_gm(
       dst + midx * m0 * n + nidx * n0,        // dst
       c,                                      // src
@@ -202,7 +202,7 @@ class MatMul {
       m0,                                     // MSize
       n,                                      // dstStride_dst_D
       m0,                                     // srcStride
-      0,                                      // UnitFlagMode
+      unit_flag,                              // UnitFlagMode
       (QuantMode_t)QuantPRE<T>::type,         // QuantPRE
       0,                                      // ReLUPRE
       false,                                  // channelSplit
@@ -279,7 +279,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
-  set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
   for (uint64_t tile = block_idx; tile < tile_end; tile += block_num) {
     __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
     int64_t midx, nidx;
@@ -337,10 +336,11 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         set_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
         wait_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
         bool init_c = (k == 0 && k_part == 0);
-        if (init_c) {
-          wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+        uint8_t unit_flag = 0b10;  // do not allow reading from L0C
+        if (k == k_loop - 1 && k_part == k_part_loop - 1) {
+          unit_flag = 0b11;  // allow reading from L0C
         }
-        mat.Mad(l0c, l0a, l0b, init_c);
+        mat.Mad(l0c, l0a, l0b, init_c, unit_flag);
         pipe_barrier(PIPE_M);
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
@@ -350,17 +350,14 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       Swap(l1a, n_l1a);
       Swap(l1b, n_l1b);
     }
-    set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
-    wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
-    mat.StoreC(gm_c, l0c, midx, nidx);
-    set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+    uint8_t unit_flag = 0b11;
+    mat.StoreC(gm_c, l0c, midx, nidx, unit_flag);
     //if (op->post_fusion) { ffts_cross_core_sync(MTE3, inner_group);}
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
-  wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
 }
 
 extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {

@@ -234,13 +234,16 @@ class ReshapeOp : public CopyOp {
  public:
   ReshapeOp(NDObject *input, ShapeRef *shape_ref)
       : CopyOp(input) {
-    shape_ref_ = shape_ref;  // updated by ms at runtime
+    dst_shape_ref_ = shape_ref;
+    shape_ref_ = new ShapeRef();
     obj_id_ = ObjectType::kReshape;
   }
+  ~ReshapeOp() { delete shape_ref_; }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(Code &code) override;
 
  private:
+  ShapeRef *dst_shape_ref_;
   std::vector<int64_t> shape_;
 };
 

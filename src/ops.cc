@@ -412,13 +412,15 @@ int CopyOp::Emit(Code &code) {
 }
 
 void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
-  // update nd_ from shape_ref_
-  auto dims = shape_ref_->size;
+  // update nd_/shape_
+  auto dims = dst_shape_ref_->size;
   nd_.resize(dims);
+  shape_.resize(dims);
   int64_t sz = 1;
   size_t update_axis = dims;
   for (size_t i = 0; i < dims; ++i) {
-    auto sh = shape_ref_->data[i];
+    auto sh = dst_shape_ref_->data[i];
+    shape_[i] = sh;
     auto nd_i = dims - i - 1;
     if (sh == -1) {
       update_axis = nd_i;
@@ -432,8 +434,11 @@ void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
     for (auto sh : lhs_->nd_) {
       input_sz *= sh;
     }
-    nd_[update_axis] = input_sz / sz;
+    auto v = input_sz / sz;
+    nd_[update_axis] = v;
+    shape_[dims - 1 - update_axis] = v;
   }
+  *shape_ref_ = shape_;
 }
 
 int ReshapeOp::Emit(Code &code) {

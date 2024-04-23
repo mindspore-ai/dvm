@@ -172,6 +172,10 @@ class VKernelD : public VKernelBase {
   void CodeGen() override;
 
  private:
+  void RecordOpRelation();
+  void RecoverOpRelation();
+
+  std::unordered_map<NDObject*, std::vector<NDObject*>> op_relations_;
   std::vector<NDObject*> pd_nexts_;
   bool elim_reshape_{false};
 };

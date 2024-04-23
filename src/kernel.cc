@@ -964,6 +964,9 @@ int VKernelBase::Analyze() {
     }
     return false;
   };
+  for (auto op : objects_) {  // clear status
+    op->lead_dim_ = 0;
+  }
   for (auto op : static_ops_) {
     if (op->Pipe() == V_PIPE_SIMD) {
       OP_GEN_S(op);
@@ -1100,6 +1103,7 @@ class PropDomainBuilder {
 };
 
 void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
+  static_ops_.clear();
   max_type_ = objects.front()->type_id_;
   min_type_ = objects.front()->type_id_;
   bool slow_build_path = false;
@@ -1157,13 +1161,50 @@ void VKernelS::CodeGen() {
   EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
 }
 
+
+void VKernelD::RecordOpRelation() {
+  for (auto op : objects_) {
+    if (op_relations_.find(op) != op_relations_.end()) {
+      // already recorded during the first iteration
+      continue;
+    }
+    auto is_select = op->obj_id_ == ObjectType::kSelect;
+    bool has_reshape = op->obj_id_ == ObjectType::kReshape ||
+                       (op->lhs_ != nullptr && op->lhs_->obj_id_ == ObjectType::kReshape) ||
+                       (op->rhs_ != nullptr && op->rhs_->obj_id_ == ObjectType::kReshape) ||
+                       (is_select && reinterpret_cast<SelectOp *>(op)->cond_->obj_id_ == ObjectType::kReshape);
+    if (has_reshape) {
+      auto input_num = is_select ? 3 : 2;
+      op_relations_[op].resize(input_num);
+      op_relations_[op][0] = op->lhs_;
+      op_relations_[op][1] = op->rhs_;
+      if (is_select) {
+        op_relations_[op][2] = reinterpret_cast<SelectOp *>(op)->cond_;
+      }
+    }
+  }
+}
+
+void VKernelD::RecoverOpRelation() {
+  for (const auto &item : op_relations_) {
+    auto op = item.first;
+    op->lhs_ = item.second[0];
+    op->rhs_ = item.second[1];
+    if (op->obj_id_ == ObjectType::kSelect) {
+      reinterpret_cast<SelectOp *>(op)->cond_ = item.second[2];
+    }
+  }
+}
+
 void VKernelD::CodeGen() {
   objects_.clear();
   if (elim_reshape_) {
+    RecoverOpRelation();
     for (auto op : build_ops_) {
       op->Normalize(objects_);
       objects_.emplace_back(op);
     }
+    RecordOpRelation();
     pass::BasicBlock bb(objects_, build_ops_); // build_ops_ is not used
     pass::EliminateReshape(bb);
     bb.Export(objects_);

@@ -1261,6 +1261,7 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
     shape_ = {batch, m_, n_};
   }
   shape_ref_data_ = shape_;
+  shape_ref_ = &shape_ref_data_;
 }
 
 float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {

@@ -40,9 +40,25 @@ class NDObjectPy {
   NDObject *obj_;
 };
 
+class ShapeRefPy{
+ public:
+  ShapeRefPy(const std::vector<int64_t> &shape): shape_(shape) {
+    shape_ref_ = new ShapeRef(shape_);
+  }
+  ~ShapeRefPy() { delete shape_ref_; }
+  void Update(const py::object &shape);
+  ShapeRef* Get() const { return shape_ref_; }
+
+ private:
+  ShapeRef *shape_ref_;
+  std::vector<int64_t> shape_;
+};
+
 class KernelPy {
  public:
   using NDOpPyPtr = std::shared_ptr<NDObjectPy>;
+  using ShapeRefPyPtr = std::shared_ptr<ShapeRefPy>;
+  friend class ShapeRefPy;
 
   KernelPy(int dev_id, const std::string &ker_type);
   ~KernelPy();
@@ -62,6 +78,8 @@ class KernelPy {
   py::object Copy(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b);
   void ParallelNext();
+  void Reload(const py::object &load, const py::object &array);
+  py::object GetOutput(const py::object &store);
 
   void Tile(int start, int end, int64_t num);
   void Optimize();
@@ -71,8 +89,13 @@ class KernelPy {
   py::object Perf();
   py::object Measure();
   void Run();
-
   void ResetPasses(const py::object& pass_names);
+
+ public:
+  void DynamicPostprocess();
+  inline bool IfDyn() {
+    return kernel_.GetImpl()->KType() == kDynShape;
+  }
 
   struct StoreInfo {
     NDObject* obj;
@@ -91,6 +114,7 @@ class KernelPy {
   std::vector<std::vector<int64_t>> shape_vec_;
   std::vector<ShapeRef*> shape_;
   std::vector<void*> dev_mem_;
+  std::unordered_map<NDObject*, std::pair<py::buffer_info, NDObject*>> store_map_;
   int dev_id_{0};
 };
 }

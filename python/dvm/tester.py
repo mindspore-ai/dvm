@@ -17,26 +17,40 @@ import os
 import sys
 import inspect
 import numpy as np
-from ._dvm_py import Kernel
+from ._dvm_py import Kernel, ShapeRef
 
 class Tester(Kernel):
     __test__ = False
     def __init__(self, ker_type=""):
         dev_id = int(os.getenv("DEVICE_ID"))
         Kernel.__init__(self, dev_id, ker_type)
-        self.results = []
+        self.if_dyn = False
+        if ker_type == "dyn":
+            self.if_dyn = True
+        self.results = {}
         self.passes = []
         self.reset_passes([])
 
     def store_expect(self, x, e, eps=None):
-        out = Kernel.store(self, x)
-        self.results.append([out, e, eps])
-        return out
+        if x in self.results:
+            self.results[x][1] = e
+            self.results[x][3] = False
+            return None
+        else:
+            out = Kernel.store(self, x)
+            self.results[x] = [out, e, eps, False]
+            return out
+
 
     def store_expect_flat(self, x, e, eps=None):
-        out = Kernel.store(self, x)
-        self.results.append([out.ravel(), e.ravel(), eps])
-        return out
+        if x in self.results:
+            self.results[x][1] = e.ravel()
+            self.results[x][3] = True
+            return None
+        else:
+            out = Kernel.store(self, x)
+            self.results[x] = [out.ravel(), e.ravel(), eps, True]
+            return out
 
     def has_pass(self):
         return len(self.passes)>0
@@ -91,7 +105,10 @@ class Tester(Kernel):
             if self.has_pass():
                 self._optimize()
         self.run()
-        for out, expect, eps in self.results:
+        for stored, v in self.results.items():
+            out, expect, eps, if_flat = v
+            if self.if_dyn:
+                out = self.get_output(stored).ravel() if if_flat else self.get_output(stored)
             if inspect.isfunction(expect):
                 if not expect(out):
                     print("********** OUTPUT **********")

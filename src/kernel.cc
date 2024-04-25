@@ -1326,6 +1326,9 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   if (n_once * op->k > l2_num) {
       b_coef = bw_coef;
   }
+  // calibrate bandwidth
+  a_coef = a_coef * block_dim / core_num;
+  b_coef = b_coef * block_dim / core_num;
   return 1.0f / (a_coef * static_cast<float>(n0)) + 1.0f / (b_coef * static_cast<float>(m0));
 }
 

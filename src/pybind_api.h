@@ -42,12 +42,23 @@ class NDObjectPy {
 
 class ShapeRefPy{
  public:
+  ShapeRefPy() {
+    shape_ref_ = new ShapeRef(shape_);
+  }
   ShapeRefPy(const std::vector<int64_t> &shape): shape_(shape) {
     shape_ref_ = new ShapeRef(shape_);
   }
   ~ShapeRefPy() { delete shape_ref_; }
   void Update(const py::object &shape);
   ShapeRef* Get() const { return shape_ref_; }
+
+  py::object GetShape() {
+    py::tuple out(shape_.size());
+    for (size_t i = 0; i < shape_.size(); ++i) {
+      out[i] = py::cast(shape_[i]);
+    }
+    return out;
+  }
 
  private:
   ShapeRef *shape_ref_;
@@ -63,9 +74,9 @@ class KernelPy {
   KernelPy(int dev_id, const std::string &ker_type);
   ~KernelPy();
 
-  py::object Load(const py::object &array);
-  py::object SliceLoad(const py::object &array, const py::object &start, const py::object &size);
-  py::object StridedSliceLoad(const py::object &array, const py::object &start, const py::object &end, const py::object &step);
+  py::object Load(const py::object &shape, const std::string &type);
+  py::object SliceLoad(const py::object &shape, const py::object &start, const py::object &size, const std::string &type);
+  py::object StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end, const py::object &step, const std::string &type);
   py::object Store(const py::object &obj);
   py::object Unary(const std::string &op_name, const py::object &input);
   py::object Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs);
@@ -78,43 +89,38 @@ class KernelPy {
   py::object Copy(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b);
   void ParallelNext();
-  void Reload(const py::object &load, const py::object &array);
-  py::object GetOutput(const py::object &store);
 
+  void Input(const py::object &load, const py::object &array);
+  py::object Output(const py::object &store);
   void Tile(int start, int end, int64_t num);
-  void Optimize();
-  py::object CodeGen(const std::string &path);
+  void CodeGen(const py::object& pass_names);
+  void Run();
+
   py::object DisAssemble();
   py::object DumpGraph();
-  py::object Perf();
   py::object Measure();
-  void Run();
-  void ResetPasses(const py::object& pass_names);
-
- public:
-  void DynamicPostprocess();
-  inline bool IfDyn() {
-    return kernel_.GetImpl()->KType() == kDynShape;
-  }
-
-  struct StoreInfo {
-    NDObject* obj;
-    void *host;
-    void *dev;
-    std::vector<int64_t> shape;
-  };
+  py::object Perf();
 
  protected:
-  void *ToDev(void *host, size_t size);
+  ShapeRef* GetShapeRef(const py::object &shape);
+  void PrepareOutput();
 
-  CodeBase* GetCode();
-  bool codegen_{false};
+  struct LoadInfo {
+    std::vector<int64_t> shape;
+    void *dev{nullptr};
+  };
+
+  struct StoreInfo {
+    void *host{nullptr};
+    void *dev{nullptr};
+    size_t size{0};
+  };
+
   Kernel kernel_;
-  std::vector<StoreInfo> stores_;
   std::vector<std::vector<int64_t>> shape_vec_;
   std::vector<ShapeRef*> shape_;
-  std::vector<void*> dev_mem_;
-  std::unordered_map<NDObject*, std::pair<py::buffer_info, NDObject*>> store_map_;
+  std::unordered_map<NDObject*, LoadInfo> loads_;
+  std::unordered_map<NDObject*, StoreInfo> stores_;
   int dev_id_{0};
 };
 }

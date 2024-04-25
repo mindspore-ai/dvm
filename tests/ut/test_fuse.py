@@ -60,7 +60,7 @@ def test_backward_sync_overlap():
     g = t.store(f)
     h = t.store(b)
     t.run_check()
-    assert np.allclose(h, a0-a1, 1e-5, 1e-5)
+    assert np.allclose(t.output(h), a0-a1, 1e-5, 1e-5)
 
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_remove_pad_01(type):

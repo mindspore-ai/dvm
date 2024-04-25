@@ -76,7 +76,7 @@ def test_select_forward(shape, shape2, type, eps):
     y = t.reshape(y, shape)
     z = t.load(b)
     z = t.select(x, y, z)
-    t.store_expect_flat(z, np.select([c == True, c == False],[a.reshape(shape), b]), eps)
+    t.store_expect(z, np.select([c == True, c == False],[a.reshape(shape), b]), eps)
     t.set_passes("EliminateReshape")
     assert(t.run_check())
 
@@ -119,8 +119,8 @@ def test_multi_reshape_1():
     z = t.unary("Reciprocal", x)
     z = t.reshape(z, [89,54])
     z = t.binary("Add", y, z)
-    expect = np.add(np.sqrt(a), np.reciprocal(a))
-    t.store_expect_flat(z, expect)
+    expect = np.add(np.sqrt(a), np.reciprocal(a)).reshape([89, 54])
+    t.store_expect(z, expect)
     t.set_passes("EliminateReshape")
     assert(t.run_check())
 
@@ -131,7 +131,7 @@ def test_multi_reshape_2():
     y = t.reshape(x, [89,54])
     y = t.unary("Sqrt", y)
     z = t.reshape(y, [178, 27])
-    t.store_expect_flat(z, np.sqrt(a))
+    t.store_expect(z, np.sqrt(a).reshape([178, 27]))
     t.set_passes("EliminateReshape")
     assert(t.run_check())
 
@@ -146,7 +146,7 @@ def test_element_any_forward():
     b = t.store(z)
     t.set_passes("EliminateReshape")
     t.run_check()
-    assert b[0] == 1
+    assert t.output(b)[0] == 1
 
 def test_element_any_backward():
     t = Tester()

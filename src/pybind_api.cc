@@ -134,20 +134,34 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
 }
 
 KernelPy::~KernelPy() {
-  for (auto dev : dev_mem_) {
-    ASCEND_CALL(aclrtFree(dev));
+  for (auto &it : loads_) {
+    if (it.second.dev) {
+      ASCEND_CALL(aclrtFree(it.second.dev));
+    }
+  }
+  for (auto &it : stores_) {
+    if (it.second.dev) {
+      ASCEND_CALL(aclrtFree(it.second.dev));
+    }
+    if (it.second.host) {
+      std::free(it.second.host);
+    }
   }
 #ifdef VK_SIM_MODEL
   aclrtResetDevice(dev_id_);
 #endif
-  for (auto &s : stores_) {
-    if (s.host != nullptr) {
-      std::free(s.host);
-    }
-  }
   for (auto ref : shape_) {
     delete ref;
   }
+}
+
+ShapeRef* KernelPy::GetShapeRef(const py::object &shape) {
+  if (py::isinstance<ShapeRefPy>(shape)) {
+    auto shape_ptr = shape.cast<ShapeRefPyPtr>();
+    return shape_ptr->Get();
+  }
+  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(GetVector(shape));
+  return shape_.emplace_back(new ShapeRef(shape_vec));
 }
 
 py::object KernelPy::Unary(const std::string &op_name, const py::object &input) {
@@ -173,8 +187,7 @@ py::object KernelPy::Select(const py::object &cond, const py::object &lhs, const
 py::object KernelPy::Reduce(const std::string &type, const py::object &input, const py::object &dims,
                                     bool keepdims) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  std::vector<int64_t> &dim_vec = shape_vec_.emplace_back(GetVector(dims));
-  auto dims_ref = shape_.emplace_back(new ShapeRef(dim_vec));
+  auto dims_ref = GetShapeRef(dims);
   auto op = kernel_.Reduce(ReduceOpType::kSum, in_obj, dims_ref, keepdims);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
@@ -207,8 +220,7 @@ py::object KernelPy::Binary(const std::string &op_name, const py::object &lhs, c
 
 py::object KernelPy::Broadcast(const py::object &input, const py::object &shape, const std::string &dtype,
                                        bool dummy_load) {
-  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(GetVector(shape));
-  auto shape_ref = shape_.emplace_back(new ShapeRef(shape_vec));
+  auto shape_ref = GetShapeRef(shape);
   NDObject *op;
   auto [is_scalar, scalar] = GetScalar<float>(input);
   if (is_scalar) {
@@ -223,13 +235,7 @@ py::object KernelPy::Broadcast(const py::object &input, const py::object &shape,
 
 py::object KernelPy::Reshape(const py::object &input, const py::object &shape) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  if (py::isinstance<ShapeRefPy>(shape)) {
-    auto shape_ptr = shape.cast<ShapeRefPyPtr>();
-    auto op = kernel_.Reshape(in_obj, shape_ptr->Get());
-    return py::cast(std::make_shared<NDObjectPy>(op));
-  }
-  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(GetVector(shape));
-  auto shape_ref = shape_.emplace_back(new ShapeRef(shape_vec));
+  auto shape_ref = GetShapeRef(shape);
   auto op = kernel_.Reshape(in_obj, shape_ref);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
@@ -240,101 +246,43 @@ py::object KernelPy::Copy(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::Load(const py::object &array) {
-  auto input = py::array(array);
-  py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
-  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
-  for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
-    shape_vec[i] = buf.shape[i];
-  }
-  auto shape_ref = shape_.emplace_back(new ShapeRef(shape_vec));
-  auto op = kernel_.Load(reinterpret_cast<void *>(addr), shape_ref, GetTypeID(buf));
+py::object KernelPy::Load(const py::object &shape, const std::string &type) {
+  LoadInfo info;
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto op = kernel_.Load(nullptr, shape_ref, StringToTypeID(type));
+  loads_[op] = std::move(info);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::SliceLoad(const py::object &array, const py::object &start, const py::object &size) {
-  auto input = py::array(array);
-  py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
-  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
-  for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
-    shape_vec[i] = buf.shape[i];
-  }
-  auto shape_ref = shape_.emplace_back(new ShapeRef(shape_vec));
-
-  std::vector<int64_t> &start_vec = shape_vec_.emplace_back(GetVector(start));
-  auto start_ref = shape_.emplace_back(new ShapeRef(start_vec));
-
-  std::vector<int64_t> &size_vec = shape_vec_.emplace_back(GetVector(size));
-  auto size_ref = shape_.emplace_back(new ShapeRef(size_vec));
-
-  auto op =
-    kernel_.SliceLoad(reinterpret_cast<void *>(addr), shape_ref, start_ref, size_ref, GetTypeID(buf));
+py::object KernelPy::SliceLoad(const py::object &shape, const py::object &start, const py::object &size, const std::string &type) {
+  LoadInfo info;
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto start_ref = GetShapeRef(start);
+  auto size_ref = GetShapeRef(size);
+  auto op = kernel_.SliceLoad(nullptr, shape_ref, start_ref, size_ref, StringToTypeID(type));
+  loads_[op] = std::move(info);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::StridedSliceLoad(const py::object &array, const py::object &start, const py::object &end, const py::object &step) {
-  auto input = py::array(array);
-  py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
-  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
-  for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
-    shape_vec[i] = buf.shape[i];
-  }
-  auto shape_ref = shape_.emplace_back(new ShapeRef(shape_vec));
-
-  std::vector<int64_t> &start_vec = shape_vec_.emplace_back(GetVector(start));
-  auto start_ref = shape_.emplace_back(new ShapeRef(start_vec));
-
-  std::vector<int64_t> &end_vec = shape_vec_.emplace_back(GetVector(end));
-  auto end_ref = shape_.emplace_back(new ShapeRef(end_vec));
-
-  std::vector<int64_t> &step_vec = shape_vec_.emplace_back(GetVector(step));
-  auto step_ref = shape_.emplace_back(new ShapeRef(step_vec));
-
-  auto op =
-    kernel_.StridedSliceLoad(reinterpret_cast<void *>(addr), shape_ref, start_ref, end_ref, step_ref, GetTypeID(buf));
+py::object KernelPy::StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end, const py::object &step, const std::string &type) {
+  LoadInfo info;
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto start_ref = GetShapeRef(start);
+  auto end_ref = GetShapeRef(end);
+  auto step_ref = GetShapeRef(step);
+  auto op = kernel_.StridedSliceLoad(nullptr, shape_ref, start_ref, end_ref, step_ref, StringToTypeID(type));
+  loads_[op] = std::move(info);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::Store(const py::object &obj) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
-  if (IfDyn()) {
-    auto op = kernel_.Store(nullptr, in_obj);
-    store_map_[in_obj] = {py::buffer_info(), op};
-    return py::array();
-  }
-  auto src = static_cast<NDObject*>(in_obj);
-  KernelPy::StoreInfo store;
-  size_t size = ITEM_SIZE[src->type_id_];
-  auto shape_ref = src->shape_ref_;
-  store.shape.resize(shape_ref->size);
-  for (size_t i = 0; i < shape_ref->size; i++) {
-    size *= shape_ref->data[i];
-    store.shape[i] = shape_ref->data[i];
-  }
-  store.host = std::malloc(size);
-  std::memset(store.host, 0, size);
-  store.dev = ToDev(store.host, size);
-  auto op = kernel_.Store(reinterpret_cast<void *>(store.dev), in_obj);
-  store.obj = op;
-
-  std::vector<ssize_t> shape;
-  std::vector<ssize_t> strides;
-  ssize_t itemsize = ITEM_SIZE[src->type_id_];
-  ssize_t ndim = store.shape.size();
-  for (size_t i = 0; i < static_cast<size_t>(ndim); ++i) {
-    shape.push_back(store.shape[i]);
-    auto stride = itemsize;
-    for (size_t j = i + 1; j < static_cast<size_t>(ndim); ++j) {
-      stride *= store.shape[j];
-    }
-    strides.push_back(stride);
-  }
-  py::buffer_info info(store.host, itemsize, GetBufferFormat(src->type_id_), ndim, shape, strides);
-  stores_.emplace_back(std::move(store));
-  return py::array(py::dtype(info), info.shape, info.strides, info.ptr, obj);
+  auto op = kernel_.Store(nullptr, in_obj);
+  stores_[op] = StoreInfo();
+  return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::ElementAny(const py::object &input) {
@@ -358,32 +306,34 @@ void KernelPy::Tile(int start, int end, int64_t num) {
   static_cast<VKernelBase*>(kernel_.GetImpl())->SetTile(start, end, num);
 }
 
-void *KernelPy::ToDev(void *host, size_t size) {
-  void *dev = nullptr;
-  ASCEND_CALL(aclrtMalloc(&dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-  ASCEND_CALL(aclrtMemcpy(dev, size, host, size, ACL_MEMCPY_HOST_TO_DEVICE));
-  dev_mem_.push_back(dev);
-  return dev;
-}
-
-void KernelPy::Optimize() {
-  if (kernel_.GetImpl()->KType() == KernelType::kStaticShape) {
-    static_cast<VKernelS*>(kernel_.GetImpl())->Optimize();
+void KernelPy::CodeGen(const py::object &pass_names) {
+  const static std::unordered_map<std::string, pass::Pass> pass_map = {
+    {"PrintPeakLive", pass::PrintPeakLive},
+    {"ReorderStore", pass::ReorderStore},
+    {"ReorderLoad", pass::ReorderLoad},
+    {"CompactPeakLiveness", pass::CompactPeakLiveness},
+    {"EliminateReshape", pass::EliminateReshape},
+    {"InsertRemovePad", pass::InsertRemovePad}};
+  std::vector<pass::Pass> old_passes;
+  bool custom_pass = py::isinstance<py::list>(pass_names);
+  if (custom_pass) {
+    old_passes = pass::passes;
+    pass::passes.clear();
+    auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
+    for (auto name : names) {
+      pass::passes.push_back(pass_map.at(name));
+    }
   }
-}
-
-py::object KernelPy::CodeGen(const std::string &path) {
-  auto code = GetCode();
-  if (!path.empty()) {
-    std::ofstream file(path);
-    file.write(reinterpret_cast<char *>(code->data_), code->data_size_);
-    file.close();
+  auto begin = GetTimeX();
+  kernel_.GetImpl()->CodeGen();
+  auto end = GetTimeX();
+  std::cout << "codegen time(us): " << end - begin << std::endl;
+  if (custom_pass) {
+    pass::passes = old_passes;
   }
-  return py::cast(code->block_dim_);
 }
 
 py::object KernelPy::DisAssemble() {
-  GetCode();
   std::string data = kernel_.GetImpl()->DisAssemble();
   return py::cast(data);
 }
@@ -394,20 +344,9 @@ py::object KernelPy::DumpGraph() {
 }
 
 void KernelPy::Run() {
-  GetCode();
+  PrepareOutput();
   ASCEND_CALL(kernel_.Launch(nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
-  for (auto &s : stores_) {
-    size_t size = ITEM_SIZE[s.obj->type_id_];
-    for (size_t i = 0; i < s.shape.size(); ++i) {
-      size *= s.shape[i];
-    }
-    ASCEND_CALL(aclrtMemcpy(s.host, size, s.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
-  }
-  if (IfDyn()) {
-    // dynamic kernel will do codegen everytime
-    codegen_ = false;
-  }
 }
 
 py::object KernelPy::Perf() {
@@ -415,7 +354,7 @@ py::object KernelPy::Perf() {
 #ifdef VK_SIM_MODEL
   return py::none();
 #else
-  GetCode();
+  PrepareOutput();
   // warm up
   ASCEND_CALL(kernel_.Launch(nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
@@ -427,11 +366,8 @@ py::object KernelPy::Perf() {
   ASCEND_CALL(aclrtCreateEvent(&end));
   for (int i = 0; i < TEST_NUM; i++) {
     for (auto &s : stores_) {
-      size_t size = ITEM_SIZE[s.obj->type_id_];
-      for (size_t i = 0; i < s.shape.size(); ++i) {
-        size *= s.shape[i];
-      }
-      ASCEND_CALL(aclrtMemcpy(s.dev, size, s.host, size, ACL_MEMCPY_HOST_TO_DEVICE));
+      auto info = s.second;
+      ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
     ASCEND_CALL(aclrtRecordEvent(start, nullptr));
     ASCEND_CALL(kernel_.Launch(nullptr));
@@ -468,93 +404,76 @@ py::object KernelPy::Measure() {
   return ret;
 }
 
-CodeBase *KernelPy::GetCode() {
-  if (!codegen_) {
-    auto begin = GetTimeX();
-    kernel_.GetImpl()->CodeGen();
-    auto end = GetTimeX();
-    std::cout << "codegen time(us): " << end - begin << std::endl;
-    if (IfDyn()) {
-      DynamicPostprocess();
-    }
-    codegen_ = true;
+void KernelPy::Input(const py::object &load, const py::object &array) {
+  auto op = reinterpret_cast<NDLoad*>(load.cast<NDOpPyPtr>()->Get());
+  auto it = loads_.find(op);
+  ASSERT(it != loads_.end());
+  auto &info = it->second;
+  if (info.dev) {
+    ASCEND_CALL(aclrtFree(info.dev));
   }
-  return kernel_.GetImpl()->GetCode();
-}
-
-void KernelPy::Reload(const py::object &load, const py::object &array) {
-  auto op = load.cast<NDOpPyPtr>();
   auto input = py::array(array);
   py::buffer_info buf = input.request();
-  void *addr = ToDev(buf.ptr, buf.itemsize * buf.size);
-  std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(buf.ndim);
-  for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
-    shape_vec[i] = buf.shape[i];
+  size_t size = buf.itemsize  * buf.size;
+  ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+  ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
+  op->src_ = reinterpret_cast<uint8_t*>(info.dev);
+  if (op->reloc_addr_) {
+    op->Reloc(info.dev);
   }
-  *(op->Get()->shape_ref_) = shape_vec;
-  reinterpret_cast<NDLoad *>(op->Get())->src_ = reinterpret_cast<uint8_t *>(addr);
-}
-
-py::object KernelPy::GetOutput(const py::object &store) {
-  auto op = store.cast<NDOpPyPtr>();
-  auto &info = store_map_.find(op->Get())->second.first;
-  return py::array(py::dtype(info), info.shape, info.strides, info.ptr, store);
-}
-
-void KernelPy::DynamicPostprocess() {
-  for (auto &s : stores_) {
-    if (s.host != nullptr) {
-      std::free(s.host);
+  if (kernel_.GetImpl()->KType() == kDynShape) {
+    info.shape.resize(buf.ndim);
+    for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
+      info.shape[i] = buf.shape[i];
     }
-  }
-  stores_.clear();
-  // Regenerate py::array from stores
-  for (auto &pair : store_map_) {
-    auto in_obj = pair.first;
-    auto op = pair.second.second;
-    KernelPy::StoreInfo store;
-    size_t size = ITEM_SIZE[in_obj->type_id_];
-    store.shape.resize(in_obj->shape_ref_->size);
-    for (size_t i = 0; i < in_obj->shape_ref_->size; i++) {
-      size *= *(in_obj->shape_ref_->data + i);
-      store.shape[i] = *(in_obj->shape_ref_->data + i);
-    }
-    store.host = std::malloc(size);
-    std::memset(store.host, 0, size);
-    store.dev = ToDev(store.host, size);
-    reinterpret_cast<NDStore *>(op)->Reloc(store.dev);
-    store.obj = op;
-
-    std::vector<ssize_t> shape;
-    std::vector<ssize_t> strides;
-    ssize_t itemsize = ITEM_SIZE[in_obj->type_id_];
-    ssize_t ndim = store.shape.size();
-    for (size_t i = 0; i < static_cast<size_t>(ndim); ++i) {
-      shape.push_back(store.shape[i]);
-      auto stride = itemsize;
-      for (size_t j = i + 1; j < static_cast<size_t>(ndim); ++j) {
-        stride *= store.shape[j];
-      }
-      strides.push_back(stride);
-    }
-    py::buffer_info info(store.host, itemsize, GetBufferFormat(in_obj->type_id_), ndim, shape, strides);
-    stores_.emplace_back(std::move(store));
-    store_map_[in_obj].first = std::move(info);
+    *(op->shape_ref_) = info.shape;
   }
 }
 
-void KernelPy::ResetPasses(const py::object &pass_names) {
-  const static std::unordered_map<std::string, pass::Pass> pass_map = {
-    {"PrintPeakLive", pass::PrintPeakLive},
-    {"ReorderStore", pass::ReorderStore},
-    {"ReorderLoad", pass::ReorderLoad},
-    {"CompactPeakLiveness", pass::CompactPeakLiveness},
-    {"EliminateReshape", pass::EliminateReshape},
-    {"InsertRemovePad", pass::InsertRemovePad}};
-  pass::passes.clear();
-  auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
-  for (auto name : names) {
-    pass::passes.push_back(pass_map.at(name));
+py::object KernelPy::Output(const py::object &store) {
+  auto op = store.cast<NDOpPyPtr>()->Get();
+  auto it = stores_.find(op);
+  ASSERT(it != stores_.end());
+  auto &info = it->second;
+  ASSERT(info.dev);
+  std::vector<ssize_t> shape;
+  std::vector<ssize_t> strides;
+  ssize_t itemsize = ITEM_SIZE[op->type_id_];
+  ssize_t ndim = op->shape_ref_->size;
+  size_t size = itemsize;
+  for (size_t i = 0; i < static_cast<size_t>(ndim); ++i) {
+    size *= op->shape_ref_->data[i];
+    shape.push_back(op->shape_ref_->data[i]);
+    auto stride = itemsize;
+    for (size_t j = i + 1; j < static_cast<size_t>(ndim); ++j) {
+      stride *= op->shape_ref_->data[j];
+    }
+    strides.push_back(stride);
+  }
+  ASCEND_CALL(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
+  py::buffer_info buf(info.host, itemsize, GetBufferFormat(op->type_id_), ndim, shape, strides);
+  return py::array(py::dtype(buf), buf.shape, buf.strides, buf.ptr, store);
+}
+
+void KernelPy::PrepareOutput() {
+  for (auto &it : stores_) {
+    auto op = it.first;
+    auto &info = it.second;
+    if (info.host) {
+      std::free(info.host);
+    }
+    if (info.dev) {
+      ASCEND_CALL(aclrtFree(info.dev));
+    }
+    info.size = ITEM_SIZE[op->type_id_];
+    for (size_t i = 0; i < op->shape_ref_->size; i++) {
+      info.size *= op->shape_ref_->data[i];
+    }
+    info.host = std::malloc(info.size);
+    std::memset(info.host, 0, info.size);
+    ASCEND_CALL(aclrtMalloc(&info.dev, info.size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
+    reinterpret_cast<NDStore *>(op)->Reloc(info.dev);
   }
 }
 
@@ -573,7 +492,9 @@ PYBIND11_MODULE(_dvm_py, m) {
   (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject").def("shape", &NDObjectPy::GetShape, "get shape");
 
   (void)py::class_<ShapeRefPy, std::shared_ptr<ShapeRefPy>>(m, "ShapeRef")
+    .def(py::init<>())
     .def(py::init<const std::vector<int64_t>&>())
+    .def("shape", &ShapeRefPy::GetShape, "get shape")
     .def("update", &ShapeRefPy::Update, "update shape");
 
   (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "Kernel")
@@ -594,17 +515,15 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("copy", &KernelPy::Copy, "emit copy op")
       .def("matmul", &KernelPy::MatMul, "emit matmul op")
       .def("p_next", &KernelPy::ParallelNext, "parallel next")
-      .def("reload", &KernelPy::Reload, "update input array")
-      .def("get_output", &KernelPy::GetOutput, "get ouput array")
+      .def("input", &KernelPy::Input, "get ouput array")
+      .def("output", &KernelPy::Output, "get ouput array")
       .def("tile", &KernelPy::Tile, "set tiling")
-      .def("optimize", &KernelPy::Optimize, "optimize code")
       .def("codegen", &KernelPy::CodeGen, "generate code")
       .def("das", &KernelPy::DisAssemble, "disassemble code")
       .def("dump", &KernelPy::DumpGraph, "dump graph")
       .def("perf", &KernelPy::Perf, "perf test")
       .def("measure", &KernelPy::Measure, "measure metrics")
-      .def("run", &KernelPy::Run, "run kernel")
-      .def("reset_passes", &KernelPy::ResetPasses, "reset passes");
+      .def("run", &KernelPy::Run, "run kernel");
 
   (void)py::class_<DevicePy, std::shared_ptr<DevicePy>>(m, "Device")
       .def_static("arch", &DevicePy::Arch, "Get system architecture")

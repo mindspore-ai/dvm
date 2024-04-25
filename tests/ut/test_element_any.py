@@ -25,8 +25,8 @@ def test_element_any(mask, shape):
     x = t.load(a)
     z = t.element_any(x)
     b = t.store(z)
-    t.run_check()
-    assert b[0] == mask
+    t.run()
+    assert t.output(b)[0] == mask
 
 def test_element_any_01():
     t = Tester()
@@ -36,8 +36,8 @@ def test_element_any_01():
     g = t.unary("Abs", x)
     z = t.element_any(g)
     b = t.store(z)
-    t.run_check()
-    assert b[0] == 1
+    t.run()
+    assert t.output(b)[0] == 1
 
 @pytest.mark.parametrize("shape, tile",[((1001,), 32), ((3184,), 33), ((5231,), 33)])
 def test_element_any_02(shape, tile):
@@ -47,5 +47,5 @@ def test_element_any_02(shape, tile):
     z = t.element_any(x)
     b = t.store(z)
     t.tile(0, 0, tile)
-    t.run_check()
-    assert b[0] == 0
+    t.run()
+    assert t.output(b)[0] == 0

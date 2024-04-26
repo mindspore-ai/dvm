@@ -48,6 +48,14 @@ enum CoreType {
   kCube,
 };
 
+enum SocType {
+  kAscend910B1,
+  kAscend910B2,
+  kAscend910B3,
+  kAscend910B4,
+  kSocUnknow,
+};
+
 class DeviceInfo {
  public:
   static DeviceInfo &Instance() {
@@ -65,6 +73,7 @@ class DeviceInfo {
     return core_type == kVector ? vector_core_num_ : cube_core_num_;
   }
   uint64_t EventNum() const { return event_num_; }
+  SocType SocName() { return soc_name_; }
 
  private:
   DeviceInfo();
@@ -77,6 +86,7 @@ class DeviceInfo {
   uint64_t event_num_;
   uint64_t vector_core_num_;
   uint64_t cube_core_num_;
+  SocType soc_name_{kSocUnknow};
 };
 
 const uint64_t SIMD_BLOCK_SIZE  = 32;

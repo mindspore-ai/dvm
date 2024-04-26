@@ -3,3 +3,6 @@
 *_bin
 *.so
 *__pycache__*
+
+# Editor
+.vscode

@@ -486,6 +486,10 @@ class DevicePy {
   static int CoreNum() {
     return DeviceInfo::Instance().CoreNum();
   }
+  static std::string SocName() {
+    static const char* soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
+    return soc_names[DeviceInfo::Instance().SocName()];
+  }
 };
 
 PYBIND11_MODULE(_dvm_py, m) {
@@ -527,6 +531,7 @@ PYBIND11_MODULE(_dvm_py, m) {
 
   (void)py::class_<DevicePy, std::shared_ptr<DevicePy>>(m, "Device")
       .def_static("arch", &DevicePy::Arch, "Get system architecture")
-      .def_static("core_num", &DevicePy::CoreNum, "Get soc core number");
+      .def_static("core_num", &DevicePy::CoreNum, "Get soc core number")
+      .def_static("soc_name", &DevicePy::SocName, "Get soc name");
 }
 }  // namespace dvm

@@ -575,6 +575,13 @@ DeviceInfo::DeviceInfo() {
     set_func_ids(g_store_func_offset, V_STORE_NONE);
   }
   ub_workspace_size_ = 1024;
+  std::unordered_map<std::string, SocType> soc_name_map = {{"Ascend910B1", kAscend910B1},
+                                                           {"Ascend910B2", kAscend910B2},
+                                                           {"Ascend910B3", kAscend910B3},
+                                                           {"Ascend910B4", kAscend910B4}};
+  if (const auto &iter = soc_name_map.find(soc_name); iter != soc_name_map.end()) {
+    soc_name_ = iter->second;
+  }
 }
 
 void Code::DisAssemble(std::ostringstream &oss) {

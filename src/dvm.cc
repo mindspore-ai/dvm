@@ -15,8 +15,10 @@
  */
 
 #include <dlfcn.h>
+#include <unordered_map>
 #include "dvm.h"
 #include "kernel.h"
+#include "msprof.h"
 
 // rts_runtime
 #if defined(__cplusplus)
@@ -58,8 +60,6 @@ extern unsigned int  g_vkernel_910b_bin_len;
 
 namespace dvm {
 namespace {
-using namespace dvm;
-
 class VKernelHolder {
  public:
   VKernelHolder();
@@ -416,6 +416,44 @@ uint64_t Kernel::CodeGen() {
 
 int Kernel::Launch(void* stream) {
   return VKernelHolder::Instance().Launch(kernel_->GetCode(), stream);
+}
+
+int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
+                         void **outputs, void *stream) {
+  static std::unordered_map<dvm::DType, uint32_t> v_type_map = {{dvm::DType::kFloat32, 43},
+                                                                {dvm::DType::kFloat16, 42},
+                                                                {dvm::DType::kInt8, 30},
+                                                                {dvm::DType::kInt32, 34},
+                                                                {dvm::DType::kBFloat16, 45}};
+  NodeInfo info;
+  info.op_name = op_name;
+  info.op_fullname = op_fullname;
+  info.input_size = reloc_table.inputs_size;
+  info.output_size = reloc_table.outputs_size;
+  auto loads = reinterpret_cast<NDLoad **>(reloc_table.inputs);
+  for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
+    auto shape_ref = GetShape(*loads);
+    info.data_formats.emplace_back(kOpFormat_DEFAULT);
+    info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
+    info.data_types.emplace_back(v_type_map[GetDType(*loads)]);
+    (*loads++)->Reloc(*inputs++);
+  }
+  auto stores = reinterpret_cast<NDStore **>(reloc_table.outputs);
+  for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
+    auto shape_ref = GetShape(*stores);
+    info.data_formats.emplace_back(kOpFormat_DEFAULT);
+    info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
+    info.data_types.emplace_back(v_type_map[GetDType(*stores)]);
+    (*stores++)->Reloc(*outputs++);
+  }
+  auto code = kernel_->GetCode();
+  info.block_dim = code->block_dim_;
+
+  MsProfHelper helper(info);
+  helper.InitReportNode();
+  auto ret = VKernelHolder::Instance().Launch(code, stream);
+  helper.ReportTask();
+  return ret;
 }
 
 int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void* stream) {

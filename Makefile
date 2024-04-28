@@ -1,5 +1,5 @@
 VPATH = ./src:./include
-OBJ = ops.o kernel.o code.o dvm.o pass.o
+OBJ = ops.o kernel.o code.o dvm.o pass.o msprof.o
 
 CFLGAS = --std=c++17 -Werror -Wall -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC -fvisibility=hidden
 ifneq ($(dbg),)

@@ -47,11 +47,11 @@ vm.o: g_vkernel_bin g_vkernel_910b_bin
 g_vkernel_910b_bin: vm_aiv_c220.o vm_aic_c220.o
 	ld.lld -Ttext=0 vm_aiv_c220.o vm_aic_c220.o -static -o g_vkernel_910b_bin
 
-g_vkernel_bin: vm.cce isa.h
-	ccec -c -O2 $(CCE_FLGAS_C100) --cce-aicore-arch=dav-c100 src/vm.cce -o g_vkernel_bin
+g_vkernel_bin: vm_aiv_c100.cce isa.h
+	ccec -c -O2 $(CCE_FLGAS_C100) --cce-aicore-arch=dav-c100 src/vm_aiv_c100.cce -o g_vkernel_bin
 
-vm_aiv_c220.o: vm.cce isa.h
-	ccec -c -O2 $(CCE_FLGAS_C220) --cce-aicore-arch=dav-c220-vec src/vm.cce -o vm_aiv_c220.o
+vm_aiv_c220.o: vm_aiv.cce isa.h
+	ccec -c -O2 $(CCE_FLGAS_C220) --cce-aicore-arch=dav-c220-vec src/vm_aiv.cce -o vm_aiv_c220.o
 
 vm_aic_c220.o: vm_aic.cce isa.h
 	ccec -c -O2 $(CCE_FLGAS_C220) --cce-aicore-arch=dav-c220-cube src/vm_aic.cce -o vm_aic_c220.o

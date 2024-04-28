@@ -364,13 +364,15 @@ class BroadcastOp : public _BroadcastOp {
  public:
   BroadcastOp(NDObject *input, ShapeRef *shape_ref)
       : _BroadcastOp(input, std::vector<int64_t>{1}) {
-    shape_ref_ = shape_ref;
+    dst_shape_ref_ = shape_ref;
+    shape_ref_ = new ShapeRef();
   }
   ~BroadcastOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
 
  private:
   std::vector<NDObject*> stuff_ops_;
+  ShapeRef *dst_shape_ref_;
   std::vector<int64_t> shape_;
 };
 

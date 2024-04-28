@@ -804,6 +804,7 @@ BroadcastOp::~BroadcastOp() {
   for (auto op : stuff_ops_) {
     delete op;
   }
+  delete shape_ref_;
 }
 
 void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -812,11 +813,19 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
     lhs_ = stuff_ops_[0]->lhs_;
   }
   // update nd_ from shape_ref_
-  auto dims = shape_ref_->size;
+  auto dims = dst_shape_ref_->size;
   nd_.resize(dims);
+  shape_.resize(dims);
+  auto offset = dims - lhs_->shape_ref_->size;  // dst_shape dims >= x_shape dims
   for (size_t i = 0; i < dims; ++i) {
-    nd_[i] = shape_ref_->data[dims - i - 1];
+    shape_[i] = dst_shape_ref_->data[i];
+    if (shape_[i] == -1) {
+      // e.g. x_shape (4, 1), dst_shape (2, -1, 1) --> dst_shape (2, 4, 1)
+      shape_[i] = lhs_->shape_ref_->data[i - offset];
+    }
+    nd_[dims - 1 - i] = shape_[i];
   }
+  *shape_ref_ = shape_;
   size_t stuff_idx = 0;
   lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, stuff_ops_, stuff_idx);
   for (size_t i = 0; i < stuff_idx; ++i) {

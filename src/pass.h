@@ -90,57 +90,48 @@ class NDObjectIterator {
 
 class BasicBlockContext {
   friend class BasicBlock;
+  static constexpr size_t MAX_NUM_OBJ = 100;
+  struct Edge {
+    int64_t next;
+    NDObject *user;
+  };
 
-  void Init(const std::vector<NDObject *> &objects) {
-    users_.reserve(objects.size());
-    for (auto object : objects) {
-      users_.insert({object, std::vector<NDObject *>()});
-    }
-    for (auto object : objects) {
-      Insert(object);
-    }
-  }
+  void Init(const std::vector<NDObject *> &objects);
 
-  void Init(NDObjectIterator<false> begin, NDObjectIterator<false> end) {
-    while (begin != end) {
-      users_.insert({begin.get(), std::vector<NDObject *>()});
-      Insert(begin++.get());
-    }
-  }
-
-  void Insert(NDObject *object) {
-    if (object->lhs_ == nullptr) {
-      // if lhs_ is empty, than rhs_ must be empty too
-      return;
-    }
-    users_[object->lhs_].emplace_back(object);
-    if (object->rhs_ == nullptr) {
-      return;
-    }
-    users_[object->rhs_].emplace_back(object);
-    if (object->GetObjectType() == kSelect) {
-      users_[reinterpret_cast<SelectOp *>(object)->cond_].emplace_back(object);
-    }
-  }
-
-  void Erase(NDObject *object) { users_.erase(object); }
-
-  void Clear() { users_.clear(); }
+  void Init(NDObjectIterator<false> begin, NDObjectIterator<false> end, size_t capcity);
 
  public:
-  // Will fail when object not exist in the context.
+  // Will fail when object is not exist in the context.
   // And users may duplicate
-  const std::vector<NDObject *> &GetUsers(NDObject *object) const {
-    auto iter = users_.find(object);
-    ASSERT(iter != users_.end());
-    return iter->second;
+  std::vector<NDObject *> GetUsers(NDObject *object) const {
+    ASSERT(object->index_ < head_.size());
+    std::vector<NDObject *> res;
+    auto idx = head_[object->index_];
+    while (idx != -1) {
+      res.push_back(edges_[idx].user);
+      idx = edges_[idx].next;
+    }
+    return res;
+  }
+
+  // Delete object from context
+  void Erase(NDObject *object);
+
+  inline void AddUser(NDObject *obj, NDObject *new_user) {
+    ASSERT(object->index_ < head_.size());
+    edges_.push_back({head_[obj->index_], new_user});
+    head_[obj->index_] = edges_.size() - 1;
   }
 
  protected:
-  std::unordered_map<NDObject *, std::vector<NDObject *>> users_;
+  std::vector<int64_t> head_;
+  std::vector<Edge> edges_;
 };
 
 /// @brief Container of NDObject* in pass pipeline
+/// @note For efficiency, we use vector instead of map-like data structures
+/// in many scenarios in the underlying implementation. So the implementation
+/// is relying on NDObject's index_, which will be monotonically increasing.
 class BasicBlock {
  public:
   BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner);
@@ -150,7 +141,9 @@ class BasicBlock {
   using reverse_iterator = NDObjectIterator<true>;
   using pointer = NDObject *;
 
-  void Reinit(const std::vector<NDObject *> &objects);
+  // Change topological order, note that the graph should not have been changed.
+  // If shoose to update index, context will be invalid
+  void ReOrder(const std::vector<NDObject *> &objects, bool if_update_index = false);
 
   iterator begin() { return iterator(NEXT_OBJ(&sentinel_)); }
 
@@ -162,7 +155,9 @@ class BasicBlock {
 
   inline size_t size() const { return size_; }
 
-  // Insert a object before position of iterator, ownership is move to object_owner_.
+  inline size_t capacity() const { return capacity_; }
+
+  // Insert a object before position of iterator, ownership is moved to object_owner_.
   iterator Insert(iterator iter, pointer object);
 
   // Remove the object at position of iterator, the NDObject won't be deleted.
@@ -182,6 +177,7 @@ class BasicBlock {
   // Remove use of insn_ and tail_insn_
   void Clear();
 
+  BasicBlockContext &context() { return context_; }
   const BasicBlockContext &context() const { return context_; }
 
   // Should be called after dependency graph of objects has changed
@@ -189,7 +185,8 @@ class BasicBlock {
 
  protected:
   NDLoadDummy sentinel_;
-  size_t size_;  // Will size be used?
+  size_t size_;
+  size_t capacity_;
   BasicBlockContext context_;
   std::vector<NDObject *> &objects_owner_;
 };

@@ -15,12 +15,15 @@
  */
 
 #include "pass.h"
+#include <algorithm>
 #include <queue>
 #include <cstdint>
 #include <vector>
 #include <stack>
+#include <functional>
 #include <unordered_map>
 #include <unordered_set>
+#include <optional>
 
 namespace dvm::pass {
 #define NEXT_OBJ(a) reinterpret_cast<NDObject *>((a)->insn_)
@@ -47,6 +50,20 @@ inline std::vector<NDObject *> GetPreds(NDObject *obj) {
     res.emplace_back(reinterpret_cast<SelectOp *>(obj)->cond_);
   }
   return res;
+}
+
+inline void ItePreds(NDObject *obj, std::function<void(NDObject *)> fun) {
+  if (obj->lhs_ == nullptr) {
+    return;
+  }
+  fun(obj->lhs_);
+  if (obj->rhs_ == nullptr) {
+    return;
+  }
+  fun(obj->rhs_);
+  if (obj->GetObjectType() == kSelect) {
+    fun(reinterpret_cast<SelectOp *>(obj)->cond_);
+  }
 }
 
 size_t GetInputsNum(NDObject *obj) {
@@ -362,14 +379,52 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
 }
 }  // namespace
 
+void BasicBlockContext::Init(const std::vector<NDObject *> &objects) {
+  // users_.resize(objects.size());
+  head_.resize(objects.size(), -1);
+  for (auto obj : objects) {
+    ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
+  }
+}
+
+void BasicBlockContext::Init(NDObjectIterator<false> begin, NDObjectIterator<false> end, size_t capcity) {
+  edges_.clear();
+  head_.resize(capcity, -1);
+  while (begin != end) {
+    auto obj = begin.get();
+    ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
+  };
+}
+
+void BasicBlockContext::Erase(NDObject *object) {
+  head_[object->index_] = -1;
+  for (auto pred : GetPreds(object)) {
+    auto idx = head_[pred->index_];
+    auto last = idx;
+    while (idx != -1) {
+      if (edges_[idx].user == object) {
+        if (idx == head_[pred->index_]) {
+          head_[pred->index_] = edges_[idx].next;
+        } else {
+          edges_[last].next = edges_[idx].next;
+        }
+        break;
+      }
+      idx = edges_[idx].next;
+      last = idx;
+    }
+    ASSERT(idx != -1);
+  }
+}
+
 BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner)
-    : sentinel_(kTypeEnd), size_(objects.size()), objects_owner_(owner) {
+    : sentinel_(kTypeEnd), size_(objects.size()), capacity_(objects.size()), objects_owner_(owner) {
   // build linked list from objects
-  Reinit(objects);
+  ReOrder(objects, true);
   context_.Init(objects);
 }
 
-void BasicBlock::Reinit(const std::vector<NDObject *> &objects) {
+void BasicBlock::ReOrder(const std::vector<NDObject *> &objects, bool if_update_index) {
   // build linked list from objects
   NDObject *last_object = &sentinel_;
   int index = 0;
@@ -377,7 +432,14 @@ void BasicBlock::Reinit(const std::vector<NDObject *> &objects) {
     ASSIGN_NEXT_OBJ(last_object, object);
     ASSIGN_PREV_OBJ(object, last_object);
     last_object = object;
-    last_object->index_ = index++;
+    if (if_update_index) {
+      last_object->index_ = index;
+    }
+    ++index;
+  }
+  size_ = index;
+  if (if_update_index) {
+    capacity_ = index;
   }
   ASSIGN_NEXT_OBJ(last_object, &sentinel_);
   ASSIGN_PREV_OBJ(&sentinel_, last_object);
@@ -431,7 +493,8 @@ BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *obj
   ASSIGN_PREV_OBJ(iter, object);
   ASSIGN_NEXT_OBJ(prev, object);
   ++size_;
-  // object will be deleted by owner
+  object->index_ = capacity_++;
+  // object should be deleted by owner
   objects_owner_.push_back(object);
   return NDObjectIterator<false>(object);
 }
@@ -460,10 +523,7 @@ BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, BasicBlock::poi
   return iterator(obj);
 }
 
-void BasicBlock::UpdateContext() {
-  context_.Clear();
-  context_.Init(begin(), end());
-}
+void BasicBlock::UpdateContext() { context_.Init(begin(), end(), capacity_); }
 
 void ReorderStore(BasicBlock &block) {
   for (auto iter = block.begin(); iter != block.end();) {
@@ -556,11 +616,11 @@ void CompactPeakLiveness(BasicBlock &bb) {
   std::vector<NDObject *> backup = bb.ToVector();
   auto old_peak = MaxLive(bb);
   auto new_order = ReorderObjectsHeuristic(bb);
-  bb.Reinit(new_order);
+  bb.ReOrder(new_order);
   auto new_peak = MaxLive(bb);
   if (new_peak >= old_peak) {
     // Reorder cause a bad result, rollback
-    bb.Reinit(backup);
+    bb.ReOrder(backup);
   }
 }
 
@@ -572,9 +632,14 @@ struct PropagateArgs {
   std::vector<int64_t> new_shape;
 };
 struct AnalysisIntermediate {
-  std::unordered_map<NDObject *, std::vector<int64_t>> need_reshape;
-  // std::unordered_set<NDObject *> visited;
-  std::stack<PropagateArgs> todos;
+  std::vector<std::optional<std::vector<int64_t>>> need_reshape;  // idx corresbond to NDObject's index_
+  std::vector<NDObject *> visited;
+  std::vector<PropagateArgs> todos;
+
+  inline void RegisterNewShape(NDObject *obj, const std::vector<int64_t> &new_shape) {
+    need_reshape[obj->index_] = new_shape;
+    visited.push_back(obj);
+  }
 };
 struct ShapePacket {
   size_t start;
@@ -584,6 +649,7 @@ struct ShapePacket {
 std::vector<ShapePacket> GetShapePackets(const std::vector<int64_t> &shape_ori,
                                          const std::vector<int64_t> &shape_to_change) {
   std::vector<ShapePacket> shape_packets;
+  shape_packets.reserve(3);
   ASSERT(shape_ori.size() >= 1);
   bool is_curr_broadcast_axis = false;
   ShapePacket shape_packet{0, 1, shape_to_change[0] != shape_ori[0]};
@@ -643,9 +709,8 @@ std::vector<int64_t> TryReshape(const std::vector<int64_t> &shape_to_change, con
       }
       auto old_len = shape_packet.end - shape_packet.start;
       if (old_len <= new_len) {
-        for (size_t ii = 0; ii < old_len; ++ii) {
-          res.push_back(shape_to_change[shape_packet.start + ii]);
-        }
+        res.insert(res.end(), shape_to_change.begin() + shape_packet.start,
+                   shape_to_change.begin() + (shape_packet.start + old_len));
         for (size_t ii = old_len; ii < new_len; ++ii) {
           res.push_back(1);
         }
@@ -655,15 +720,12 @@ std::vector<int64_t> TryReshape(const std::vector<int64_t> &shape_to_change, con
           first *= shape_to_change[shape_packet.start + ii];
         }
         res.push_back(first);
-        for (size_t ii = old_len - new_len + 1; ii < old_len; ++ii) {
-          res.push_back(shape_to_change[shape_packet.start + ii]);
-        }
+        res.insert(res.end(), shape_to_change.begin() + (shape_packet.start + old_len - new_len + 1),
+                   shape_to_change.begin() + old_len);
       }
     } else {
       // Case of not broadcast packet
-      for (; j_start != j; ++j_start) {
-        res.push_back(shape_new[j_start]);
-      }
+      res.insert(res.end(), shape_new.begin() + j_start, shape_new.begin() + j);
     }
   }
   // Case when shape_new has trailing 1, e.g. (32, 4) -> (16, 2, 4, 1, 1)
@@ -680,7 +742,7 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
                const BasicBlock &bb, AnalysisIntermediate &intermediate) {
   auto &need_reshape = intermediate.need_reshape;
   auto &todos = intermediate.todos;
-  if (need_reshape.find(obj) != need_reshape.end()) {
+  if (need_reshape[obj->index_].has_value()) {
     return true;
   }
   if (obj->nd_ == new_shape) {
@@ -696,34 +758,34 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
     case kSelect:
     case kCast:
       // Elementwise
-      need_reshape.insert({obj, new_shape});
+      intermediate.RegisterNewShape(obj, new_shape);
       forward_shape = new_shape;
       backward_shape = new_shape;
       break;
     case kLoad:
     case kBroadcastS: {
       ASSERT(!is_forward);
-      need_reshape.insert({obj, new_shape});
+      intermediate.RegisterNewShape(obj, new_shape);
       forward_shape = new_shape;
       break;
     }
     case kStore:
       ASSERT(is_forward);
-      need_reshape.insert({obj, new_shape});
+      intermediate.RegisterNewShape(obj, new_shape);
       return true;
     case kReshape: {
       if (is_forward) {
         // Only change shape of input of this Reshape, no need to propagate further
         return true;
       }
-      need_reshape.insert({obj, new_shape});
+      intermediate.RegisterNewShape(obj, new_shape);
       if (GetSuccs(obj, bb).size() == 1) return true;
       // Need to change all other users of this Reshape
       for (auto succ : GetSuccs(obj, bb)) {
         if (succ == last) {
           continue;
         }
-        todos.push({true, succ, obj, new_shape});
+        todos.push_back({true, succ, obj, new_shape});
       }
       return true;
     }
@@ -734,7 +796,7 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
       if (shape_change.empty()) {
         return false;
       }
-      need_reshape.insert({obj, is_forward ? shape_change : new_shape});
+      intermediate.RegisterNewShape(obj, is_forward ? shape_change : new_shape);
       if (is_forward) {
         forward_shape = shape_change;
       } else {
@@ -749,7 +811,7 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
       }
       if (is_forward) {
         forward_shape = std::vector<int64_t>(new_shape.size(), 1);
-        need_reshape.insert({obj, forward_shape});
+        intermediate.RegisterNewShape(obj, forward_shape);
       } else {
         auto new_size = new_shape.size();
         auto old_size = obj->nd_.size();
@@ -769,7 +831,7 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
             backward_shape.push_back(obj->lhs_->nd_[i++]);
           }
           forward_shape = new_shape;
-          need_reshape.insert({obj, forward_shape});
+          intermediate.RegisterNewShape(obj, forward_shape);
         }
       }
       break;
@@ -780,12 +842,12 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
 
   if (!forward_shape.empty()) {
     for (auto succ : GetSuccs(obj, bb)) {
-      todos.push({true, succ, obj, forward_shape});
+      todos.push_back({true, succ, obj, forward_shape});
     }
   }
   if (!backward_shape.empty()) {
     for (auto prev : GetPreds(obj)) {
-      todos.push({false, prev, obj, backward_shape});
+      todos.push_back({false, prev, obj, backward_shape});
     }
   }
   return true;
@@ -820,14 +882,11 @@ void EliminateReshape(BasicBlock &bb) {
       if (reshape.GetObjectType() != kReshape) {
         continue;
       }
-      std::vector<int64_t> new_shape;
-      if (is_forward) {
-        new_shape = reshape.lhs_->nd_;
-      } else {
-        new_shape = reshape.nd_;
-      }
       AnalysisIntermediate inter;
-      inter.need_reshape.insert({&reshape, new_shape});
+      inter.need_reshape.resize(bb.capacity());
+      inter.visited.reserve(bb.capacity());
+      std::vector<int64_t> &new_shape = is_forward ? reshape.lhs_->nd_ : reshape.nd_;
+      inter.RegisterNewShape(&reshape, new_shape);
       bool can_eliminate = true;
       if (is_forward) {
         for (auto user : GetSuccs(&reshape, bb)) {
@@ -846,29 +905,31 @@ void EliminateReshape(BasicBlock &bb) {
       }
       auto &todos = inter.todos;
       while (!todos.empty() && can_eliminate) {
-        auto todo = todos.top();
-        todos.pop();
+        auto todo = std::move(todos.back());
+        todos.pop_back();
         can_eliminate = Propagate(todo.obj, todo.new_shape, todo.last, todo.is_forward, bb, inter);
       }
       if (!can_eliminate) {
         continue;
       }
       // Reshape
-      for (auto todo : inter.need_reshape) {
-        todo.first->nd_ = todo.second;
+      for (auto to_update : inter.visited) {
+        to_update->nd_ = inter.need_reshape[to_update->index_].value();
         // Reduce need additoinal clean up
-        if (todo.first->GetObjectType() == kReduce) {
-          reduce_to_cleanup.insert(todo.first);
+        if (to_update->GetObjectType() == kReduce) {
+          reduce_to_cleanup.insert(to_update);
         }
       }
-      // delete Reshape op
+      // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
+      auto &context = bb.context();
       auto prev = reshape.lhs_;
       for (auto succ : GetSuccs(&reshape, bb)) {
         auto &input_ref = GetInputRef(succ, &reshape);
         input_ref = prev;
+        context.AddUser(prev, succ);
       }
       bb.Erase(BasicBlock::iterator(&reshape));
-      bb.UpdateContext();
+      context.Erase(&reshape);
     }
   };
 

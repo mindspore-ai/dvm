@@ -90,7 +90,6 @@ class NDObjectIterator {
 
 class BasicBlockContext {
   friend class BasicBlock;
-  static constexpr size_t MAX_NUM_OBJ = 100;
   struct Edge {
     int64_t next;
     NDObject *user;
@@ -170,6 +169,7 @@ class BasicBlock {
 
   void PushBack(pointer ptr) { Insert(end(), ptr); }
 
+  template <bool if_update_index = true>
   std::vector<NDObject *> ToVector();
 
   void Export(std::vector<NDObject *> &objects);

@@ -256,7 +256,7 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
   };
   int iter_num = 0;
   uint32_t cur_live = 0;
-  std::vector<NDObject *> objects = bb.ToVector();  // used in encoding
+  std::vector<NDObject *> objects = bb.ToVector<false>();  // used in encoding
   if (bb.size() > 64) {
     // Support up to 64 nodes
     return objects;
@@ -445,13 +445,16 @@ void BasicBlock::ReOrder(const std::vector<NDObject *> &objects, bool if_update_
   ASSIGN_PREV_OBJ(&sentinel_, last_object);
 }
 
+template <bool if_update_index>
 std::vector<NDObject *> BasicBlock::ToVector() {
   auto iter = begin();
   std::vector<NDObject *> res;
   res.reserve(size());
   int i = 0;
   while (iter != end()) {
-    iter->index_ = i++;
+    if constexpr (if_update_index) {
+      iter->index_ = i++;
+    }
     res.push_back(iter.get());
     ++iter;
   }
@@ -613,7 +616,7 @@ void PrintPeakLive(BasicBlock &bb) {
 }
 
 void CompactPeakLiveness(BasicBlock &bb) {
-  std::vector<NDObject *> backup = bb.ToVector();
+  std::vector<NDObject *> backup = bb.ToVector<false>();
   auto old_peak = MaxLive(bb);
   auto new_order = ReorderObjectsHeuristic(bb);
   bb.ReOrder(new_order);

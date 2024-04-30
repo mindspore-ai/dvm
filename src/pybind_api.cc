@@ -315,10 +315,8 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     {"EliminateReshape", pass::EliminateReshape},
     {"InsertRemovePad", pass::InsertRemovePad}};
   std::vector<pass::Pass> old_passes;
-  bool custom_pass = py::isinstance<py::list>(pass_names);
-  if (custom_pass) {
-    old_passes = pass::passes;
-    pass::passes.clear();
+  std::swap(old_passes, pass::passes);
+  if (py::isinstance<py::list>(pass_names)) {
     auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
     for (auto name : names) {
       pass::passes.push_back(pass_map.at(name));
@@ -328,9 +326,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
   kernel_.GetImpl()->CodeGen();
   auto end = GetTimeX();
   std::cout << "codegen time(us): " << end - begin << std::endl;
-  if (custom_pass) {
-    pass::passes = old_passes;
-  }
+  std::swap(old_passes, pass::passes);
 }
 
 py::object KernelPy::DisAssemble() {

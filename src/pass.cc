@@ -670,9 +670,13 @@ std::vector<ShapePacket> GetShapePackets(const std::vector<int64_t> &shape_ori,
   return shape_packets;
 }
 
-std::vector<int64_t> TryReshape(const std::vector<int64_t> &shape_to_change, const std::vector<int64_t> &shape_ori,
+std::vector<int64_t> TryReshape(std::vector<int64_t> &shape_to_change, std::vector<int64_t> &shape_ori,
                                 const std::vector<int64_t> &shape_new) {
-  ASSERT(shape_to_change.size() == shape_ori.size());
+  if (shape_to_change.size() < shape_ori.size()) {
+    shape_to_change.resize(shape_ori.size(), 1);
+  } else if (shape_to_change.size() > shape_ori.size()) {
+    shape_ori.resize(shape_to_change.size(), 1);
+  }
   auto shape_packets = GetShapePackets(shape_ori, shape_to_change);
 
   std::vector<int64_t> res;

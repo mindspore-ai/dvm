@@ -160,3 +160,16 @@ def test_element_any_backward():
     t.set_passes("EliminateReshape")
     t.store_expect(z, 1.0)
     assert t.run_check()
+
+def test_unalign_broadcast():
+    t = Tester()
+    a = np.full([1, 320], 0.3, np.float16)
+    b = np.full((), 0.2, np.float32)
+    x1 = t.load(a)
+    x2 = t.load(b)
+    x3 = t.cast(x1, "float32")
+    x4 = t.reshape(x3, [320])
+    x5 = t.binary("Mul", x4, x2)
+    t.set_passes("EliminateReshape")
+    t.store_expect(x5, 0.06)
+    assert(t.run_check())

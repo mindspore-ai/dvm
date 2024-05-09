@@ -23,7 +23,9 @@ def test_cast(type1, type2, eps):
     t = Tester()
     a = np.random.normal(0, 100, [1024, 32]).astype(type1)
     x = t.load(a)
+    x = t.copy(x)
     z = t.cast(x,  type2.__name__)
+    z = t.copy(z)
     t.store_expect(z, a.astype(type2), eps)
     assert (t.run_check())
 

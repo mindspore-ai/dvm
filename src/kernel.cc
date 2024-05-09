@@ -979,7 +979,8 @@ int VKernelBase::Analyze() {
     if (op->Pipe() == V_PIPE_SIMD) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (OP_LIVE_D(op) && (op->obj_id_ == kUnary || op->obj_id_ == kBinary || op->obj_id_ == kBinaryS)) {
+        if (OP_LIVE_D(op) && (op->obj_id_ == kUnary || op->obj_id_ == kBinary || op->obj_id_ == kBinaryS ||
+                              (op->obj_id_ == kCast && op->type_id_ <= op->lhs_->type_id_))) {
           op->flags_ |= OBJ_FLAG_REUSE_LHS;
         } else {
           op->flags_ |= OBJ_FLAG_FREE_LHS;

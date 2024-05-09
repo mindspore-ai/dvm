@@ -801,6 +801,8 @@ struct vCubeOp {
 
   uint32_t op_type;
   uint32_t m, n, k;
+  // shape_a: [batch_a0, batch_a1, m, k], shape_b: [batch_b0, batch_b1, k, n]
+  uint32_t batch_a0, batch_a1, batch_b0, batch_b1;
   uint32_t m0, n0, k0;
   // trans_a << 16 | trans_b
   uint32_t transpose;

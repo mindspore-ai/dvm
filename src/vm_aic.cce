@@ -26,6 +26,12 @@ class MatMul {
     m = op->m;
     n = op->n;
     k = op->k;
+    batch_a0 = op->batch_a0;
+    batch_a1 = op->batch_a1;
+    batch_b0 = op->batch_b0;
+    batch_b1 = op->batch_b1;
+    batch_c0 = batch_a0 > batch_b0 ? batch_a0 : batch_b0;
+    batch_c1 = batch_a1 > batch_b1 ? batch_a1 : batch_b1;
     m0 = op->m0;
     n0 = op->n0;
     k0 = op->k0;
@@ -211,6 +217,7 @@ class MatMul {
   }
 
   __force_inline__ __aicore__ void TileMap(uint32_t tile, int64_t &midx, int64_t &nidx) {
+    tile = tile % (m_loop * n_loop);
     if (swizzle_dir == 0) {
       uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
       uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);
@@ -241,9 +248,25 @@ class MatMul {
       }
     }
   }
+
+  // Compute global memory offset of matrix A and B based on batch idx of matrix C
+  __force_inline__ __aicore__ void ComputeOffset(uint64_t c_idx, uint64_t &offset_a, uint64_t &offset_b) {
+    uint64_t c_idx0 = c_idx / batch_c1;
+    uint64_t c_idx1 = c_idx % batch_c1;
+    uint64_t a_idx0 = c_idx0 >= batch_a0 ? batch_a0 - 1 : c_idx0;
+    uint64_t a_idx1 = c_idx1 >= batch_a1 ? batch_a1 - 1 : c_idx1;
+    uint64_t b_idx0 = c_idx0 >= batch_b0 ? batch_b0 - 1 : c_idx0;
+    uint64_t b_idx1 = c_idx1 >= batch_b1 ? batch_b1 - 1 : c_idx1;
+    uint64_t a_idx = a_idx0 * batch_a1 + a_idx1;
+    uint64_t b_idx = b_idx0 * batch_b1 + b_idx1;
+    offset_a = a_idx * m * k;
+    offset_b = b_idx * k * n;
+  }
+
   uint64_t n_loop, m_loop;
   uint64_t k0_part_len;
   uint64_t m, n, k;
+  uint64_t batch_a0, batch_a1, batch_b0, batch_b1, batch_c0, batch_c1;
   uint64_t m0, n0, k0;
   bool trans_a;
   bool trans_b;
@@ -258,10 +281,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   uint64_t config = 0x1;
   set_nd_para(config);
   M mat(op);
-  uint64_t batch_offset = 0;
-  __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a + batch_offset);
-  __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b + batch_offset);
-  __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c + batch_offset);
+  __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a);
+  __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b);
+  __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c);
   int64_t offset = (op->m0 * op->k0 * sizeof(T) + 256 - 1) / 256 * 256;  // TODO: int8 is 512
   __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);
   __cbuf__ T *__restrict__ l1b = reinterpret_cast<__cbuf__ T*>(offset);
@@ -281,15 +303,19 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   for (uint64_t tile = block_idx; tile < tile_end; tile += block_num) {
     __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
+    uint64_t c_idx = tile / (mat.m_loop * mat.n_loop);
+    uint64_t offset_c = c_idx * mat.m * mat.n;
+    uint64_t offset_a, offset_b;
+    mat.ComputeOffset(c_idx, offset_a, offset_b);
     int64_t midx, nidx;
     mat.TileMap(tile, midx, nidx);
     if (tile == block_idx) {
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
-      mat.LoadA(l1a, gm_a, midx, 0);
+      mat.LoadA(l1a, gm_a + offset_a, midx, 0);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
-      mat.LoadB(l1b, gm_b, 0, nidx);
+      mat.LoadB(l1b, gm_b + offset_b, 0, nidx);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
@@ -297,19 +323,21 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       auto event_id_next = pingpong ? EVENT_ID1 : EVENT_ID0;
       if (k < k_loop - 1) {
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
-        mat.LoadA(n_l1a, gm_a, midx, k + 1);
+        mat.LoadA(n_l1a, gm_a + offset_a, midx, k + 1);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
-        mat.LoadB(n_l1b, gm_b, k + 1, nidx);
+        mat.LoadB(n_l1b, gm_b + offset_b, k + 1, nidx);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       } else if (tile + block_num < tile_end) {
+        int64_t c_idx_n = (tile + block_num) / (mat.m_loop * mat.n_loop);
+        mat.ComputeOffset(c_idx_n, offset_a, offset_b);
         int64_t n_midx, n_nidx;
         mat.TileMap(tile + block_num, n_midx, n_nidx);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
-        mat.LoadA(n_l1a, gm_a, n_midx, 0);
+        mat.LoadA(n_l1a, gm_a + offset_a, n_midx, 0);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
-        mat.LoadB(n_l1b, gm_b, 0, n_nidx);
+        mat.LoadB(n_l1b, gm_b + offset_b, 0, n_nidx);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
       set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
@@ -351,7 +379,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       Swap(l1b, n_l1b);
     }
     uint8_t unit_flag = 0b11;
-    mat.StoreC(gm_c, l0c, midx, nidx, unit_flag);
+    mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag);
     //if (op->post_fusion) { ffts_cross_core_sync(MTE3, inner_group);}
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);

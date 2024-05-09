@@ -1288,6 +1288,29 @@ void VKernelP::DumpKernel(std::ostringstream &oss) {
   oss << "}";
 }
 
+void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
+  int n = std::max(lhs->nd_.size(), rhs->nd_.size());
+  nd_.reserve(n);
+  nd_.emplace_back(n_);
+  nd_.emplace_back(m_);
+  for (int i = 2; i < n; ++i) {
+    auto dim1 = i < static_cast<int>(lhs->nd_.size()) ? lhs_->nd_[i] : 1;
+    auto dim2 = i < static_cast<int>(rhs->nd_.size()) ? rhs_->nd_[i] : 1;
+    if (dim1 == dim2) {
+      nd_.emplace_back(dim1);
+    } else if (dim1 == 1) {
+      nd_.emplace_back(dim2);
+    } else if (dim2 == 1) {
+      nd_.emplace_back(dim1);
+    } else {
+      // should not reach here, because this case can not be broadcasted.
+      ASSERT(0);
+    }
+  }
+  shape_.resize(n);
+  std::reverse_copy(nd_.begin(), nd_.end(), shape_.begin());
+}
+
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
   : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
   m_ = trans_a ? lhs->nd_[0] : lhs->nd_[1];
@@ -1297,9 +1320,7 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
     nd_ = {n_, m_};
     shape_ = {m_, n_};
   } else {
-    int64_t batch = lhs->nd_.size() == 3 ? lhs->nd_[2] : rhs->nd_[2];
-    nd_ = {n_, m_, batch};
-    shape_ = {batch, m_, n_};
+    ComputeBroadcastShape(lhs, rhs);
   }
   shape_ref_data_ = shape_;
   shape_ref_ = &shape_ref_data_;
@@ -1411,9 +1432,13 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->k = k_;
   auto a = static_cast<NDLoad*>(lhs_);
   op->gm_a = reinterpret_cast<uint64_t>(a->src_);
+  op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
+  op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
   a->reloc_addr_ = &op->gm_a;
   auto b = static_cast<NDLoad*>(rhs_);
   op->gm_b = reinterpret_cast<uint64_t>(b->src_);
+  op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
+  op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
   b->reloc_addr_ = &op->gm_b;
   auto c = static_cast<NDStore*>(output_);
   op->gm_c = reinterpret_cast<uint64_t>(c->dst_);
@@ -1425,7 +1450,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   Tile(op);
   auto m_loop = CeilDiv(op->m, op->m0);
   auto n_loop = CeilDiv(op->n, op->n0);
-  core_loop_ = m_loop * n_loop;
+  core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
   block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
   GetSwizzleConfig(op);

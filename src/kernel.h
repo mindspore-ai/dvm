@@ -216,6 +216,7 @@ class CubeOp : public NDObject {
   uint64_t core_loop_{0};
 
  protected:
+  void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);
   float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
   void Tile(vCubeOp *code);
   void GetSwizzleConfig(vCubeOp *code);

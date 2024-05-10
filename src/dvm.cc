@@ -14,137 +14,13 @@
  * limitations under the License.
  */
 
-#include <dlfcn.h>
 #include <unordered_map>
 #include "dvm.h"
 #include "kernel.h"
 #include "msprof.h"
 
-// rts_runtime
-#if defined(__cplusplus)
-extern "C" {
-#endif
-#define RT_DEV_BINARY_MAGIC_ELF        0x43554245U
-#define RT_DEV_BINARY_MAGIC_ELF_AICPU  0x41415243U
-#define RT_DEV_BINARY_MAGIC_ELF_AIVEC  0x41415246U
-#define RT_DEV_BINARY_MAGIC_ELF_AICUBE 0x41494343U
-
-typedef int32_t rtError_t;
-typedef char char_t;
-const int32_t RT_ERROR_NONE = 0; // success
-typedef void *rtStream_t;
-struct tagRtSmCtrl;
-typedef struct tagRtSmCtrl rtSmDesc_t;
-
-typedef struct tagRtDevBinary {
-    uint32_t magic;    // magic number
-    uint32_t version;  // version of binary
-    const void *data;  // binary data
-    uint64_t length;   // binary length
-} rtDevBinary_t;
-
-rtError_t rtDevBinaryRegister(const rtDevBinary_t *bin, void **hdl);
-rtError_t rtDevBinaryUnRegister(void *hdl);
-rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName,
-                         const void *kernelInfoExt, uint32_t funcMode);
-rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                         rtSmDesc_t *smDesc, rtStream_t stm);
-#if defined(__cplusplus)
-}
-#endif
-
-extern const unsigned char g_vkernel_bin[];
-extern unsigned int  g_vkernel_bin_len;
-extern const unsigned char g_vkernel_910b_bin[];
-extern unsigned int  g_vkernel_910b_bin_len;
-
 namespace dvm {
 namespace {
-class VKernelHolder {
- public:
-  VKernelHolder();
-  ~VKernelHolder() = default;
-
-  static VKernelHolder &Instance() {
-    static VKernelHolder instance;
-    return instance;
-  }
-
-  int Launch(CodeBase* code, void* stream) {
-    if (!code->atomic_clean_.empty()) {
-      for (auto a : code->atomic_clean_) {
-        uint8_t* a_stub = reinterpret_cast<uint8_t*>(this) + a->target_;
-        auto ret = launch_func_(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
-        if (ret != RT_ERROR_NONE) return ret;
-      }
-    }
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + code->target_;
-    return launch_func_(stub_func, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
-  }
-
- private:
-  rtError_t (*launch_func_)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                              rtSmDesc_t *smDesc, rtStream_t stm);
-};
-
-VKernelHolder::VKernelHolder() {
-#ifdef VK_SIM_MODEL
-  auto rt_binary_register = rtDevBinaryRegister;
-  auto rt_function_register = rtFunctionRegister;
-  launch_func_ = rtKernelLaunch;
-#else
-  void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
-  auto rt_binary_register =
-    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(handle, "rtDevBinaryRegister"));
-  EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
-  auto rt_function_register =
-    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
-      dlsym(handle, "rtFunctionRegister"));
-  EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
-  launch_func_ = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
-    dlsym(handle, "rtKernelLaunch"));
-  EXCEPTION_IF(launch_func_ == nullptr, "load rt_kernel_launch symbol failed");
-#endif
-  rtError_t err;
-  void *module = nullptr;
-  rtDevBinary_t dev_bin;
-  dev_bin.version = 0;
-  if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
-    dev_bin.data = g_vkernel_bin;
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-    dev_bin.length = g_vkernel_bin_len;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg binary failed");
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
-    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg function failed");
-  } else {
-    dev_bin.data = g_vkernel_910b_bin;
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-    dev_bin.length = g_vkernel_910b_bin_len;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
-    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
-
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetCube;
-    err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
-
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetMix;
-    err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
-  }
-}
-
 template <typename T>
 NDObject *GetBinaryS(int op_type, T val, NDObject *rhs) {
   if (rhs->type_id_ == kInt32 && DeviceInfo::Instance().Arch() != kAiCore_C220) {
@@ -170,11 +46,6 @@ NDObject *GetBinaryS(int op_type, T val, NDObject *rhs) {
 }  // namespace
 
 Kernel::Kernel() : kernel_{nullptr} {
-  static bool init = false;
-  if (!init) {
-    (void)VKernelHolder::Instance();
-    init = true;
-  }
 }
 
 Kernel::~Kernel() {
@@ -410,16 +281,16 @@ DType Kernel::GetDType(NDObject* op) const {
 }
 
 uint64_t Kernel::CodeGen() {
-  kernel_->CodeGen();
-  return kernel_->GetCode()->data_size_;
+  return kernel_->CodeGen();
 }
 
-int Kernel::Launch(void* stream) {
-  return VKernelHolder::Instance().Launch(kernel_->GetCode(), stream);
+int Kernel::Launch(void *workspace, void* stream) {
+  kernel_->RelocWorkspace(workspace);
+  return kernel_->GetCode()->Launch(stream);
 }
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
-                         void **outputs, void *stream) {
+                         void **outputs, void *workspace, void *stream) {
   static std::unordered_map<dvm::DType, uint32_t> v_type_map = {{dvm::DType::kFloat32, 43},
                                                                 {dvm::DType::kFloat16, 42},
                                                                 {dvm::DType::kInt8, 30},
@@ -446,17 +317,18 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
     info.data_types.emplace_back(v_type_map[GetDType(*stores)]);
     (*stores++)->Reloc(*outputs++);
   }
+  kernel_->RelocWorkspace(workspace);
   auto code = kernel_->GetCode();
   info.block_dim = code->block_dim_;
 
   MsProfHelper helper(info);
   helper.InitReportNode();
-  auto ret = VKernelHolder::Instance().Launch(code, stream);
+  auto ret = code->Launch(stream);
   helper.ReportTask();
   return ret;
 }
 
-int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void* stream) {
+int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void *workspace, void* stream) {
   auto loads = reinterpret_cast<NDLoad**>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
     (*loads++)->Reloc(*inputs++);
@@ -465,7 +337,8 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
     (*stores++)->Reloc(*outputs++);
   }
-  return VKernelHolder::Instance().Launch(kernel_->GetCode(), stream);
+  kernel_->RelocWorkspace(workspace);
+  return kernel_->GetCode()->Launch(stream);
 }
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {

@@ -82,25 +82,17 @@ if __name__ == '__main__':
 
     # Process symbol table to find function addresses
     try:
-        vmain_in0 = False
         function_address_map = {}
         pattern = r'^([0-9a-f]+) .* D_(V_[\w]+)$'
         vmain_pattern = r"^0000000000000000 .* vmain_mix_aiv$"
         while True:
             line = input()
-            if not vmain_in0:
-                match = re.search(vmain_pattern, line)
-                if match:
-                    vmain_in0 = True
-                    continue
             match = re.search(pattern, line)
             if match:
                 address, ins_name = match.groups()
                 function_address_map[ins_name] = process_address(address)
     except EOFError:
         pass
-    if not vmain_in0:
-        raise ValueError("vmain_mix_aiv is not in 0x0000")
 
     # Ensure all instructions have been mapped
     total_insn_num = len(insn_names[0]) + len(insn_names[1]) + len(insn_names[2])

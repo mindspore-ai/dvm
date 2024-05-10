@@ -57,7 +57,7 @@ class RootDomain : public PropDomain {
   RootDomain() = default;
   void SetHead(NDObject *head) { head_ = head; }
   void Normalize(VKernelBase *kernel);
-  int64_t Tile(int start, int end, int64_t space, int64_t num);
+  int64_t Tile(int start, int end, int64_t space, int64_t num, bool group_tile = false);
 
   std::vector<int64_t>& DimSpace() const { return dom_->nd_; }
   int64_t TileNum() const { return tile_num_; }
@@ -77,8 +77,16 @@ class VKernel {
   virtual ~VKernel() {}
 
   virtual void Append(NDObject *obj) = 0;
-  virtual void CodeGen() = 0;
+  virtual uint64_t CodeGen() = 0;
   virtual void DumpKernel(std::ostringstream &oss) = 0;
+
+  inline void RelocWorkspace(void *workspace) {
+    if (workspace) {
+      for (auto &r : reloc_workspaces_) {
+        *(r.first) = reinterpret_cast<uint64_t>(static_cast<char*>(workspace) + r.second);
+      }
+    }
+  }
 
   CodeBase *GetCode() const { return code_ptr_; }
   std::string& DumpGraph() {
@@ -94,6 +102,7 @@ class VKernel {
   CodeBase* code_ptr_{nullptr};
   KernelType ktype_;
   std::string dump_str_;
+  std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
 };
 
 struct Metrics {
@@ -155,7 +164,7 @@ class VKernelS : public VKernelBase {
   VKernelS() : VKernelBase(KernelType::kStaticShape) {}
   void Append(NDObject *obj) override;
   void Optimize();
-  void CodeGen() override;
+  uint64_t CodeGen() override;
 
   static std::vector<pass::Pass> passes;
 };
@@ -169,7 +178,7 @@ class VKernelD : public VKernelBase {
       elim_reshape_ = true;
     }
   }
-  void CodeGen() override;
+  uint64_t CodeGen() override;
 
  private:
   void RecordOpRelation();
@@ -197,7 +206,7 @@ class VKernelP : public VKernel {
   void Append(NDObject *obj) override { children_.back()->Append(obj); }
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 
-  void CodeGen() override;
+  uint64_t CodeGen() override;
   void DumpKernel(std::ostringstream &oss) override;
 
  protected:
@@ -208,8 +217,10 @@ class VKernelP : public VKernel {
 class CubeOp : public NDObject {
  public:
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
+  ~CubeOp() override;
   int Emit(Code &code) override { return 0; }
   void CodeGen(vCubeOp *code);
+  void NormalizeCube();
 
   NDObject *output_{nullptr};
   uint64_t block_dim_{0};
@@ -236,13 +247,15 @@ class MixKernel : public VKernel {
   ~MixKernel() override;
 
   void Append(NDObject *obj) override;
-  void CodeGen() override;
+  uint64_t CodeGen() override;
   void DumpKernel(std::ostringstream &oss) override;
 
  protected:
+  uint64_t UpdateReloc();
+
   MixCode code_;
-  VKernel *pre_fusion_{nullptr};
-  VKernel *post_fusion_{nullptr};
+  VKernelS *pre_fusion_{nullptr};
+  VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
 };
 } // namespace dvm

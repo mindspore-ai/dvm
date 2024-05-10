@@ -30,16 +30,16 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TYPE_SHIFT(x) (32 / sizeof(x))
 #define BlockDataShift(x)  (5 - sizeof(x) / 2)   // 1B - 5, 2B - 4, 4B - 3, 8B - not support
 
-// tile : simd_width(8) << 56 | tile_end(20) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// tile : simd_width(8) << 56 | group_idx(20) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
 #define V_TILE_N_BEGIN_FLAG_OFFSET  0
 #define V_TILE_END_FLAG_OFFSET      1
 #define V_TILE_TAIL_FLAG_OFFSET     2
 #define V_TILE_CUR_IDX_OFFSET       4
-#define V_TILE_END_IDX_OFFSET       24
+#define V_TILE_GROUP_IDX_OFFSET     24
 #define V_TILE_SIMD_WIDTH_OFFSET    56
 
 #define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
-#define TileEnd(tile)         vGetBitRange(tile, V_TILE_END_IDX_OFFSET, 20)
+#define TileGroupIdx(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 20)
 #define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
 #define IsBeginTile(tile)     ((tile & (1ul << V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
 #define IsEndTile(tile)       ((tile) &(1ul << V_TILE_END_FLAG_OFFSET))
@@ -1185,64 +1185,72 @@ __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
   }
 }
 
-#define DISPATCH(op, func)  case op: do { func; } while (0); break
-
 typedef void (*OpFunc) (__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
 __aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
   return base_addr + id;
 }
 
-extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
-  __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
-  uint64_t tile, tile_loops;
-  if ((config >> 63) == 0) {
-    // config: last_tile(23) << 40 | simd_width(32) | insn_num(16) << 16 | lenburst(16)
-    uint64_t len_burst = config & 0xfffful;
-    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), base_addr + sizeof(config), 0, 1, len_burst, 0, 0);
-    set_atomic_none();
-    set_mask_norm();
-    uint64_t simd_width = (config >> 32) & 0xfful;
-    SetVectorMask(simd_width);
-    uint64_t last_tile = config >> 40;
-    tile_loops = (last_tile + block_num) / block_num;
-    uint64_t tile_start_idx = tile_loops * block_idx;
-    uint64_t tile_end_idx = tile_start_idx + tile_loops - 1;
-    uint64_t tail_flag = 0;
-    if (tile_end_idx >= last_tile) {
-      tile_end_idx = last_tile;
-      tail_flag = 1ul << V_TILE_TAIL_FLAG_OFFSET;
-      tile_loops = tile_end_idx >= tile_start_idx ? tile_end_idx - tile_start_idx + 1 : 0;
-    }
-    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_end_idx << V_TILE_END_IDX_OFFSET | tile_start_idx << V_TILE_CUR_IDX_OFFSET | tail_flag;
-  } else { // parallel fusion
-    // bytecode format:
-    // config(1) + summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
-    // config = parallel(1) << 63 | simdwidth7(7) << 56 | .. | simdwidth1(7) << 7 | simdwidth0(7)
-    // summary = lenburst(6) << 58 | offset(9) << 49 | ker_idx(3) << 46 | insn_num(6) << 40 | tail_tile(1) << 39 | end_offset(19) << 20 | start_idx(20)
-    // codeseg = code(n)
-    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(base_addr + sizeof(config)) + block_idx);
-    uint64_t offset = (summary >> (49 - 5)) & 0x3fe0ul;
-    uint64_t lenburst = summary >> 58;
-    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), base_addr + offset, 0, 1, lenburst, 0, 0);
-    set_atomic_none();
-    set_mask_norm();
-    uint64_t ker_idx = (summary >> 46) & 0x7ul;
-    uint64_t simd_width = ((config >> (ker_idx * 8)) & 0x7ful) + 1;
-    if (simd_width > 64) {
-      set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
+extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
+  set_ffts_base_addr(ffts_addr);
+  __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
+  uint64_t tile, tile_loops, simd_width;
+  if (entry & V_ENTRY_FLAG_MIX) {
+    // vCubeOp + vec_code
+    uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + sizeof(vCubeOp),
+                    0, 1, (code_size - sizeof(vCubeOp)/sizeof(uint64_t) + 3) >> 2, 0, 0);
+    __gm__ vCubeOp * __restrict__ cube = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
+    uint64_t subtilenum = cube->subtilenum;
+    uint64_t subtile_1 = subtilenum >> 32;
+    uint64_t subtile_0 = subtilenum & MASK_32;
+    simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | block_idx << V_TILE_GROUP_IDX_OFFSET;
+    if (get_subblockid() == 0) {
+      tile_loops = subtile_0;
+      if (subtile_1 == 0) tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+    } else if (subtile_1 > 0) {
+      tile_loops = subtile_1;
+      tile |= subtile_0 << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_TAIL_FLAG_OFFSET;
     } else {
-      set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
+      tile_loops  = 0;
     }
+  } else if (entry & V_ENTRY_FLAG_PARALLEL) {
+    // summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
+    // summary = lenburst(6) << 58 | offset(9) << 49 | simdwidth(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
+    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(body_addr) + block_idx);
+    uint64_t offset = (summary >> (49 - 5)) & (0x1fful << 5);
+    uint64_t lenburst = summary >> 58;
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + offset, 0, 1, lenburst, 0, 0);
     uint64_t start_idx = summary & 0xffffful;
-    uint64_t end_idx = ((summary >> 20) & 0x7fffful) + start_idx;
-    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | end_idx << V_TILE_END_IDX_OFFSET | start_idx << V_TILE_CUR_IDX_OFFSET |
-           (summary >> (39 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
-    tile_loops = end_idx - start_idx + 1;
+    tile_loops = (summary >> 20) & 0xffffful;
+    simd_width = (summary >> 41) & 0xfful;
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | start_idx << V_TILE_CUR_IDX_OFFSET |
+           (summary >> (40 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
+  } else {
+    uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
+    uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
+    tile_loops = (tile_num + block_num - 1) / block_num;
+    uint64_t tile_start_idx = tile_loops * block_idx;
+    simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_start_idx << V_TILE_CUR_IDX_OFFSET;
+    if (tile_start_idx + tile_loops >= tile_num) {
+      tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+      tile_loops = tile_start_idx < tile_num ? tile_num - tile_start_idx : 0;
+    }
   }
+  SetVectorMask(simd_width);
+  set_atomic_none();
+  set_mask_norm();
 // Note: vmain_mix_aiv should be the first function in this file(inline function is not included)
 // We need that fact to calculate the right offset of dispatch functions
-  uint8_t* main_addr = (uint8_t*)(get_pc() & (~0xfff));
+  uint8_t* main_addr = (uint8_t*)((get_pc() - VMAIN_OFFSET) & (~0xfff));
   pipe_barrier(PIPE_ALL);
+
+TILE_LOOP:
+  if (entry & V_ENTRY_FLAG_PRE_WAIT) {
+    wait_flag_dev(vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET, V_ENTRY_PRE_WAIT_BITS));
+  }
   while (tile_loops > 0) {
     tile_loops--;
     if (tile_loops == 0) {
@@ -1300,9 +1308,28 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
         pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
       }
     }
-  INSN_END:
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
+  }
+  if (entry & V_ENTRY_FLAG_POST_SET) {
+    ffts_cross_core_sync(PIPE_MTE3, vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS));
+  }
+  if (entry & V_ENTRY_FLAG_MIX) {
+    __gm__ vCubeOp * __restrict__ cube = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
+    uint64_t group_idx = TileGroupIdx(tile) + block_num;
+    if (group_idx < vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS)) {
+      vClrBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20*2); //TRICK: clear tile_idx and group_idx
+      tile &= ~(1ul << V_TILE_N_BEGIN_FLAG_OFFSET | 1ul << V_TILE_END_FLAG_OFFSET);
+      tile |= group_idx << V_TILE_GROUP_IDX_OFFSET;
+      uint64_t tile_end = TileIdx(tile);
+      if (get_subblockid() == 0) {
+        tile_loops = tile_end;
+      } else {
+        tile_loops = cube->subtilenum > 32;
+        tile |= (tile_end - tile_loops) << V_TILE_CUR_IDX_OFFSET;
+      }
+      goto TILE_LOOP;
+    }
   }
   pipe_barrier(PIPE_ALL);
 }

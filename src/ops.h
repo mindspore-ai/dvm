@@ -50,6 +50,7 @@ struct TileParam {
   int64_t num;
   int64_t tile;
   int64_t tail;
+  bool group_tile;
 };
 
 struct PropRange {

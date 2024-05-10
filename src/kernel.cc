@@ -17,6 +17,7 @@
 #include <queue>
 #include <unordered_map>
 #include <cstdlib>
+#include <cstring>
 #include <climits>
 #include <algorithm>
 #include "kernel.h"
@@ -170,7 +171,7 @@ class CodeGenHelper {
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
       OverWriteCoreLimit();
     }
-    code.FillHead();
+    code.UpdateHead(code.tile_num_, code.simd_width_, 0, 0, 0);
     return true;
   }
 
@@ -467,13 +468,14 @@ void RootDomain::Normalize(VKernelBase *kernel) {
   }
 }
 
-int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
+int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num, bool group_tile) {
   TileParam tp;
   tp.start = start;
   tp.end = end;
   tp.num = num;
   tp.tile = CeilDiv(space, num);
   tp.tail = space % tp.tile;
+  tp.group_tile = group_tile;
   PropDomain::TileProp(tp);
   if (start > 0) {
     tile_size_ = tile_size_ / space * CeilDiv(space, num);
@@ -1154,12 +1156,13 @@ void VKernelS::Optimize() {
   bb.Export(objects_);
 }
 
-void VKernelS::CodeGen() {
+uint64_t VKernelS::CodeGen() {
   Optimize();
   BuildDomain(objects_);
   NormalizeDomain();
   DoCodeGen(DeviceInfo::Instance().CoreNum());
   EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
+  return 0;
 }
 
 
@@ -1197,7 +1200,7 @@ void VKernelD::RecoverOpRelation() {
   }
 }
 
-void VKernelD::CodeGen() {
+uint64_t VKernelD::CodeGen() {
   objects_.clear();
   if (elim_reshape_) {
     RecoverOpRelation();
@@ -1213,7 +1216,7 @@ void VKernelD::CodeGen() {
     NormalizeDomain();
     DoCodeGen(DeviceInfo::Instance().CoreNum());
     EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
-    return;
+    return 0;
   }
   if (pd_nexts_.empty()) { // first
     BuildDomain(build_ops_);
@@ -1239,9 +1242,10 @@ void VKernelD::CodeGen() {
   }
   NormalizeDomain();
   DoCodeGen(DeviceInfo::Instance().CoreNum());
+  return 0;
 }
 
-void VKernelP::CodeGen() {
+uint64_t VKernelP::CodeGen() {
   auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
   uint64_t total_workload = 0;
   for (auto k : children_) {
@@ -1278,6 +1282,7 @@ void VKernelP::CodeGen() {
     }
   }
   EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
+  return 0;
 }
 
 void VKernelP::DumpKernel(std::ostringstream &oss) {
@@ -1314,14 +1319,29 @@ void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
   : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
-  m_ = trans_a ? lhs->nd_[0] : lhs->nd_[1];
-  k_ = trans_a ? lhs->nd_[1] : lhs->nd_[0];
-  n_ = trans_b ? rhs->nd_[1] : rhs->nd_[0];
-  if (lhs->nd_.size() == 2 && rhs->nd_.size() == 2) {
+}
+
+CubeOp::~CubeOp() {
+  if (lhs_->obj_id_ == kLoad) {
+    delete lhs_;
+  }
+  if (rhs_->obj_id_ == kLoad) {
+    delete rhs_;
+  }
+  if (output_->obj_id_ == kStore) {
+    delete output_;
+  }
+}
+
+void CubeOp::NormalizeCube() {
+  m_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
+  k_ = trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0];
+  n_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
+  if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
     nd_ = {n_, m_};
     shape_ = {m_, n_};
   } else {
-    ComputeBroadcastShape(lhs, rhs);
+    ComputeBroadcastShape(lhs_, rhs_);
   }
   shape_ref_data_ = shape_;
   shape_ref_ = &shape_ref_data_;
@@ -1431,20 +1451,32 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->m = m_;
   op->n = n_;
   op->k = k_;
-  auto a = static_cast<NDLoad*>(lhs_);
-  op->gm_a = reinterpret_cast<uint64_t>(a->src_);
-  op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
-  op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
-  a->reloc_addr_ = &op->gm_a;
-  auto b = static_cast<NDLoad*>(rhs_);
-  op->gm_b = reinterpret_cast<uint64_t>(b->src_);
-  op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
-  op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
-  b->reloc_addr_ = &op->gm_b;
-  auto c = static_cast<NDStore*>(output_);
-  op->gm_c = reinterpret_cast<uint64_t>(c->dst_);
-  c->reloc_addr_ = &op->gm_c;
-  op->transpose = trans_a_ << 16 | trans_b_;
+
+  if (lhs_->obj_id_ == kLoad) {
+    auto a = static_cast<NDLoad*>(lhs_);
+    op->gm_a = reinterpret_cast<uint64_t>(a->src_);
+    op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
+    op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
+  } else {
+    ASSERT(0); // TODO: pre fusion
+  }
+  if (rhs_->obj_id_ == kLoad) {
+    auto b = static_cast<NDLoad*>(rhs_);
+    op->gm_b = reinterpret_cast<uint64_t>(b->src_);
+    op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
+    op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
+  } else {
+    ASSERT(0); // TODO: pre fusion
+  }
+  if (output_->obj_id_ == kStore) {
+    auto c = static_cast<NDStore*>(output_);
+    op->gm_c = reinterpret_cast<uint64_t>(c->dst_);
+  } else {
+    auto c = static_cast<NDLoad*>(output_);
+    op->gm_c = reinterpret_cast<uint64_t>(c->src_);
+  }
+  op->flags = trans_a_ ? V_CUBE_FLAG_TRANS_A : 0;
+  if (trans_b_)  op->flags |= V_CUBE_FLAG_TRANS_B;
   auto dtype = lhs_->type_id_;
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
@@ -1464,36 +1496,158 @@ MixKernel::~MixKernel() {
 }
 
 void MixKernel::Append(NDObject *obj) {
-  if (obj->obj_id_ == kCubeOp) {
-    EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
-    cube_op_ = static_cast<CubeOp*>(obj);
-    return;
-  }
+  const uint32_t LOAD_PENDING = 1;
   if (cube_op_ == nullptr) {
-    if (pre_fusion_ == nullptr) {
-      pre_fusion_ = new VKernelS();
+    if (obj->obj_id_ == kLoad) {
+      obj->flags_ = LOAD_PENDING;
+    } else if (obj->obj_id_ != kCubeOp) {
+      if (pre_fusion_ == nullptr) {
+        pre_fusion_ = new VKernelS();
+      }
+      auto AppendPending = [this](NDObject *op) {
+        if (op->flags_ == LOAD_PENDING) {
+          pre_fusion_->Append(op);
+          op->flags_ = 0;
+        }
+      };
+      if (obj->lhs_) {
+        AppendPending(obj->lhs_);
+        if (obj->rhs_) {
+          AppendPending(obj->rhs_);
+          if (obj->obj_id_ == kSelect) {
+            AppendPending(static_cast<SelectOp*>(obj)->cond_);
+          }
+        }
+      }
+      pre_fusion_->Append(obj);
+    } else {
+      EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
+      auto lhs = obj->lhs_;
+      if (lhs->obj_id_ != kLoad) {
+        lhs = new NDStore(nullptr, lhs);
+        pre_fusion_->Append(lhs);
+        obj->lhs_ = lhs;
+      } else {
+        lhs->Normalize(pre_fusion_->objects_);
+      }
+      auto rhs = obj->rhs_;
+      if (rhs->obj_id_ != kLoad) {
+        rhs = new NDStore(nullptr, rhs);
+        pre_fusion_->Append(rhs);
+        obj->rhs_ = rhs;
+      } else {
+        rhs->Normalize(pre_fusion_->objects_);
+      }
+      cube_op_ = static_cast<CubeOp*>(obj);
+      cube_op_->NormalizeCube();
     }
-    pre_fusion_->Append(obj);
+  } else if (obj->obj_id_ == kStore && obj->lhs_ == cube_op_) {
+    cube_op_->output_ = obj;
   } else {
     if (post_fusion_ == nullptr) {
       post_fusion_ = new VKernelS();
     }
-    post_fusion_->Append(obj);
-    if (obj->obj_id_ == kStore && obj->lhs_ == cube_op_) {
-      cube_op_->output_ = obj;
+    auto WorkLoad = [this](NDObject *&op) {
+      if (op == cube_op_) {
+        if (cube_op_->output_ == nullptr) {
+          cube_op_->output_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          post_fusion_->Append(cube_op_->output_);
+        }
+        op = cube_op_->output_;
+      }
+    };
+    if (obj->lhs_) {
+      WorkLoad(obj->lhs_);
+      if (obj->rhs_) {
+        WorkLoad(obj->rhs_);
+        if (obj->obj_id_ == kSelect) {
+          WorkLoad(static_cast<SelectOp*>(obj)->cond_);
+        }
+      }
     }
+    post_fusion_->Append(obj);
   }
 }
 
-void MixKernel::CodeGen() {
-  size_t size = sizeof(uint64_t) + sizeof(vCubeOp);
-  code_.Alloc(size);
-  code_.target_ = CodeBase::kTargetCube;
-  code_.data_size_ = size;
-  cube_op_->CodeGen(reinterpret_cast<vCubeOp*>(code_.data_ + sizeof(uint64_t)));
+uint64_t MixKernel::CodeGen() {
+  size_t size = code_.HeadSize() + sizeof(vCubeOp);
+  vCubeOp cube_code;
+  cube_op_->CodeGen(&cube_code);
   code_.block_dim_ = cube_op_->block_dim_;
-  auto *ptr = reinterpret_cast<uint64_t*>(code_.data_);
-  *ptr = (cube_op_->core_loop_ - 1) << 40;
+  uint64_t post_fusion_id = 0;
+  uint64_t head_flags = 0;
+  uint64_t head_simd = 0;
+  if (post_fusion_) {
+    post_fusion_->Optimize();
+    post_fusion_->BuildDomain(post_fusion_->objects_);
+    post_fusion_->NormalizeDomain();
+    auto m = cube_op_->output_->nd_[1];
+    auto n = cube_op_->output_->nd_[0];
+    post_fusion_->root_dom_.Tile(1, 1, m, m / cube_code.m0, true);
+    post_fusion_->root_dom_.Tile(0, 0, n, n / cube_code.n0, true);
+    std::cout << "\nbefore sub codegen:\n" <<post_fusion_->DumpGraph() << std::endl;
+    post_fusion_->NormalizeDomain();
+    post_fusion_->DoCodeGen(2);
+    size += post_fusion_->code_.data_size_;
+    uint64_t subtile_0 = (post_fusion_->code_.block_dim_ + 1) / 2;
+    uint64_t subtile_1 = post_fusion_->code_.block_dim_ - subtile_0;
+    cube_code.subtilenum = subtile_1 << 32 | subtile_0;
+    uint64_t mode = 2;
+    cube_code.flags |= V_CUBE_FLAG_POST_SET;
+    cube_code.post_set_flag = 1 | mode << 4 | post_fusion_id << 8;
+    head_flags |= V_ENTRY_FLAG_PRE_WAIT | V_ENTRY_FLAG_MIX;
+    head_simd = post_fusion_->code_.simd_width_;
+  }
+  code_.target_ = pre_fusion_ || post_fusion_ ? CodeBase::kTargetMix : CodeBase::kTargetCube;
+  code_.data_size_ = size;
+  code_.Alloc(size);
+  code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags, post_fusion_id, 0);
+  uint64_t offset = code_.HeadSize();
+  std::memcpy(code_.data_ + offset, &cube_code, sizeof(vCubeOp));
+  offset += sizeof(vCubeOp);
+  if (post_fusion_) {
+    auto &post_code = post_fusion_->code_;
+    std::memcpy(code_.data_ + offset, post_code.data_ + post_code.HeadSize(), post_code.data_size_ - post_code.HeadSize());
+  }
+  return UpdateReloc();
+}
+
+uint64_t MixKernel::UpdateReloc() {
+  uint64_t workspace = 0;
+  reloc_workspaces_.clear();
+  vCubeOp *op = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
+  if (cube_op_->lhs_->obj_id_ == kLoad) {
+    static_cast<NDLoad*>(cube_op_->lhs_)->reloc_addr_ = &op->gm_a;
+  } else {
+    // TODO: pre fusion
+  }
+  if (cube_op_->rhs_->obj_id_ == kLoad) {
+    static_cast<NDLoad*>(cube_op_->rhs_)->reloc_addr_ = &op->gm_b;
+  } else {
+    // TODO: pre fusion
+  }
+  if (cube_op_->output_->obj_id_ == kStore) {
+    static_cast<NDStore*>(cube_op_->output_)->reloc_addr_ = &op->gm_c;
+  } else {
+    uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + sizeof(vCubeOp));
+    uint64_t *old_base = reinterpret_cast<uint64_t*>(post_fusion_->code_.data_);
+    auto m = cube_op_->output_->nd_[1];
+    auto n = cube_op_->output_->nd_[0];
+    workspace += m * n * ITEM_SIZE[cube_op_->type_id_];
+    NDLoad *load = static_cast<NDLoad*>(cube_op_->output_);
+    reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
+    reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
+    for (auto op :  post_fusion_->objects_) {
+      if (op->obj_id_ == kLoad) {
+        auto load = static_cast<NDLoad*>(op);
+        load->reloc_addr_ = new_base + (load->reloc_addr_ - old_base);
+      } else if (op->obj_id_ == kStore) {
+        auto store = static_cast<NDStore*>(op);
+        store->reloc_addr_ = new_base + (store->reloc_addr_ - old_base);
+      }
+    }
+  }
+  return workspace;
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss) {
@@ -1507,18 +1661,24 @@ void MixKernel::DumpKernel(std::ostringstream &oss) {
     }
     oss << "]";
   };
-  oss << "vgraph.mix() {\n// pre_fusion" << std::endl;
-  pre_fusion_->DumpKernel(oss);
-  oss << std::endl;
+  oss << "vgraph.mix() {\n";
+  if (pre_fusion_) {
+    oss << "// pre_fusion" << std::endl;
+    pre_fusion_->DumpKernel(oss);
+    oss << std::endl;
+  }
   oss << "// cube\n%" << cube_op_->output_->index_;
   dump_nd(cube_op_->output_->nd_);
   oss << " = MatMul(%" << cube_op_->lhs_->index_;
   dump_nd(cube_op_->lhs_->nd_);
   oss << ", %" << cube_op_->rhs_->index_;
   dump_nd(cube_op_->rhs_->nd_);
-  oss << ")\n// post_fusion" << std::endl;
-  post_fusion_->DumpKernel(oss);
-  oss << std::endl;
+  oss << ")\n";
+  if (post_fusion_) {
+    oss << "// post_fusion" << std::endl;
+    post_fusion_->DumpKernel(oss);
+    oss << std::endl;
+  }
   oss << "}";
 }
 } // namespace dvm

@@ -35,8 +35,8 @@ class MatMul {
     m0 = op->m0;
     n0 = op->n0;
     k0 = op->k0;
-    trans_a = op->transpose >> 16;
-    trans_b = op->transpose & 0xffff;
+    flags = op->flags;
+    post_set_flag = op->post_set_flag;
     swizzle_dir = op->swizzle >> 16;
     swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
@@ -47,7 +47,7 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst, __gm__ T *__restrict__ src, int64_t midx, int64_t kidx) {
     // load GM to L1: ND -> zN
-    if (trans_a) {
+    if (flags & V_CUBE_FLAG_TRANS_A) {
       copy_gm_to_cbuf_multi_nd2nz_b16(
         dst,
         src + kidx * k0 * m + midx * m0,
@@ -80,7 +80,7 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadB(__cbuf__ T *__restrict__ dst, __gm__ T *__restrict__ src, int64_t kidx, int64_t nidx) {
     // load GM to L1: ND -> zN
-    if (trans_b) {
+    if (flags & V_CUBE_FLAG_TRANS_B) {
       copy_gm_to_cbuf_multi_nd2nz_b16(
         dst,
         src + nidx * n0 * k + kidx * k0,
@@ -113,7 +113,7 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadL0A(__ca__ T *__restrict__ dst, __cbuf__ T *__restrict__ src, int64_t total_k, int64_t k_part) {
     // load L1 to L0A: zN -> zZ
-    if (trans_a) {
+    if (flags & V_CUBE_FLAG_TRANS_A) {
       for (size_t i = 0; i < m0 / BLOCK_SIZE; i++) {
         load_cbuf_to_ca(
           dst + i * BLOCK_SIZE * k0 / total_k,
@@ -144,7 +144,7 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadL0B(__cb__ T *__restrict__ dst, __cbuf__ T *__restrict__ src, int64_t total_k, int64_t k_part) {
     // load L1 to L0A: zN -> nZ
-    if (trans_b) {
+    if (flags & V_CUBE_FLAG_TRANS_B) {
       load_cbuf_to_cb(
         dst,
         src + k_part * k0 / total_k * n0,
@@ -268,10 +268,10 @@ class MatMul {
   uint64_t m, n, k;
   uint64_t batch_a0, batch_a1, batch_b0, batch_b1, batch_c0, batch_c1;
   uint64_t m0, n0, k0;
-  bool trans_a;
-  bool trans_b;
   uint64_t swizzle_dir;
   uint64_t swizzle_cnt;
+  uint32_t flags;
+  uint32_t post_set_flag;
 };
 
 template <typename M, typename T>
@@ -380,7 +380,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     }
     uint8_t unit_flag = 0b11;
     mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag);
-    //if (op->post_fusion) { ffts_cross_core_sync(MTE3, inner_group);}
+    if (mat.flags & V_CUBE_FLAG_POST_SET) {
+      ffts_cross_core_sync(PIPE_MTE3, mat.post_set_flag);
+    }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
@@ -388,22 +390,19 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
 }
 
-extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t config) {
-  __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
-  uint64_t last_tile = config >> 40;
-  uint64_t tile_per_block = (last_tile + block_num) / block_num;
-  uint64_t tile_end = last_tile + 1;
-  __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(base_addr + sizeof(uint64_t));
-  switch (op->dtype)
-  {
+extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t entry) {
+  set_ffts_base_addr(ffts_addr);
+  __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
+  __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
+  uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
+  switch (op->dtype) {
     case vCubeOp::FP16:
-      CutMKN<MatMul<half>, half>(op, tile_end);
+      CutMKN<MatMul<half>, half>(op, tile_num);
       break;
     case vCubeOp::BF16:
-      CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_end);
+      CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_num);
       break;
     default: break;
   }
-
   pipe_barrier(PIPE_ALL);
 }

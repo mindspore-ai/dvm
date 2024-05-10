@@ -73,6 +73,7 @@ uint64_t GetMsprofHashId(const char *info) {
 }
 
 MsProfHolder::MsProfHolder() {
+#ifndef VK_SIM_MODEL
   void *handle = dlopen("libprofapi.so", RTLD_LAZY | RTLD_LOCAL);
   EXCEPTION_IF(handle == nullptr, "Load libprofapi.so failed");
   msprof_sys_cycle_time_ = reinterpret_cast<uint64_t (*)()>(dlsym(handle, "MsprofSysCycleTime"));
@@ -90,6 +91,7 @@ MsProfHolder::MsProfHolder() {
     reinterpret_cast<int32_t (*)(uint32_t agingFlag, const VOID_PTR data, uint32_t length)>(
       dlsym(handle, "MsprofReportAdditionalInfo"));
   EXCEPTION_IF(msprof_report_additional_info_ == nullptr, "load msprof_report_additional_info symbol failed");
+#endif
 }
 
 void MsProfHelper::BuildSingleTensorInfo(const uint64_t opName_hash_id, const size_t index, const uint32_t tensor_num,

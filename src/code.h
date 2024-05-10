@@ -21,6 +21,14 @@
 #include "dvm.h"
 #include "isa.h"
 
+// rts_runtime
+typedef int32_t rtError_t;
+typedef char char_t;
+const int32_t RT_ERROR_NONE = 0; // success
+typedef void *rtStream_t;
+struct tagRtSmCtrl;
+typedef struct tagRtSmCtrl rtSmDesc_t;
+
 namespace dvm {
 #ifdef DEBUG
 #define ASSERT(cond)                                                           \
@@ -75,6 +83,12 @@ class DeviceInfo {
   uint64_t EventNum() const { return event_num_; }
   SocType SocName() { return soc_name_; }
 
+  rtError_t (*launch_func_)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
+                              rtSmDesc_t *smDesc, rtStream_t stm);
+  rtError_t(*get_c2c_addr_func_)(uint64_t*, uint32_t*){nullptr};
+
+  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t*>(this) + target; }
+
  private:
   DeviceInfo();
   AiCoreArch arch_;
@@ -114,7 +128,34 @@ struct CodeBase {
     } else {
       data_ = static_cast<unsigned char *>(std::malloc(s));
     }
-  };
+  }
+  void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags, uint64_t pre_wait, uint64_t post_set) {
+    uint64_t *head = reinterpret_cast<uint64_t*>(data_);
+    head[0] = 0;
+    head[1] = tile_num << V_ENTRY_TILE_NUM_OFFSET | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET |
+             (data_size_ / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET |
+             pre_wait << V_ENTRY_PRE_WAIT_OFFSET | post_set << V_ENTRY_POST_SET_OFFSET | flags;
+  }
+  uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry
+
+  int Launch(void* stream) {
+    if (target_ == kTargetMix) {
+      uint32_t ffts_len;
+      auto ret = DeviceInfo::Instance().get_c2c_addr_func_(reinterpret_cast<uint64_t*>(data_), &ffts_len);
+      if (ret != RT_ERROR_NONE) return ret;
+    }
+    auto launch_func = DeviceInfo::Instance().launch_func_;
+    uint8_t* stub_func = DeviceInfo::Instance().StubFunc(target_);
+    if (!atomic_clean_.empty()) {
+      for (auto a : atomic_clean_) {
+        uint8_t* a_stub = DeviceInfo::Instance().StubFunc(a->target_);
+        auto ret = launch_func(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
+        if (ret != RT_ERROR_NONE) return ret;
+      }
+    }
+    return launch_func(stub_func, block_dim_, data_, data_size_, nullptr, stream);
+  }
+
   virtual void DisAssemble(std::ostringstream &oss) = 0;
   unsigned char *data_{nullptr};
   size_t data_size_{0};
@@ -129,12 +170,6 @@ struct Code : public CodeBase {
     tile_num_ = 0;
     atomic_clean_.clear();
   }
-
-  void FillHead() {
-    uint64_t *ptr = reinterpret_cast<uint64_t*>(data_);
-    *ptr = (tile_num_ - 1) << 40 | simd_width_ << 32 | (data_size_ - sizeof(uint64_t) + 31) / 32;
-  }
-  uint64_t HeadSize() const { return sizeof(uint64_t); }
 
   void UpdateBlockDim(uint64_t core_num) {
     auto tile_per_block = (tile_num_ + core_num - 1) / core_num;
@@ -158,6 +193,5 @@ struct CodeP : public CodeBase {
 struct MixCode : public CodeBase {
   void DisAssemble(std::ostringstream &oss) override;
 };
-
 } // namespace dvm 
 #endif // _DVM_CODE_H_

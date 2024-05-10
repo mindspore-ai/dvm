@@ -122,6 +122,7 @@ class KernelPy {
   std::unordered_map<NDObject*, LoadInfo> loads_;
   std::unordered_map<NDObject*, StoreInfo> stores_;
   int dev_id_{0};
+  void *workspace_{nullptr};
 };
 }
 #endif // _DVM_PYBIND_API_H_

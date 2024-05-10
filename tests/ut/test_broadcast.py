@@ -18,7 +18,7 @@ import numpy as np
 from dvm.tester import Tester
 
 
-@pytest.mark.parametrize('type, eps', [(np.float32, 1e-03),
+@pytest.mark.parametrize('type, eps', [(np.float16, 1e-03),
                                        (np.float32, 1e-05)])
 def test_broadcast_x(type, eps):
     t = Tester()

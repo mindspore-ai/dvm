@@ -1291,51 +1291,41 @@ __aicore_inline__ void Dispatch_Store(bcodeptr_t pc, uint64_t head, uint64_t til
   }
 }
 
-extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t config) {
-  __gm__ uint8_t * base_addr = (__gm__ uint8_t*)(get_para_base());
-  uint64_t tile, tile_loops;
-  if ((config >> 63) == 0) {
-    // config: last_tile(23) << 40 | simd_width(32) | insn_num(16) << 16 | lenburst(16)
-    uint64_t len_burst = config & 0xfffful;
-    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), base_addr + sizeof(config), 0, 1, len_burst, 0, 0);
-    set_atomic_none();
-    uint64_t simd_width = (config >> 32) & 0xfful;
-    SetVectorMask(simd_width);
-    uint64_t last_tile = config >> 40;
-    tile_loops = (last_tile + block_num) / block_num;
-    uint64_t tile_start_idx = tile_loops * block_idx;
-    uint64_t tile_end_idx = tile_start_idx + tile_loops - 1;
-    uint64_t tail_flag = 0;
-    if (tile_end_idx >= last_tile) {
-      tile_end_idx = last_tile;
-      tail_flag = 1ul << V_TILE_TAIL_FLAG_OFFSET;
-      tile_loops = tile_end_idx >= tile_start_idx ? tile_end_idx - tile_start_idx + 1 : 0;
-    }
-    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_end_idx << V_TILE_END_IDX_OFFSET | tile_start_idx << V_TILE_CUR_IDX_OFFSET | tail_flag;
-  } else { // parallel fusion
-    // bytecode format:
-    // config(1) + summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
-    // config = parallel(1) << 63 | simdwidth7(7) << 56 | .. | simdwidth1(7) << 7 | simdwidth0(7)
-    // summary = lenburst(6) << 58 | offset(9) << 49 | ker_idx(3) << 46 | insn_num(6) << 40 | tail_tile(1) << 39 | end_offset(19) << 20 | start_idx(20)
-    // codeseg = code(n)
-    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(base_addr + sizeof(config)) + block_idx);
-    uint64_t offset = (summary >> (49 - 5)) & 0x3fe0ul;
+extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
+  __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
+  uint64_t tile, tile_loops, simd_width;
+  if (entry & V_ENTRY_FLAG_PARALLEL) {
+    // summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
+    // summary = lenburst(6) << 58 | offset(9) << 49 | simdwidth(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
+    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(body_addr) + block_idx);
+    uint64_t offset = (summary >> (49 - 5)) & (0x1fful << 5);
     uint64_t lenburst = summary >> 58;
-    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), base_addr + offset, 0, 1, lenburst, 0, 0);
-    set_atomic_none();
-    uint64_t ker_idx = (summary >> 46) & 0x7ul;
-    uint64_t simd_width = ((config >> (ker_idx * 8)) & 0x7ful) + 1;
-    if (simd_width > 64) {
-      set_vector_mask(0xffffffffffffffffllu >> (128 - simd_width), 0xffffffffffffffffllu);
-    } else {
-      set_vector_mask(0, 0xffffffffffffffffllu >> (64 - simd_width));
-    }
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + offset, 0, 1, lenburst, 0, 0);
+    tile_loops = (summary >> 20) & 0xffffful;
     uint64_t start_idx = summary & 0xffffful;
-    uint64_t end_idx = ((summary >> 20) & 0x7fffful) + start_idx;
+    uint64_t end_idx = start_idx + tile_loops - 1;
+    simd_width = (summary >> 41) & 0xfful;
     tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | end_idx << V_TILE_END_IDX_OFFSET | start_idx << V_TILE_CUR_IDX_OFFSET |
            (summary >> (39 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
     tile_loops = end_idx - start_idx + 1;
+  } else {
+    uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
+    uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
+    tile_loops = (tile_num + block_num - 1) / block_num;
+    uint64_t tile_start_idx = tile_loops * block_idx;
+    uint64_t tile_end_idx = tile_start_idx + tile_loops - 1;
+    simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+    uint64_t tail_flag = 0;
+    if (tile_end_idx + 1 >= tile_num) {
+      tail_flag = 1ul << V_TILE_TAIL_FLAG_OFFSET;
+      tile_end_idx = tile_num - 1;
+      tile_loops = tile_start_idx < tile_num ? tile_num - tile_start_idx : 0;
+    }
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_end_idx << V_TILE_END_IDX_OFFSET | tile_start_idx << V_TILE_CUR_IDX_OFFSET | tail_flag;
   }
+  SetVectorMask(simd_width);
+  set_atomic_none();
   pipe_barrier(PIPE_ALL);
   while (tile_loops > 0) {
     tile_loops--;

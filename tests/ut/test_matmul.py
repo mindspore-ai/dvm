@@ -39,3 +39,16 @@ def test_batchmatmul(shape_a, shape_b):
     c = t.matmul(a, b, False, False)
     t.store_expect(c, expect)
     assert (t.run_check())
+
+def test_matmul_post_fusion():
+    # TODO: add check
+    t = Tester("mix")
+    ax = np.full([1024, 128], 0.05, np.float16)
+    bx = np.full([128, 512], 0.01, np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    c = t.binary("Add", c, 1.0)
+    c = t.unary("Sqrt", c)
+    o = t.store(c)
+    assert (t.run_check())

@@ -147,6 +147,9 @@ KernelPy::~KernelPy() {
       std::free(it.second.host);
     }
   }
+  if (workspace_) {
+    ASCEND_CALL(aclrtFree(workspace_));
+  }
 #ifdef VK_SIM_MODEL
   aclrtResetDevice(dev_id_);
 #endif
@@ -323,10 +326,18 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     }
   }
   auto begin = GetTimeX();
-  kernel_.GetImpl()->CodeGen();
+  auto workspace_size = kernel_.GetImpl()->CodeGen();
   auto end = GetTimeX();
   std::cout << "codegen time(us): " << end - begin << std::endl;
   std::swap(old_passes, pass::passes);
+  if (workspace_) {
+    ASCEND_CALL(aclrtFree(workspace_));
+    workspace_ = nullptr;
+  }
+  if (workspace_size > 0) {
+    ASCEND_CALL(aclrtMalloc(&workspace_, workspace_size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    kernel_.GetImpl()->RelocWorkspace(workspace_);
+  }
 }
 
 py::object KernelPy::DisAssemble() {
@@ -341,7 +352,7 @@ py::object KernelPy::DumpGraph() {
 
 void KernelPy::Run() {
   PrepareOutput();
-  ASCEND_CALL(kernel_.Launch(nullptr));
+  ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
 }
 
@@ -352,7 +363,7 @@ py::object KernelPy::Perf() {
 #else
   PrepareOutput();
   // warm up
-  ASCEND_CALL(kernel_.Launch(nullptr));
+  ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
   float min_us = 1e6;
   float max_us = 0.0f;
@@ -366,7 +377,7 @@ py::object KernelPy::Perf() {
       ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
     ASCEND_CALL(aclrtRecordEvent(start, nullptr));
-    ASCEND_CALL(kernel_.Launch(nullptr));
+    ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
     ASCEND_CALL(aclrtRecordEvent(end, nullptr));
     ASCEND_CALL(aclrtSynchronizeStream(nullptr));
     float time_us = 0.0f;

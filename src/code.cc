@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <dlfcn.h>
 #include <unordered_map>
 #include <vector>
 #include <cstring>
@@ -23,9 +24,39 @@
 #endif
 #include "code.h"
 
+// rts_runtime
+#if defined(__cplusplus)
+extern "C" {
+#endif
+#define RT_DEV_BINARY_MAGIC_ELF        0x43554245U
+#define RT_DEV_BINARY_MAGIC_ELF_AICPU  0x41415243U
+#define RT_DEV_BINARY_MAGIC_ELF_AIVEC  0x41415246U
+#define RT_DEV_BINARY_MAGIC_ELF_AICUBE 0x41494343U
+
+typedef struct tagRtDevBinary {
+    uint32_t magic;    // magic number
+    uint32_t version;  // version of binary
+    const void *data;  // binary data
+    uint64_t length;   // binary length
+} rtDevBinary_t;
+
+rtError_t rtDevBinaryRegister(const rtDevBinary_t *bin, void **hdl);
+rtError_t rtDevBinaryUnRegister(void *hdl);
+rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName,
+                         const void *kernelInfoExt, uint32_t funcMode);
+rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
+                         rtSmDesc_t *smDesc, rtStream_t stm);
+#if defined(__cplusplus)
+}
+#endif
+
 extern uint64_t g_simd_func_offset[];
 extern uint64_t g_load_func_offset[];
 extern uint64_t g_store_func_offset[];
+extern const unsigned char g_vkernel_bin[];
+extern unsigned int  g_vkernel_bin_len;
+extern const unsigned char g_vkernel_910b_bin[];
+extern unsigned int  g_vkernel_910b_bin_len;
 
 namespace dvm {
 namespace {
@@ -493,7 +524,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
     oss << "\n";
     if (offset == 0) break;
     insn = insn + offset;
-    oss <<  "  {";
+    oss <<  indent << "  {";
     bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
     if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
       oss << "simd";
@@ -582,6 +613,68 @@ DeviceInfo::DeviceInfo() {
   if (const auto &iter = soc_name_map.find(soc_name); iter != soc_name_map.end()) {
     soc_name_ = iter->second;
   }
+
+#ifdef VK_SIM_MODEL
+  auto rt_binary_register = rtDevBinaryRegister;
+  auto rt_function_register = rtFunctionRegister;
+  launch_func_ = rtKernelLaunch;
+#else
+  void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
+  EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
+  auto rt_binary_register =
+    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(handle, "rtDevBinaryRegister"));
+  EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
+  auto rt_function_register =
+    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
+      dlsym(handle, "rtFunctionRegister"));
+  EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
+  launch_func_ = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
+    dlsym(handle, "rtKernelLaunch"));
+  EXCEPTION_IF(launch_func_ == nullptr, "load rt_kernel_launch symbol failed");
+#endif
+  rtError_t err;
+  void *module = nullptr;
+  rtDevBinary_t dev_bin;
+  dev_bin.version = 0;
+  if (arch_ == kAiCore_C100) {
+    dev_bin.data = g_vkernel_bin;
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
+    dev_bin.length = g_vkernel_bin_len;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg binary failed");
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
+    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg function failed");
+  } else {
+    dev_bin.data = g_vkernel_910b_bin;
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
+    dev_bin.length = g_vkernel_910b_bin_len;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
+    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
+
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
+    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetCube;
+    err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
+
+    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
+    err = rt_binary_register(&dev_bin, &module);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
+    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetMix;
+    err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
+    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
+
+#ifdef VK_SIM_MODEL
+    get_c2c_addr_func_ = rtGetC2cCtrlAddr;
+#else
+    get_c2c_addr_func_ = reinterpret_cast<rtError_t(*)(uint64_t*, uint32_t*)>(dlsym(handle, "rtGetC2cCtrlAddr"));
+#endif
+  }
 }
 
 void Code::DisAssemble(std::ostringstream &oss) {
@@ -597,34 +690,31 @@ void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
   uint64_t code_size = 0;
   for (auto c : children_) {
     block_dim_ += c->block_dim_;
-    code_size += ((c->data_size_ - 8 + 31) >> 5) << 5;
+    code_size += ((c->data_size_ - c->HeadSize() + 31) >> 5) << 5;
   }
-  data_size_ = (((block_dim_ + 1) * sizeof(uint64_t) + 31) >> 5) << 5; // config + summary
-  uint64_t offset = data_size_;
-  data_size_ += code_size;
+  uint64_t summary_size = ((block_dim_ * sizeof(uint64_t) + 31) >> 5) << 5;
+  data_size_ = HeadSize() + summary_size + code_size;
   Alloc(data_size_);
-  uint64_t *data_64 = reinterpret_cast<uint64_t*>(data_);
-  uint64_t config = 1ul << 63;
-  int summary_idx = 1;
+  uint64_t offset = summary_size;
+  uint64_t *summaries = reinterpret_cast<uint64_t*>(data_ + HeadSize());
+  uint64_t summary_idx = 0;
   for (size_t k = 0; k < children_.size(); ++k) {
     Code *code = children_[k];
     ASSERT(code->tile_num_ <= 0xffffful);
-    // config
-    config |= (children_[k]->simd_width_ - 1) << (8 * k);
     // summary
-    uint64_t lenburst = (code->data_size_ - sizeof(uint64_t) + 31) / 32;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | k << 46;
+    uint64_t lenburst = (code->data_size_ - code->HeadSize() + 31) / 32;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | code->simd_width_ << 41;
     uint64_t tile_per_block = (code->tile_num_ - 1) / code->block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
-      data_64[summary_idx++] = summary | (tile_per_block - 1) << 20 | start_idx;
+      summaries[summary_idx++] = summary | tile_per_block << 20 | start_idx;
       start_idx += tile_per_block;
     }
-    data_64[summary_idx++] = summary | (code->tile_num_ - start_idx - 1) << 20 | start_idx | 1ul << 39;
+    summaries[summary_idx++] = summary | (code->tile_num_ - start_idx) << 20 | start_idx | 1ul << 40;
     // data
-    offsets.push_back(offset - sizeof(uint64_t));
-    uint64_t cpy_size = code->data_size_ - sizeof(uint64_t);
-    memcpy(data_ + offset, code->data_ + sizeof(uint64_t), cpy_size);
+    offsets.push_back(offset);
+    uint64_t cpy_size = code->data_size_ - code->HeadSize();
+    memcpy(data_ + HeadSize() + offset, code->data_ + code->HeadSize(), cpy_size);
     offset += ((cpy_size + 31) >> 5) << 5;
     // atomic clean
     if (!code->atomic_clean_.empty()) {
@@ -633,55 +723,83 @@ void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
       }
     }
   }
-  data_64[0] = config;
+  UpdateHead(0, 0, V_ENTRY_FLAG_PARALLEL, 0, 0);
 }
 
 void CodeP::DisAssemble(std::ostringstream &oss) {
   struct Summary {
+    Summary(uint8_t *code = nullptr) : bcode(code) {}
     int64_t block_start{-1};
     int64_t block_end{-1};
     int64_t block_step{-1};
     int64_t block_tail{-1};
-    uint8_t *bcode{nullptr};
+    int64_t simd_width{-1};
+    uint8_t *bcode;
   };
-  std::vector<Summary> summays(children_.size());
-  uint64_t *data_64 = reinterpret_cast<uint64_t*>(data_ + sizeof(uint64_t));
+  std::vector<Summary> summays;
+  Summary *current = nullptr;
+  uint64_t *summaries = reinterpret_cast<uint64_t*>(data_ + HeadSize());
   for (uint64_t i = 0; i < block_dim_; ++i) {
-    uint64_t sum_data = *data_64++;
+    uint64_t sum_data = *summaries++;
     uint64_t start_idx = sum_data & 0xffffful;
-    uint64_t end_idx = start_idx + ((sum_data >> 20) & 0x7fffful);
-    uint64_t ker_idx = (sum_data >> 46) & 0x7ul;
+    uint64_t tile_loops = (sum_data >> 20) & 0xffffful;
     uint64_t offset = ((sum_data >> 49) & 0x1fful) * 32;
-    uint64_t body_flag = (sum_data >> 39) & 0x1ul;
-    auto &summary = summays[ker_idx];
-    if (summary.block_start == -1) {
-      summary.block_start = i;
-      summary.block_step = end_idx - start_idx + 1;
-      summary.bcode = data_ + offset;
+    uint64_t tail_flag = (sum_data >> 40) & 0x1ul;
+    auto bcode = data_ + HeadSize() + offset;
+    if (current == nullptr || current->bcode != bcode) {
+      summays.emplace_back(bcode);
+      current = &(summays.back());
+      current->block_start = i;
+      current->block_step = tile_loops;
+      current->bcode = bcode;
+      current->simd_width = (sum_data >> 41) & 0xfful;
     }
-    if (!body_flag) {
-      summary.block_end = i;
-      summary.block_tail = end_idx - start_idx + 1;
+    if (tail_flag) {
+      current->block_end = i;
+      current->block_tail = start_idx + tile_loops;
     }
   }
+  ASSERT(summays.size() == children_.size());
   oss << "vmain.parallel(block_dim=" << block_dim_ << ") {" << std::endl;
   for (uint64_t i = 0; i < children_.size(); ++i) {
     auto code = children_[i];
     auto &summary = summays[i];
-    oss << " kernel_" << i << "(tile_num=" << code->tile_num_ << ", simd_width="<<code->simd_width_ <<
+    oss << " kernel_" << i << "(tile_num=" << code->tile_num_ << ", simd_width="<< summary.simd_width <<
           ", block_range=[" << summary.block_start << ", " << summary.block_end << "], block_step=" << summary.block_step <<
           ", block_tail=" << summary.block_tail << ") {" << std::endl;
-    DasBody(oss, summary.bcode, code->data_size_ - code->HeadSize(), code->simd_width_, "  ");
+    DasBody(oss, summary.bcode, code->data_size_ - code->HeadSize(), summary.simd_width, "  ");
     oss << " }" << std::endl;
   }
   oss << "}";
 }
 
 void MixCode::DisAssemble(std::ostringstream &oss) {
-  vCubeOp *op = reinterpret_cast<vCubeOp*>(data_ + sizeof(uint64_t));
-  oss << "vmain.mix(block_dim=" << block_dim_ << ") {" << std::endl;
-  oss << " [cube] MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
+  void* ffts = *reinterpret_cast<void**>(data_);
+  uint64_t entry = *reinterpret_cast<uint64_t*>(data_ + sizeof(uint64_t));
+  auto tile_num = vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
+  auto is_mix = bool(entry & V_ENTRY_FLAG_MIX);
+  oss << "vmain.mix(block_dim=" << tile_num << ", mix_flag=" << is_mix << ", ffts=" << ffts << ") {" << std::endl;
+  vCubeOp *op = reinterpret_cast<vCubeOp*>(data_ + HeadSize());
+  oss << "  aic() {" << std::endl;
+  oss << "    MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
        " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
+  if (target_ == kTargetMix) {
+    oss << "    { sync: mode=" << ((op->post_set_flag >> 4) & 0xful) << ", id=" << ((op->post_set_flag >> 8) & 0xful) << "}" << std::endl;
+  }
+  oss << "  }" << std::endl;
+  if (target_ == kTargetMix) {
+    auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+    oss << "  aiv(sub_tile_num=[" << (op->subtilenum & 0xfffffffful) << ", "<< (op->subtilenum >> 32) <<
+      "], simd_width=" << simd_width;
+    if (entry & V_ENTRY_FLAG_PRE_WAIT) {
+      auto pre_wait = vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET, V_ENTRY_PRE_WAIT_BITS);
+      oss << ", pre_wait=" << pre_wait;
+    }
+    oss << ") {" << std::endl;
+    uint64_t offset = HeadSize() + sizeof(vCubeOp);
+    DasBody(oss, data_ + offset, data_size_ - offset, simd_width, "    ");
+    oss << "  }" << std::endl;
+  }
   oss << "}";
 }
 }  // namespace dvm

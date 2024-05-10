@@ -133,7 +133,7 @@ struct CodeBase {
     uint64_t *head = reinterpret_cast<uint64_t*>(data_);
     head[0] = 0;
     head[1] = tile_num << V_ENTRY_TILE_NUM_OFFSET | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET |
-             (data_size_ / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET |
+             (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET |
              pre_wait << V_ENTRY_PRE_WAIT_OFFSET | post_set << V_ENTRY_POST_SET_OFFSET | flags;
   }
   uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry
@@ -158,10 +158,10 @@ struct CodeBase {
 
   virtual void DisAssemble(std::ostringstream &oss) = 0;
   unsigned char *data_{nullptr};
-  size_t data_size_{0};
-  uint64_t block_dim_{0};
-  std::vector<CodeBase*> atomic_clean_;
+  uint32_t data_size_{0};
+  uint32_t block_dim_{0};
   int target_{0};
+  std::vector<CodeBase*> atomic_clean_;
 };
 
 struct Code : public CodeBase {

@@ -40,6 +40,8 @@ def test_batchmatmul(shape_a, shape_b):
     t.store_expect(c, expect)
     assert (t.run_check())
 
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_matmul_post_fusion():
     # TODO: add check
     t = Tester("mix")

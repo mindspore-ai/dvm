@@ -940,7 +940,7 @@ void VKernelBase::CollectMetrics(Metrics &metrics) const {
   }
   NDObject *dom = root_dom_.DomObject();
   metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(DeviceInfo::Instance().LocalMemSize()) - ReserveCodeSize();
-  uint64_t tile_per_block = CeilDiv(code_.tile_num_, code_.block_dim_);
+  uint64_t tile_per_block = CeilDiv(code_.tile_num_, static_cast<uint64_t>(code_.block_dim_));
   metrics.core_usage = float(code_.tile_num_) / float(tile_per_block  * DeviceInfo::Instance().CoreNum());
   uint64_t tiled_shape_size = 1;
   for (auto d : dom->nd_) {

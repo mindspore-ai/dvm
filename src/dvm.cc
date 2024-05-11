@@ -15,6 +15,7 @@
  */
 
 #include <unordered_map>
+#include <cmath>
 #include "dvm.h"
 #include "kernel.h"
 #include "msprof.h"
@@ -22,22 +23,73 @@
 namespace dvm {
 namespace {
 template <typename T>
-NDObject *GetBinaryS(int op_type, T val, NDObject *rhs) {
+bool isInteger(const T &value) {
+  if constexpr (std::is_integral<T>::value) {
+    return true;
+  } else if constexpr (std::is_floating_point<T>::value) {
+    return std::floor(value) == value;
+  }
+  return false;
+}
+
+template <typename T>
+NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
+  int64_t iter_num = std::abs(static_cast<int64_t>(value));
+  if (iter_num == 0) {
+    return kernel->Broadcast(static_cast<T>(1), obj->shape_ref_, obj->type_id_, false);
+  }
+  NDObject *res;
+  if (iter_num == 1) {
+    res = kernel->Copy(obj);
+  } else {
+    res = obj;
+    iter_num--;
+    while (iter_num) {
+      if (iter_num & 1) {
+        res = kernel->Binary(BinaryOpType::kMul, res, obj);
+      }
+      obj = kernel->Binary(BinaryOpType::kMul, obj, obj);
+      iter_num >>= 1;
+    }
+  }
+  if (value < 0) {
+    res = kernel->Unary(UnaryOpType::kReciprocal, res);
+  }
+  return res;
+}
+
+template <typename T>
+NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
   if (rhs->type_id_ == kInt32 && DeviceInfo::Instance().Arch() != kAiCore_C220) {
     return nullptr;
   }
+  auto vkernel = kernel->GetImpl();
   switch (op_type) {
-    case BinaryOpType::kAdd:
-      return new BinaryScalarOp<T>(BinarySOpType::kAdds, rhs, val);
-    case BinaryOpType::kMul:
-      return new BinaryScalarOp<T>(BinarySOpType::kMuls, rhs, val);
+    case BinaryOpType::kAdd: {
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kAdds, rhs, val);
+      vkernel->Append(obj);
+      return obj;
+    }
+    case BinaryOpType::kMul: {
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMuls, rhs, val);
+      vkernel->Append(obj);
+      return obj;
+    }
     case BinaryOpType::kMaximum:
       if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-        return new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
+        auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
+        vkernel->Append(obj);
+        return obj;
       }
     case BinaryOpType::kMinimum:
       if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
-        return new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
+        auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
+        vkernel->Append(obj);
+        return obj;
+      }
+    case BinaryOpType::kPow:
+      if (isInteger(val)) {
+        return PowS(kernel, rhs, val);
       }
     default:
       return nullptr;
@@ -138,25 +190,23 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
 
 template<typename T>
 NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
-  NDObject *obj = GetBinaryS(op_type, val, rhs);
+  NDObject *obj = GetBinaryS(this, op_type, val, rhs);
   if (obj == nullptr) {
     NDObject *broadcast = new BroadcastScalarOp<T>(val, rhs->shape_ref_, rhs->type_id_, nullptr);
     kernel_->Append(broadcast);
     return Binary(op_type, broadcast, rhs);
   }
-  kernel_->Append(obj);
   return obj;
 }
 
 template<typename T>
 NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
-  NDObject *obj = GetBinaryS(op_type, val, lhs);
+  NDObject *obj = GetBinaryS(this, op_type, val, lhs);
   if (obj == nullptr) {
     NDObject *broadcast = new BroadcastScalarOp<T>(val, lhs->shape_ref_, lhs->type_id_, nullptr);
     kernel_->Append(broadcast);
     return Binary(op_type, lhs, broadcast);
   }
-  kernel_->Append(obj);
   return obj;
 }
 

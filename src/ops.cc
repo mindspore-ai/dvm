@@ -698,6 +698,61 @@ int BinaryOp::Emit(Code &code) {
   }
 }
 
+void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
+  // recover original input
+  NDObject **input[] = {&lhs_, &rhs_, &cond_};
+  for (size_t i = 0; i < 3; i++) {
+    if (!stuff_ops_[i].empty()) {
+      *input[i] = stuff_ops_[i][0]->lhs_;
+    }
+  }
+  auto max_size = std::max({lhs_->shape_ref_->size, rhs_->shape_ref_->size, cond_->shape_ref_->size});
+  shape_.resize(max_size);
+  for (size_t i = 0; i < max_size; ++i) {
+    int64_t len[3];
+    for (size_t j = 0; j < 3; j++) {
+      auto obj = *input[j];
+      len[j] = (obj->shape_ref_->size < i) ? 1 : obj->shape_ref_->data[obj->shape_ref_->size - 1 - i];
+    }
+    shape_[max_size - 1 - i] = std::max({len[0], len[1], len[2]});
+  }
+  *shape_ref_ = shape_;
+
+  // update nd_
+  bool need_broadcast[3] = {false, false, false};
+  std::vector<int64_t> nds[3] = {lhs_->nd_, rhs_->nd_, cond_->nd_};
+  auto max_dims = std::max({nds[0].size(), nds[1].size(), nds[2].size()});
+  nd_.resize(max_dims, 1);
+  for (size_t i = 0; i < 3; ++i) {
+    nds[i].resize(max_dims, 1);
+  }
+  for (size_t i = 0; i < max_dims; ++i) {
+    nd_[i] = std::max({nds[0][i], nds[1][i], nds[2][i]});
+    for (size_t j = 0; j < 3; ++j) {
+      if (nds[j][i] != nd_[i]) {
+        need_broadcast[j] = true;
+      }
+    }
+  }
+  for (size_t j = 0; j < 3; ++j) {
+    if (need_broadcast[j]) {
+      size_t stuff_idx = 0;
+      *input[j] = InsertImplicitBroadcast(*input[j], nd_, stuff_ops_[j], stuff_idx);
+      for (size_t i = 0; i < stuff_idx; ++i) {
+        run_ops.push_back(stuff_ops_[j][i]);
+      }
+    }
+  }
+}
+
+SelectOp::~SelectOp() {
+  for (size_t j = 0; j < 3; ++j) {
+    for (auto op : stuff_ops_[j]) {
+      delete op;
+    }
+  }
+}
+
 int SelectOp::Emit(Code &code) {
   vSelect op;
   op.xd = xbuf_;

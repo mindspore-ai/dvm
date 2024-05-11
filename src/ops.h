@@ -323,9 +323,9 @@ class BinaryOp : public NDObject {
   ~BinaryOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(Code &code) override;
+  vSimdInsnID id_;
 
  protected:
-  vSimdInsnID id_;
   int cmp_op_;
   std::vector<NDObject*> lhs_stuff_ops_;
   std::vector<NDObject*> rhs_stuff_ops_;
@@ -336,12 +336,18 @@ class SelectOp : public NDObject {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs)
       : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kSelect), cond_(cond) {
-    shape_ref_ = lhs->shape_ref_;
+    shape_ref_ = &shape_ref_data_;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  ~SelectOp();
+  void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(Code &code) override;
   NDObject *cond_{nullptr};
   bool free_cond{false};
+
+ private:
+  std::vector<NDObject *> stuff_ops_[3];
+  std::vector<int64_t> shape_;
+  ShapeRef shape_ref_data_;
 };
 
 class _BroadcastOp : public NDObject {

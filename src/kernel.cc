@@ -955,6 +955,27 @@ void VKernelBase::CollectMetrics(Metrics &metrics) const {
 #define OP_KILL(op) do { op->lead_dim_ = 0; } while(0)
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
+
+static inline bool BinaryInplaceCheck(NDObject *obj) {
+  if (obj->obj_id_ == kBinary) {
+    auto id = static_cast<BinaryOp *>(obj)->id_;
+    if (id != V_POW && id != V_POW_FP16) {
+      return true;
+    }
+  }
+  return false;
+}
+
+static inline bool LhsInplaceCheck(NDObject *obj) {
+  if (obj->obj_id_ == kUnary || obj->obj_id_ == kBinaryS || BinaryInplaceCheck(obj)) {
+    return true;
+  }
+  if (obj->obj_id_ == kCast && obj->type_id_ <= obj->lhs_->type_id_) {
+    return true;
+  }
+  return false;
+}
+
 int VKernelBase::Analyze() {
   int op_index = objects_.size();
   int cur_live = static_ops_.size();
@@ -981,8 +1002,7 @@ int VKernelBase::Analyze() {
     if (op->Pipe() == V_PIPE_SIMD) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (OP_LIVE_D(op) && (op->obj_id_ == kUnary || op->obj_id_ == kBinary || op->obj_id_ == kBinaryS ||
-                              (op->obj_id_ == kCast && op->type_id_ <= op->lhs_->type_id_))) {
+        if (OP_LIVE_D(op) && LhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_LHS;
         } else {
           op->flags_ |= OBJ_FLAG_FREE_LHS;
@@ -991,7 +1011,7 @@ int VKernelBase::Analyze() {
       }
       kill = op->rhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && op->obj_id_ == kBinary) {
+        if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && BinaryInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_RHS;
         } else {
           op->flags_ |=  OBJ_FLAG_FREE_RHS;

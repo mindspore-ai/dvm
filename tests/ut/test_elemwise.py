@@ -168,8 +168,23 @@ def test_pow_2(type, eps, shape):
     b = np.random.randint(6, size = shape).astype(type)
     x = t.load(a)
     y = t.load(b)
+    x = t.copy(x)
+    y = t.copy(y)
     z = t.binary("Pow", x, y)
+    z = t.copy(z)
     t.store_expect(z, np.power(a, b), eps)
+    assert(t.run_check())
+
+@pytest.mark.parametrize("shape",[(1024, 32), (13, 131)])
+@pytest.mark.parametrize("exponent",[0.0, 1.2 ,5.0, -7.0, -3.0])
+def test_pow_3(shape, exponent):
+    t = Tester()
+    a = np.abs(np.random.normal(0, 1, shape).astype(np.float32) - 2)
+    x = t.load(a)
+    y = t.binary("Pow", x, exponent)
+    z = t.binary("Add", y, 2)
+    z = t.copy(z)
+    t.store_expect(z, np.power(a, exponent) + 2)
     assert(t.run_check())
 
 @pytest.mark.parametrize('type, eps', [(np.float16, 1e-3), (np.float32, 1e-5)]) 

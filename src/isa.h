@@ -660,10 +660,10 @@ struct vSliceLoad {
   uint64_t xn;
   uint64_t tile_stride;
   uint64_t offset;
-  uint64_t src_n;
   uint64_t src_m;
-  uint64_t slice_n;
+  uint64_t src_n;
   uint64_t slice_m;
+  uint64_t slice_n;
   uint64_t pad_size;
   uint64_t slice_k;
   uint64_t type_size;
@@ -672,10 +672,10 @@ struct vSliceLoad {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
-    op.src_n = data & 0xfffful;
-    op.src_m = (data >> 16) & 0xfffful;
-    op.slice_n = (data >> 32) & 0xfffful;
-    op.slice_m = (data >> 48) & 0xfffful;
+    op.src_m = data & 0xfffful;
+    op.src_n = (data >> 16) & 0xfffful;
+    op.slice_m = (data >> 32) & 0xfffful;
+    op.slice_n = (data >> 48) & 0xfffful;
     data = pc[3];
     op.type_size = data & 0xfful;
     op.tile_stride = (data >> 8) & 0xfffffful;
@@ -687,7 +687,7 @@ struct vSliceLoad {
     uint64_t size = 4;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
-    pc[2] = op.slice_m << 48 | op.slice_n << 32 | op.src_m << 16 | op.src_n;
+    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.src_m;
     pc[3] = op.slice_k << 48 | op.pad_size << 32 | op.tile_stride << 8 | op.type_size;
     return size;
   }

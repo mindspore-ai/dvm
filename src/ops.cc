@@ -272,16 +272,16 @@ int NDSliceLoad::Emit(Code &code) {
   op.pad_size = lead_align - nd_[lead_dim_];
   if (nd_.size() == 2) {
     op.slice_k = 1;
-    op.slice_n = size_ref_->data[0];
-    op.slice_m = size_ref_->data[1];
-    op.src_n = src_ref_->data[0];
-    op.src_m = src_ref_->data[1];
+    op.slice_m = size_ref_->data[0];
+    op.slice_n = size_ref_->data[1];
+    op.src_m = src_ref_->data[0];
+    op.src_n = src_ref_->data[1];
   } else {
     op.slice_k = size_ref_->data[0];
-    op.slice_n = size_ref_->data[1];
-    op.slice_m = size_ref_->data[2];
-    op.src_n = src_ref_->data[1];
-    op.src_m = src_ref_->data[2];
+    op.slice_m = size_ref_->data[1];
+    op.slice_n = size_ref_->data[2];
+    op.src_m = src_ref_->data[1];
+    op.src_n = src_ref_->data[2];
   }
   op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSliceLoad::RELOC_OFFSET;

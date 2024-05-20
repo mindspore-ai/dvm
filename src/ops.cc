@@ -92,7 +92,7 @@ uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t simd_width) {
 }  // namespace
 
 int64_t NDObject::Size() {
-  return std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{}) * type_id_;
+  return std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{}) * ITEM_SIZE[type_id_];
 }
 
 void NDObject::Tile(const TileParam &tp) {

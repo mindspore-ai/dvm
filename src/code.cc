@@ -46,6 +46,7 @@ rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t
                          const void *kernelInfoExt, uint32_t funcMode);
 rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
                          rtSmDesc_t *smDesc, rtStream_t stm);
+rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 #if defined(__cplusplus)
 }
 #endif

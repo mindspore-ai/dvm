@@ -37,9 +37,13 @@ int main() {
 
   (void)kernel.Store(o1.dev_, d_dvm);
   (void)kernel.Store(o2.dev_, g_dvm);
-  kernel.CodeGen();
-  kernel.Launch(nullptr);
+  auto workspace = PrepareWorkspace(kernel.CodeGen());
+  kernel.Launch(workspace, nullptr);
+
   ASCEND_CALL(rtStreamSynchronize(nullptr));
   std::cout << kernel.Das() << '\n';
+  if (workspace) {
+    ASCEND_CALL(rtFree(workspace));
+  }
   ASCEND_CALL(rtDeviceReset(0));
 }

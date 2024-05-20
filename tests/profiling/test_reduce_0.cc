@@ -30,12 +30,15 @@ int main() {
   auto b_dvm = kernel.Reduce(ReduceOpType::kSum, a_dvm, reduce_axis_ref.get(), true);
 
   (void)kernel.Store(o1.dev_, b_dvm);
-  kernel.CodeGen();
-  kernel.Launch(nullptr);
-  ASCEND_CALL(rtStreamSynchronize(nullptr));
+  auto workspace = PrepareWorkspace(kernel.CodeGen());
+  kernel.Launch(workspace, nullptr);
 
+  ASCEND_CALL(rtStreamSynchronize(nullptr));
   std::cout << kernel.Das() << '\n';
   o1.ToHost();
   assert(allclose(o1.ToData(), 64.0f, o1.size() / sizeof(float), 1e-5f, 1e-5f));
+  if (workspace) {
+    ASCEND_CALL(rtFree(workspace));
+  }
   ASCEND_CALL(rtDeviceReset(0));
 }

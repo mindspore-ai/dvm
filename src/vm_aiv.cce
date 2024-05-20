@@ -1312,7 +1312,7 @@ TILE_LOOP:
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }
   if (entry & V_ENTRY_FLAG_POST_SET) {
-    ffts_cross_core_sync(PIPE_FIX, vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS));
+    ffts_cross_core_sync(PIPE_MTE3, vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS));
   }
   if (entry & V_ENTRY_FLAG_MIX) {
     uint64_t group_idx = TileGroupIdx(tile) + block_num;
@@ -1321,8 +1321,8 @@ TILE_LOOP:
       vClrBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20*2); //TRICK: clear tile_idx and group_idx
       tile &= ~(1ul << V_TILE_N_BEGIN_FLAG_OFFSET | 1ul << V_TILE_END_FLAG_OFFSET);
       tile |= group_idx << V_TILE_GROUP_IDX_OFFSET;
-      uint64_t subtile_0 = subtilenum & MASK_32;
-      uint64_t subtile_1 = subtilenum >> 32;
+      uint64_t subtile_0 = cube->subtilenum & MASK_32;
+      uint64_t subtile_1 = cube->subtilenum >> 32;
       if (get_subblockid() == 0) {
         tile_loops = subtile_0;
       } else {

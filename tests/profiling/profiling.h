@@ -43,6 +43,14 @@ std::ostream &operator<<(std::ostream &os, const std::vector<T> &vec) {
   return os;
 }
 
+void *PrepareWorkspace(uint64_t workspace_size) {
+  void *workspace = nullptr;
+  if (workspace_size > 0) {
+    ASCEND_CALL(rtMalloc(&workspace, workspace_size, RT_MEMORY_HBM, 0));
+  }
+  return workspace;
+}
+
 template <typename T>
 struct Tensor {
   void *host_{nullptr};
@@ -81,7 +89,7 @@ struct Tensor {
 
   size_t size() { return std::accumulate(shape_.begin(), shape_.end(), sizeof(T), std::multiplies<int64_t>()); }
 
-  ~Tensor(){
+  ~Tensor() {
     rtFree(dev_);
     free(host_);
   }

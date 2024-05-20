@@ -13,11 +13,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
+#include <set>
 #include <string>
 #include <cstring>
 #include <vector>
-#include <set>
+#include <numeric>
 #include <algorithm>
 #include "ops.h"
 #include "kernel.h"
@@ -90,6 +90,10 @@ uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t simd_width) {
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
 }  // namespace
+
+int64_t NDObject::Size() {
+  return std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{}) * type_id_;
+}
 
 void NDObject::Tile(const TileParam &tp) {
   bool pointwise = nd_[tp.start] > 1;

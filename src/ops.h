@@ -93,6 +93,7 @@ class NDObject {
 
   void UpdateStride(uint64_t simd_width);
 
+  int64_t Size();
   int64_t LeadAlign() const { return strides_[lead_dim_]; }
   uint64_t GetBlocks(int64_t size) const { return (size * ITEM_SIZE[type_id_] + 31) >> 5; }
   ObjectType GetObjectType() const { return obj_id_; }

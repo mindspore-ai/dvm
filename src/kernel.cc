@@ -1651,10 +1651,8 @@ uint64_t MixKernel::UpdateReloc() {
   } else {
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + sizeof(vCubeOp));
     uint64_t *old_base = reinterpret_cast<uint64_t*>(post_fusion_->code_.data_);
-    auto m = cube_op_->output_->nd_[1];
-    auto n = cube_op_->output_->nd_[0];
-    workspace += m * n * ITEM_SIZE[cube_op_->type_id_];
-    NDLoad *load = static_cast<NDLoad*>(cube_op_->output_);
+    workspace += cube_op_->output_->Size();
+    NDLoad *load = static_cast<NDLoad *>(cube_op_->output_);
     reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
     reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
     for (auto op :  post_fusion_->objects_) {

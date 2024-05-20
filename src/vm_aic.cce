@@ -381,7 +381,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint8_t unit_flag = 0b11;
     mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag);
     if (mat.flags & V_CUBE_FLAG_POST_SET) {
-      ffts_cross_core_sync(PIPE_MTE3, mat.post_set_flag);
+      ffts_cross_core_sync(PIPE_FIX, mat.post_set_flag);
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);

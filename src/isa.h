@@ -659,7 +659,6 @@ struct vSliceLoad {
   __gm__ uint8_t *gm;
   uint64_t xn;
   uint64_t tile_stride;
-  uint64_t offset;
   uint64_t src_m;
   uint64_t src_n;
   uint64_t slice_m;

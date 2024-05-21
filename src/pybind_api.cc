@@ -109,22 +109,18 @@ static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", Binar
                                                                    {"LogicalAnd", BinaryOpType::kLogicalAnd},
                                                                    {"LogicalOr", BinaryOpType::kLogicalOr}};
 
+static std::unordered_map<std::string, KernelType> kernel_type_map = {
+  {"", kStaticShape}, {"static", kStaticShape}, {"dyn", kDynShape}, {"mix", kStaticMix},
+  {"parallel", kStaticParallel}, {"stages", kStaticStages}};
+
 void ShapeRefPy::Update(const py::object &shape){
   shape_ = GetVector(shape);
   *shape_ref_ = shape_;
 }
 
 KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
-  KernelType type;
-  if (type_str == "parallel") {
-    type = kStaticParallel;
-  } else if (type_str == "mix") {
-    type = kStaticMix;
-  } else if (type_str == "dyn") {
-    type = kDynShape;
-  } else {
-    type = kStaticShape;
-  }
+  auto it = kernel_type_map.find(type_str);
+  KernelType type = it != kernel_type_map.end() ? it->second : kStaticShape;
   uint32_t dev_count = 0;
   ASCEND_CALL(aclrtGetDeviceCount(&dev_count));
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
@@ -303,6 +299,24 @@ py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool t
 
 void KernelPy::ParallelNext() {
   kernel_.ParallelNext();
+}
+
+void KernelPy::StageSwitch(const std::string &ker_type) {
+  auto it = kernel_type_map.find(ker_type);
+  KernelType type = it != kernel_type_map.end() ? it->second : kStaticShape;
+  kernel_.StageSwitch(type);
+}
+
+py::object KernelPy::StageLoad(const py::object &store) {
+  auto in_obj = store.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.StageLoad(in_obj);
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
+py::object KernelPy::StageStore(const py::object &input) {
+  auto in_obj = input.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.StageStore(in_obj);
+  return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 void KernelPy::Tile(int start, int end, int64_t num) {
@@ -526,6 +540,9 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("copy", &KernelPy::Copy, "emit copy op")
       .def("matmul", &KernelPy::MatMul, "emit matmul op")
       .def("p_next", &KernelPy::ParallelNext, "parallel next")
+      .def("stage_switch", &KernelPy::StageSwitch, "stage switch")
+      .def("stage_load", &KernelPy::StageLoad, "stage load")
+      .def("stage_store", &KernelPy::StageStore, "stage store")
       .def("input", &KernelPy::Input, "get ouput array")
       .def("output", &KernelPy::Output, "get ouput array")
       .def("tile", &KernelPy::Tile, "set tiling")

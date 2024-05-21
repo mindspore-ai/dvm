@@ -235,7 +235,6 @@ class NDStore : public NDObject {
   VKernel *clear_kernel_{nullptr};
 };
 
-
 class NDSStore : public NDStore{
  public:
   using NDStore::NDStore;
@@ -246,6 +245,18 @@ class NDSStore : public NDStore{
 
 private:
   uint64_t slice[2];
+};
+
+class NDStageStore : public NDStore {
+ public:
+  NDStageStore(NDObject *input) : NDStore(input) {}
+  int64_t ws_offset_{0};
+};
+
+class NDStageLoad : public NDLoad {
+ public:
+  NDStageLoad(NDStageStore *store) : NDLoad(nullptr, store->shape_ref_, store->type_id_), store_(store) {}
+  NDStageStore *store_;
 };
 
 class CopyOp : public NDObject {

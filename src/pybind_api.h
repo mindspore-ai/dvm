@@ -90,6 +90,10 @@ class KernelPy {
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b);
   void ParallelNext();
 
+  void StageSwitch(const std::string &ker_type);
+  py::object StageLoad(const py::object &store);
+  py::object StageStore(const py::object &input);
+
   void Input(const py::object &load, const py::object &array);
   py::object Output(const py::object &store);
   void Tile(int start, int end, int64_t num);

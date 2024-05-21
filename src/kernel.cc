@@ -46,6 +46,10 @@ inline __attribute__((always_inline)) uint32_t RoundDown(uint32_t num, uint32_t 
   return num / rnd * rnd;
 }
 
+inline __attribute__((always_inline)) uint64_t FftsSyncConfig(uint64_t mode, uint64_t event_id) {
+  return 1ul | mode << 4 | event_id << 8;
+}
+
 class CodeGenHelper {
  public:
   enum CodeGenType {
@@ -1594,8 +1598,9 @@ uint64_t MixKernel::CodeGen() {
   vCubeOp cube_code;
   cube_op_->CodeGen(&cube_code);
   code_.block_dim_ = cube_op_->block_dim_;
+  cube_code.subtilenum = 0;
   uint64_t post_fusion_id = 0;
-  uint64_t head_flags = 0;
+  uint64_t head_flags = V_ENTRY_FLAG_MIX;
   uint64_t head_simd = 0;
   if (post_fusion_) {
     post_fusion_->Optimize();
@@ -1614,10 +1619,9 @@ uint64_t MixKernel::CodeGen() {
     uint64_t subtile_0 = (post_fusion_->code_.block_dim_ + 1) / 2;
     uint64_t subtile_1 = post_fusion_->code_.block_dim_ - subtile_0;
     cube_code.subtilenum = subtile_1 << 32 | subtile_0;
-    uint64_t mode = 2;
-    cube_code.flags |= V_CUBE_FLAG_POST_SET;
-    cube_code.post_set_flag = 1 | mode << 4 | post_fusion_id << 8;
-    head_flags |= V_ENTRY_FLAG_PRE_WAIT | V_ENTRY_FLAG_MIX;
+    cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
+    cube_code.group_set = FftsSyncConfig(2, post_fusion_id);
+    head_flags |= V_ENTRY_FLAG_PRE_WAIT;
     head_simd = post_fusion_->code_.simd_width_;
   }
   code_.target_ = pre_fusion_ || post_fusion_ ? CodeBase::kTargetMix : CodeBase::kTargetCube;
@@ -1701,4 +1705,127 @@ void MixKernel::DumpKernel(std::ostringstream &oss) {
   }
   oss << "}";
 }
+
+StagesKernel::~StagesKernel() {
+  for (auto s : stages_) {
+    delete s->kernel;
+    delete s;
+  }
+}
+
+void StagesKernel::Append(NDObject *obj) {
+  stages_.back()->kernel->Append(obj);
+  if (obj->obj_id_ == ObjectType::kLoad) {
+    stages_.back()->loads.push_back(static_cast<NDLoad*>(obj));
+  } else if (obj->obj_id_ == ObjectType::kStore) {
+    stages_.back()->stores.push_back(static_cast<NDStore*>(obj));
+  }
+}
+
+uint64_t StagesKernel::CodeGen() {
+  auto get_tensor_size = [](NDObject *op) -> int64_t {
+    int64_t size = ITEM_SIZE[op->type_id_];
+    for (size_t i = 0; i < op->shape_ref_->size; ++i) {
+      size *= op->shape_ref_->data[i];
+    }
+    return size;
+  };
+  constexpr int64_t ffts_size = sizeof(uint64_t);
+  uint64_t ws_size = 0;
+  uint64_t code_size = ffts_size;
+  code_.target_ = CodeBase::kTargetMix;
+  code_.block_dim_ = 0;
+  for (auto &s : stages_) {
+    auto workspace = s->kernel->CodeGen();
+    if (workspace > 0) {
+      s->ws_offset = ws_size;
+      ws_size += workspace;
+    }
+    for (auto ss : s->stage_stores) {
+      ss->ws_offset_ = ws_size;
+      ws_size += get_tensor_size(ss);
+    }
+    s->code_offset = code_size;
+    auto stage_code = s->kernel->GetCode();
+    code_size += stage_code->data_size_ - ffts_size;
+    if (stage_code->target_ == CodeBase::kTargetVec) {
+      auto group_num = (stage_code->block_dim_ + 1) / 2;
+      if (group_num > code_.block_dim_) code_.block_dim_ = group_num;
+    } else if (stage_code->block_dim_ > code_.block_dim_) {
+      code_.block_dim_= stage_code->block_dim_;
+    }
+    if (!stage_code->atomic_clean_.empty()) {
+      for (auto ac : stage_code->atomic_clean_) code_.atomic_clean_.push_back(ac);
+    }
+  }
+  // link
+  code_.Alloc(code_size);
+  code_.data_size_ = code_size;
+  *reinterpret_cast<uint64_t*>(code_.data_) = 0; //ffts
+  for (size_t sidx = 0; sidx < stages_.size(); ++sidx) {
+    auto stage = stages_[sidx];
+    auto src_code = stage->kernel->GetCode();
+    std::memcpy(code_.data_ + stage->code_offset, src_code->data_ + ffts_size, src_code->data_size_ - ffts_size);
+    auto cur_entry = *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
+    cur_entry |= V_ENTRY_FLAG_GROUP;
+    if (sidx > 0) { // add sync
+      auto pre_code = code_.data_ + stages_[sidx - 1]->code_offset;
+      auto pre_entry = *reinterpret_cast<uint64_t*>(pre_code);
+      pre_entry |= V_ENTRY_FLAG_NEXT_STAGE;
+      if (pre_entry & V_ENTRY_FLAG_MIX) {
+        vCubeOp *cube = reinterpret_cast<vCubeOp*>(pre_code + sizeof(uint64_t));
+        cube->flags |= V_CUBE_FLAG_POST_BAR;
+        if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
+          cube->flags |= V_CUBE_FLAG_POST_SET;
+          cube->post_set = FftsSyncConfig(2, 0);
+          cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
+        }
+      } else {
+        pre_entry |= V_ENTRY_FLAG_POST_BAR;
+        if (cur_entry & V_ENTRY_FLAG_MIX) {
+          auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + stage->code_offset + sizeof(uint64_t));
+          pre_entry |= V_ENTRY_FLAG_POST_SET;
+          pre_entry |= FftsSyncConfig(2, 0) << V_ENTRY_POST_SET_OFFSET;
+          cube->flags |= V_CUBE_FLAG_PRE_WAIT;
+          cube->pre_wait = 0ul;
+        }
+      }
+      *reinterpret_cast<uint64_t*>(pre_code) = pre_entry;
+    }
+    *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset) = cur_entry;
+    uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
+    uint64_t *old_base = reinterpret_cast<uint64_t*>(stage->kernel->GetCode()->data_ + ffts_size);
+    for (auto op :  stage->loads) {
+      op->reloc_addr_ = (op->reloc_addr_ - old_base) + new_base;
+    }
+    for (auto op :  stage->stores) {
+      op->reloc_addr_ = (op->reloc_addr_ - old_base) + new_base;
+    }
+    for (auto op : stage->stage_loads) {
+      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, op->store_->ws_offset_));
+    }
+    for (auto op : stage->stage_stores) {
+      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, op->ws_offset_));
+    }
+    if (stage->ws_offset >= 0) {
+      for (auto &reloc : stage->kernel->reloc_workspaces_) {
+        reloc_workspaces_.emplace_back(std::make_pair((reloc.first - old_base) + new_base, reloc.second + stage->ws_offset));
+      }
+    }
+  }
+  return ws_size;
+}
+
+void StagesKernel::DumpKernel(std::ostringstream &oss) {
+  oss << "vgraph.stages() {\n";
+  int stage_idx = 0;
+  for (auto &s : stages_) {
+    oss << "// stage " << stage_idx << std::endl;
+    stage_idx++;
+    s->kernel->DumpKernel(oss);
+    oss << std::endl;
+  }
+  oss << "}";
+}
+
 } // namespace dvm

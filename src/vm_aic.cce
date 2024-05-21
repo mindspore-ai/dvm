@@ -36,7 +36,7 @@ class MatMul {
     n0 = op->n0;
     k0 = op->k0;
     flags = op->flags;
-    post_set_flag = op->post_set_flag;
+    group_set = op->group_set;
     swizzle_dir = op->swizzle >> 16;
     swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
@@ -238,7 +238,7 @@ class MatMul {
   uint64_t swizzle_dir;
   uint64_t swizzle_cnt;
   uint32_t flags;
-  uint32_t post_set_flag;
+  uint32_t group_set;
 };
 
 template <typename M, typename T>
@@ -347,8 +347,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     }
     uint8_t unit_flag = 0b11;
     mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag);
-    if (mat.flags & V_CUBE_FLAG_POST_SET) {
-      ffts_cross_core_sync(PIPE_FIX, mat.post_set_flag);
+    if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+      ffts_cross_core_sync(PIPE_FIX, mat.group_set);
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
@@ -359,17 +359,39 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
 
 extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t entry) {
   set_ffts_base_addr(ffts_addr);
-  __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
-  __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
-  uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
-  switch (op->dtype) {
-    case vCubeOp::FP16:
-      CutMKN<MatMul<half>, half>(op, tile_num);
-      break;
-    case vCubeOp::BF16:
-      CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_num);
-      break;
-    default: break;
+  __gm__ uint64_t * body_addr = (__gm__ uint64_t*)(get_para_base()) + 2;
+STAGE_ENTRY:
+  if (entry & V_ENTRY_FLAG_MIX) {
+    __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
+    uint64_t flags = op->flags;
+    if (flags & V_CUBE_FLAG_PRE_WAIT) {
+      wait_flag_dev(op->pre_wait);
+    }
+    uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
+    switch (op->dtype) {
+      case vCubeOp::FP16:
+        CutMKN<MatMul<half>, half>(op, tile_num);
+        break;
+      case vCubeOp::BF16:
+        CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_num);
+        break;
+      default: break;
+    }
+    if (flags & V_CUBE_FLAG_POST_BAR) {
+      uint64_t mode = 0;
+      uint64_t flag_id = 15;
+      ffts_cross_core_sync(PIPE_FIX, 1 | mode << 4 | flag_id << 8);
+      wait_flag_dev(flag_id);
+    }
+    if (flags & V_CUBE_FLAG_POST_SET) {
+      ffts_cross_core_sync(PIPE_FIX, op->post_set);
+    }
+  }
+  if (entry & V_ENTRY_FLAG_NEXT_STAGE) {
+    __gm__ uint64_t *next_addr = body_addr + vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
+    entry = *next_addr;
+    body_addr = next_addr + 1;
+    goto STAGE_ENTRY;
   }
   pipe_barrier(PIPE_ALL);
 }

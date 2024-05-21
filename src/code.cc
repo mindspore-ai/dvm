@@ -819,7 +819,7 @@ void MixCode::DisAssemble(std::ostringstream &oss) {
   oss << " //";
   DumpVal("n0", op->n0, oss);
   if (target_ == kTargetMix) {
-    oss << "\n    { sync: mode=" << ((op->post_set_flag >> 4) & 0xful) << ", id=" << ((op->post_set_flag >> 8) & 0xful) << "}" << std::endl;
+    oss << "\n    { group_set: mode=" << ((op->group_set >> 4) & 0xful) << ", id=" << ((op->group_set >> 8) & 0xful) << "}" << std::endl;
   }
   oss << "  }" << std::endl;
   if (target_ == kTargetMix) {
@@ -835,6 +835,111 @@ void MixCode::DisAssemble(std::ostringstream &oss) {
     DasBody(oss, data_ + offset, data_size_ - offset, simd_width, "    ");
     oss << "  }" << std::endl;
   }
+  oss << "}";
+}
+
+void DasVecBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
+  DasBody(oss, bcode, bcode_size, simd_width, indent);
+}
+
+void DasFftsSet(std::ostringstream &oss, uint64_t set) {
+  oss <<"mode_" << ((set >> 4) & 0xful) << ", id_" << ((set >> 8) & 0xful);
+}
+
+void DasCubeBody(std::ostringstream &oss, vCubeOp *op, const std::string &indent) {
+  oss << indent << "MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
+       " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
+  oss << indent << "  {trans_a(" << bool(op->flags & V_CUBE_FLAG_TRANS_A) << "), trans_b("<<bool(op->flags & V_CUBE_FLAG_TRANS_B) << ")";
+  if (op->flags & V_CUBE_FLAG_GROUP_SET) {
+    oss << ", group_set(";
+    DasFftsSet(oss, op->group_set);
+    oss << ")";
+  }
+  if (op->flags & V_CUBE_FLAG_POST_SET) {
+    oss << ", post_set(";
+    DasFftsSet(oss, op->post_set);
+    oss << ")";
+  }
+  if (op->flags & V_CUBE_FLAG_PRE_WAIT) {
+    oss << ", pre_wait(" << op->pre_wait << ")";
+  }
+  if (op->flags & V_CUBE_FLAG_POST_BAR) {
+    oss << ", post_bar(1)";
+  }
+}
+
+void DasVec(std::ostringstream &oss, const std::string &prefix, uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+  oss << indent << prefix << "tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS)
+      << ", simd_width=" << vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+  if (entry & V_ENTRY_FLAG_MIX) {
+    oss <<", mix=1";
+  }
+  if (entry & V_ENTRY_FLAG_GROUP) {
+    oss <<", group=1";
+  }
+  if (entry & V_ENTRY_FLAG_PRE_WAIT) {
+    oss << ", pre_wait=" << vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET, V_ENTRY_PRE_WAIT_BITS);
+  }
+  if (entry & V_ENTRY_FLAG_POST_SET) {
+    oss << ", post_set=" << vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS);
+  }
+  if (entry & V_ENTRY_FLAG_POST_BAR) {
+    oss << ", post_bar=1";
+  }
+  oss << ") {" << std::endl;
+  auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+  DasVecBody(oss, bcode, bcode_size, simd_width, indent + "  ");
+  oss << std::endl << indent << "}";
+}
+
+void DasMix(std::ostringstream &oss, const std::string &prefix, uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+  oss << indent << prefix << "tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
+  if (entry & V_ENTRY_FLAG_MIX) {
+    oss <<", mix=1";
+  }
+  if (entry & V_ENTRY_FLAG_GROUP) {
+    oss <<", group=1";
+  }
+  oss << ") {" << std::endl;
+  vCubeOp *cube = reinterpret_cast<vCubeOp*>(bcode);
+  auto vec_size = bcode_size - sizeof(vCubeOp);
+  if (vec_size > 0) {
+    oss << indent << "  aic() {" << std::endl;
+    DasCubeBody(oss, cube, indent + "    ");
+    oss << std::endl << indent << "  }" << std::endl;
+    DasVec(oss, "aiv(", entry, bcode + sizeof(vCubeOp), vec_size, indent + "  ");
+  } else {
+    DasCubeBody(oss, cube, indent + "  ");
+  }
+  oss << std::endl << indent << "}";
+}
+
+void DasParallel(std::ostringstream &oss, const std::string &prefix, uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+  // TODO:
+}
+
+void StagedCode::DisAssemble(std::ostringstream &oss) {
+  void* ffts = *reinterpret_cast<void**>(data_);
+  oss << "vmain.stages(ffts=" << ffts<< ", block_dim=" << block_dim_  << ") {" << std::endl;
+  uint32_t offset = sizeof(uint64_t);
+  int stage_idx = 0;
+  uint64_t entry;
+  do {
+   entry = *reinterpret_cast<uint64_t*>(data_ + offset);
+   offset += sizeof(entry);
+   uint64_t bcode_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
+   oss << "  // stage " << stage_idx << std::endl;
+   stage_idx++;
+   if (entry & V_ENTRY_FLAG_MIX) {
+    DasMix(oss, "mix(", entry, data_ + offset, bcode_size, "  ");
+   } else if (entry & V_ENTRY_FLAG_PARALLEL) {
+    DasParallel(oss, "parallel(", entry, data_ + offset, bcode_size, "  ");
+   } else {
+    DasVec(oss, "aiv(", entry, data_ + offset, bcode_size, "  ");
+   }
+   offset += bcode_size;
+   oss << std::endl;
+  } while (entry & V_ENTRY_FLAG_NEXT_STAGE);
   oss << "}";
 }
 }  // namespace dvm

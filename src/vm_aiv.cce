@@ -1244,12 +1244,22 @@ __aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
   return base_addr + id;
 }
 
+__aicore_inline__ uint64_t vBlockIdx(uint64_t entry) {
+  return (entry & V_ENTRY_FLAG_GROUP) == 0 ? block_idx : block_idx * 2 + get_subblockid();
+}
+
+__aicore_inline__ uint64_t vBlockNum(uint64_t entry) {
+  return (entry & V_ENTRY_FLAG_GROUP) == 0 ? block_num : block_num * 2;
+}
+
 extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
   set_atomic_none();
   set_mask_norm();
   set_ffts_base_addr(ffts_addr);
   __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   uint64_t tile, tile_loops, simd_width;
+
+STAGE_ENTRY:
   if (entry & V_ENTRY_FLAG_MIX) {
     // vCubeOp + vec_code
     uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
@@ -1273,7 +1283,7 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
   } else if (entry & V_ENTRY_FLAG_PARALLEL) {
     // summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
     // summary = lenburst(6) << 58 | offset(9) << 49 | simdwidth(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
-    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(body_addr) + block_idx);
+    uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(body_addr) + vBlockIdx(entry));
     uint64_t offset = (summary >> (49 - 5)) & (0x1fful << 5);
     uint64_t lenburst = summary >> 58;
     copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + offset, 0, 1, lenburst, 0, 0);
@@ -1286,8 +1296,8 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
     uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
     copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
     uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
-    tile_loops = (tile_num + block_num - 1) / block_num;
-    uint64_t tile_start_idx = tile_loops * block_idx;
+    tile_loops = (tile_num - 1) / vBlockNum(entry) + 1;
+    uint64_t tile_start_idx = tile_loops * vBlockIdx(entry);
     simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
     tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | tile_start_idx << V_TILE_CUR_IDX_OFFSET;
     if (tile_start_idx + tile_loops >= tile_num) {
@@ -1296,8 +1306,8 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
     }
   }
   SetVectorMask(simd_width);
-// Note: vmain_mix_aiv should be the first function in this file(inline function is not included)
-// We need that fact to calculate the right offset of dispatch functions
+  // Note: vmain_mix_aiv should be the first function in this file(inline function is not included)
+  // We need that fact to calculate the right offset of dispatch functions
   uint8_t* main_addr = (uint8_t*)((get_pc() - VMAIN_OFFSET) & (~0xfff));
   pipe_barrier(PIPE_ALL);
 TILE_LOOP:
@@ -1305,9 +1315,9 @@ TILE_LOOP:
     wait_flag_dev(vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET,
                                V_ENTRY_PRE_WAIT_BITS));  // TODO: wait_flag_dev in Sload (only for cube ouput)
   }
-  while ((tile_loops & MASK_32) > 0) {
+  while (tile_loops << 32) {
     tile_loops--;
-    if ((tile_loops & MASK_32) == 0) {
+    if ((tile_loops << 32) == 0) {
       tile |= 1ul << V_TILE_END_FLAG_OFFSET;
     }
     const uint64_t ub_va_offset = 0x80000;
@@ -1365,6 +1375,12 @@ TILE_LOOP:
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }
+  if (entry & V_ENTRY_FLAG_POST_BAR) {
+    uint64_t mode = 0;
+    uint64_t flag_id = 15;
+    ffts_cross_core_sync(PIPE_MTE3, 1 | mode << 4 | flag_id << 8);
+    wait_flag_dev(flag_id);
+  }
   if (entry & V_ENTRY_FLAG_POST_SET) {
     ffts_cross_core_sync(PIPE_MTE3, vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS));
   }
@@ -1389,6 +1405,14 @@ TILE_LOOP:
       wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
       goto TILE_LOOP;
     }
+  }
+  if (entry & V_ENTRY_FLAG_NEXT_STAGE) {
+    __gm__ uint64_t *head_addr = reinterpret_cast<__gm__ uint64_t*>(body_addr)  + vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
+    entry = *head_addr;
+    body_addr = reinterpret_cast<__gm__ uint8_t*>(head_addr + 1);
+    set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+    wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+    goto STAGE_ENTRY;
   }
   pipe_barrier(PIPE_ALL);
 }

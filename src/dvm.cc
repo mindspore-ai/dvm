@@ -116,14 +116,20 @@ void Kernel::Reset(KernelType type) {
     kernel_ = new VKernelP();
   } else if (type == kStaticMix) {
     kernel_ = new MixKernel();
+  } else if (type == kStaticStages) {
+    kernel_ = new StagesKernel();
   } else {
     ASSERT(0);
   }
 }
 
 NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
+  auto ktype = kernel_->KType();
+  if (ktype == kStaticStages) {
+    ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
+  }
   NDObject *obj;
-  if (kernel_->KType() == kStaticMix) {
+  if (ktype == kStaticMix) {
     obj = new NDSLoad(static_cast<uint8_t *>(addr), shape, type);
   } else {
     obj = new NDLoad(static_cast<uint8_t *>(addr), shape, type);
@@ -297,8 +303,12 @@ NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keep
 }
 
 NDObject* Kernel::Store(void *addr, NDObject* input) {
+  auto ktype = kernel_->KType();
+  if (ktype == kStaticStages) {
+    ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
+  }
   NDObject *obj;
-  if (kernel_->KType() == kStaticMix) {
+  if (ktype == kStaticMix) {
     obj = new NDSStore(static_cast<uint8_t *>(addr), input);
   } else {
     obj = new NDStore(static_cast<uint8_t *>(addr), input);
@@ -323,13 +333,33 @@ void Kernel::Reserve(size_t size) {
 }
 
 int Kernel::ParallelNext() {
-  if (kernel_->KType() != KernelType::kStaticParallel) {
+  if (kernel_->KType() == KernelType::kStaticParallel) {
+    static_cast<VKernelP*>(kernel_)->AppendNext();
+  } else if (kernel_->KType() == KernelType::kStaticStages) {
+    static_cast<StagesKernel*>(kernel_)->ParallelSwitch();
+  } else {
     ASSERT(0);
-    return -1;
   }
-  auto p_kernel = static_cast<VKernelP*>(kernel_);
-  p_kernel->AppendNext();
   return 0;
+}
+
+void Kernel::StageSwitch(KernelType type) {
+  ASSERT(kernel_->KType() == KernelType::kStaticStages);
+  static_cast<StagesKernel*>(kernel_)->StageSwitch(type);
+}
+
+NDObject* Kernel::StageLoad(NDObject *stage_store) {
+  ASSERT(kernel_->KType() == KernelType::kStaticStages);
+  auto op = new NDStageLoad(static_cast<NDStageStore*>(stage_store));
+  static_cast<StagesKernel*>(kernel_)->AppendStageLoad(op);
+  return op;
+}
+
+NDObject* Kernel::StageStore(NDObject *input) {
+  ASSERT(kernel_->KType() == KernelType::kStaticStages);
+  auto op = new NDStageStore(input);
+  static_cast<StagesKernel*>(kernel_)->AppendStageStore(op);
+  return op;
 }
 
 ShapeRef* Kernel::GetShape(NDObject* op) const {

@@ -193,5 +193,9 @@ struct CodeP : public CodeBase {
 struct MixCode : public CodeBase {
   void DisAssemble(std::ostringstream &oss) override;
 };
+
+struct StagedCode : public CodeBase {
+  void DisAssemble(std::ostringstream &oss) override;
+};
 } // namespace dvm 
 #endif // _DVM_CODE_H_

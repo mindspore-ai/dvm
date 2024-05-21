@@ -98,11 +98,12 @@ class VKernel {
   std::string& DisAssemble();
   KernelType KType() const { return ktype_; }
 
+  std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
+
  protected:
   CodeBase* code_ptr_{nullptr};
   KernelType ktype_;
   std::string dump_str_;
-  std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
 };
 
 struct Metrics {
@@ -257,6 +258,62 @@ class MixKernel : public VKernel {
   VKernelS *pre_fusion_{nullptr};
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
+};
+
+class StagesKernel : public VKernel {
+ public:
+  StagesKernel() : VKernel(&code_, KernelType::kStaticStages) {}
+  ~StagesKernel() override;
+
+  void StageSwitch(KernelType type) {
+    VKernel *kernel = nullptr;
+    if (type == KernelType::kStaticShape) {
+      kernel = new VKernelS();
+    } else if (type == KernelType::kStaticMix) {
+      kernel = new MixKernel();
+    } else if (type == KernelType::kStaticParallel) {
+      kernel = new VKernelP();
+    } else {
+      ASSERT(0);
+    }
+    stages_.push_back(new Stage(kernel));
+  }
+
+  void ParallelSwitch() {
+    auto current = stages_.back()->kernel;
+    ASSERT(current->KType() != KernelType::kStaticParallel);
+    static_cast<VKernelP*>(current)->AppendNext();
+  }
+
+  void AppendStageStore(NDStageStore *store) {
+    stages_.back()->kernel->Append(store);
+    stages_.back()->stage_stores.push_back(store);
+  }
+
+  void AppendStageLoad(NDStageLoad *load) {
+    stages_.back()->kernel->Append(load);
+    stages_.back()->stage_loads.push_back(load);
+  }
+
+  VKernel* Current() const { return stages_.back()->kernel; }
+
+  void Append(NDObject *obj) override;
+  uint64_t CodeGen() override;
+  void DumpKernel(std::ostringstream &oss) override;
+
+ protected:
+  struct Stage {
+    Stage(VKernel *k) : kernel(k) {}
+    VKernel* kernel;
+    int64_t ws_offset{-1};
+    int64_t code_offset{-1};
+    std::vector<NDStageStore*> stage_stores;
+    std::vector<NDStageLoad*> stage_loads;
+    std::vector<NDLoad*> loads;
+    std::vector<NDStore*> stores;
+  };
+  std::vector<Stage*> stages_;
+  StagedCode code_;
 };
 } // namespace dvm
 #endif // _DVM_KERNEL_H_

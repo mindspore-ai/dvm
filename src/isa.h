@@ -877,7 +877,10 @@ struct vStoreStatus {
 
 #define V_CUBE_FLAG_TRANS_A  1
 #define V_CUBE_FLAG_TRANS_B  2
-#define V_CUBE_FLAG_POST_SET 4
+#define V_CUBE_FLAG_GROUP_SET 4
+#define V_CUBE_FLAG_PRE_WAIT  8
+#define V_CUBE_FLAG_POST_SET  16
+#define V_CUBE_FLAG_POST_BAR  32
 
 struct vCubeOp {
   enum {FP16, BF16};
@@ -890,7 +893,9 @@ struct vCubeOp {
   // swizzle_dir << 16 | swizzle_cnt
   uint32_t swizzle;
   uint32_t dtype;
-  uint32_t post_set_flag;
+  uint32_t post_set;
+  uint32_t pre_wait;
+  uint32_t group_set;
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;
@@ -947,12 +952,14 @@ struct vCubeOp {
 
 // [entry]
 // tilenum(20) << 44 | simd_width(8) << 36 | code_size_8B(12) << 24 | post_flag(12) << 12 | pre_flag(4) << 8 |
-// group(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
+// post_sync(1) << 6 | next_stage(1) << 5 | group(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
 #define V_ENTRY_FLAG_PRE_WAIT            1
 #define V_ENTRY_FLAG_POST_SET            2
 #define V_ENTRY_FLAG_PARALLEL            4
 #define V_ENTRY_FLAG_MIX                 8
 #define V_ENTRY_FLAG_GROUP               16
+#define V_ENTRY_FLAG_NEXT_STAGE          32
+#define V_ENTRY_FLAG_POST_BAR            64
 
 #define V_ENTRY_PRE_WAIT_OFFSET          8
 #define V_ENTRY_POST_SET_OFFSET          12

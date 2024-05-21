@@ -129,6 +129,30 @@ void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
+void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vSLoad op;
+  vSLoad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "sload " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  oss << " //";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << " //";
+  DumpVal("cube_m", op.slice_m, oss);
+  oss << " //";
+  DumpVal("cube_n", op.slice_n, oss);
+}
+
+void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vSStore op;
+  vSStore::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "sstore " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.gm) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << " //";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << " //";
+  DumpVal("cube_m", op.slice_m, oss);
+  oss << " //";
+  DumpVal("cube_n", op.slice_n, oss);
+}
+
 void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSliceLoad op;
   vSliceLoad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -370,6 +394,7 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_LOAD_2, &DumpLoad2},
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
+  {V_SLOAD, &DumpSLoad},
   {V_LOAD_NONE, &DumpLoadExit},
 };
 
@@ -378,6 +403,7 @@ std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE_2, &DumpStore2},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
   {V_STORE_STATUS, &DumpStoreStatus},
+  {V_SSTORE, &DumpSStore},
 };
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
@@ -784,8 +810,16 @@ void MixCode::DisAssemble(std::ostringstream &oss) {
   oss << "  aic() {" << std::endl;
   oss << "    MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
        " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
+  oss << "    ";
+  DumpVal("m", op->m, oss);
+  oss << " //";
+  DumpVal("n", op->n, oss);
+  oss << " //";
+  DumpVal("m0", op->m0, oss);
+  oss << " //";
+  DumpVal("n0", op->n0, oss);
   if (target_ == kTargetMix) {
-    oss << "    { sync: mode=" << ((op->post_set_flag >> 4) & 0xful) << ", id=" << ((op->post_set_flag >> 8) & 0xful) << "}" << std::endl;
+    oss << "\n    { sync: mode=" << ((op->post_set_flag >> 4) & 0xful) << ", id=" << ((op->post_set_flag >> 8) & 0xful) << "}" << std::endl;
   }
   oss << "  }" << std::endl;
   if (target_ == kTargetMix) {

@@ -236,6 +236,74 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   round_tile_.clear();
 }
 
+void NDSLoad::Tile(const TileParam &tp) {
+  if (tp.group_tile) {
+    ASSERT(tp.start == tp.end);
+    if (tp.start < 2) {
+      slice[tp.start] = tp.tile;
+    }
+  }
+  NDLoad::Tile(tp);
+}
+
+void NDSStore::Tile(const TileParam &tp) {
+  if (tp.group_tile) {
+    ASSERT(tp.start == tp.end);
+    if (tp.start < 2) {
+      slice[tp.start] = tp.tile;
+    }
+  }
+  NDStore::Tile(tp);
+}
+
+void NDSLoad::AlignProp(PropRange &range) {
+  range.depth = 1;
+}
+
+void NDSStore::AlignProp(PropRange &range) {
+  range.depth = 1;
+}
+
+void NDSLoad::FoldProp(PropRange &range) {
+  range.depth = shape_ref_->size - 1;
+}
+
+void NDSStore::FoldProp(PropRange &range) {
+  range.depth = shape_ref_->size - 1;
+}
+
+int NDSStore::Emit(Code &code) { // TODO: broadcast
+  uint64_t lead_align = LeadAlign();
+  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  vSStore op;
+  op.gm = dst_;
+  op.xn = lhs_->xbuf_;
+  op.tile_stride = src_tile_stride_;
+  op.pad_size = lead_align - nd_[lead_dim_];
+  op.slice_m = slice[1];
+  op.slice_n = slice[0];
+  op.src_n = shape_ref_->data[shape_ref_->size - 1];
+  op.type_size = ITEM_SIZE[type_id_];
+  reloc_addr_ = insn_ + vSStore::RELOC_OFFSET;
+  return vSStore::Encode(insn_, vStoreInsnID::V_SSTORE, op);;
+}
+
+int NDSLoad::Emit(Code &code) {
+  uint64_t lead_align = LeadAlign();
+  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  vSLoad op;
+  op.gm = src_;
+  op.xn = xbuf_;
+  op.tile_stride = src_tile_stride_;
+  op.pad_size = lead_align - nd_[lead_dim_];
+  op.slice_m = slice[1];
+  op.slice_n = slice[0];
+  op.src_n = shape_ref_->data[shape_ref_->size - 1];
+  op.type_size = ITEM_SIZE[type_id_];
+  reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
+  return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);
+}
+
 void NDSliceLoad::AlignProp(PropRange &range) {
   range.depth = 1;
 }

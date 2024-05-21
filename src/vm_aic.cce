@@ -216,39 +216,6 @@ class MatMul {
     );
   }
 
-  __force_inline__ __aicore__ void TileMap(uint32_t tile, int64_t &midx, int64_t &nidx) {
-    tile = tile % (m_loop * n_loop);
-    if (swizzle_dir == 0) {
-      uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
-      uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);
-      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * n_loop);
-
-      uint32_t n_row = swizzle_cnt;
-      if (tile_block_idx == tile_block_loop - 1) {
-          n_row = m_loop - swizzle_cnt * tile_block_idx;
-      }
-      midx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
-      nidx = in_tile_block_idx / n_row;
-      if (tile_block_idx % 2 != 0) {
-          nidx = n_loop - nidx - 1;
-      }
-    } else {
-      uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
-      uint32_t tile_block_idx = tile / (swizzle_cnt * m_loop);
-      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * m_loop);
-
-      uint32_t n_col = swizzle_cnt;
-      if (tile_block_idx == tile_block_loop - 1) {
-          n_col = n_loop - swizzle_cnt * tile_block_idx;
-      }
-      midx = in_tile_block_idx / n_col;
-      nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
-      if (tile_block_idx % 2 != 0) {
-          midx = m_loop - midx - 1;
-      }
-    }
-  }
-
   // Compute global memory offset of matrix A and B based on batch idx of matrix C
   __force_inline__ __aicore__ void ComputeOffset(uint64_t c_idx, uint64_t &offset_a, uint64_t &offset_b) {
     uint64_t c_idx0 = c_idx / batch_c1;
@@ -308,7 +275,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint64_t offset_a, offset_b;
     mat.ComputeOffset(c_idx, offset_a, offset_b);
     int64_t midx, nidx;
-    mat.TileMap(tile, midx, nidx);
+    vCubeOp::TileMap(tile, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, midx, nidx);
     if (tile == block_idx) {
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
@@ -332,7 +299,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         int64_t c_idx_n = (tile + block_num) / (mat.m_loop * mat.n_loop);
         mat.ComputeOffset(c_idx_n, offset_a, offset_b);
         int64_t n_midx, n_nidx;
-        mat.TileMap(tile + block_num, n_midx, n_nidx);
+        vCubeOp::TileMap(tile + block_num, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, n_midx, n_nidx);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         mat.LoadA(n_l1a, gm_a + offset_a, n_midx, 0);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);

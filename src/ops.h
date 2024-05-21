@@ -155,6 +155,19 @@ class NDLoad : public NDObject {
   std::vector<int64_t> round_tile_;
 };
 
+class NDSLoad : public NDLoad {
+ public:
+  using NDLoad::NDLoad;
+
+  int Emit(Code &code) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+  void Tile(const TileParam &tp) override;
+
+private:
+  uint64_t slice[2];
+};
+
 class NDSliceLoad : public NDLoad {
  public:
   NDSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
@@ -220,6 +233,19 @@ class NDStore : public NDObject {
   int tail_size_{0};
   NDStore *clear_store_{nullptr};
   VKernel *clear_kernel_{nullptr};
+};
+
+
+class NDSStore : public NDStore{
+ public:
+  using NDStore::NDStore;
+  int Emit(Code &code) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+  void Tile(const TileParam &tp) override;
+
+private:
+  uint64_t slice[2];
 };
 
 class CopyOp : public NDObject {

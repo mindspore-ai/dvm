@@ -1570,7 +1570,7 @@ void MixKernel::Append(NDObject *obj) {
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (cube_op_->output_ == nullptr) {
-          cube_op_->output_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          cube_op_->output_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
           post_fusion_->Append(cube_op_->output_);
         }
         op = cube_op_->output_;
@@ -1605,7 +1605,9 @@ uint64_t MixKernel::CodeGen() {
     auto n = cube_op_->output_->nd_[0];
     post_fusion_->root_dom_.Tile(1, 1, m, m / cube_code.m0, true);
     post_fusion_->root_dom_.Tile(0, 0, n, n / cube_code.n0, true);
-    std::cout << "\nbefore sub codegen:\n" <<post_fusion_->DumpGraph() << std::endl;
+    for (size_t i = 2; i < cube_op_->output_->nd_.size(); i++) {
+      post_fusion_->root_dom_.Tile(i, i, cube_op_->output_->nd_[i], cube_op_->output_->nd_[i], true);
+    }
     post_fusion_->NormalizeDomain();
     post_fusion_->DoCodeGen(2);
     size += post_fusion_->code_.data_size_;
@@ -1656,7 +1658,7 @@ uint64_t MixKernel::UpdateReloc() {
     reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
     reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
     for (auto op :  post_fusion_->objects_) {
-      if (op->obj_id_ == kLoad) {
+      if (op->obj_id_ == kLoad) { // TODO: is not cube output
         auto load = static_cast<NDLoad*>(op);
         load->reloc_addr_ = new_base + (load->reloc_addr_ - old_base);
       } else if (op->obj_id_ == kStore) {

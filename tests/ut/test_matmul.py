@@ -42,15 +42,24 @@ def test_batchmatmul(shape_a, shape_b):
 
 @pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
-def test_matmul_post_fusion():
-    # TODO: add check
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[4, 1, 256, 256], [1, 8, 256, 256]],
+    [[16, 2048, 1024], [16, 1024, 512]],
+    [[2048, 1024], [1024, 5120]],
+    [[768, 1024], [1024, 10240]],
+])
+def test_matmul_post_fusion(shape_a, shape_b):
     t = Tester("mix")
-    ax = np.full([1024, 128], 0.05, np.float16)
-    bx = np.full([128, 512], 0.01, np.float16)
+    ax = np.random.normal(0, 1, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 1, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
+    zx = np.random.normal(0, 1, np_c.shape).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)
     c = t.matmul(a, b, False, False)
-    c = t.binary("Add", c, 1.0)
-    c = t.unary("Sqrt", c)
-    o = t.store(c)
+    z = t.load(zx)
+    d = t.binary("Add", c, z)
+    e = t.unary("Abs", d)
+    expect = np.abs(np_c + zx)
+    t.store_expect(e, expect.astype(np.float16), 2e-3)
     assert (t.run_check())

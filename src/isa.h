@@ -48,6 +48,7 @@ enum vLoadInsnID {
   V_LOAD_2,
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
+  V_SLOAD,
   V_LOAD_NONE,
 };
 
@@ -56,6 +57,7 @@ enum vStoreInsnID {
   V_STORE_2,
   V_STORE_ATOMIC,
   V_STORE_STATUS,
+  V_SSTORE,
   V_STORE_NONE,
 };
 
@@ -654,6 +656,80 @@ struct vDMA {
   }
 };
 
+struct vSLoad {
+  enum { RELOC_OFFSET = 1 };
+  __gm__ uint8_t *gm;
+  uint64_t xn;
+  uint64_t tile_stride;
+  uint64_t src_n;
+  uint64_t slice_n;
+  uint64_t slice_m;
+  uint64_t pad_size;
+  uint64_t type_size;
+  // pc[0]: xn(18)
+  // pc[1]: src
+  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
+  // pc[2]: tile_stride(32) << 32 | type_size(8)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSLoad &op) {
+    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
+    uint64_t data = pc[2];
+    op.src_n = (data >> 16) & 0xfffful;
+    op.slice_m = (data >> 32) & 0xfffful;
+    op.slice_n = (data >> 48) & 0xfffful;
+    op.pad_size = data & 0xfffful;
+    data = pc[3];
+    op.tile_stride = (data >> 32) & 0xfffffffful;
+    op.type_size = data & 0xfful;
+  }
+
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSLoad &op) {
+    uint64_t size = 4;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
+    pc[1] = reinterpret_cast<uint64_t>(op.gm);
+    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
+    pc[3] = op.tile_stride << 32 | op.type_size;
+    return size;
+  }
+};
+
+struct vSStore {
+  enum { RELOC_OFFSET = 1 };
+  __gm__ uint8_t *gm;
+  uint64_t xn;
+  uint64_t tile_stride;
+  uint64_t src_n;
+  uint64_t slice_n;
+  uint64_t slice_m;
+  uint64_t pad_size;
+  uint64_t type_size;
+  // pc[0]: xn(18)
+  // pc[1]: dst
+  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
+  // pc[2]: tile_stride(32) << 32 | type_size(8)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSStore &op) {
+    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
+    uint64_t data = pc[2];
+    op.src_n = (data >> 16) & 0xfffful;
+    op.slice_m = (data >> 32) & 0xfffful;
+    op.slice_n = (data >> 48) & 0xfffful;
+    op.pad_size = data & 0xfffful;
+    data = pc[3];
+    op.tile_stride = (data >> 32) & 0xfffffffful;
+    op.type_size = data & 0xfful;
+  }
+
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSStore &op) {
+    uint64_t size = 4;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_STORE);
+    pc[1] = reinterpret_cast<uint64_t>(op.gm);
+    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
+    pc[3] = op.tile_stride << 32 | op.type_size;
+    return size;
+  }
+};
+
 struct vSliceLoad {
   enum { RELOC_OFFSET = 1 };
   __gm__ uint8_t *gm;
@@ -820,6 +896,53 @@ struct vCubeOp {
   uint64_t gm_c;
   // for aiv
   uint64_t subtilenum; // subblockid1 << 32 | subblockid0
+
+  __aicore_inline__ uint64_t GetCubeOffset(__gm__ vCubeOp *__restrict__ op, uint32_t block_tile) {
+    int64_t start_m, start_n;
+    uint64_t swizzle_dir = op->swizzle >> 16;
+    uint64_t swizzle_cnt = op->swizzle & 0xffff;
+    uint64_t m_loop = (op->m + op->m0 - 1) / op->m0;
+    uint64_t n_loop = (op->n + op->n0 - 1) / op->n0;
+    TileMap(block_tile, m_loop, n_loop, swizzle_dir, swizzle_cnt, start_m, start_n);
+    start_m *= op->m0;
+    start_n *= op->n0;
+    uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n * op->m;
+    return start_m * op->n + start_n + batch_offset;
+  }
+
+  __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,
+                                        uint64_t swizzle_cnt, int64_t &midx, int64_t &nidx) {
+    tile = tile % (m_loop * n_loop);
+    if (swizzle_dir == 0) {
+      uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
+      uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);
+      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * n_loop);
+
+      uint32_t n_row = swizzle_cnt;
+      if (tile_block_idx == tile_block_loop - 1) {
+        n_row = m_loop - swizzle_cnt * tile_block_idx;
+      }
+      midx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
+      nidx = in_tile_block_idx / n_row;
+      if (tile_block_idx % 2 != 0) {
+        nidx = n_loop - nidx - 1;
+      }
+    } else {
+      uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
+      uint32_t tile_block_idx = tile / (swizzle_cnt * m_loop);
+      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * m_loop);
+
+      uint32_t n_col = swizzle_cnt;
+      if (tile_block_idx == tile_block_loop - 1) {
+        n_col = n_loop - swizzle_cnt * tile_block_idx;
+      }
+      midx = in_tile_block_idx / n_col;
+      nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
+      if (tile_block_idx % 2 != 0) {
+        midx = m_loop - midx - 1;
+      }
+    }
+  }
 };
 
 // [entry]

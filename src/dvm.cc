@@ -121,8 +121,13 @@ void Kernel::Reset(KernelType type) {
   }
 }
 
-NDObject* Kernel::Load(void *addr, ShapeRef *shape, DType type) {
-  auto obj = new NDLoad(static_cast<uint8_t*>(addr), shape, type);
+NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
+  NDObject *obj;
+  if (kernel_->KType() == kStaticMix) {
+    obj = new NDSLoad(static_cast<uint8_t *>(addr), shape, type);
+  } else {
+    obj = new NDLoad(static_cast<uint8_t *>(addr), shape, type);
+  }
   kernel_->Append(obj);
   return obj;
 }
@@ -292,7 +297,12 @@ NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keep
 }
 
 NDObject* Kernel::Store(void *addr, NDObject* input) {
-  auto obj = new NDStore(static_cast<uint8_t*>(addr), input);
+  NDObject *obj;
+  if (kernel_->KType() == kStaticMix) {
+    obj = new NDSStore(static_cast<uint8_t *>(addr), input);
+  } else {
+    obj = new NDStore(static_cast<uint8_t *>(addr), input);
+  }
   kernel_->Append(obj);
   return obj;
 }

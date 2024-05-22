@@ -118,10 +118,6 @@ struct Code {
     if (data_)
       std::free(data_);
   }
-  bool IsParallel() const {
-    uint64_t* head = reinterpret_cast<uint64_t*>(data_);
-    return (*head) >> 63;
-  }
   void Alloc(size_t s) {
     if (data_) {
       data_ = static_cast<unsigned char *>(std::realloc(data_, s));
@@ -135,6 +131,10 @@ struct Code {
     head[1] = tile_num << V_ENTRY_TILE_NUM_OFFSET | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET |
              (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET | flags;
   }
+  void UpdateParallelHead() {
+    UpdateHead(0, block_dim_, V_ENTRY_FLAG_PARALLEL);
+  }
+
   uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry
 
   int Launch(void* stream) {

@@ -78,7 +78,7 @@ class VKernel {
 
   virtual void Append(NDObject *obj) = 0;
   virtual uint64_t CodeGen() = 0;
-  virtual void DumpKernel(std::ostringstream &oss) = 0;
+  virtual void DumpKernel(std::ostringstream &oss, const std::string &indent) = 0;
 
   inline void RelocWorkspace(void *workspace) {
     if (workspace) {
@@ -90,7 +90,7 @@ class VKernel {
 
   std::string& DumpGraph() {
     std::ostringstream oss;
-    DumpKernel(oss);
+    DumpKernel(oss, "");
     dump_str_ = oss.str();
     return dump_str_;
   }
@@ -118,7 +118,7 @@ class VKernelBase : public VKernel {
   VKernelBase(KernelType ktype) : VKernel(ktype) {}
   virtual ~VKernelBase();
 
-  void DumpKernel(std::ostringstream &oss) override;
+  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
   void CollectMetrics(Metrics &metrics) const;
 
   void Reserve(size_t size) {
@@ -209,7 +209,7 @@ class VKernelP : public VKernel {
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss) override;
+  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
   void LinkAll(std::vector<uint64_t> &offsets);
@@ -250,7 +250,7 @@ class MixKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss) override;
+  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
   uint64_t UpdateReloc();
@@ -299,7 +299,7 @@ class StagesKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss) override;
+  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
   struct Stage {

@@ -73,12 +73,12 @@ class Tester(Kernel):
             print("******* before tiling *******")
             print(self.dump())
         self.codegen()
+        Kernel.run(self)
         if verbose:
             print("******* after tiling *******")
             print(self.dump())
             print("********* bytecode *********")
             print(self.das())
-        Kernel.run(self)
 
     def check(self, store, expect, eps=None, verbose=False):
         def _print_result_diff(out, expect, eps):

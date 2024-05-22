@@ -858,7 +858,7 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
   helper.Generate();
 }
 
-void VKernelBase::DumpKernel(std::ostringstream &oss) {
+void VKernelBase::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   static const char* obj_names[ObjectType::kObjectBulk] = {
     "LoadDummy",
     "Load",
@@ -898,10 +898,11 @@ void VKernelBase::DumpKernel(std::ostringstream &oss) {
     }
     oss << "]<" << dtype_names[op->type_id_] << ">";
   };
-  oss << "vgraph(tile_num=" << tile_num_ << ", simd_width="<<code_.simd_width_ << ") {" << std::endl;
+  oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width="<<code_.simd_width_ << ") {" << std::endl;
+  std::string body_indent = indent + "  ";
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
-    oss << "  ";
+    oss << body_indent;
     dump_op(op);
     oss << " = " << obj_names[op->GetObjectType()] << "(";
     if (op->GetObjectType() == kSelect) {
@@ -932,7 +933,7 @@ void VKernelBase::DumpKernel(std::ostringstream &oss) {
     }
     oss << "]" << std::endl;
   }
-  oss << "}";
+  oss << indent << "}";
 }
 
 void VKernelBase::CollectMetrics(Metrics &metrics) const {
@@ -1349,16 +1350,17 @@ void VKernelP::LinkAll(std::vector<uint64_t> &offsets) {
       }
     }
   }
-  code_.UpdateHead(0, code_.block_dim_, V_ENTRY_FLAG_PARALLEL);
+  code_.UpdateParallelHead();
 }
 
-void VKernelP::DumpKernel(std::ostringstream &oss) {
-  oss << "vgraph.parallel() {" << std::endl;
+void VKernelP::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+  oss << indent << "vgraph.parallel() {" << std::endl;
+  std::string body_indent = indent + "  ";
   for (auto k : children_) {
-    k->DumpKernel(oss);
+    k->DumpKernel(oss, body_indent);
     oss << std::endl;
   }
-  oss << "}";
+  oss << indent << "}";
 }
 
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
@@ -1715,7 +1717,7 @@ uint64_t MixKernel::UpdateReloc() {
   return workspace;
 }
 
-void MixKernel::DumpKernel(std::ostringstream &oss) {
+void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   auto dump_nd = [&oss](const std::vector<int64_t> &nd) {
     oss << "[";
     if (!nd.empty()) {
@@ -1726,13 +1728,15 @@ void MixKernel::DumpKernel(std::ostringstream &oss) {
     }
     oss << "]";
   };
-  oss << "vgraph.mix() {\n";
+  oss << indent << "vgraph.mix() {\n";
+  std::string body_indent = indent + "  ";
   if (pre_fusion_) {
-    oss << "// pre_fusion" << std::endl;
-    pre_fusion_->DumpKernel(oss);
+    oss << body_indent << "// pre_fusion" << std::endl;
+    pre_fusion_->DumpKernel(oss, body_indent);
     oss << std::endl;
   }
-  oss << "// cube\n%" << cube_op_->output_->index_;
+  oss << body_indent << "// cube" << std::endl;
+  oss << body_indent << "%" << cube_op_->output_->index_;
   dump_nd(cube_op_->output_->nd_);
   oss << " = MatMul(%" << cube_op_->lhs_->index_;
   dump_nd(cube_op_->lhs_->nd_);
@@ -1740,11 +1744,11 @@ void MixKernel::DumpKernel(std::ostringstream &oss) {
   dump_nd(cube_op_->rhs_->nd_);
   oss << ")\n";
   if (post_fusion_) {
-    oss << "// post_fusion" << std::endl;
-    post_fusion_->DumpKernel(oss);
+    oss << body_indent << "// post_fusion" << std::endl;
+    post_fusion_->DumpKernel(oss, body_indent);
     oss << std::endl;
   }
-  oss << "}";
+  oss << indent << "}";
 }
 
 StagesKernel::~StagesKernel() {
@@ -1854,16 +1858,17 @@ uint64_t StagesKernel::CodeGen() {
   return ws_size;
 }
 
-void StagesKernel::DumpKernel(std::ostringstream &oss) {
-  oss << "vgraph.stages() {\n";
+void StagesKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+  oss << indent << "vgraph.stages() {\n";
   int stage_idx = 0;
+  std::string body_indent = indent + "  ";
   for (auto &s : stages_) {
-    oss << "// stage " << stage_idx << std::endl;
+    oss << body_indent << "// stage " << stage_idx << std::endl;
     stage_idx++;
-    s->kernel->DumpKernel(oss);
+    s->kernel->DumpKernel(oss, body_indent);
     oss << std::endl;
   }
-  oss << "}";
+  oss << indent << "}";
 }
 
 } // namespace dvm

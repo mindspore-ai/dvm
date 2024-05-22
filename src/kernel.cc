@@ -1662,7 +1662,6 @@ uint64_t MixKernel::CodeGen() {
     uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
     cube_code.subtilenum = subtile_1 << 32 | subtile_0;
     cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
-    cube_code.group_set = FftsSyncConfig(2, post_fusion_id);
     head_flags |= V_ENTRY_FLAG_PRE_WAIT;
     head_simd = post_fusion_->code_.simd_width_;
   }

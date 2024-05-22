@@ -36,7 +36,6 @@ class MatMul {
     n0 = op->n0;
     k0 = op->k0;
     flags = op->flags;
-    group_set = op->group_set;
     swizzle_dir = op->swizzle >> 16;
     swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
@@ -238,7 +237,6 @@ class MatMul {
   uint64_t swizzle_dir;
   uint64_t swizzle_cnt;
   uint32_t flags;
-  uint32_t group_set;
 };
 
 template <typename M, typename T>
@@ -348,7 +346,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint8_t unit_flag = 0b11;
     mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag);
     if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
-      ffts_cross_core_sync(PIPE_FIX, mat.group_set);
+      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
@@ -365,7 +363,7 @@ STAGE_ENTRY:
     __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
     uint64_t flags = op->flags;
     if (flags & V_CUBE_FLAG_PRE_WAIT) {
-      wait_flag_dev(op->pre_wait);
+      wait_flag_dev(1);
     }
     uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
     switch (op->dtype) {
@@ -378,13 +376,11 @@ STAGE_ENTRY:
       default: break;
     }
     if (flags & V_CUBE_FLAG_POST_BAR) {
-      uint64_t mode = 0;
-      uint64_t flag_id = 15;
-      ffts_cross_core_sync(PIPE_FIX, 1 | mode << 4 | flag_id << 8);
-      wait_flag_dev(flag_id);
+      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(0, 0));
+      wait_flag_dev(0);
     }
     if (flags & V_CUBE_FLAG_POST_SET) {
-      ffts_cross_core_sync(PIPE_FIX, op->post_set);
+      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
     }
   }
   if (entry & V_ENTRY_FLAG_NEXT_STAGE) {

@@ -1312,8 +1312,7 @@ STAGE_ENTRY:
   pipe_barrier(PIPE_ALL);
 TILE_LOOP:
   if (entry & V_ENTRY_FLAG_PRE_WAIT) {
-    wait_flag_dev(vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET,
-                               V_ENTRY_PRE_WAIT_BITS));  // TODO: wait_flag_dev in Sload (only for cube ouput)
+    wait_flag_dev(0);  // TODO: wait_flag_dev in Sload (only for cube ouput)
   }
   while (tile_loops << 32) {
     tile_loops--;
@@ -1376,13 +1375,11 @@ TILE_LOOP:
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }
   if (entry & V_ENTRY_FLAG_POST_BAR) {
-    uint64_t mode = 0;
-    uint64_t flag_id = 15;
-    ffts_cross_core_sync(PIPE_MTE3, 1 | mode << 4 | flag_id << 8);
-    wait_flag_dev(flag_id);
+    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+    wait_flag_dev(0);
   }
   if (entry & V_ENTRY_FLAG_POST_SET) {
-    ffts_cross_core_sync(PIPE_MTE3, vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS));
+    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(2, 1));
   }
   if (entry & V_ENTRY_FLAG_MIX) {
     tile_loops += block_num << 32;

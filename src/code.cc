@@ -750,7 +750,7 @@ void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
       }
     }
   }
-  UpdateHead(0, 0, V_ENTRY_FLAG_PARALLEL, 0, 0);
+  UpdateHead(0, 0, V_ENTRY_FLAG_PARALLEL);
 }
 
 void CodeP::DisAssemble(std::ostringstream &oss) {
@@ -819,7 +819,7 @@ void MixCode::DisAssemble(std::ostringstream &oss) {
   oss << " //";
   DumpVal("n0", op->n0, oss);
   if (target_ == kTargetMix) {
-    oss << "\n    { group_set: mode=" << ((op->group_set >> 4) & 0xful) << ", id=" << ((op->group_set >> 8) & 0xful) << "}" << std::endl;
+    oss << "\n    { group_set=" << bool(op->flags & V_CUBE_FLAG_GROUP_SET) << "}" << std::endl;
   }
   oss << "  }" << std::endl;
   if (target_ == kTargetMix) {
@@ -827,8 +827,7 @@ void MixCode::DisAssemble(std::ostringstream &oss) {
     oss << "  aiv(sub_tile_num=[" << (op->subtilenum & 0xfffffffful) << ", "<< (op->subtilenum >> 32) <<
       "], simd_width=" << simd_width;
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
-      auto pre_wait = vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET, V_ENTRY_PRE_WAIT_BITS);
-      oss << ", pre_wait=" << pre_wait;
+      oss << ", pre_wait=1";
     }
     oss << ") {" << std::endl;
     uint64_t offset = HeadSize() + sizeof(vCubeOp);
@@ -851,17 +850,13 @@ void DasCubeBody(std::ostringstream &oss, vCubeOp *op, const std::string &indent
        " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
   oss << indent << "  {trans_a(" << bool(op->flags & V_CUBE_FLAG_TRANS_A) << "), trans_b("<<bool(op->flags & V_CUBE_FLAG_TRANS_B) << ")";
   if (op->flags & V_CUBE_FLAG_GROUP_SET) {
-    oss << ", group_set(";
-    DasFftsSet(oss, op->group_set);
-    oss << ")";
+    oss << ", group_set(1)";
   }
   if (op->flags & V_CUBE_FLAG_POST_SET) {
-    oss << ", post_set(";
-    DasFftsSet(oss, op->post_set);
-    oss << ")";
+    oss << ", post_set(1)";
   }
   if (op->flags & V_CUBE_FLAG_PRE_WAIT) {
-    oss << ", pre_wait(" << op->pre_wait << ")";
+    oss << ", pre_wait(1)";
   }
   if (op->flags & V_CUBE_FLAG_POST_BAR) {
     oss << ", post_bar(1)";
@@ -878,10 +873,10 @@ void DasVec(std::ostringstream &oss, const std::string &prefix, uint64_t entry, 
     oss <<", group=1";
   }
   if (entry & V_ENTRY_FLAG_PRE_WAIT) {
-    oss << ", pre_wait=" << vGetBitRange(entry, V_ENTRY_PRE_WAIT_OFFSET, V_ENTRY_PRE_WAIT_BITS);
+    oss << ", pre_wait=1";
   }
   if (entry & V_ENTRY_FLAG_POST_SET) {
-    oss << ", post_set=" << vGetBitRange(entry, V_ENTRY_POST_SET_OFFSET, V_ENTRY_POST_SET_BITS);
+    oss << ", post_set=1";
   }
   if (entry & V_ENTRY_FLAG_POST_BAR) {
     oss << ", post_bar=1";

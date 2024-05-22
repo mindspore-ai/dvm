@@ -46,10 +46,6 @@ inline __attribute__((always_inline)) uint32_t RoundDown(uint32_t num, uint32_t 
   return num / rnd * rnd;
 }
 
-inline __attribute__((always_inline)) uint64_t FftsSyncConfig(uint64_t mode, uint64_t event_id) {
-  return 1ul | mode << 4 | event_id << 8;
-}
-
 class CodeGenHelper {
  public:
   enum CodeGenType {
@@ -175,7 +171,7 @@ class CodeGenHelper {
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
       OverWriteCoreLimit();
     }
-    code.UpdateHead(code.tile_num_, code.simd_width_, 0, 0, 0);
+    code.UpdateHead(code.tile_num_, code.simd_width_, 0);
     return true;
   }
 
@@ -1599,7 +1595,6 @@ uint64_t MixKernel::CodeGen() {
   cube_op_->CodeGen(&cube_code);
   code_.block_dim_ = cube_op_->block_dim_;
   cube_code.subtilenum = 0;
-  uint64_t post_fusion_id = 0;
   uint64_t head_flags = V_ENTRY_FLAG_MIX;
   uint64_t head_simd = 0;
   if (post_fusion_) {
@@ -1627,7 +1622,7 @@ uint64_t MixKernel::CodeGen() {
   code_.target_ = pre_fusion_ || post_fusion_ ? CodeBase::kTargetMix : CodeBase::kTargetCube;
   code_.data_size_ = size;
   code_.Alloc(size);
-  code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags, post_fusion_id, 0);
+  code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
   uint64_t offset = code_.HeadSize();
   std::memcpy(code_.data_ + offset, &cube_code, sizeof(vCubeOp));
   offset += sizeof(vCubeOp);
@@ -1777,7 +1772,6 @@ uint64_t StagesKernel::CodeGen() {
         cube->flags |= V_CUBE_FLAG_POST_BAR;
         if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
           cube->flags |= V_CUBE_FLAG_POST_SET;
-          cube->post_set = FftsSyncConfig(2, 0);
           cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
         }
       } else {
@@ -1785,9 +1779,7 @@ uint64_t StagesKernel::CodeGen() {
         if (cur_entry & V_ENTRY_FLAG_MIX) {
           auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + stage->code_offset + sizeof(uint64_t));
           pre_entry |= V_ENTRY_FLAG_POST_SET;
-          pre_entry |= FftsSyncConfig(2, 0) << V_ENTRY_POST_SET_OFFSET;
           cube->flags |= V_CUBE_FLAG_PRE_WAIT;
-          cube->pre_wait = 0ul;
         }
       }
       *reinterpret_cast<uint64_t*>(pre_code) = pre_entry;

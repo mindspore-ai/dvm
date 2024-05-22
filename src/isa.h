@@ -893,9 +893,7 @@ struct vCubeOp {
   // swizzle_dir << 16 | swizzle_cnt
   uint32_t swizzle;
   uint32_t dtype;
-  uint32_t post_set;
-  uint32_t pre_wait;
-  uint32_t group_set;
+  uint32_t reserved;
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;
@@ -951,7 +949,7 @@ struct vCubeOp {
 };
 
 // [entry]
-// tilenum(20) << 44 | simd_width(8) << 36 | code_size_8B(12) << 24 | post_flag(12) << 12 | pre_flag(4) << 8 |
+// tilenum(20) << 44 | simd_width(8) << 36 | code_size_8B(12) << 24 |
 // post_sync(1) << 6 | next_stage(1) << 5 | group(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
 #define V_ENTRY_FLAG_PRE_WAIT            1
 #define V_ENTRY_FLAG_POST_SET            2
@@ -961,16 +959,15 @@ struct vCubeOp {
 #define V_ENTRY_FLAG_NEXT_STAGE          32
 #define V_ENTRY_FLAG_POST_BAR            64
 
-#define V_ENTRY_PRE_WAIT_OFFSET          8
-#define V_ENTRY_POST_SET_OFFSET          12
 #define V_ENTRY_CODE_SIZE_OFFSET         24
 #define V_ENTRY_SIMD_WIDTH_OFFSET        36
 #define V_ENTRY_TILE_NUM_OFFSET          44
 
-#define V_ENTRY_PRE_WAIT_BITS            4
-#define V_ENTRY_POST_SET_BITS            12
 #define V_ENTRY_CODE_SIZE_BITS           12
 #define V_ENTRY_SIMD_WIDTH_BITS          8
 #define V_ENTRY_TILE_NUM_BITS            20
 
+__aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) {
+  return 1ul | mode << 4 | event_id << 8;
+}
 #endif // _DVM_ISA_H_

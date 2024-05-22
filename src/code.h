@@ -129,12 +129,11 @@ struct CodeBase {
       data_ = static_cast<unsigned char *>(std::malloc(s));
     }
   }
-  void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags, uint64_t pre_wait, uint64_t post_set) {
+  void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags) {
     uint64_t *head = reinterpret_cast<uint64_t*>(data_);
     head[0] = 0;
     head[1] = tile_num << V_ENTRY_TILE_NUM_OFFSET | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET |
-             (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET |
-             pre_wait << V_ENTRY_PRE_WAIT_OFFSET | post_set << V_ENTRY_POST_SET_OFFSET | flags;
+             (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET | flags;
   }
   uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry
 

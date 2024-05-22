@@ -171,7 +171,7 @@ class CodeGenHelper {
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
       OverWriteCoreLimit();
     }
-    code.UpdateHead(code.tile_num_, code.simd_width_, 0);
+    code.UpdateHead(kernel_->tile_num_, code.simd_width_, 0);
     return true;
   }
 
@@ -239,7 +239,11 @@ class CodeGenHelper {
       // producer node for Store
       uint64_t size = op->strides_.back() / op->LeadAlign() * op->nd_[op->lead_dim_] * ITEM_SIZE[op->type_id_];
       if (size < SIMD_BLOCK_SIZE) {
-        kernel_->code_.ApplyTileLimit(CeilDiv(SIMD_BLOCK_SIZE, size));
+        // TODO: optimize me
+        auto core_tile_least = CeilDiv(SIMD_BLOCK_SIZE, size);
+        while (kernel_->code_.block_dim_ > 1 && core_tile_least * kernel_->code_.block_dim_ > kernel_->tile_num_) {
+          kernel_->code_.block_dim_--;
+        }
       }
     }
   }
@@ -795,7 +799,7 @@ class ShapeTiling {
 
 std::string& VKernel::DisAssemble() {
   std::ostringstream oss;
-  code_ptr_->DisAssemble(oss);
+  code_.DisAssemble(oss);
   dump_str_ = oss.str();
   return dump_str_;
 }
@@ -824,9 +828,10 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
       root_dom_.Tile(t.start, t.end, space, t.num);
     }
   }
-  code_.Reset();
-  code_.tile_num_ = root_dom_.TileNum();
-  code_.UpdateBlockDim(core_limit);
+  code_.atomic_clean_.clear();
+  tile_num_ = root_dom_.TileNum();
+  auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
+  code_.block_dim_ = (tile_num_ + tile_per_block - 1) / tile_per_block;
   // simd_width
   int64_t lead_dim = root_dom_.DimSpace().front();
   int64_t block_sw = BlockAlign();
@@ -893,7 +898,7 @@ void VKernelBase::DumpKernel(std::ostringstream &oss) {
     }
     oss << "]<" << dtype_names[op->type_id_] << ">";
   };
-  oss << "vgraph(tile_num=" << code_.tile_num_ << ", simd_width="<<code_.simd_width_ << ") {" << std::endl;
+  oss << "vgraph(tile_num=" << tile_num_ << ", simd_width="<<code_.simd_width_ << ") {" << std::endl;
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
     oss << "  ";
@@ -940,8 +945,8 @@ void VKernelBase::CollectMetrics(Metrics &metrics) const {
   }
   NDObject *dom = root_dom_.DomObject();
   metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(DeviceInfo::Instance().LocalMemSize()) - ReserveCodeSize();
-  uint64_t tile_per_block = CeilDiv(code_.tile_num_, static_cast<uint64_t>(code_.block_dim_));
-  metrics.core_usage = float(code_.tile_num_) / float(tile_per_block  * DeviceInfo::Instance().CoreNum());
+  uint64_t tile_per_block = CeilDiv(tile_num_, static_cast<uint64_t>(code_.block_dim_));
+  metrics.core_usage = float(tile_num_) / float(tile_per_block  * DeviceInfo::Instance().CoreNum());
   uint64_t tiled_shape_size = 1;
   for (auto d : dom->nd_) {
     tiled_shape_size *= d;
@@ -1282,15 +1287,14 @@ uint64_t VKernelP::CodeGen() {
     // If workload is inbalanced, make sure that each workload occupies at least one core
     uint64_t core_limit = std::max(core_num * workload / total_workload, 1ul);
     k->DoCodeGen(core_limit);
-    code_.children_.push_back(&k->code_);
     total_workload -= workload;
-    core_num -= k->GetCode()->block_dim_;
+    core_num -= k->code_.block_dim_;
   }
   std::vector<uint64_t> offsets;
-  code_.LinkAll(offsets);
+  LinkAll(offsets);
   for (size_t i = 0; i < children_.size(); ++i) {
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + offsets[i]);
-    uint64_t *old_base = reinterpret_cast<uint64_t*>(code_.children_[i]->data_);
+    uint64_t *old_base = reinterpret_cast<uint64_t*>(children_[i]->code_.data_);
     for (auto op :  children_[i]->objects_) {
       if (op->obj_id_ == kLoad) {
         auto load = static_cast<NDLoad*>(op);
@@ -1303,6 +1307,49 @@ uint64_t VKernelP::CodeGen() {
   }
   EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
   return 0;
+}
+
+void VKernelP::LinkAll(std::vector<uint64_t> &offsets) {
+  code_.atomic_clean_.clear();
+  code_.block_dim_ = 0;
+  uint64_t code_size = 0;
+  for (auto c : children_) {
+    code_.block_dim_ += c->code_.block_dim_;
+    code_size += ((c->code_.data_size_ - c->code_.HeadSize() + 31) >> 5) << 5;
+  }
+  uint64_t summary_size = ((code_.block_dim_ * sizeof(uint64_t) + 31) >> 5) << 5;
+  code_.data_size_ = code_.HeadSize() + summary_size + code_size;
+  code_.Alloc(code_.data_size_);
+  uint64_t offset = summary_size;
+  uint64_t *summaries = reinterpret_cast<uint64_t*>(code_.data_ + code_.HeadSize());
+  uint64_t summary_idx = 0;
+  for (size_t k = 0; k < children_.size(); ++k) {
+    Code *code = &(children_[k]->code_);
+    auto tile_num = children_[k]->tile_num_;
+    ASSERT(tile_num <= 0xffffful);
+    // summary
+    uint64_t lenburst = (code->data_size_ - code->HeadSize() + 31) / 32;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | code->simd_width_ << 41;
+    uint64_t tile_per_block = (tile_num - 1) / code->block_dim_ + 1;
+    uint64_t start_idx = 0;
+    for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
+      summaries[summary_idx++] = summary | tile_per_block << 20 | start_idx;
+      start_idx += tile_per_block;
+    }
+    summaries[summary_idx++] = summary | (tile_num - start_idx) << 20 | start_idx | 1ul << 40;
+    // data
+    offsets.push_back(offset);
+    uint64_t cpy_size = code->data_size_ - code->HeadSize();
+    memcpy(code_.data_ + code_.HeadSize() + offset, code->data_ + code->HeadSize(), cpy_size);
+    offset += ((cpy_size + 31) >> 5) << 5;
+    // atomic clean
+    if (!code->atomic_clean_.empty()) {
+      for (auto ac : code->atomic_clean_) {
+        code_.atomic_clean_.push_back(ac);
+      }
+    }
+  }
+  code_.UpdateHead(0, code_.block_dim_, V_ENTRY_FLAG_PARALLEL);
 }
 
 void VKernelP::DumpKernel(std::ostringstream &oss) {
@@ -1611,15 +1658,15 @@ uint64_t MixKernel::CodeGen() {
     post_fusion_->NormalizeDomain();
     post_fusion_->DoCodeGen(2);
     size += post_fusion_->code_.data_size_;
-    uint64_t subtile_0 = (post_fusion_->code_.tile_num_ + 1) / 2;
-    uint64_t subtile_1 = post_fusion_->code_.tile_num_ - subtile_0;
+    uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
+    uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
     cube_code.subtilenum = subtile_1 << 32 | subtile_0;
     cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
     cube_code.group_set = FftsSyncConfig(2, post_fusion_id);
     head_flags |= V_ENTRY_FLAG_PRE_WAIT;
     head_simd = post_fusion_->code_.simd_width_;
   }
-  code_.target_ = pre_fusion_ || post_fusion_ ? CodeBase::kTargetMix : CodeBase::kTargetCube;
+  code_.target_ = pre_fusion_ || post_fusion_ ? Code::kTargetMix : Code::kTargetCube;
   code_.data_size_ = size;
   code_.Alloc(size);
   code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
@@ -1728,7 +1775,7 @@ uint64_t StagesKernel::CodeGen() {
   constexpr int64_t ffts_size = sizeof(uint64_t);
   uint64_t ws_size = 0;
   uint64_t code_size = ffts_size;
-  code_.target_ = CodeBase::kTargetMix;
+  code_.target_ = Code::kTargetMix;
   code_.block_dim_ = 0;
   for (auto &s : stages_) {
     auto workspace = s->kernel->CodeGen();
@@ -1741,16 +1788,16 @@ uint64_t StagesKernel::CodeGen() {
       ws_size += get_tensor_size(ss);
     }
     s->code_offset = code_size;
-    auto stage_code = s->kernel->GetCode();
-    code_size += stage_code->data_size_ - ffts_size;
-    if (stage_code->target_ == CodeBase::kTargetVec) {
-      auto group_num = (stage_code->block_dim_ + 1) / 2;
+    auto &stage_code = s->kernel->code_;
+    code_size += stage_code.data_size_ - ffts_size;
+    if (stage_code.target_ == Code::kTargetVec) {
+      auto group_num = (stage_code.block_dim_ + 1) / 2;
       if (group_num > code_.block_dim_) code_.block_dim_ = group_num;
-    } else if (stage_code->block_dim_ > code_.block_dim_) {
-      code_.block_dim_= stage_code->block_dim_;
+    } else if (stage_code.block_dim_ > code_.block_dim_) {
+      code_.block_dim_= stage_code.block_dim_;
     }
-    if (!stage_code->atomic_clean_.empty()) {
-      for (auto ac : stage_code->atomic_clean_) code_.atomic_clean_.push_back(ac);
+    if (!stage_code.atomic_clean_.empty()) {
+      for (auto ac : stage_code.atomic_clean_) code_.atomic_clean_.push_back(ac);
     }
   }
   // link
@@ -1759,8 +1806,8 @@ uint64_t StagesKernel::CodeGen() {
   *reinterpret_cast<uint64_t*>(code_.data_) = 0; //ffts
   for (size_t sidx = 0; sidx < stages_.size(); ++sidx) {
     auto stage = stages_[sidx];
-    auto src_code = stage->kernel->GetCode();
-    std::memcpy(code_.data_ + stage->code_offset, src_code->data_ + ffts_size, src_code->data_size_ - ffts_size);
+    auto &src_code = stage->kernel->code_;
+    std::memcpy(code_.data_ + stage->code_offset, src_code.data_ + ffts_size, src_code.data_size_ - ffts_size);
     auto cur_entry = *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
     cur_entry |= V_ENTRY_FLAG_GROUP;
     if (sidx > 0) { // add sync
@@ -1786,7 +1833,7 @@ uint64_t StagesKernel::CodeGen() {
     }
     *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset) = cur_entry;
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
-    uint64_t *old_base = reinterpret_cast<uint64_t*>(stage->kernel->GetCode()->data_ + ffts_size);
+    uint64_t *old_base = reinterpret_cast<uint64_t*>(stage->kernel->code_.data_ + ffts_size);
     for (auto op :  stage->loads) {
       op->reloc_addr_ = (op->reloc_addr_ - old_base) + new_base;
     }

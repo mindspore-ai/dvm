@@ -376,7 +376,7 @@ uint64_t Kernel::CodeGen() {
 
 int Kernel::Launch(void *workspace, void* stream) {
   kernel_->RelocWorkspace(workspace);
-  return kernel_->GetCode()->Launch(stream);
+  return kernel_->code_.Launch(stream);
 }
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
@@ -408,12 +408,12 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
     (*stores++)->Reloc(*outputs++);
   }
   kernel_->RelocWorkspace(workspace);
-  auto code = kernel_->GetCode();
-  info.block_dim = code->block_dim_;
+  auto &code = kernel_->code_;
+  info.block_dim = code.block_dim_;
 
   MsProfHelper helper(info);
   helper.InitReportNode();
-  auto ret = code->Launch(stream);
+  auto ret = code.Launch(stream);
   helper.ReportTask();
   return ret;
 }
@@ -428,7 +428,7 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
     (*stores++)->Reloc(*outputs++);
   }
   kernel_->RelocWorkspace(workspace);
-  return kernel_->GetCode()->Launch(stream);
+  return kernel_->code_.Launch(stream);
 }
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {

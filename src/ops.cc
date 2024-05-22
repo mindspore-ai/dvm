@@ -429,7 +429,7 @@ int NDStore::Emit(Code &code) {
         clear_kernel_->Append(clear_store_);
       }
       clear_kernel_->CodeGen();
-      code.atomic_clean_.push_back(clear_kernel_->GetCode());
+      code.atomic_clean_.push_back(&(clear_kernel_->code_));
       reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
       return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op);
     }

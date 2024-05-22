@@ -73,7 +73,7 @@ class RootDomain : public PropDomain {
 
 class VKernel {
  public:
-  VKernel(CodeBase* code_ptr, KernelType ktype) : code_ptr_(code_ptr), ktype_(ktype) {}
+  VKernel(KernelType ktype) : ktype_(ktype) {}
   virtual ~VKernel() {}
 
   virtual void Append(NDObject *obj) = 0;
@@ -88,7 +88,6 @@ class VKernel {
     }
   }
 
-  CodeBase *GetCode() const { return code_ptr_; }
   std::string& DumpGraph() {
     std::ostringstream oss;
     DumpKernel(oss);
@@ -100,8 +99,9 @@ class VKernel {
 
   std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
 
+  Code code_;
+
  protected:
-  CodeBase* code_ptr_{nullptr};
   KernelType ktype_;
   std::string dump_str_;
 };
@@ -115,7 +115,7 @@ struct Metrics {
 class CodeGenHelper;
 class VKernelBase : public VKernel {
  public:
-  VKernelBase(KernelType ktype) : VKernel(&code_, ktype) {}
+  VKernelBase(KernelType ktype) : VKernel(ktype) {}
   virtual ~VKernelBase();
 
   void DumpKernel(std::ostringstream &oss) override;
@@ -142,8 +142,9 @@ class VKernelBase : public VKernel {
 
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
-  Code code_;
   RootDomain root_dom_;
+
+  uint64_t tile_num_{0};
 
  protected:
   int max_type_{-1};
@@ -192,7 +193,7 @@ class VKernelD : public VKernelBase {
 
 class VKernelP : public VKernel {
  public:
-  VKernelP() : VKernel(&code_, KernelType::kStaticParallel) {
+  VKernelP() : VKernel(KernelType::kStaticParallel) {
     children_.push_back(new VKernelS());
   }
   ~VKernelP() {
@@ -211,8 +212,8 @@ class VKernelP : public VKernel {
   void DumpKernel(std::ostringstream &oss) override;
 
  protected:
+  void LinkAll(std::vector<uint64_t> &offsets);
   std::vector<VKernelS*> children_;
-  CodeP code_;
 };
 
 class CubeOp : public NDObject {
@@ -244,7 +245,7 @@ class CubeOp : public NDObject {
 
 class MixKernel : public VKernel {
  public:
-  MixKernel() : VKernel(&code_, KernelType::kStaticMix) {}
+  MixKernel() : VKernel(KernelType::kStaticMix) {}
   ~MixKernel() override;
 
   void Append(NDObject *obj) override;
@@ -254,7 +255,6 @@ class MixKernel : public VKernel {
  protected:
   uint64_t UpdateReloc();
 
-  MixCode code_;
   VKernelS *pre_fusion_{nullptr};
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
@@ -262,7 +262,7 @@ class MixKernel : public VKernel {
 
 class StagesKernel : public VKernel {
  public:
-  StagesKernel() : VKernel(&code_, KernelType::kStaticStages) {}
+  StagesKernel() : VKernel(KernelType::kStaticStages) {}
   ~StagesKernel() override;
 
   void StageSwitch(KernelType type) {
@@ -313,7 +313,6 @@ class StagesKernel : public VKernel {
     std::vector<NDStore*> stores;
   };
   std::vector<Stage*> stages_;
-  StagedCode code_;
 };
 } // namespace dvm
 #endif // _DVM_KERNEL_H_

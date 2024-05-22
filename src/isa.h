@@ -962,10 +962,12 @@ struct vCubeOp {
 #define V_ENTRY_CODE_SIZE_OFFSET         24
 #define V_ENTRY_SIMD_WIDTH_OFFSET        36
 #define V_ENTRY_TILE_NUM_OFFSET          44
+#define V_ENTRY_PARALLEL_BLOCK_OFFSET    36
 
 #define V_ENTRY_CODE_SIZE_BITS           12
 #define V_ENTRY_SIMD_WIDTH_BITS          8
 #define V_ENTRY_TILE_NUM_BITS            20
+#define V_ENTRY_PARALLEL_BLOCK_BITS      8
 
 __aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) {
   return 1ul | mode << 4 | event_id << 8;

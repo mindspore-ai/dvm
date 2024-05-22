@@ -109,12 +109,12 @@ const uint64_t SIMD_REPEAT_SIZE = 256;
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
 
-struct CodeBase {
+struct Code {
   enum { kTargetVec = 0, kTargetCube, kTargetMix };
-  CodeBase() = default;
-  CodeBase(const CodeBase &obj) = delete;
-  CodeBase &operator=(const CodeBase &) = delete;
-  virtual ~CodeBase() {
+  Code() = default;
+  Code(const Code&obj) = delete;
+  Code&operator=(const Code&) = delete;
+  virtual ~Code() {
     if (data_)
       std::free(data_);
   }
@@ -155,46 +155,15 @@ struct CodeBase {
     return launch_func(stub_func, block_dim_, data_, data_size_, nullptr, stream);
   }
 
-  virtual void DisAssemble(std::ostringstream &oss) = 0;
+  void DisAssemble(std::ostringstream &oss);
+
   unsigned char *data_{nullptr};
   uint32_t data_size_{0};
   uint32_t block_dim_{0};
   int target_{0};
-  std::vector<CodeBase*> atomic_clean_;
-};
+  std::vector<Code*> atomic_clean_;
 
-struct Code : public CodeBase {
-  void Reset() {
-    simd_width_ = 0;
-    tile_num_ = 0;
-    atomic_clean_.clear();
-  }
-
-  void UpdateBlockDim(uint64_t core_num) {
-    auto tile_per_block = (tile_num_ + core_num - 1) / core_num;
-    block_dim_ = (tile_num_ + tile_per_block - 1) / tile_per_block;
-  }
-
-  void ApplyTileLimit(uint64_t core_tile_least) {
-    while (block_dim_ > 1 && core_tile_least * block_dim_ > tile_num_) block_dim_--; // TODO: optimize me
-  }
-  void DisAssemble(std::ostringstream &oss) override;
   uint64_t simd_width_{0};
-  uint64_t tile_num_{0};
-};
-
-struct CodeP : public CodeBase {
- void LinkAll(std::vector<uint64_t> &offsets);
- void DisAssemble(std::ostringstream &oss) override;
- std::vector<Code*> children_;
-};
-
-struct MixCode : public CodeBase {
-  void DisAssemble(std::ostringstream &oss) override;
-};
-
-struct StagedCode : public CodeBase {
-  void DisAssemble(std::ostringstream &oss) override;
 };
 } // namespace dvm 
 #endif // _DVM_CODE_H_

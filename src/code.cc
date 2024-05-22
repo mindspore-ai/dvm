@@ -669,7 +669,7 @@ DeviceInfo::DeviceInfo() {
     dev_bin.length = g_vkernel_bin_len;
     err = rt_binary_register(&dev_bin, &module);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg binary failed");
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
     err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg function failed");
   } else {
@@ -678,21 +678,21 @@ DeviceInfo::DeviceInfo() {
     dev_bin.length = g_vkernel_910b_bin_len;
     err = rt_binary_register(&dev_bin, &module);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetVec;
+    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
     err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
 
     dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
     err = rt_binary_register(&dev_bin, &module);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetCube;
+    stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetCube;
     err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
 
     dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
     err = rt_binary_register(&dev_bin, &module);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-    stub_func = reinterpret_cast<uint8_t*>(this) + CodeBase::kTargetMix;
+    stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetMix;
     err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
     EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 
@@ -704,237 +704,187 @@ DeviceInfo::DeviceInfo() {
   }
 }
 
-void Code::DisAssemble(std::ostringstream &oss) {
-  oss << "vmain(tile_num=" << tile_num_ << ", block_dim=" << block_dim_ <<
-      ", simd_width="<<simd_width_ << ") {" << std::endl;
-  DasBody(oss, data_ + HeadSize(), data_size_ - HeadSize(), simd_width_, " "); 
-  oss << "}";
-}
+class DisAssembler {
+ public:
+  DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
 
-void CodeP::LinkAll(std::vector<uint64_t> &offsets) {
-  atomic_clean_.clear();
-  block_dim_ = 0;
-  uint64_t code_size = 0;
-  for (auto c : children_) {
-    block_dim_ += c->block_dim_;
-    code_size += ((c->data_size_ - c->HeadSize() + 31) >> 5) << 5;
-  }
-  uint64_t summary_size = ((block_dim_ * sizeof(uint64_t) + 31) >> 5) << 5;
-  data_size_ = HeadSize() + summary_size + code_size;
-  Alloc(data_size_);
-  uint64_t offset = summary_size;
-  uint64_t *summaries = reinterpret_cast<uint64_t*>(data_ + HeadSize());
-  uint64_t summary_idx = 0;
-  for (size_t k = 0; k < children_.size(); ++k) {
-    Code *code = children_[k];
-    ASSERT(code->tile_num_ <= 0xffffful);
-    // summary
-    uint64_t lenburst = (code->data_size_ - code->HeadSize() + 31) / 32;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | code->simd_width_ << 41;
-    uint64_t tile_per_block = (code->tile_num_ - 1) / code->block_dim_ + 1;
-    uint64_t start_idx = 0;
-    for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
-      summaries[summary_idx++] = summary | tile_per_block << 20 | start_idx;
-      start_idx += tile_per_block;
-    }
-    summaries[summary_idx++] = summary | (code->tile_num_ - start_idx) << 20 | start_idx | 1ul << 40;
-    // data
-    offsets.push_back(offset);
-    uint64_t cpy_size = code->data_size_ - code->HeadSize();
-    memcpy(data_ + HeadSize() + offset, code->data_ + code->HeadSize(), cpy_size);
-    offset += ((cpy_size + 31) >> 5) << 5;
-    // atomic clean
-    if (!code->atomic_clean_.empty()) {
-      for (auto ac : code->atomic_clean_) {
-        atomic_clean_.push_back(ac);
+  void Run(Code *code) {
+    void* ffts = *reinterpret_cast<void**>(code->data_);
+    uint64_t entry = *reinterpret_cast<uint64_t*>(code->data_ + sizeof(uint64_t));
+    uint8_t *bcode = code->data_ + code->HeadSize();
+    uint64_t bcode_size = code->data_size_ - code->HeadSize();
+    oss << "// block_dim=" << code->block_dim_ << ", ffts_addr=" << ffts << std::endl;
+    oss << "vmain.";
+    if (entry & V_ENTRY_FLAG_NEXT_STAGE) {
+      DasStages(entry, bcode, bcode_size, "");
+    } else if (entry & V_ENTRY_FLAG_PARALLEL) {
+      DasParallel(entry, bcode, bcode_size, "");
+    } else if (entry & V_ENTRY_FLAG_MIX) {
+      if (bcode_size == sizeof(vCubeOp)) {
+        DasCube(entry, bcode, bcode_size, "");
+      } else {
+        DasMix(entry, bcode, bcode_size, "");
       }
+    } else {
+      DasVec(entry, bcode, bcode_size, "");
     }
   }
-  UpdateHead(0, 0, V_ENTRY_FLAG_PARALLEL);
-}
 
-void CodeP::DisAssemble(std::ostringstream &oss) {
-  struct Summary {
-    Summary(uint8_t *code = nullptr) : bcode(code) {}
-    int64_t block_start{-1};
-    int64_t block_end{-1};
-    int64_t block_step{-1};
-    int64_t block_tail{-1};
-    int64_t simd_width{-1};
-    uint8_t *bcode;
-  };
-  std::vector<Summary> summays;
-  Summary *current = nullptr;
-  uint64_t *summaries = reinterpret_cast<uint64_t*>(data_ + HeadSize());
-  for (uint64_t i = 0; i < block_dim_; ++i) {
-    uint64_t sum_data = *summaries++;
-    uint64_t start_idx = sum_data & 0xffffful;
-    uint64_t tile_loops = (sum_data >> 20) & 0xffffful;
-    uint64_t offset = ((sum_data >> 49) & 0x1fful) * 32;
-    uint64_t tail_flag = (sum_data >> 40) & 0x1ul;
-    auto bcode = data_ + HeadSize() + offset;
-    if (current == nullptr || current->bcode != bcode) {
-      summays.emplace_back(bcode);
-      current = &(summays.back());
-      current->block_start = i;
-      current->block_step = tile_loops;
-      current->bcode = bcode;
-      current->simd_width = (sum_data >> 41) & 0xfful;
-    }
-    if (tail_flag) {
-      current->block_end = i;
-      current->block_tail = start_idx + tile_loops;
-    }
+  void DasVecBody(uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent ) {
+    DasBody(oss, bcode, bcode_size, simd_width, indent);
   }
-  ASSERT(summays.size() == children_.size());
-  oss << "vmain.parallel(block_dim=" << block_dim_ << ") {" << std::endl;
-  for (uint64_t i = 0; i < children_.size(); ++i) {
-    auto code = children_[i];
-    auto &summary = summays[i];
-    oss << " kernel_" << i << "(tile_num=" << code->tile_num_ << ", simd_width="<< summary.simd_width <<
-          ", block_range=[" << summary.block_start << ", " << summary.block_end << "], block_step=" << summary.block_step <<
-          ", block_tail=" << summary.block_tail << ") {" << std::endl;
-    DasBody(oss, summary.bcode, code->data_size_ - code->HeadSize(), summary.simd_width, "  ");
-    oss << " }" << std::endl;
-  }
-  oss << "}";
-}
 
-void MixCode::DisAssemble(std::ostringstream &oss) {
-  void* ffts = *reinterpret_cast<void**>(data_);
-  uint64_t entry = *reinterpret_cast<uint64_t*>(data_ + sizeof(uint64_t));
-  auto tile_num = vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
-  auto is_mix = bool(entry & V_ENTRY_FLAG_MIX);
-  oss << "vmain.mix(block_dim=" << tile_num << ", mix_flag=" << is_mix << ", ffts=" << ffts << ") {" << std::endl;
-  vCubeOp *op = reinterpret_cast<vCubeOp*>(data_ + HeadSize());
-  oss << "  aic() {" << std::endl;
-  oss << "    MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
-       " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
-  oss << "    ";
-  DumpVal("m", op->m, oss);
-  oss << " //";
-  DumpVal("n", op->n, oss);
-  oss << " //";
-  DumpVal("m0", op->m0, oss);
-  oss << " //";
-  DumpVal("n0", op->n0, oss);
-  if (target_ == kTargetMix) {
-    oss << "\n    { group_set=" << bool(op->flags & V_CUBE_FLAG_GROUP_SET) << "}" << std::endl;
+  void DasCubeBody(vCubeOp *op, const std::string &indent) {
+    oss << indent << "MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
+        " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b);
+    oss << " //";
+    DumpVal("m0", op->m0, oss);
+    oss << ", ";
+    DumpVal("n0", op->n0, oss);
+    oss << ", ";
+    DumpVal("trans_a", bool(op->flags & V_CUBE_FLAG_TRANS_A), oss);
+    oss << ", ";
+    DumpVal("trans_b", bool(op->flags & V_CUBE_FLAG_TRANS_B), oss);
+    oss << std::endl << indent << " {";
+    if (op->flags & V_CUBE_FLAG_GROUP_SET) {
+      oss << ", group_set(1)";
+    }
+    if (op->flags & V_CUBE_FLAG_POST_SET) {
+      oss << ", post_set(1)";
+    }
+    if (op->flags & V_CUBE_FLAG_PRE_WAIT) {
+      oss << ", pre_wait(1)";
+    }
+    if (op->flags & V_CUBE_FLAG_POST_BAR) {
+      oss << ", post_bar(1)";
+    }
+    oss << "}";
   }
-  oss << "  }" << std::endl;
-  if (target_ == kTargetMix) {
+
+  void DasVec(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    auto tile_num = vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
     auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
-    oss << "  aiv(sub_tile_num=[" << (op->subtilenum & 0xfffffffful) << ", "<< (op->subtilenum >> 32) <<
-      "], simd_width=" << simd_width;
+    oss << indent << "aiv(tile_num=" << tile_num << ", simd_width=" << simd_width;
+    if (entry & V_ENTRY_FLAG_MIX) {
+      oss <<", mix=1";
+    }
+    if (entry & V_ENTRY_FLAG_GROUP) {
+      oss <<", group=1";
+    }
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
     }
+    if (entry & V_ENTRY_FLAG_POST_SET) {
+      oss << ", post_set=1";
+    }
+    if (entry & V_ENTRY_FLAG_POST_BAR) {
+      oss << ", post_bar=1";
+    }
     oss << ") {" << std::endl;
-    uint64_t offset = HeadSize() + sizeof(vCubeOp);
-    DasBody(oss, data_ + offset, data_size_ - offset, simd_width, "    ");
-    oss << "  }" << std::endl;
+    DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
+    oss << indent << "}";
   }
-  oss << "}";
-}
 
-void DasVecBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
-  DasBody(oss, bcode, bcode_size, simd_width, indent);
-}
+  void DasCube(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    oss << indent << "aic() {" << std::endl;
+    vCubeOp *cube = reinterpret_cast<vCubeOp*>(bcode);
+    DasCubeBody(cube, indent + "  ");
+    oss << std::endl << indent << "}";
+  }
 
-void DasFftsSet(std::ostringstream &oss, uint64_t set) {
-  oss <<"mode_" << ((set >> 4) & 0xful) << ", id_" << ((set >> 8) & 0xful);
-}
-
-void DasCubeBody(std::ostringstream &oss, vCubeOp *op, const std::string &indent) {
-  oss << indent << "MatMul." << op->m << "x" << op->k << "x" << op->n << " " << reinterpret_cast<void*>(op->gm_c) <<
-       " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b) << std::endl;
-  oss << indent << "  {trans_a(" << bool(op->flags & V_CUBE_FLAG_TRANS_A) << "), trans_b("<<bool(op->flags & V_CUBE_FLAG_TRANS_B) << ")";
-  if (op->flags & V_CUBE_FLAG_GROUP_SET) {
-    oss << ", group_set(1)";
-  }
-  if (op->flags & V_CUBE_FLAG_POST_SET) {
-    oss << ", post_set(1)";
-  }
-  if (op->flags & V_CUBE_FLAG_PRE_WAIT) {
-    oss << ", pre_wait(1)";
-  }
-  if (op->flags & V_CUBE_FLAG_POST_BAR) {
-    oss << ", post_bar(1)";
-  }
-}
-
-void DasVec(std::ostringstream &oss, const std::string &prefix, uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
-  oss << indent << prefix << "tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS)
-      << ", simd_width=" << vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
-  if (entry & V_ENTRY_FLAG_MIX) {
-    oss <<", mix=1";
-  }
-  if (entry & V_ENTRY_FLAG_GROUP) {
-    oss <<", group=1";
-  }
-  if (entry & V_ENTRY_FLAG_PRE_WAIT) {
-    oss << ", pre_wait=1";
-  }
-  if (entry & V_ENTRY_FLAG_POST_SET) {
-    oss << ", post_set=1";
-  }
-  if (entry & V_ENTRY_FLAG_POST_BAR) {
-    oss << ", post_bar=1";
-  }
-  oss << ") {" << std::endl;
-  auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
-  DasVecBody(oss, bcode, bcode_size, simd_width, indent + "  ");
-  oss << std::endl << indent << "}";
-}
-
-void DasMix(std::ostringstream &oss, const std::string &prefix, uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
-  oss << indent << prefix << "tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
-  if (entry & V_ENTRY_FLAG_MIX) {
-    oss <<", mix=1";
-  }
-  if (entry & V_ENTRY_FLAG_GROUP) {
-    oss <<", group=1";
-  }
-  oss << ") {" << std::endl;
-  vCubeOp *cube = reinterpret_cast<vCubeOp*>(bcode);
-  auto vec_size = bcode_size - sizeof(vCubeOp);
-  if (vec_size > 0) {
-    oss << indent << "  aic() {" << std::endl;
-    DasCubeBody(oss, cube, indent + "    ");
+  void DasMix(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    oss << indent << "mix(tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
+    if (entry & V_ENTRY_FLAG_GROUP) {
+      oss <<", group=1";
+    }
+    oss << ") {" << std::endl;
+    DasCube(entry, bcode, sizeof(vCubeOp), indent + "  ");
     oss << std::endl << indent << "  }" << std::endl;
-    DasVec(oss, "aiv(", entry, bcode + sizeof(vCubeOp), vec_size, indent + "  ");
-  } else {
-    DasCubeBody(oss, cube, indent + "  ");
+    DasVec(entry, bcode + sizeof(vCubeOp), bcode_size - sizeof(vCubeOp), indent + "  ");
+    oss << std::endl << indent << "}";
   }
-  oss << std::endl << indent << "}";
-}
 
-void DasParallel(std::ostringstream &oss, const std::string &prefix, uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
-  // TODO:
-}
+  void DasParallel(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    struct Summary {
+      Summary(uint8_t *code = nullptr) : bcode(code) {}
+      int64_t block_start{-1};
+      int64_t block_end{-1};
+      int64_t block_step{-1};
+      int64_t block_tail{-1};
+      int64_t simd_width{-1};
+      uint8_t *bcode;
+      int64_t code_size;
+    };
+    std::vector<Summary> summays;
+    Summary *current = nullptr;
+    uint64_t *summaries = reinterpret_cast<uint64_t*>(bcode);
+    auto block_dim = vGetBitRange(entry, V_ENTRY_PARALLEL_BLOCK_OFFSET, V_ENTRY_PARALLEL_BLOCK_BITS);
+    for (uint64_t i = 0; i < block_dim; ++i) {
+      uint64_t sum_data = *summaries++;
+      uint64_t start_idx = sum_data & 0xffffful;
+      uint64_t tile_loops = (sum_data >> 20) & 0xffffful;
+      uint64_t offset = ((sum_data >> 49) & 0x1fful) * 32;
+      uint64_t tail_flag = (sum_data >> 40) & 0x1ul;
+      auto vec_code = bcode + offset;
+      if (current == nullptr || current->bcode != vec_code) {
+        summays.emplace_back(vec_code);
+        current = &(summays.back());
+        current->block_start = i;
+        current->block_step = tile_loops;
+        current->bcode = vec_code;
+        current->simd_width = (sum_data >> 41) & 0xfful;
+        current->code_size = (sum_data >> 58) * 32;
+      }
+      if (tail_flag) {
+        current->block_end = i;
+        current->block_tail = start_idx + tile_loops;
+      }
+    }
+    oss << indent << "parallel() {" << std::endl;
+    for (uint64_t i = 0; i < summays.size(); ++i) {
+      auto &summary = summays[i];
+      oss << " kernel_" << i << "(simd_width="<< summary.simd_width <<
+            ", block_range=[" << summary.block_start << ", " << summary.block_end << "], block_step=" << summary.block_step <<
+            ", block_tail=" << summary.block_tail << ") {" << std::endl;
+      DasVecBody(summary.bcode, summary.code_size, summary.simd_width, indent + "  ");
+      oss << indent << " }" << std::endl;
+    }
+    oss << indent << "}";
+  }
 
-void StagedCode::DisAssemble(std::ostringstream &oss) {
-  void* ffts = *reinterpret_cast<void**>(data_);
-  oss << "vmain.stages(ffts=" << ffts<< ", block_dim=" << block_dim_  << ") {" << std::endl;
-  uint32_t offset = sizeof(uint64_t);
-  int stage_idx = 0;
-  uint64_t entry;
-  do {
-   entry = *reinterpret_cast<uint64_t*>(data_ + offset);
-   offset += sizeof(entry);
-   uint64_t bcode_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
-   oss << "  // stage " << stage_idx << std::endl;
-   stage_idx++;
-   if (entry & V_ENTRY_FLAG_MIX) {
-    DasMix(oss, "mix(", entry, data_ + offset, bcode_size, "  ");
-   } else if (entry & V_ENTRY_FLAG_PARALLEL) {
-    DasParallel(oss, "parallel(", entry, data_ + offset, bcode_size, "  ");
-   } else {
-    DasVec(oss, "aiv(", entry, data_ + offset, bcode_size, "  ");
-   }
-   offset += bcode_size;
-   oss << std::endl;
-  } while (entry & V_ENTRY_FLAG_NEXT_STAGE);
-  oss << "}";
+  void DasStages(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    oss << indent << "stages() {" << std::endl;
+    int stage_idx = 0;
+    uint8_t *bcode_end = bcode + bcode_size;
+    while (bcode < bcode_end) {
+      uint64_t stage_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
+      oss << "  // stage " << stage_idx << std::endl;
+      stage_idx++;
+      if (entry & V_ENTRY_FLAG_MIX) {
+        if (stage_size == sizeof(vCubeOp)) {
+          DasCube(entry, bcode, stage_size, indent + "  ");
+        } else {
+          DasMix(entry, bcode, stage_size, indent + "  ");
+        }
+      } else if (entry & V_ENTRY_FLAG_PARALLEL) {
+        DasParallel(entry, bcode, stage_size, indent + "  ");
+      } else {
+        DasVec(entry, bcode, stage_size, indent + "  ");
+      }
+      oss << std::endl;
+      if ((entry & V_ENTRY_FLAG_NEXT_STAGE) == 0) break;
+      bcode += stage_size;
+      entry = *reinterpret_cast<uint64_t*>(bcode);
+      bcode += sizeof(uint64_t);
+    }
+    oss << indent << "}";
+  }
+
+ private:
+  std::ostringstream &oss;
+};
+
+void Code::DisAssemble(std::ostringstream &oss) {
+  DisAssembler(oss).Run(this);
 }
 }  // namespace dvm

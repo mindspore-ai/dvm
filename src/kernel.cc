@@ -1786,9 +1786,9 @@ uint64_t StagesKernel::CodeGen() {
       s->ws_offset = ws_size;
       ws_size += workspace;
     }
-    for (auto ss : s->stage_stores) {
-      ss->ws_offset_ = ws_size;
-      ws_size += get_tensor_size(ss);
+    for (auto op : s->stage_stores) {
+      SetStageStoreWorkspace(op, ws_size);
+      ws_size += get_tensor_size(op);
     }
     s->code_offset = code_size;
     auto &stage_code = s->kernel->code_;
@@ -1844,10 +1844,12 @@ uint64_t StagesKernel::CodeGen() {
       op->reloc_addr_ = (op->reloc_addr_ - old_base) + new_base;
     }
     for (auto op : stage->stage_loads) {
-      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, op->store_->ws_offset_));
+      auto offset = GetStageStoreWorkspace(GetStageStore(op));
+      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
     }
     for (auto op : stage->stage_stores) {
-      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, op->ws_offset_));
+      auto offset = GetStageStoreWorkspace(op);
+      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
     }
     if (stage->ws_offset >= 0) {
       for (auto &reloc : stage->kernel->reloc_workspaces_) {

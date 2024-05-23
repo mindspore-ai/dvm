@@ -350,15 +350,15 @@ void Kernel::StageSwitch(KernelType type) {
 
 NDObject* Kernel::StageLoad(NDObject *stage_store) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDStageLoad(static_cast<NDStageStore*>(stage_store));
-  static_cast<StagesKernel*>(kernel_)->AppendStageLoad(op);
+  auto op = new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
+  static_cast<StagesKernel*>(kernel_)->StageLoad(op, static_cast<NDStore*>(stage_store));
   return op;
 }
 
 NDObject* Kernel::StageStore(NDObject *input) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDStageStore(input);
-  static_cast<StagesKernel*>(kernel_)->AppendStageStore(op);
+  auto op = new NDStore(nullptr, input);
+  static_cast<StagesKernel*>(kernel_)->StageStore(op);
   return op;
 }
 

@@ -600,11 +600,12 @@ void DvmException(const char* error_str) {
 
 DeviceInfo::DeviceInfo() {
   auto soc_name = GetSocName();
-  if (soc_name.find("Ascend910B") != std::string::npos) {
+  if (soc_name.find("Ascend910B") != std::string::npos || soc_name.find("Ascend910C") != std::string::npos) {
     arch_ = kAiCore_C220;
     local_mem_size_ = 192 * 1024;
     event_num_ = 8;
-    if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2") {
+    if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2" || soc_name == "Ascend910C1" ||
+        soc_name == "Ascend910C2") {
       vector_core_num_ = 48;
       cube_core_num_ = 24;
     } else {

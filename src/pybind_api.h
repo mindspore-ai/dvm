@@ -78,6 +78,7 @@ class KernelPy {
   py::object SliceLoad(const py::object &shape, const py::object &start, const py::object &size, const std::string &type);
   py::object StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end, const py::object &step, const std::string &type);
   py::object Store(const py::object &obj);
+  py::object PadStore(const py::object &obj, const py::object &pad_shape);
   py::object Unary(const std::string &op_name, const py::object &input);
   py::object Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs);
   py::object Broadcast(const py::object &input, const py::object &shape, const std::string &dtype, bool dummy_load);
@@ -93,6 +94,7 @@ class KernelPy {
   void StageSwitch(const std::string &ker_type);
   py::object StageLoad(const py::object &store);
   py::object StageStore(const py::object &input);
+  py::object StagePadStore(const py::object &input, const py::object &pad_shape);
 
   void Input(const py::object &load, const py::object &array);
   py::object Output(const py::object &store);

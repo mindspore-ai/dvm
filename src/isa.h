@@ -58,6 +58,7 @@ enum vStoreInsnID {
   V_STORE_ATOMIC,
   V_STORE_STATUS,
   V_SSTORE,
+  V_SLICE_STORE,
   V_STORE_NONE,
 };
 
@@ -730,7 +731,7 @@ struct vSStore {
   }
 };
 
-struct vSliceLoad {
+struct vSliceSL {
   enum { RELOC_OFFSET = 1 };
   __gm__ uint8_t *gm;
   uint64_t xn;
@@ -743,7 +744,7 @@ struct vSliceLoad {
   uint64_t slice_k;
   uint64_t type_size;
 
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceLoad &op) {
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceSL &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
@@ -758,9 +759,9 @@ struct vSliceLoad {
     op.slice_k = (data >> 48) & 0xfffful;
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSliceLoad &op) {
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vSliceSL &op) {
     uint64_t size = 4;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
+    pc[0] = vMakeHead(id, op.xn, size, pipe);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.src_m;
     pc[3] = op.slice_k << 48 | op.pad_size << 32 | op.tile_stride << 8 | op.type_size;

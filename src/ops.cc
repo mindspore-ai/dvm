@@ -236,6 +236,47 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   round_tile_.clear();
 }
 
+void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
+  auto size = lhs_->shape_ref_->size;
+  shape_.resize(size);
+  for (size_t i = 0; i < size; i++) {
+    shape_[i] = lhs_->shape_ref_->data[i] + pad_shape_->data[i];
+  }
+  *shape_ref_= shape_;
+  NDStore::Normalize(run_ops);
+}
+
+void NDPadStore::AlignProp(PropRange &range) {
+  range.depth = 1;
+}
+
+void NDPadStore::FoldProp(PropRange &range) {
+  range.depth = shape_ref_->size - 1;
+}
+
+int NDPadStore::Emit(Code &code) {
+  uint64_t lead_align = LeadAlign();
+  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  vSliceSL op;
+  auto size = shape_ref_->size;
+  op.gm = dst_;
+  op.xn = lhs_->xbuf_;
+  op.tile_stride = src_tile_stride_;
+  op.pad_size = lead_align - nd_[lead_dim_];
+  op.src_m = shape_ref_->data[size - 2];
+  op.src_n = shape_ref_->data[size - 1];
+
+  op.slice_m = lhs_->shape_ref_->data[size - 2];
+  op.slice_n = lhs_->shape_ref_->data[size - 1];
+  op.slice_k = 1;
+  for (size_t i = 0; i + 2 < size; i++) {
+    op.slice_k *= shape_ref_->data[i];
+  }
+  op.type_size = ITEM_SIZE[type_id_];
+  reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
+  return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
+}
+
 void NDSLoad::Tile(const TileParam &tp) {
   if (tp.group_tile) {
     ASSERT(tp.start == tp.end);
@@ -337,27 +378,23 @@ int NDSliceLoad::Emit(Code &code) {
   }
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  vSliceLoad op;
+  vSliceSL op;
+  auto size = size_ref_->size;
   op.gm = src_ + reloc_offset_;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
-  if (nd_.size() == 2) {
-    op.slice_k = 1;
-    op.slice_m = size_ref_->data[0];
-    op.slice_n = size_ref_->data[1];
-    op.src_m = src_ref_->data[0];
-    op.src_n = src_ref_->data[1];
-  } else {
-    op.slice_k = size_ref_->data[0];
-    op.slice_m = size_ref_->data[1];
-    op.slice_n = size_ref_->data[2];
-    op.src_m = src_ref_->data[1];
-    op.src_n = src_ref_->data[2];
+  op.slice_k = 1;
+  op.slice_m = size_ref_->data[size - 2];
+  op.slice_n = size_ref_->data[size - 1];
+  op.src_m = src_ref_->data[size - 2];
+  op.src_n = src_ref_->data[size - 1];
+  for (size_t i = 0; i + 2 < size; i++) {
+    op.slice_k *= size_ref_->data[i];
   }
   op.type_size = ITEM_SIZE[type_id_];
-  reloc_addr_ = insn_ + vSliceLoad::RELOC_OFFSET;
-  return vSliceLoad::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, op);
+  reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
+  return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op);
 }
 
 void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {

@@ -1020,8 +1020,8 @@ static inline[aicore] void SliceMove2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *sr
 }
 
 static inline[aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vSliceLoad op;
-  vSliceLoad::Decode(pc, head, op);
+  vSliceSL op;
+  vSliceSL::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   uint64_t slice_mn = op.slice_n * op.slice_m;
   uint64_t src_mn = op.src_n * op.src_m;

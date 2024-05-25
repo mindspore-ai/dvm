@@ -1109,9 +1109,9 @@ static inline [aicore] void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
 }
 
-static inline [aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vSliceLoad op;
-  vSliceLoad::Decode(pc, head, op);
+static inline [aicore] void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vSliceSL op;
+  vSliceSL::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   uint64_t slice_mn = op.slice_n * op.slice_m;
   uint64_t src_mn = op.src_n * op.src_m;
@@ -1125,28 +1125,67 @@ static inline [aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t til
   uint64_t end_m = IsLastTile(tile) ? op.slice_m - 1 : end_tmp % slice_mn / op.slice_n;
   uint64_t begin_n = begin_tmp % op.slice_n;
   uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % op.slice_n;
-  uint64_t type_size = op.type_size;
+  uint64_t offset_slice = begin_k * src_mn + begin_m * op.src_n + begin_n;
+
+  __gm__ uint8_t *dst = (__gm__ uint8_t *)op.gm + offset_slice * op.type_size;
+  __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
+  if (begin_k == end_k) {
+    SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
+  } else {
+    SliceStore2D(dst, src, begin_m, op.slice_m - 1, begin_n, op.slice_n - 1, op.slice_n, op.src_n, op.pad_size, op.type_size);
+    uint64_t pad_size_2d = (op.slice_n + op.pad_size) * op.slice_m;
+    dst += (src_mn - begin_n - begin_m * op.src_n) * op.type_size;
+    if (op.pad_size) {
+      src += (pad_size_2d - (op.slice_n + op.pad_size) * begin_m) * op.type_size;
+    } else {
+      src += (pad_size_2d - op.slice_n * begin_m - begin_n) * op.type_size;
+    }
+    for (uint64_t i = 0; i < end_k - begin_k - 1; ++i) {
+      SliceStore2D(dst, src, 0, op.slice_m - 1, 0, op.slice_n - 1, op.slice_n, op.src_n, op.pad_size, op.type_size);
+      dst += src_mn * op.type_size;
+      src += pad_size_2d * op.type_size;
+    }
+    SliceStore2D(dst, src, 0, end_m, 0, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
+  }
+}
+
+static inline [aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vSliceSL op;
+  vSliceSL::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t slice_mn = op.slice_n * op.slice_m;
+  uint64_t src_mn = op.src_n * op.src_m;
+
+  uint64_t begin_tmp = op.tile_stride * tile_idx;
+  uint64_t end_tmp = begin_tmp + op.tile_stride - 1;
+
+  uint64_t begin_k = begin_tmp / slice_mn;
+  uint64_t end_k = IsLastTile(tile) ? op.slice_k - 1 : end_tmp / slice_mn;
+  uint64_t begin_m = begin_tmp % slice_mn / op.slice_n;
+  uint64_t end_m = IsLastTile(tile) ? op.slice_m - 1 : end_tmp % slice_mn / op.slice_n;
+  uint64_t begin_n = begin_tmp % op.slice_n;
+  uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % op.slice_n;
   uint64_t offset_slice = begin_k * src_mn + begin_m * op.src_n + begin_n;
 
   __gm__ uint8_t *src = (__gm__ uint8_t *)op.gm + offset_slice * op.type_size;
   __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
   if (begin_k == end_k) {
-    SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, type_size);
+    SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
   } else {
-    SliceLoad2D(dst, src, begin_m, op.slice_m - 1, begin_n, op.slice_n - 1, op.slice_n, op.src_n, op.pad_size, type_size);
+    SliceLoad2D(dst, src, begin_m, op.slice_m - 1, begin_n, op.slice_n - 1, op.slice_n, op.src_n, op.pad_size, op.type_size);
     uint64_t pad_size_2d = (op.slice_n + op.pad_size) * op.slice_m;
-    src += (src_mn - begin_n - begin_m * op.src_n) * type_size;
+    src += (src_mn - begin_n - begin_m * op.src_n) * op.type_size;
     if (op.pad_size) {
-      dst += (pad_size_2d - (op.slice_n + op.pad_size) * begin_m) * type_size;
+      dst += (pad_size_2d - (op.slice_n + op.pad_size) * begin_m) * op.type_size;
     } else {
-      dst += (pad_size_2d - op.slice_n * begin_m - begin_n) * type_size;
+      dst += (pad_size_2d - op.slice_n * begin_m - begin_n) * op.type_size;
     }
     for (uint64_t i = 0; i < end_k - begin_k - 1; ++i) {
-      SliceLoad2D(dst, src, 0, op.slice_m - 1, 0, op.slice_n - 1, op.slice_n, op.src_n, op.pad_size, type_size);
-      src += src_mn * type_size;
-      dst += pad_size_2d * type_size;
+      SliceLoad2D(dst, src, 0, op.slice_m - 1, 0, op.slice_n - 1, op.slice_n, op.src_n, op.pad_size, op.type_size);
+      src += src_mn * op.type_size;
+      dst += pad_size_2d * op.type_size;
     }
-    SliceLoad2D(dst, src, 0, end_m, 0, end_n, op.slice_n, op.src_n, op.pad_size, type_size);
+    SliceLoad2D(dst, src, 0, end_m, 0, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
   }
 }
 
@@ -1427,6 +1466,7 @@ DEF_DISP_FUNC(V_STORE_2, Store2(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_STATUS, StoreStatus(pc, head))
 DEF_DISP_FUNC(V_SSTORE, SStore(pc, head, tile))
+DEF_DISP_FUNC(V_SLICE_STORE, SliceStore(pc, head, tile))
 
 DEF_DISP_FUNC(V_COPY, Copy(pc, head))
 DEF_DISP_FUNC(V_BROADCAST_X, BroadcastX<float>(pc, head, tile))

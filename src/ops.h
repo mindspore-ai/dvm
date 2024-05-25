@@ -235,6 +235,26 @@ class NDStore : public NDObject {
   VKernel *clear_kernel_{nullptr};
 };
 
+class NDPadStore : public NDStore {
+ public:
+  NDPadStore(NDObject *src, ShapeRef *pad_shape) : NDStore(src), pad_shape_(pad_shape) {
+    shape_ref_ = &shape_ref_data_;
+  }
+  NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) {
+    dst_ = dst;
+  }
+
+  void Normalize(std::vector<NDObject*> &run_ops) override;
+  int Emit(Code &code) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+
+ private:
+  std::vector<int64_t> shape_;
+  ShapeRef shape_ref_data_;
+  ShapeRef *pad_shape_;
+};
+
 class NDSStore : public NDStore{
  public:
   using NDStore::NDStore;

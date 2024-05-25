@@ -154,15 +154,19 @@ void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
 }
 
 void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vSliceLoad op;
-  vSliceLoad::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "slice_load " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  vSliceSL op;
+  vSliceSL::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "slice_load " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
   oss << " //";
-  DumpVal("body_size", op.pad_size, oss);
-  oss << ", ";
   DumpVal("pad_size", op.pad_size, oss);
-  oss << ", ";
-  DumpVal("type_size", op.type_size, oss);
+}
+
+void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vSliceSL op;
+  vSliceSL::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "slice_store " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  oss << " //";
+  DumpVal("pad_size", op.pad_size, oss);
 }
 
 void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -404,6 +408,7 @@ std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE_ATOMIC, &DumpStoreAtomic},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_SSTORE, &DumpSStore},
+  {V_SLICE_STORE, &DumpSliceStore},
 };
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {

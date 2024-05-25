@@ -317,6 +317,17 @@ NDObject* Kernel::Store(void *addr, NDObject* input) {
   return obj;
 }
 
+NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
+  auto ktype = kernel_->KType();
+  if (ktype == kStaticStages) {
+    ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
+  }
+  NDObject *obj;
+  obj = new NDPadStore(static_cast<uint8_t *>(addr), input, pad_shape);
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b) {
   auto obj = new CubeOp(lhs, rhs, trans_a, trans_b);
   kernel_->Append(obj);
@@ -358,6 +369,13 @@ NDObject* Kernel::StageLoad(NDObject *stage_store) {
 NDObject* Kernel::StageStore(NDObject *input) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
   auto op = new NDStore(nullptr, input);
+  static_cast<StagesKernel*>(kernel_)->StageStore(op);
+  return op;
+}
+
+NDObject* Kernel::StagePadStore(NDObject *input, ShapeRef *pad_shape) {
+  ASSERT(kernel_->KType() == KernelType::kStaticStages);
+  auto op = new NDPadStore(nullptr, input, pad_shape);
   static_cast<StagesKernel*>(kernel_)->StageStore(op);
   return op;
 }

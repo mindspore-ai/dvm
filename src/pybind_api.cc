@@ -284,6 +284,13 @@ py::object KernelPy::Store(const py::object &obj) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
+py::object KernelPy::PadStore(const py::object &obj, const py::object &pad_shape) {
+  auto in_obj = obj.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.PadStore(nullptr, in_obj, GetShapeRef(pad_shape));
+  stores_[op] = StoreInfo();
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
 py::object KernelPy::ElementAny(const py::object &input) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.ElemAny(in_obj);
@@ -316,6 +323,12 @@ py::object KernelPy::StageLoad(const py::object &store) {
 py::object KernelPy::StageStore(const py::object &input) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.StageStore(in_obj);
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
+py::object KernelPy::StagePadStore(const py::object &input, const py::object &pad_shape) {
+  auto in_obj = input.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.StagePadStore(in_obj, GetShapeRef(pad_shape));
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -528,6 +541,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("slice_load", &KernelPy::SliceLoad, "load array")
       .def("stridedslice_load", &KernelPy::StridedSliceLoad, "load array")
       .def("store", &KernelPy::Store, "store array")
+      .def("pad_store", &KernelPy::PadStore, "pad store array")
       .def("unary", &KernelPy::Unary, "emit unary op")
       .def("cast", &KernelPy::Cast, "emit cast op")
       .def("element_any", &KernelPy::ElementAny, "emit element_any op")
@@ -543,6 +557,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("stage_switch", &KernelPy::StageSwitch, "stage switch")
       .def("stage_load", &KernelPy::StageLoad, "stage load")
       .def("stage_store", &KernelPy::StageStore, "stage store")
+      .def("stage_pad_store", &KernelPy::StagePadStore, "stage store")
       .def("input", &KernelPy::Input, "get ouput array")
       .def("output", &KernelPy::Output, "get ouput array")
       .def("tile", &KernelPy::Tile, "set tiling")

@@ -202,7 +202,7 @@ int NDLoad::Emit(Code &code) {
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   if (lead_align == nd_[lead_dim_] || lead_align == strides_.back()) {
     vDMA op;
-    op.gm = src_;
+    op.gm = gm_;
     op.xn = xbuf_;
     op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
     op.lenburst = GetBlocks(src_tile_stride_);
@@ -212,7 +212,7 @@ int NDLoad::Emit(Code &code) {
     return vDMA::Encode(insn_, vLoadInsnID::V_LOAD, vPipe::V_PIPE_LOAD, op, rounds);
   } else { // align
     vLoad op;
-    op.from = src_;
+    op.from = gm_;
     op.xn = xbuf_;
     op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
     op.body_iter = strides_.back() / lead_align;
@@ -259,7 +259,7 @@ int NDPadStore::Emit(Code &code) {
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   vSliceSL op;
   auto size = shape_ref_->size;
-  op.gm = dst_;
+  op.gm = gm_;
   op.xn = lhs_->xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
@@ -317,7 +317,7 @@ int NDSStore::Emit(Code &code) { // TODO: broadcast
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   vSStore op;
-  op.gm = dst_;
+  op.gm = gm_;
   op.xn = lhs_->xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
@@ -333,7 +333,7 @@ int NDSLoad::Emit(Code &code) {
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   vSLoad op;
-  op.gm = src_;
+  op.gm = gm_;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
@@ -373,14 +373,14 @@ int64_t NDSliceLoad::CalcOffset() {
 int NDSliceLoad::Emit(Code &code) {
   reloc_offset_ = CalcOffset();
   if (nd_.size() == 1) {
-    src_ += reloc_offset_;
+    gm_ += reloc_offset_;
     return NDLoad::Emit(code);
   }
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   vSliceSL op;
   auto size = size_ref_->size;
-  op.gm = src_ + reloc_offset_;
+  op.gm = gm_ + reloc_offset_;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
@@ -432,7 +432,7 @@ int NDStore::Emit(Code &code) {
   if (lhs_->obj_id_ == kElementAny) {
     vStoreStatus op;
     op.xn = lhs_->xbuf_;
-    op.to = reinterpret_cast<uint64_t>(dst_);
+    op.to = reinterpret_cast<uint64_t>(gm_);
     reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
     return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);;
   } else if (lhs_->obj_id_ == kReduce || (lhs_->obj_id_ == kRemovePad && lhs_->lhs_->obj_id_ == kReduce)) {
@@ -440,7 +440,7 @@ int NDStore::Emit(Code &code) {
     auto red_op = static_cast<ReduceOp *>(reduce_op);
     if (red_op->factor_ > 1) {
       vStoreAtomic op;
-      op.to = reinterpret_cast<uint64_t>(dst_);
+      op.to = reinterpret_cast<uint64_t>(gm_);
       op.xn = lhs_->xbuf_;
       op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
       op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
@@ -462,7 +462,7 @@ int NDStore::Emit(Code &code) {
         clear_kernel_->Append(dummy_load);
         auto broadcast_scalar_op = new BroadcastScalarOp<float>(0.0, shape_ref_, type_id_, dummy_load);
         clear_kernel_->Append(broadcast_scalar_op);
-        clear_store_ = new NDStore(dst_, broadcast_scalar_op);
+        clear_store_ = new NDStore(gm_, broadcast_scalar_op);
         clear_kernel_->Append(clear_store_);
       }
       clear_kernel_->CodeGen();
@@ -473,7 +473,7 @@ int NDStore::Emit(Code &code) {
   }
   if (lead_align == static_cast<uint64_t>(lhs_->nd_[lhs_->lead_dim_])) {
     vDMA op;
-    op.gm = dst_;
+    op.gm = gm_;
     op.xn = lhs_->xbuf_;
     op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
     op.lenburst = GetBlocks(dst_tile_stride_);
@@ -485,7 +485,7 @@ int NDStore::Emit(Code &code) {
     vStore *op = reinterpret_cast<vStore*>(insn_);
     uint64_t ext = (dst_tile_stride_ * ITEM_SIZE[type_id_]) << V_C_X_BITS | vCompactX(lhs_->xbuf_);
     op->head = vMakeHead(vStoreInsnID::V_STORE_2, ext, sizeof(vStore) / sizeof(uint64_t), V_PIPE_STORE);
-    op->to = dst_;
+    op->to = gm_;
     uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
     uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
     uint64_t body_iter = strides_.back() / lead_align;

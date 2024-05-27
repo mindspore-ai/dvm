@@ -117,9 +117,16 @@ class NDObject {
   uint64_t *tail_insn_{nullptr};  // when in optimization passes, used to point to the prev NDObject
 };
 
-class NDLoadDummy : public NDObject {
+class NDAccess : public NDObject {
  public:
-  NDLoadDummy(DType type_id) : NDObject(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
+  NDAccess(uint8_t *gm, NDObject *lhs, DType type_id, ObjectType obj_id) : NDObject(lhs, nullptr, type_id, obj_id), gm_(gm) {}
+  uint8_t *gm_;
+  uint64_t *reloc_addr_{nullptr};
+};
+
+class NDLoadDummy : public NDAccess {
+ public:
+  NDLoadDummy(DType type_id) : NDAccess (nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
     nd_ = shape_;
     shape_ref_data_ = shape_;
     shape_ref_ = &shape_ref_data_;
@@ -132,10 +139,10 @@ class NDLoadDummy : public NDObject {
   ShapeRef shape_ref_data_;
 };
 
-class NDLoad : public NDObject {
+class NDLoad : public NDAccess {
  public:
   NDLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32)
-      : NDObject(nullptr, nullptr, type_id, ObjectType::kLoad), src_(src) {
+      : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
@@ -145,8 +152,6 @@ class NDLoad : public NDObject {
     *reloc_addr_ = reinterpret_cast<uint64_t>(static_cast<uint8_t *>(src) + reloc_offset_);
   }
 
-  uint8_t *src_;
-  uint64_t *reloc_addr_{nullptr};
   uint64_t reloc_offset_{0};
 
  private:
@@ -205,12 +210,12 @@ class NDStridedSliceLoad : public NDSliceLoad {
   ShapeRef *step_ref_;
 };
 
-class NDStore : public NDObject {
+class NDStore : public NDAccess {
  public:
-  NDStore(NDObject *src) : NDObject(src, nullptr, src->type_id_, ObjectType::kStore), dst_(nullptr) {
+  NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
-  NDStore(uint8_t *dst, NDObject *src) : NDObject(src, nullptr, src->type_id_, ObjectType::kStore), dst_(dst) {
+  NDStore(uint8_t *dst, NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
   ~NDStore() override;
@@ -225,8 +230,6 @@ class NDStore : public NDObject {
   }
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
-  uint8_t *dst_;
-  uint64_t *reloc_addr_{nullptr};
 
  private:
   int tail_dim_{-1};
@@ -241,7 +244,7 @@ class NDPadStore : public NDStore {
     shape_ref_ = &shape_ref_data_;
   }
   NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) {
-    dst_ = dst;
+    gm_ = dst;
   }
 
   void Normalize(std::vector<NDObject*> &run_ops) override;
@@ -255,7 +258,7 @@ class NDPadStore : public NDStore {
   ShapeRef *pad_shape_;
 };
 
-class NDSStore : public NDStore{
+class NDSStore : public NDStore {
  public:
   using NDStore::NDStore;
   int Emit(Code &code) override;

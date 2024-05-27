@@ -233,7 +233,7 @@ class CodeGenHelper {
 
   void OverWriteCoreLimit() {
     for (auto op : kernel_->static_ops_) {
-      if (op->obj_id_ <= kLoad || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && static_cast<ReduceOp*>(op)->factor_ > 1)) {
+      if (op->Pipe() == V_PIPE_LOAD || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && static_cast<ReduceOp*>(op)->factor_ > 1)) {
         continue;
       }
       // producer node for Store
@@ -1297,12 +1297,9 @@ uint64_t VKernelP::CodeGen() {
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + offsets[i]);
     uint64_t *old_base = reinterpret_cast<uint64_t*>(children_[i]->code_.data_);
     for (auto op :  children_[i]->objects_) {
-      if (op->obj_id_ == kLoad) {
-        auto load = static_cast<NDLoad*>(op);
-        load->reloc_addr_ = new_base + (load->reloc_addr_ - old_base);
-      } else if (op->obj_id_ == kStore) {
-        auto store = static_cast<NDStore*>(op);
-        store->reloc_addr_ = new_base + (store->reloc_addr_ - old_base);
+      if (op->Pipe() != V_PIPE_SIMD) {
+        auto io = static_cast<NDAccess*>(op);
+        io->reloc_addr_ = new_base + (io->reloc_addr_ - old_base);
       }
     }
   }
@@ -1521,29 +1518,24 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->n = n_;
   op->k = k_;
 
-  if (lhs_->obj_id_ == kLoad) {
-    auto a = static_cast<NDLoad*>(lhs_);
-    op->gm_a = reinterpret_cast<uint64_t>(a->src_);
+  if (lhs_->Pipe() == V_PIPE_LOAD) {
+    auto a = static_cast<NDAccess*>(lhs_);
+    op->gm_a = reinterpret_cast<uint64_t>(a->gm_);
     op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
     op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
   } else {
     ASSERT(0); // TODO: pre fusion
   }
-  if (rhs_->obj_id_ == kLoad) {
-    auto b = static_cast<NDLoad*>(rhs_);
-    op->gm_b = reinterpret_cast<uint64_t>(b->src_);
+  if (rhs_->Pipe() == V_PIPE_LOAD) {
+    auto b = static_cast<NDAccess*>(rhs_);
+    op->gm_b = reinterpret_cast<uint64_t>(b->gm_);
     op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
     op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
   } else {
     ASSERT(0); // TODO: pre fusion
   }
-  if (output_->obj_id_ == kStore) {
-    auto c = static_cast<NDStore*>(output_);
-    op->gm_c = reinterpret_cast<uint64_t>(c->dst_);
-  } else {
-    auto c = static_cast<NDLoad*>(output_);
-    op->gm_c = reinterpret_cast<uint64_t>(c->src_);
-  }
+  auto c = static_cast<NDAccess*>(output_);
+  op->gm_c = reinterpret_cast<uint64_t>(c->gm_);
   op->flags = trans_a_ ? V_CUBE_FLAG_TRANS_A : 0;
   if (trans_b_)  op->flags |= V_CUBE_FLAG_TRANS_B;
   auto dtype = lhs_->type_id_;
@@ -1685,32 +1677,29 @@ uint64_t MixKernel::UpdateReloc() {
   uint64_t workspace = 0;
   reloc_workspaces_.clear();
   vCubeOp *op = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
-  if (cube_op_->lhs_->obj_id_ == kLoad) {
-    static_cast<NDLoad*>(cube_op_->lhs_)->reloc_addr_ = &op->gm_a;
+  if (cube_op_->lhs_->Pipe() == V_PIPE_LOAD) {
+    static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &op->gm_a;
   } else {
     // TODO: pre fusion
   }
-  if (cube_op_->rhs_->obj_id_ == kLoad) {
-    static_cast<NDLoad*>(cube_op_->rhs_)->reloc_addr_ = &op->gm_b;
+  if (cube_op_->rhs_->Pipe() == V_PIPE_LOAD) {
+    static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &op->gm_b;
   } else {
     // TODO: pre fusion
   }
-  if (cube_op_->output_->obj_id_ == kStore) {
-    static_cast<NDStore*>(cube_op_->output_)->reloc_addr_ = &op->gm_c;
+  if (cube_op_->output_->Pipe() == V_PIPE_STORE) {
+    static_cast<NDAccess*>(cube_op_->output_)->reloc_addr_ = &op->gm_c;
   } else {
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + sizeof(vCubeOp));
     uint64_t *old_base = reinterpret_cast<uint64_t*>(post_fusion_->code_.data_);
     workspace += cube_op_->output_->Size();
-    NDLoad *load = static_cast<NDLoad *>(cube_op_->output_);
+    NDAccess* load = static_cast<NDAccess*>(cube_op_->output_);
     reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
     reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
     for (auto op :  post_fusion_->objects_) {
-      if (op->obj_id_ == kLoad) { // TODO: is not cube output
-        auto load = static_cast<NDLoad*>(op);
-        load->reloc_addr_ = new_base + (load->reloc_addr_ - old_base);
-      } else if (op->obj_id_ == kStore) {
-        auto store = static_cast<NDStore*>(op);
-        store->reloc_addr_ = new_base + (store->reloc_addr_ - old_base);
+      if (op->Pipe() != V_PIPE_SIMD) {
+        auto io = static_cast<NDAccess*>(op);
+        io->reloc_addr_ = new_base + (io->reloc_addr_ - old_base);
       }
     }
   }
@@ -1760,10 +1749,8 @@ StagesKernel::~StagesKernel() {
 
 void StagesKernel::Append(NDObject *obj) {
   stages_.back()->kernel->Append(obj);
-  if (obj->obj_id_ == ObjectType::kLoad) {
-    stages_.back()->loads.push_back(static_cast<NDLoad*>(obj));
-  } else if (obj->obj_id_ == ObjectType::kStore) {
-    stages_.back()->stores.push_back(static_cast<NDStore*>(obj));
+  if (obj->obj_id_ == ObjectType::kLoad || obj->obj_id_ == ObjectType::kStore) {
+    stages_.back()->ios.push_back(static_cast<NDAccess*>(obj));
   }
 }
 
@@ -1837,11 +1824,8 @@ uint64_t StagesKernel::CodeGen() {
     *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset) = cur_entry;
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
     uint64_t *old_base = reinterpret_cast<uint64_t*>(stage->kernel->code_.data_ + ffts_size);
-    for (auto op :  stage->loads) {
-      op->reloc_addr_ = (op->reloc_addr_ - old_base) + new_base;
-    }
-    for (auto op :  stage->stores) {
-      op->reloc_addr_ = (op->reloc_addr_ - old_base) + new_base;
+    for (auto a :  stage->ios) {
+      a->reloc_addr_ = (a->reloc_addr_ - old_base) + new_base;
     }
     for (auto op : stage->stage_loads) {
       auto offset = GetStageStoreWorkspace(GetStageStore(op));

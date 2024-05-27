@@ -451,7 +451,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   size_t size = buf.itemsize  * buf.size;
   ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
   ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
-  op->src_ = reinterpret_cast<uint8_t*>(info.dev);
+  op->gm_ = reinterpret_cast<uint8_t*>(info.dev);
   if (op->reloc_addr_) {
     op->Reloc(info.dev);
   }

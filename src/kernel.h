@@ -285,14 +285,14 @@ class StagesKernel : public VKernel {
     static_cast<VKernelP*>(current)->AppendNext();
   }
 
-  void StageStore(NDStore *store) {
+  void StageStore(NDAccess *store) {
     stages_.back()->kernel->Append(store);
     stages_.back()->stage_stores.push_back(store);
   }
 
-  void StageLoad(NDLoad *load, NDStore *store) {
+  void StageLoad(NDAccess *load, NDAccess *store) {
     stages_.back()->kernel->Append(load);
-    load->src_ = reinterpret_cast<uint8_t*>(store);
+    load->gm_ = reinterpret_cast<uint8_t*>(store);
     stages_.back()->stage_loads.push_back(load);
   }
 
@@ -303,19 +303,18 @@ class StagesKernel : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  NDStore* GetStageStore(NDLoad* load) { return reinterpret_cast<NDStore*>(load->src_); }
-  void SetStageStoreWorkspace(NDStore* store, int64_t offset) { store->dst_ = reinterpret_cast<uint8_t*>(offset); }
-  int64_t GetStageStoreWorkspace(NDStore* store) { return reinterpret_cast<int64_t>(store->dst_); }
+  NDAccess* GetStageStore(NDAccess* load) { return reinterpret_cast<NDAccess*>(load->gm_); }
+  void SetStageStoreWorkspace(NDAccess* store, int64_t offset) { store->gm_ = reinterpret_cast<uint8_t*>(offset); }
+  int64_t GetStageStoreWorkspace(NDAccess* store) { return reinterpret_cast<int64_t>(store->gm_); }
 
   struct Stage {
     Stage(VKernel *k) : kernel(k) {}
     VKernel* kernel;
     int64_t ws_offset{-1};
     int64_t code_offset{-1};
-    std::vector<NDStore*> stage_stores; // dst_ is offset
-    std::vector<NDLoad*> stage_loads; // src_ is NDStore*
-    std::vector<NDLoad*> loads;
-    std::vector<NDStore*> stores;
+    std::vector<NDAccess*> stage_stores; // gm_ is offset
+    std::vector<NDAccess*> stage_loads; // gm_ is NDStore*
+    std::vector<NDAccess*> ios;
   };
   std::vector<Stage*> stages_;
 };

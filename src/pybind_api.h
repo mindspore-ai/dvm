@@ -35,6 +35,7 @@ class NDObjectPy {
     }
     return out;
   }
+  std::string GetDType() const;
   NDObject* Get() const { return obj_; }
  private:
   NDObject *obj_;
@@ -89,6 +90,8 @@ class KernelPy {
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b);
+  py::object ConvertToBF16(const py::object &input);
+  py::object ConvertFromBF16(const py::object &input);
   void ParallelNext();
 
   void StageSwitch(const std::string &ker_type);
@@ -127,6 +130,9 @@ class KernelPy {
   std::vector<ShapeRef*> shape_;
   std::unordered_map<NDObject*, LoadInfo> loads_;
   std::unordered_map<NDObject*, StoreInfo> stores_;
+  std::vector<std::vector<float>> f32s_; // store f32 converted from bf16
+  std::vector<std::vector<uint16_t>> bf16s_; // store bf16 converted from f32
+
   int dev_id_{0};
   void *workspace_{nullptr};
 };

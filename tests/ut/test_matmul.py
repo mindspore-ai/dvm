@@ -64,3 +64,17 @@ def test_matmul_post_fusion(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+@pytest.mark.parametrize('trans', [[False, False]])
+def test_matmul_bf16(trans):
+    t = Tester("mix")
+    g0 = np.random.normal(0, 1, [64, 64]).astype(np.float32)
+    g1 = np.random.normal(0, 1, [64, 64]).astype(np.float32)
+    expect = np.matmul(g0 if not trans[0] else g0.transpose(), g1 if not trans[1] else g1.transpose())
+    a = t.load(g0, "bfloat16")
+    b = t.load(g1, "bfloat16")
+    c = t.matmul(a, b, trans[0], trans[1])
+    t.store_expect(c, expect, 1e-1)
+    assert (t.run_check())

@@ -30,18 +30,26 @@ class Tester(Kernel):
         self.passes = None
 
     def load(self, shape_arr, dtype=None):
-        if dtype is not None:
+        if not isinstance(shape_arr, np.ndarray):
+            # dynamic shape scenario
             return Kernel.load(self, shape_arr, dtype)
-        dtype = str(shape_arr.dtype)
+        if dtype == "bfloat16":
+            shape_arr = Kernel.convert_to_bf16(self, shape_arr)
+        elif dtype == None:
+            dtype = str(shape_arr.dtype)
         shape = list(shape_arr.shape)
         op = Kernel.load(self, shape, dtype)
         self.input(op, shape_arr)
         return op
 
     def slice_load(self, shape_arr, start, size, dtype=None):
-        if dtype is not None:
+        if not isinstance(shape_arr, np.ndarray):
+            # dynamic shape scenario
             return Kernel.slice_load(self, shape_arr, start, size, dtype)
-        dtype = str(shape_arr.dtype)
+        if dtype == "bfloat16":
+            shape_arr = Kernel.convert_to_bf16(self, shape_arr)
+        elif dtype == None:
+            dtype = str(shape_arr.dtype)
         shape = list(shape_arr.shape)
         op = Kernel.slice_load(self, shape, start, size, dtype)
         self.input(op, shape_arr)
@@ -109,6 +117,8 @@ class Tester(Kernel):
             for i in error_ranges:
                 print("[{}, {}]: {}".format(i[0], i[1], i[1] - i[0] + 1))
         out = self.output(store)
+        if store.dtype() == "bfloat16":
+            out = Kernel.convert_from_bf16(self, out)
         if inspect.isfunction(expect):
             if not expect(out):
                 print("********** OUTPUT **********")

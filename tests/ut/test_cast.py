@@ -29,6 +29,17 @@ def test_cast(type1, type2, eps):
     t.store_expect(z, a.astype(type2), eps)
     assert (t.run_check())
 
+@pytest.mark.parametrize('type1, type2, eps', [("bfloat16", "float32", 1e-2), ("float32", "bfloat16", 1e-2)])
+def test_cast_bf16(type1, type2, eps):
+    t = Tester()
+    a = np.random.normal(0, 100, [1024, 32]).astype(np.float32)
+    x = t.load(a, type1)
+    x = t.copy(x)
+    z = t.cast(x, type2)
+    z = t.copy(z)
+    t.store_expect(z, a, eps)
+    assert (t.run_check())
+
 @pytest.mark.parametrize('type1, type2, eps', [(np.float16, np.float32, 1e-3), (np.float32, np.float16, 1e-3)])
 def test_cast_binary(type1, type2, eps):
     t = Tester()

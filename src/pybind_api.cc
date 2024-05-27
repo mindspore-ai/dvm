@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <memory>
 #include <fstream>
 #include "pybind11/numpy.h"
@@ -22,6 +23,7 @@
 #include "acl/acl_rt.h"
 #include "kernel.h"
 #include "pybind_api.h"
+#include "bf16.h"
 
 #define ASCEND_CALL(func)                                                                               \
   do {                                                                                                  \
@@ -39,14 +41,23 @@ static int64_t GetTimeX() {
   return tv.tv_sec * 1000000 + tv.tv_usec;
 }
 
-DType StringToTypeID(const std::string type) {
-  const static std::unordered_map<std::string, DType> map = {
-    {"float32", DType::kFloat32}, {"float16", DType::kFloat16}, {"bool", DType::kInt8}, {"int32", DType::kInt32}};
+DType StringToTypeID(const std::string &type) {
+  const static std::unordered_map<std::string, DType> map = {{"float32", DType::kFloat32},
+                                                             {"float16", DType::kFloat16},
+                                                             {"bfloat16", DType::kBFloat16},
+                                                             {"bool", DType::kInt8},
+                                                             {"int32", DType::kInt32}};
   return map.at(type);
 }
 
+std::string TypeIDToString(DType type) {
+  const static std::string map[] = {"bool", "float16", "bfloat16", "float32", "int32"};
+  return map[type];
+}
+
 std::string GetBufferFormat(const DType type) {
-  const std::string formats[kTypeEnd] = {py::format_descriptor<bool>::format(), "e", "", py::format_descriptor<float>::format(),
+  const std::string formats[kTypeEnd] = {py::format_descriptor<bool>::format(), "e",
+                                         py::format_descriptor<uint16_t>::format(), py::format_descriptor<float>::format(),
                                          py::format_descriptor<int32_t>::format()};
   return formats[type];
 }
@@ -112,6 +123,8 @@ static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", Binar
 static std::unordered_map<std::string, KernelType> kernel_type_map = {
   {"", kStaticShape}, {"static", kStaticShape}, {"dyn", kDynShape}, {"mix", kStaticMix},
   {"parallel", kStaticParallel}, {"stages", kStaticStages}};
+
+std::string NDObjectPy::GetDType() const { return TypeIDToString(obj_->type_id_); }
 
 void ShapeRefPy::Update(const py::object &shape){
   shape_ = GetVector(shape);
@@ -302,6 +315,34 @@ py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool t
   auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.MatMul(lhs_obj, rhs_obj, trans_a, trans_b);
   return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
+py::object KernelPy::ConvertToBF16(const py::object &input) {
+  auto array = py::array(input);
+  py::buffer_info buf = array.request();
+  ASSERT(buf.itemsize == 4);  // input should be array of f32
+  size_t size = buf.size;
+  std::vector<uint16_t> bf16(size);
+  F32ToBF16(reinterpret_cast<float *>(buf.ptr), bf16.data(), size);
+  std::for_each(buf.strides.begin(), buf.strides.end(), [](ssize_t &stride) { stride /= 2; });
+  py::buffer_info new_buf(bf16.data(), 2, py::format_descriptor<uint16_t>::format(), buf.ndim, buf.shape,
+                          buf.strides);
+  bf16s_.push_back(std::move(bf16));
+  return py::array(new_buf);
+}
+
+py::object KernelPy::ConvertFromBF16(const py::object &input) {
+  auto array = py::array(input);
+  py::buffer_info buf = array.request();
+  ASSERT(buf.itemsize == 2);  // input should be array of bf16
+  size_t size = buf.size;
+  std::vector<float> float_data(size);
+  BF16ToF32(reinterpret_cast<uint16_t *>(buf.ptr), float_data.data(), size);
+  std::for_each(buf.strides.begin(), buf.strides.end(), [](ssize_t &stride) { stride *= 2; });
+  py::buffer_info new_buf(float_data.data(), 4, py::format_descriptor<float>::format(), buf.ndim, buf.shape,
+                          buf.strides);
+  f32s_.push_back(std::move(float_data));
+  return py::array(new_buf);
 }
 
 void KernelPy::ParallelNext() {
@@ -527,7 +568,9 @@ class DevicePy {
 };
 
 PYBIND11_MODULE(_dvm_py, m) {
-  (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject").def("shape", &NDObjectPy::GetShape, "get shape");
+  (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
+    .def("shape", &NDObjectPy::GetShape, "get shape")
+    .def("dtype", &NDObjectPy::GetDType, "get dtype");
 
   (void)py::class_<ShapeRefPy, std::shared_ptr<ShapeRefPy>>(m, "ShapeRef")
     .def(py::init<>())
@@ -553,6 +596,8 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("reduce", &KernelPy::Reduce, "emit reduce op")
       .def("copy", &KernelPy::Copy, "emit copy op")
       .def("matmul", &KernelPy::MatMul, "emit matmul op")
+      .def("convert_to_bf16", &KernelPy::ConvertToBF16, "convert f32 array to bf16 array")
+      .def("convert_from_bf16", &KernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
       .def("p_next", &KernelPy::ParallelNext, "parallel next")
       .def("stage_switch", &KernelPy::StageSwitch, "stage switch")
       .def("stage_load", &KernelPy::StageLoad, "stage load")

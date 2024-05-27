@@ -1043,15 +1043,9 @@ static inline [aicore] void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *s
   if (begin_m == end_m) {
     copy_gm_to_ubuf_align_b8(dst, src, 0, 1, (end_n - begin_n + 1) * type_size, 0, 0, 0, 0);
   } else {
-    copy_gm_to_ubuf_align_b8(dst, src, 0, 1, (slice_n - begin_n) * type_size, 0, 0, 0, 0);
-    src += (src_n - begin_n) * type_size;
-    dst += (slice_n - begin_n + pad_size) * type_size;
-    uint64_t num = end_m - begin_m - 1;
+    uint64_t num = end_m - begin_m + 1;
     copy_gm_to_ubuf_align_b8(dst, src, 0, num, slice_n * type_size, 0, 0, (src_n - slice_n) * type_size,
                              (pad_size * type_size) >> 5);
-    src += num * src_n * type_size;
-    dst += num * (slice_n + pad_size) * type_size;
-    copy_gm_to_ubuf_align_b8(dst, src, 0, 1, (end_n + 1) * type_size, 0, 0, 0, 0);
   }
 }
 
@@ -1061,15 +1055,9 @@ static inline [aicore] void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *
   if (begin_m == end_m) {
     copy_ubuf_to_gm_align_b8(dst, src, 0, 1, (end_n - begin_n + 1) * type_size, 0, 0, 0, 0);
   } else {
-    copy_ubuf_to_gm_align_b8(dst, src, 0, 1, (slice_n - begin_n) * type_size, 0, 0, 0, 0);
-    dst += (src_n - begin_n) * type_size;
-    src += (slice_n - begin_n + pad_size) * type_size;
-    uint64_t num = end_m - begin_m - 1;
+    uint64_t num = end_m - begin_m + 1;
     copy_ubuf_to_gm_align_b8(dst, src, 0, num, slice_n * type_size, 0, 0, (pad_size * type_size) >> 5,
                              (src_n - slice_n) * type_size);
-    dst += num * src_n * type_size;
-    src += num * (slice_n + pad_size) * type_size;
-    copy_ubuf_to_gm_align_b8(dst, src, 0, 1, (end_n + 1) * type_size, 0, 0, 0, 0);
   }
 }
 

@@ -496,5 +496,32 @@ class ReduceOp : public _ReduceOp {
   bool keepdims_;
   ShapeRef *dims_ref_;
 };
+
+class CubeOp : public NDObject {
+ public:
+  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
+  ~CubeOp() override;
+  int Emit(Code &code) override { return 0; }
+  void CodeGen(vCubeOp *code);
+  void NormalizeCube();
+
+  NDObject *output_{nullptr};
+  uint64_t block_dim_{0};
+  uint64_t core_loop_{0};
+
+ protected:
+  void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);
+  float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
+  void Tile(vCubeOp *code);
+  void GetSwizzleConfig(vCubeOp *code);
+
+  bool trans_a_{false};
+  bool trans_b_{false};
+  int64_t m_{0};
+  int64_t n_{0};
+  int64_t k_{0};
+  std::vector<int64_t> shape_;
+  ShapeRef shape_ref_data_;
+};
 } // namespace dvm
 #endif // _DVM_OPS_H_

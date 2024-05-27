@@ -24,6 +24,26 @@
 
 namespace dvm {
 namespace {
+constexpr uint32_t FP32_SIZE = 4;
+constexpr uint32_t BLOCK_SIZE = 16;
+constexpr uint32_t AXES_ALIGN_SIZE = 512;
+constexpr uint32_t CUBE_BLOCK_SIZE = 256;
+constexpr uint32_t CONST_512 = 512;
+
+inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
+  if (rnd == 0) {
+      return 0;
+  }
+  return (num + rnd - 1) / rnd * rnd;
+}
+
+inline __attribute__((always_inline)) uint32_t RoundDown(uint32_t num, uint32_t rnd) {
+  if (rnd == 0) {
+    return 0;
+  }
+  return num / rnd * rnd;
+}
+
 inline uint64_t DMAConfig(uint64_t sid, uint64_t nBurst, uint64_t lenBurst,
                           uint64_t srcStride, uint64_t dstStride) {
   return dstStride << 48 | srcStride << 32 | lenBurst << 16 | nBurst << 4 | sid;
@@ -1239,5 +1259,195 @@ int ReduceOp::Emit(Code &code) {
     num += size;
   }
   return num;
+}
+
+void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
+  int n = std::max(lhs->nd_.size(), rhs->nd_.size());
+  nd_.reserve(n);
+  nd_.emplace_back(n_);
+  nd_.emplace_back(m_);
+  for (int i = 2; i < n; ++i) {
+    auto dim1 = i < static_cast<int>(lhs->nd_.size()) ? lhs_->nd_[i] : 1;
+    auto dim2 = i < static_cast<int>(rhs->nd_.size()) ? rhs_->nd_[i] : 1;
+    if (dim1 == dim2) {
+      nd_.emplace_back(dim1);
+    } else if (dim1 == 1) {
+      nd_.emplace_back(dim2);
+    } else if (dim2 == 1) {
+      nd_.emplace_back(dim1);
+    } else {
+      // should not reach here, because this case can not be broadcasted.
+      ASSERT(0);
+    }
+  }
+  shape_.resize(n);
+  std::reverse_copy(nd_.begin(), nd_.end(), shape_.begin());
+}
+
+CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
+  : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
+}
+
+CubeOp::~CubeOp() {
+  if (lhs_->obj_id_ == kLoad) {
+    delete lhs_;
+  }
+  if (rhs_->obj_id_ == kLoad) {
+    delete rhs_;
+  }
+  if (output_->obj_id_ == kStore) {
+    delete output_;
+  }
+}
+
+void CubeOp::NormalizeCube() {
+  m_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
+  k_ = trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0];
+  n_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
+  if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
+    nd_ = {n_, m_};
+    shape_ = {m_, n_};
+  } else {
+    ComputeBroadcastShape(lhs_, rhs_);
+  }
+  shape_ref_data_ = shape_;
+  shape_ref_ = &shape_ref_data_;
+}
+
+float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
+  float a_coef = 1.0f;
+  float b_coef = 1.0f;
+  float bw_coef = 5.0f;
+  auto m_loop = CeilDiv(op->m, m0);
+  auto n_loop = CeilDiv(op->n, n0);
+  if (m_loop == 0 || n_loop == 0) {
+    return 1.0f;
+  }
+  auto core_need = m_loop * n_loop;
+  auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
+  auto l2_num = DeviceInfo::Instance().L2Size() / ITEM_SIZE[type_id_];
+  uint32_t block_dim = core_need < core_num ? core_need : core_num;
+  uint32_t m_once = block_dim < n_loop ? m0 : block_dim / n_loop * m0;
+  uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n;
+  if (m_once * op->k > l2_num) {
+      a_coef = bw_coef;
+  }
+  if (n_once * op->k > l2_num) {
+      b_coef = bw_coef;
+  }
+  // calibrate bandwidth
+  a_coef = a_coef * block_dim / core_num;
+  b_coef = b_coef * block_dim / core_num;
+  return 1.0f / (a_coef * static_cast<float>(n0)) + 1.0f / (b_coef * static_cast<float>(m0));
+}
+
+void CubeOp::Tile(vCubeOp *op) {
+  auto pri_flag = m_ < n_ ? false : true;
+  auto m_round = RoundUp(static_cast<uint32_t>(m_), BLOCK_SIZE);
+  auto n_round = RoundUp(static_cast<uint32_t>(n_), BLOCK_SIZE);
+  auto pri_axis = pri_flag ? m_round : n_round;
+  auto axis = pri_flag ? n_round : m_round;
+  auto axis_max = AXES_ALIGN_SIZE / ITEM_SIZE[type_id_];
+  auto pri_axis0_max = pri_axis < axis_max ? pri_axis : axis_max;
+  auto axis0_max = axis < axis_max ? axis : axis_max;
+  auto l0c_num = DeviceInfo::Instance().L0CSize() / FP32_SIZE;
+  uint32_t pri_axis0_init = BLOCK_SIZE;
+  uint32_t axis0_init = BLOCK_SIZE;
+  float min_cost = 1.0f;
+  // m0, n0
+  for (uint32_t pri_axis0 = pri_axis0_init; pri_axis0 <= pri_axis0_max; pri_axis0 *= 2) {
+    for (uint32_t axis0 = axis0_init; axis0 <= axis0_max; axis0 *= 2) {
+      if (pri_axis0 * axis0 > l0c_num) {
+        break;
+      }
+      auto m0 = pri_flag ? pri_axis0 : axis0;
+      auto n0 = pri_flag ? axis0 : pri_axis0;
+      auto cost = CostFunc(op, m0, n0);
+      if (cost < min_cost) {
+        min_cost = cost;
+        op->m0 = m0;
+        op->n0 = n0;
+      }
+    }
+  }
+  // k0
+  uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
+  uint32_t kBlockSize = BLOCK_SIZE;
+  auto l1_ping_pong_num = DeviceInfo::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
+  auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
+  op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
+  if (op->k0 > CONST_512) {
+    op->k0 = RoundDown(op->k0, CONST_512);
+  }
+  if (op->k0 > op->k) {
+    op->k0 = op->k;
+  }
+}
+
+void CubeOp::GetSwizzleConfig(vCubeOp *op) {
+  uint32_t swizzle_cnt = 1;
+  uint32_t swizzle_dir = 0;
+  float mincost = op->m + op->n;
+  for (size_t i = 1; i <= block_dim_; i++) {
+    uint32_t c = (block_dim_ + i - 1) / i;
+    float cost;
+    if (i * op->n0 + op->m < op->m0 * c + op->n) {
+      swizzle_dir = 1; // zN
+      uint32_t mem_a_zN = c * op->m0;
+      uint32_t mem_b_zN = i * op->n0;
+      cost = mem_a_zN + mem_b_zN;
+      if (cost <= mincost) {
+          mincost = cost;
+          swizzle_cnt = i;
+      }
+    } else {
+      swizzle_dir = 0; // nZ
+      uint32_t mem_a_nZ = c * op->n0;
+      uint32_t mem_b_nZ = i * op->m0;
+      cost = mem_a_nZ + mem_b_nZ;
+      if (cost < mincost) {
+          mincost = cost;
+          swizzle_cnt = i;
+      }
+    }
+  }
+  op->swizzle = swizzle_dir << 16 | swizzle_cnt;
+}
+
+void CubeOp::CodeGen(vCubeOp *op) {
+  op->m = m_;
+  op->n = n_;
+  op->k = k_;
+
+  if (lhs_->Pipe() == V_PIPE_LOAD) {
+    auto a = static_cast<NDAccess*>(lhs_);
+    op->gm_a = reinterpret_cast<uint64_t>(a->gm_);
+    op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
+    op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
+  } else {
+    ASSERT(0); // TODO: pre fusion
+  }
+  if (rhs_->Pipe() == V_PIPE_LOAD) {
+    auto b = static_cast<NDAccess*>(rhs_);
+    op->gm_b = reinterpret_cast<uint64_t>(b->gm_);
+    op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
+    op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
+  } else {
+    ASSERT(0); // TODO: pre fusion
+  }
+  auto c = static_cast<NDAccess*>(output_);
+  op->gm_c = reinterpret_cast<uint64_t>(c->gm_);
+  op->flags = trans_a_ ? V_CUBE_FLAG_TRANS_A : 0;
+  if (trans_b_)  op->flags |= V_CUBE_FLAG_TRANS_B;
+  auto dtype = lhs_->type_id_;
+  ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
+  op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
+  Tile(op);
+  auto m_loop = CeilDiv(op->m, op->m0);
+  auto n_loop = CeilDiv(op->n, op->n0);
+  core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
+  auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
+  block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+  GetSwizzleConfig(op);
 }
 } // namespace dvm

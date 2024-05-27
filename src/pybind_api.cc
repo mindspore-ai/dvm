@@ -439,7 +439,7 @@ py::object KernelPy::Measure() {
 }
 
 void KernelPy::Input(const py::object &load, const py::object &array) {
-  auto op = reinterpret_cast<NDLoad*>(load.cast<NDOpPyPtr>()->Get());
+  auto op = static_cast<NDAccess*>(load.cast<NDOpPyPtr>()->Get());
   auto it = loads_.find(op);
   ASSERT(it != loads_.end());
   auto &info = it->second;
@@ -453,7 +453,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
   op->gm_ = reinterpret_cast<uint8_t*>(info.dev);
   if (op->reloc_addr_) {
-    op->Reloc(info.dev);
+    kernel_.GetImpl()->RelocInput(op, info.dev);
   }
   if (kernel_.GetImpl()->KType() == kDynShape) {
     info.shape.resize(buf.ndim);
@@ -507,7 +507,7 @@ void KernelPy::PrepareOutput() {
     std::memset(info.host, 0, info.size);
     ASCEND_CALL(aclrtMalloc(&info.dev, info.size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
-    reinterpret_cast<NDStore *>(op)->Reloc(info.dev);
+    kernel_.GetImpl()->RelocOutput(op, info.dev);
   }
 }
 

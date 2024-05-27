@@ -409,21 +409,21 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
   info.op_fullname = op_fullname;
   info.input_size = reloc_table.inputs_size;
   info.output_size = reloc_table.outputs_size;
-  auto loads = reinterpret_cast<NDLoad **>(reloc_table.inputs);
+  auto loads = reloc_table.inputs;
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
     auto shape_ref = GetShape(*loads);
     info.data_formats.emplace_back(kOpFormat_DEFAULT);
     info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
     info.data_types.emplace_back(v_type_map[GetDType(*loads)]);
-    (*loads++)->Reloc(*inputs++);
+    kernel_->RelocInput(*loads++, *inputs++);
   }
-  auto stores = reinterpret_cast<NDStore **>(reloc_table.outputs);
+  auto stores = reloc_table.outputs;
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
     auto shape_ref = GetShape(*stores);
     info.data_formats.emplace_back(kOpFormat_DEFAULT);
     info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
     info.data_types.emplace_back(v_type_map[GetDType(*stores)]);
-    (*stores++)->Reloc(*outputs++);
+    kernel_->RelocOutput(*stores++, *outputs++);
   }
   kernel_->RelocWorkspace(workspace);
   auto &code = kernel_->code_;
@@ -437,13 +437,13 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 }
 
 int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void *workspace, void* stream) {
-  auto loads = reinterpret_cast<NDLoad**>(reloc_table.inputs);
+  auto loads = reloc_table.inputs;
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    (*loads++)->Reloc(*inputs++);
+    kernel_->RelocInput(*loads++, *inputs++);
   }
-  auto stores = reinterpret_cast<NDStore**>(reloc_table.outputs);
+  auto stores = reloc_table.outputs;
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    (*stores++)->Reloc(*outputs++);
+    kernel_->RelocOutput(*stores++, *outputs++);
   }
   kernel_->RelocWorkspace(workspace);
   return kernel_->code_.Launch(stream);

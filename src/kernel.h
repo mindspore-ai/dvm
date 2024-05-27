@@ -80,6 +80,8 @@ class VKernel {
   virtual uint64_t CodeGen() = 0;
   virtual void DumpKernel(std::ostringstream &oss, const std::string &indent) = 0;
 
+  inline void RelocInput(NDObject *load, void *gm) { static_cast<NDLoad*>(load)->Reloc(gm); }
+  inline void RelocOutput(NDObject *store, void *gm) { static_cast<NDStore*>(store)->Reloc(gm); }
   inline void RelocWorkspace(void *workspace) {
     if (workspace) {
       for (auto &r : reloc_workspaces_) {

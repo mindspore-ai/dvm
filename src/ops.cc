@@ -1264,8 +1264,8 @@ int ReduceOp::Emit(Code &code) {
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   int n = std::max(lhs->nd_.size(), rhs->nd_.size());
   nd_.reserve(n);
-  nd_.emplace_back(n_);
-  nd_.emplace_back(m_);
+  nd_.emplace_back(n_real_);
+  nd_.emplace_back(m_real_);
   for (int i = 2; i < n; ++i) {
     auto dim1 = i < static_cast<int>(lhs->nd_.size()) ? lhs_->nd_[i] : 1;
     auto dim2 = i < static_cast<int>(rhs->nd_.size()) ? rhs_->nd_[i] : 1;
@@ -1301,12 +1301,31 @@ CubeOp::~CubeOp() {
 }
 
 void CubeOp::NormalizeCube() {
-  m_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
-  k_ = trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0];
-  n_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
+  m_align_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
+  k_align_ = trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0];
+  n_align_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
+  m_real_ = m_align_;
+  k_real_ = k_align_;
+  n_real_ = n_align_;
+
+  auto lhs_load = static_cast<NDLoad *>(lhs_);
+  // if the original shape reference is not nullptr, then this matmul must be padded, we need to get its original shape
+  if (lhs_load->ori_shape_ref_ != nullptr) {
+    std::vector<int64_t> lhs_real_nd(lhs_load->ori_shape_ref_->data, lhs_load->ori_shape_ref_->data + lhs_load->ori_shape_ref_->size);
+    std::reverse(lhs_real_nd.begin(), lhs_real_nd.end());
+    m_real_ = trans_a_ ? lhs_real_nd[0] : lhs_real_nd[1];
+    k_real_ = trans_a_ ? lhs_real_nd[1] : lhs_real_nd[0];
+  }
+  auto rhs_load = static_cast<NDLoad *>(rhs_);
+  if (rhs_load->ori_shape_ref_ != nullptr) {
+    std::vector<int64_t> rhs_real_nd(rhs_load->ori_shape_ref_->data, rhs_load->ori_shape_ref_->data + rhs_load->ori_shape_ref_->size);
+    std::reverse(rhs_real_nd.begin(), rhs_real_nd.end());
+    k_real_ = trans_b_ ? rhs_real_nd[0] : rhs_real_nd[1];
+    n_real_ = trans_b_ ? rhs_real_nd[1] : rhs_real_nd[0];
+  }  
   if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
-    nd_ = {n_, m_};
-    shape_ = {m_, n_};
+    nd_ = {n_real_, m_real_};
+    shape_ = {m_real_, n_real_};
   } else {
     ComputeBroadcastShape(lhs_, rhs_);
   }
@@ -1318,8 +1337,8 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   float a_coef = 1.0f;
   float b_coef = 1.0f;
   float bw_coef = 5.0f;
-  auto m_loop = CeilDiv(op->m, m0);
-  auto n_loop = CeilDiv(op->n, n0);
+  auto m_loop = CeilDiv(op->m_align, m0);
+  auto n_loop = CeilDiv(op->n_align, n0);
   if (m_loop == 0 || n_loop == 0) {
     return 1.0f;
   }
@@ -1328,11 +1347,12 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   auto l2_num = DeviceInfo::Instance().L2Size() / ITEM_SIZE[type_id_];
   uint32_t block_dim = core_need < core_num ? core_need : core_num;
   uint32_t m_once = block_dim < n_loop ? m0 : block_dim / n_loop * m0;
-  uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n;
-  if (m_once * op->k > l2_num) {
+
+  uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n_align;
+  if (m_once * op->k_align > l2_num) {
       a_coef = bw_coef;
   }
-  if (n_once * op->k > l2_num) {
+  if (n_once * op->k_align > l2_num) {
       b_coef = bw_coef;
   }
   // calibrate bandwidth
@@ -1342,9 +1362,9 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
 }
 
 void CubeOp::Tile(vCubeOp *op) {
-  auto pri_flag = m_ < n_ ? false : true;
-  auto m_round = RoundUp(static_cast<uint32_t>(m_), BLOCK_SIZE);
-  auto n_round = RoundUp(static_cast<uint32_t>(n_), BLOCK_SIZE);
+  auto pri_flag = m_align_ < n_align_ ? false : true;
+  auto m_round = RoundUp(static_cast<uint32_t>(m_align_), BLOCK_SIZE);
+  auto n_round = RoundUp(static_cast<uint32_t>(n_align_), BLOCK_SIZE);
   auto pri_axis = pri_flag ? m_round : n_round;
   auto axis = pri_flag ? n_round : m_round;
   auto axis_max = AXES_ALIGN_SIZE / ITEM_SIZE[type_id_];
@@ -1379,19 +1399,19 @@ void CubeOp::Tile(vCubeOp *op) {
   if (op->k0 > CONST_512) {
     op->k0 = RoundDown(op->k0, CONST_512);
   }
-  if (op->k0 > op->k) {
-    op->k0 = op->k;
+  if (op->k0 > op->k_align) {
+    op->k0 = op->k_align;
   }
 }
 
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   uint32_t swizzle_cnt = 1;
   uint32_t swizzle_dir = 0;
-  float mincost = op->m + op->n;
+  float mincost = op->m_align + op->n_align;
   for (size_t i = 1; i <= block_dim_; i++) {
     uint32_t c = (block_dim_ + i - 1) / i;
     float cost;
-    if (i * op->n0 + op->m < op->m0 * c + op->n) {
+    if (i * op->n0 + op->m_align < op->m0 * c + op->n_align) {
       swizzle_dir = 1; // zN
       uint32_t mem_a_zN = c * op->m0;
       uint32_t mem_b_zN = i * op->n0;
@@ -1415,9 +1435,12 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
 }
 
 void CubeOp::CodeGen(vCubeOp *op) {
-  op->m = m_;
-  op->n = n_;
-  op->k = k_;
+  op->m_align = m_align_;
+  op->n_align = n_align_;
+  op->k_align = k_align_;
+  op->m_real = m_real_;
+  op->n_real = n_real_;
+  op->k_real = k_real_;
 
   if (lhs_->Pipe() == V_PIPE_LOAD) {
     auto a = static_cast<NDAccess*>(lhs_);
@@ -1443,8 +1466,10 @@ void CubeOp::CodeGen(vCubeOp *op) {
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
   Tile(op);
-  auto m_loop = CeilDiv(op->m, op->m0);
-  auto n_loop = CeilDiv(op->n, op->n0);
+  auto m_loop = op->m_align / op->m0;
+  ASSERT(op->m_align % op->m0 == 0); // after padding, m_align must be divisible by m0
+  auto n_loop = op->n_align / op->n0;
+  ASSERT(op->m_align % op->m0 == 0); // after padding, n_align must be divisible by n0
   core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
   block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;

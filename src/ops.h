@@ -141,9 +141,10 @@ class NDLoadDummy : public NDAccess {
 
 class NDLoad : public NDAccess {
  public:
-  NDLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32)
+  NDLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32, ShapeRef *ori_shape_ref = nullptr)
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
+    ori_shape_ref_ = ori_shape_ref;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
@@ -153,6 +154,7 @@ class NDLoad : public NDAccess {
   }
 
   uint64_t reloc_offset_{0};
+  ShapeRef *ori_shape_ref_;
 
  private:
   int tail_dim_{-1};
@@ -517,9 +519,12 @@ class CubeOp : public NDObject {
 
   bool trans_a_{false};
   bool trans_b_{false};
-  int64_t m_{0};
-  int64_t n_{0};
-  int64_t k_{0};
+  int64_t m_align_{0};
+  int64_t n_align_{0};
+  int64_t k_align_{0};
+  int64_t m_real_{0};
+  int64_t n_real_{0};
+  int64_t k_real_{0};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
 };

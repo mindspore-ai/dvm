@@ -887,7 +887,8 @@ struct vCubeOp {
   enum {FP16, BF16};
 
   uint32_t flags;
-  uint32_t m, n, k;
+  uint32_t m_real, n_real, k_real;
+  uint32_t m_align, n_align, k_align;
   // shape_a: [batch_a0, batch_a1, m, k], shape_b: [batch_b0, batch_b1, k, n]
   uint32_t batch_a0, batch_a1, batch_b0, batch_b1;
   uint32_t m0, n0, k0;
@@ -905,13 +906,13 @@ struct vCubeOp {
     int64_t start_m, start_n;
     uint64_t swizzle_dir = op->swizzle >> 16;
     uint64_t swizzle_cnt = op->swizzle & 0xffff;
-    uint64_t m_loop = (op->m + op->m0 - 1) / op->m0;
-    uint64_t n_loop = (op->n + op->n0 - 1) / op->n0;
+    uint64_t m_loop = (op->m_align + op->m0 - 1) / op->m0;
+    uint64_t n_loop = (op->n_align + op->n0 - 1) / op->n0;
     TileMap(block_tile, m_loop, n_loop, swizzle_dir, swizzle_cnt, start_m, start_n);
     start_m *= op->m0;
     start_n *= op->n0;
-    uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n * op->m;
-    return start_m * op->n + start_n + batch_offset;
+    uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n_align * op->m_align;
+    return start_m * op->n_align + start_n + batch_offset;
   }
 
   __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,

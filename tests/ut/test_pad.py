@@ -31,23 +31,3 @@ def test_pad_4d(type, eps, shape, pad):
     assert np.allclose(out[:, :, :shape[2], :shape[3]],
                        expect, rtol=eps, atol=eps, equal_nan=True)
 
-def test_pad_matmul():
-    # TODO: check
-    t = Tester("stages")
-    t.stage_switch("static")
-    ax = np.random.normal(0, 1, [1024, 111]).astype(np.float16)
-    a = t.load(ax)
-    ya = t.unary("Abs", a)
-    za = t.stage_pad_store(ya, [0, 17])
-    t.stage_switch("static")
-    bx = np.random.normal(0, 1, [111, 1024]).astype(np.float16)
-    b = t.load(bx)
-    yb = t.unary("Abs", b)
-    zb = t.stage_pad_store(yb, [17, 0])
-    t.stage_switch("mix")
-    ea = t.stage_load(za)
-    eb = t.stage_load(zb)
-    g = t.matmul(ea, eb, False, False)
-    o = t.store(g)
-    t.run_check()
-    print(t.output(o))

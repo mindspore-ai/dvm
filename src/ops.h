@@ -510,6 +510,7 @@ class CubeOp : public NDObject {
 class NDSStore : public NDStore {
  public:
   using NDStore::NDStore;
+  void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
@@ -522,7 +523,7 @@ class NDSStore : public NDStore {
 class NDSLoad : public NDLoad {
  public:
   using NDLoad::NDLoad;
-
+  void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;

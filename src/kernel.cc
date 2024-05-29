@@ -452,14 +452,14 @@ void RootDomain::Normalize(VKernelBase *kernel) {
   }
 }
 
-int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num, bool group_tile) {
+int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
   TileParam tp;
   tp.start = start;
   tp.end = end;
   tp.num = num;
   tp.tile = CeilDiv(space, num);
   tp.tail = space % tp.tile;
-  tp.group_tile = group_tile;
+  tp.group_tile = false;
   PropDomain::TileProp(tp);
   if (start > 0) {
     tile_size_ = tile_size_ / space * CeilDiv(space, num);
@@ -470,6 +470,17 @@ int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num, bool gr
   }
   tile_num_ *= num;
   return tile_size_;
+}
+
+void RootDomain::GroupTile(int dim, int64_t space, int64_t tile) {
+  TileParam tp;
+  tp.start = dim;
+  tp.end = dim;
+  tp.num = CeilDiv(space, tile);
+  tp.tile = tile;
+  tp.tail = space % tile;
+  tp.group_tile = true;
+  PropDomain::TileProp(tp);
 }
 
 class ReshapeDomain : public PropDomain {
@@ -1441,10 +1452,10 @@ uint64_t MixKernel::CodeGen() {
     post_fusion_->NormalizeDomain();
     auto m = cube_op_->output_->nd_[1];
     auto n = cube_op_->output_->nd_[0];
-    post_fusion_->root_dom_.Tile(1, 1, m, m / cube_code.m0, true);
-    post_fusion_->root_dom_.Tile(0, 0, n, n / cube_code.n0, true);
+    post_fusion_->root_dom_.GroupTile(1, m, cube_code.m0);
+    post_fusion_->root_dom_.GroupTile(0, n, cube_code.n0);
     for (size_t i = 2; i < cube_op_->output_->nd_.size(); i++) {
-      post_fusion_->root_dom_.Tile(i, i, cube_op_->output_->nd_[i], cube_op_->output_->nd_[i], true);
+      post_fusion_->root_dom_.GroupTile(i, cube_op_->output_->nd_[i], 1);
     }
     post_fusion_->NormalizeDomain();
     post_fusion_->DoCodeGen(2);

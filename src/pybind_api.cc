@@ -530,6 +530,13 @@ py::object KernelPy::Output(const py::object &store) {
   return py::array(py::dtype(buf), buf.shape, buf.strides, buf.ptr, store);
 }
 
+void KernelPy::ClearStoreMemory(const py::object &store) {
+  auto op = store.cast<NDOpPyPtr>()->Get();
+  auto it = stores_.find(op);
+  ASSERT(it != stores_.end());
+  it->second.clear_mem = true;
+}
+
 void KernelPy::PrepareOutput() {
   for (auto &it : stores_) {
     auto op = it.first;
@@ -545,9 +552,11 @@ void KernelPy::PrepareOutput() {
       info.size *= op->shape_ref_->data[i];
     }
     info.host = std::malloc(info.size);
-    std::memset(info.host, 0, info.size);
     ASCEND_CALL(aclrtMalloc(&info.dev, info.size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
+    if (info.clear_mem) {
+      std::memset(info.host, 0, info.size);
+      ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
+    }
     kernel_.GetImpl()->RelocOutput(op, info.dev);
   }
 }
@@ -605,6 +614,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("stage_pad_store", &KernelPy::StagePadStore, "stage store")
       .def("input", &KernelPy::Input, "get ouput array")
       .def("output", &KernelPy::Output, "get ouput array")
+      .def("clear_store_memory", &KernelPy::ClearStoreMemory, "clear store memory")
       .def("tile", &KernelPy::Tile, "set tiling")
       .def("codegen", &KernelPy::CodeGen, "generate code")
       .def("das", &KernelPy::DisAssemble, "disassemble code")

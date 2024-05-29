@@ -25,6 +25,7 @@ def test_element_any(mask, shape):
     x = t.load(a)
     z = t.element_any(x)
     b = t.store(z)
+    t.clear_store_memory(b)
     t.run()
     assert t.output(b)[0] == mask
 
@@ -36,6 +37,7 @@ def test_element_any_01():
     g = t.unary("Abs", x)
     z = t.element_any(g)
     b = t.store(z)
+    t.clear_store_memory(b)
     t.run()
     assert t.output(b)[0] == 1
 
@@ -47,5 +49,6 @@ def test_element_any_02(shape, tile):
     z = t.element_any(x)
     b = t.store(z)
     t.tile(0, 0, tile)
+    t.clear_store_memory(b)
     t.run()
     assert t.output(b)[0] == 0

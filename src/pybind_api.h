@@ -101,6 +101,7 @@ class KernelPy {
 
   void Input(const py::object &load, const py::object &array);
   py::object Output(const py::object &store);
+  void ClearStoreMemory(const py::object &store);
   void Tile(int start, int end, int64_t num);
   void CodeGen(const py::object& pass_names);
   void Run();
@@ -123,6 +124,7 @@ class KernelPy {
     void *host{nullptr};
     void *dev{nullptr};
     size_t size{0};
+    bool clear_mem{false};
   };
 
   Kernel kernel_;

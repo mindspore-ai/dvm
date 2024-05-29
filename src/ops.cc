@@ -313,6 +313,14 @@ void NDSStore::FoldProp(PropRange &range) {
   range.depth = nd_.size() - 1;
 }
 
+void NDSLoad::Tile(const TileParam &tp) {
+  NDObject::Tile(tp);
+}
+
+void NDSStore::Tile(const TileParam &tp) {
+  NDObject::Tile(tp);
+}
+
 int NDSStore::Emit(Code &code) { // TODO: broadcast
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];

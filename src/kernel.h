@@ -57,7 +57,8 @@ class RootDomain : public PropDomain {
   RootDomain() = default;
   void SetHead(NDObject *head) { head_ = head; }
   void Normalize(VKernelBase *kernel);
-  int64_t Tile(int start, int end, int64_t space, int64_t num, bool group_tile = false);
+  int64_t Tile(int start, int end, int64_t space, int64_t num);
+  void GroupTile(int dim, int64_t space, int64_t tile);
 
   std::vector<int64_t>& DimSpace() const { return dom_->nd_; }
   int64_t TileNum() const { return tile_num_; }

@@ -349,8 +349,9 @@ int NDSLoad::Emit(Code &code) {
   op.slice_n = cube_op_->n0_;
   size_t shape_size = shape_ref_->size;
   op.src_n = cube_op_->n_real_;
-  op.broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
-  op.broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
+  auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
+  auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
+  op.flags = broadcast_m << 1 | broadcast_n;
   op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
   return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);

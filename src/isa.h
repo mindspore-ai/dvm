@@ -667,12 +667,11 @@ struct vSLoad {
   uint64_t slice_m;
   uint64_t pad_size;
   uint64_t type_size;
-  uint64_t broadcast_m;
-  uint64_t broadcast_n;
+  uint64_t flags;
   // pc[0]: xn(18)
   // pc[1]: src
   // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
-  // pc[2]: tile_stride(32) << 32 | broadcast_m(8) << 16 | broadcast_n(8) << 8 | type_size(8)
+  // pc[2]: tile_stride(32) << 32 | flags(8) << 8 | type_size(8)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSLoad &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
@@ -683,8 +682,7 @@ struct vSLoad {
     op.pad_size = data & 0xfffful;
     data = pc[3];
     op.tile_stride = (data >> 32) & 0xfffffffful;
-    op.broadcast_m = (data >> 16) & 0xfful;
-    op.broadcast_n = (data >> 8) & 0xfful;
+    op.flags = (data >> 8) & 0xfful;
     op.type_size = data & 0xfful;
   }
 
@@ -693,7 +691,7 @@ struct vSLoad {
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
-    pc[3] = op.tile_stride << 32 | op.broadcast_m << 16 | op.broadcast_n << 8 | op.type_size;
+    pc[3] = op.tile_stride << 32 | op.flags << 8 | op.type_size;
     return size;
   }
 };

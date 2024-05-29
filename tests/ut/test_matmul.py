@@ -107,6 +107,7 @@ def test_unaligned_matmul(shape_a, shape_b):
     mat_b = t.stage_load(pad_b)
     res = t.matmul(mat_a, mat_b, False, False)
     t.store_expect(res, expect)
+    assert (t.run_check())
 
 @pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
@@ -130,7 +131,6 @@ def test_matmul_post_broadcast_fusion_0(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     o = t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
-
 
 @pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")

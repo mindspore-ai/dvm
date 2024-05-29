@@ -1401,7 +1401,9 @@ void MixKernel::Append(NDObject *obj) {
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (cube_op_->output_ == nullptr) {
-          cube_op_->output_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          auto load = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          load->SetCubeOp(cube_op_);
+          cube_op_->output_ = load;
           post_fusion_->Append(cube_op_->output_);
         }
         op = cube_op_->output_;
@@ -1415,6 +1417,11 @@ void MixKernel::Append(NDObject *obj) {
           WorkLoad(static_cast<SelectOp*>(obj)->cond_);
         }
       }
+    }
+    if (obj->GetObjectType() == kLoad) {
+      static_cast<NDSLoad*>(obj)->SetCubeOp(cube_op_);
+    } else if (obj->GetObjectType() == kStore) {
+      static_cast<NDSStore*>(obj)->SetCubeOp(cube_op_);
     }
     post_fusion_->Append(obj);
   }

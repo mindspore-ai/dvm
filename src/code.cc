@@ -139,6 +139,12 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("cube_m", op.slice_m, oss);
   oss << " //";
   DumpVal("cube_n", op.slice_n, oss);
+  oss << " //";
+  DumpVal("broadcast_m", op.broadcast_m, oss);
+  oss << " //";
+  DumpVal("broadcast_n", op.broadcast_n, oss);
+  oss << " //";
+  DumpVal("src_n", op.src_n, oss);
 }
 
 void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {

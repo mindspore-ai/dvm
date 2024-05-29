@@ -271,7 +271,7 @@ void NDPadStore::AlignProp(PropRange &range) {
 }
 
 void NDPadStore::FoldProp(PropRange &range) {
-  range.depth = shape_ref_->size - 1;
+  range.depth = nd_.size() - 1;
 }
 
 int NDPadStore::Emit(Code &code) {
@@ -297,26 +297,6 @@ int NDPadStore::Emit(Code &code) {
   return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
 }
 
-void NDSLoad::Tile(const TileParam &tp) {
-  if (tp.group_tile) {
-    ASSERT(tp.start == tp.end);
-    if (tp.start < 2) {
-      slice[tp.start] = tp.tile;
-    }
-  }
-  NDLoad::Tile(tp);
-}
-
-void NDSStore::Tile(const TileParam &tp) {
-  if (tp.group_tile) {
-    ASSERT(tp.start == tp.end);
-    if (tp.start < 2) {
-      slice[tp.start] = tp.tile;
-    }
-  }
-  NDStore::Tile(tp);
-}
-
 void NDSLoad::AlignProp(PropRange &range) {
   range.depth = 1;
 }
@@ -326,11 +306,11 @@ void NDSStore::AlignProp(PropRange &range) {
 }
 
 void NDSLoad::FoldProp(PropRange &range) {
-  range.depth = shape_ref_->size - 1;
+  range.depth = nd_.size() - 1;
 }
 
 void NDSStore::FoldProp(PropRange &range) {
-  range.depth = shape_ref_->size - 1;
+  range.depth = nd_.size() - 1;
 }
 
 int NDSStore::Emit(Code &code) { // TODO: broadcast
@@ -341,9 +321,9 @@ int NDSStore::Emit(Code &code) { // TODO: broadcast
   op.xn = lhs_->xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
-  op.slice_m = slice[1];
-  op.slice_n = slice[0];
-  op.src_n = shape_ref_->data[shape_ref_->size - 1];
+  op.slice_m = cube_op_->m0_;
+  op.slice_n = cube_op_->n0_;
+  op.src_n = cube_op_->n_real_;
   op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSStore::RELOC_OFFSET;
   return vSStore::Encode(insn_, vStoreInsnID::V_SSTORE, op);;
@@ -357,9 +337,12 @@ int NDSLoad::Emit(Code &code) {
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
-  op.slice_m = slice[1];
-  op.slice_n = slice[0];
-  op.src_n = shape_ref_->data[shape_ref_->size - 1];
+  op.slice_m = cube_op_->m0_;
+  op.slice_n = cube_op_->n0_;
+  size_t shape_size = shape_ref_->size;
+  op.src_n = cube_op_->n_real_;
+  op.broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
+  op.broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
   op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
   return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);
@@ -370,7 +353,7 @@ void NDSliceLoad::AlignProp(PropRange &range) {
 }
 
 void NDSliceLoad::FoldProp(PropRange &range) {
-  range.depth = size_ref_->size - 1;
+  range.depth = nd_.size() - 1;
 }
 
 int64_t NDSliceLoad::CalcOffset() {
@@ -1402,6 +1385,9 @@ void CubeOp::Tile(vCubeOp *op) {
   if (op->k0 > op->k_align) {
     op->k0 = op->k_align;
   }
+  m0_ = op->m0;
+  n0_ = op->n0;
+  k0_ = op->k0;
 }
 
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {

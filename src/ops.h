@@ -162,19 +162,6 @@ class NDLoad : public NDAccess {
   std::vector<int64_t> round_tile_;
 };
 
-class NDSLoad : public NDLoad {
- public:
-  using NDLoad::NDLoad;
-
-  int Emit(Code &code) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
-  void Tile(const TileParam &tp) override;
-
-private:
-  uint64_t slice[2];
-};
-
 class NDSliceLoad : public NDLoad {
  public:
   NDSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
@@ -258,18 +245,6 @@ class NDPadStore : public NDStore {
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
   ShapeRef *pad_shape_;
-};
-
-class NDSStore : public NDStore {
- public:
-  using NDStore::NDStore;
-  int Emit(Code &code) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
-  void Tile(const TileParam &tp) override;
-
-private:
-  uint64_t slice[2];
 };
 
 class CopyOp : public NDObject {
@@ -510,6 +485,15 @@ class CubeOp : public NDObject {
   NDObject *output_{nullptr};
   uint64_t block_dim_{0};
   uint64_t core_loop_{0};
+  int64_t m_align_{0};
+  int64_t n_align_{0};
+  int64_t k_align_{0};
+  int64_t m_real_{0};
+  int64_t n_real_{0};
+  int64_t k_real_{0};
+  int64_t m0_{0};
+  int64_t n0_{0};
+  int64_t k0_{0};
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);
@@ -519,14 +503,33 @@ class CubeOp : public NDObject {
 
   bool trans_a_{false};
   bool trans_b_{false};
-  int64_t m_align_{0};
-  int64_t n_align_{0};
-  int64_t k_align_{0};
-  int64_t m_real_{0};
-  int64_t n_real_{0};
-  int64_t k_real_{0};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
+};
+
+class NDSStore : public NDStore {
+ public:
+  using NDStore::NDStore;
+  int Emit(Code &code) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+  void SetCubeOp(CubeOp *op) { cube_op_ = op; }
+
+ private:
+  CubeOp *cube_op_;
+};
+
+class NDSLoad : public NDLoad {
+ public:
+  using NDLoad::NDLoad;
+
+  int Emit(Code &code) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+  void SetCubeOp(CubeOp *op) { cube_op_ = op; }
+
+ private:
+  CubeOp *cube_op_;
 };
 } // namespace dvm
 #endif // _DVM_OPS_H_

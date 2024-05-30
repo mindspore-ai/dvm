@@ -263,7 +263,7 @@ __aicore_inline__ void vCmpGe(__ubuf__ half *src0, __ubuf__ half *src1, uint8_t 
   vcmp_ge(src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride);
 }
 
-__aicore_inline__ void repeat_vcadd(__ubuf__ float *dst, __ubuf__ float *src, uint8_t repeat, uint16_t dstRepeatStride,
+__aicore_inline__ void repeat_vcadd(__ubuf__ float *dst, __ubuf__ float *src, uint16_t repeat, uint16_t dstRepeatStride,
                                     uint16_t srcRepeatStride) {
   for (; repeat > 255; repeat -= 255) {
     vCAdd(dst, src, 255, dstRepeatStride, srcRepeatStride);
@@ -289,63 +289,63 @@ __aicore_inline__ void repeat_vcadd(__ubuf__ float *dst, __ubuf__ float *src, ui
             src0RepeatStride, src1RepeatStride);                                                                \
   }
 
-#define DELCARE_BINARYS(builtin, VTYPE)                                                                                \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, VTYPE val, uint16_t repeat,    \
-                                              uint8_t dstBlockStride, uint8_t srcBlockStride, uint8_t dstRepeatStride, \
-                                              uint8_t srcRepeatStride) {                                               \
-    for (; repeat > 255; repeat -= 255) {                                                                              \
-      builtin(dst, src, val, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                   \
-      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                                \
-      src += 255 * TYPE_SHIFT(VTYPE) * srcRepeatStride;                                                                \
-    }                                                                                                                  \
-    builtin(dst, src, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                  \
+#define DELCARE_BINARYS(builtin, VTYPE)                                                                             \
+  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, VTYPE val, uint16_t repeat, \
+                                              uint16_t dstBlockStride, uint16_t srcBlockStride,                     \
+                                              uint16_t dstRepeatStride, uint16_t srcRepeatStride) {                 \
+    for (; repeat > 255; repeat -= 255) {                                                                           \
+      builtin(dst, src, val, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                \
+      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                             \
+      src += 255 * TYPE_SHIFT(VTYPE) * srcRepeatStride;                                                             \
+    }                                                                                                               \
+    builtin(dst, src, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);               \
   }
 
-#define DELCARE_BINARYS_WITH_MODE(builtin, VTYPE, mode)                                                                \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, VTYPE val, uint16_t repeat,    \
-                                              uint8_t dstBlockStride, uint8_t srcBlockStride, uint8_t dstRepeatStride, \
-                                              uint8_t srcRepeatStride) {                                               \
-    for (; repeat > 255; repeat -= 255) {                                                                              \
-      builtin(dst, src, val, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride, mode);             \
-      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                                \
-      src += 255 * TYPE_SHIFT(VTYPE) * srcRepeatStride;                                                                \
-    }                                                                                                                  \
-    builtin(dst, src, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride, mode);            \
+#define DELCARE_BINARYS_WITH_MODE(builtin, VTYPE, mode)                                                             \
+  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, VTYPE val, uint16_t repeat, \
+                                              uint16_t dstBlockStride, uint16_t srcBlockStride,                     \
+                                              uint16_t dstRepeatStride, uint16_t srcRepeatStride) {                 \
+    for (; repeat > 255; repeat -= 255) {                                                                           \
+      builtin(dst, src, val, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride, mode);          \
+      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                             \
+      src += 255 * TYPE_SHIFT(VTYPE) * srcRepeatStride;                                                             \
+    }                                                                                                               \
+    builtin(dst, src, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride, mode);         \
   }
 
-#define DELCARE_UNARYS(builtin, VTYPE)                                                                                 \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, VTYPE val, uint16_t repeat, uint8_t dstBlockStride, \
-                                              uint8_t srcBlockStride, uint8_t dstRepeatStride,                         \
-                                              uint8_t srcRepeatStride) {                                               \
-    for (; repeat > 255; repeat -= 255) {                                                                              \
-      builtin(dst, val, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                        \
-      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                                \
-    }                                                                                                                  \
-    builtin(dst, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                       \
+#define DELCARE_UNARYS(builtin, VTYPE)                                                              \
+  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, VTYPE val, uint16_t repeat,      \
+                                              uint16_t dstBlockStride, uint16_t srcBlockStride,     \
+                                              uint16_t dstRepeatStride, uint16_t srcRepeatStride) { \
+    for (; repeat > 255; repeat -= 255) {                                                           \
+      builtin(dst, val, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);     \
+      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                             \
+    }                                                                                               \
+    builtin(dst, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);    \
   }
 
-#define DELCARE_UNARY(builtin, VTYPE)                                                                                  \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, uint16_t repeat,               \
-                                              uint8_t dstBlockStride, uint8_t srcBlockStride, uint8_t dstRepeatStride, \
-                                              uint8_t srcRepeatStride) {                                               \
-    for (; repeat > 255; repeat -= 255) {                                                                              \
-      builtin(dst, src, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                        \
-      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                                \
-      src += 255 * TYPE_SHIFT(VTYPE) * srcRepeatStride;                                                                \
-    }                                                                                                                  \
-    builtin(dst, src, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                       \
+#define DELCARE_UNARY(builtin, VTYPE)                                                                    \
+  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, uint16_t repeat, \
+                                              uint16_t dstBlockStride, uint16_t srcBlockStride,          \
+                                              uint16_t dstRepeatStride, uint16_t srcRepeatStride) {      \
+    for (; repeat > 255; repeat -= 255) {                                                                \
+      builtin(dst, src, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);          \
+      dst += 255 * TYPE_SHIFT(VTYPE) * dstRepeatStride;                                                  \
+      src += 255 * TYPE_SHIFT(VTYPE) * srcRepeatStride;                                                  \
+    }                                                                                                    \
+    builtin(dst, src, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);         \
   }
 
-#define DELCARE_CAST(builtin, DTYPE, STYPE)                                                                            \
-  static inline[aicore] void repeat_##builtin(__ubuf__ DTYPE *dst, __ubuf__ STYPE *src, uint16_t repeat,               \
-                                              uint8_t dstBlockStride, uint8_t srcBlockStride, uint8_t dstRepeatStride, \
-                                              uint8_t srcRepeatStride) {                                               \
-    for (; repeat > 255; repeat -= 255) {                                                                              \
-      builtin(dst, src, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                        \
-      dst += 255 * TYPE_SHIFT(DTYPE) * dstRepeatStride;                                                                \
-      src += 255 * TYPE_SHIFT(STYPE) * srcRepeatStride;                                                                \
-    }                                                                                                                  \
-    builtin(dst, src, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);                       \
+#define DELCARE_CAST(builtin, DTYPE, STYPE)                                                              \
+  static inline[aicore] void repeat_##builtin(__ubuf__ DTYPE *dst, __ubuf__ STYPE *src, uint16_t repeat, \
+                                              uint16_t dstBlockStride, uint16_t srcBlockStride,          \
+                                              uint16_t dstRepeatStride, uint16_t srcRepeatStride) {      \
+    for (; repeat > 255; repeat -= 255) {                                                                \
+      builtin(dst, src, 255, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);          \
+      dst += 255 * TYPE_SHIFT(DTYPE) * dstRepeatStride;                                                  \
+      src += 255 * TYPE_SHIFT(STYPE) * srcRepeatStride;                                                  \
+    }                                                                                                    \
+    builtin(dst, src, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);         \
   }
 
 DELCARE_BINARY(vadd, float)

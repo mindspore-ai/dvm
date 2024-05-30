@@ -50,6 +50,16 @@ def test_reduce_y(r_dim, s_dim):
     t.store_expect(y, expect)
     assert(t.run_check())
 
+@pytest.mark.parametrize('i, j', [(32, 65), (31, 89), (31, 90), (31, 93), (30, 82), (30, 83), (30, 85)])
+def test_reduce_i_j(i, j) :
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [3, 1280, i, j]).astype(np.float32)
+    x = t.load(a)
+    y = t.reduce("sum", x, [0, 2, 3], False)
+    expect = np.sum(a, axis=(0, 2, 3), keepdims=False)
+    t.store_expect(y, expect)
+    assert(t.run_check())
+
 @pytest.mark.parametrize('dims', [[1,2,3], [1,3,5], [1, 2, 5, 6], [5,6], [0,1,2,3,4,5,6]])
 def test_reduce_normalize(dims):
     t = Tester()

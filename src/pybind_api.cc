@@ -177,6 +177,10 @@ ShapeRef* KernelPy::GetShapeRef(const py::object &shape) {
 }
 
 py::object KernelPy::Unary(const std::string &op_name, const py::object &input) {
+  if (unary_map.count(op_name) == 0) {
+    std::string err_msg = "Could not find op: " + op_name;
+    throw std::invalid_argument(err_msg);
+  }
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.Unary(unary_map[op_name], in_obj);
   return py::cast(std::make_shared<NDObjectPy>(op));
@@ -205,6 +209,10 @@ py::object KernelPy::Reduce(const std::string &type, const py::object &input, co
 }
 
 py::object KernelPy::Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs) {
+  if (binary_map.count(op_name) == 0) {
+    std::string err_msg = "Could not find op: " + op_name;
+    throw std::invalid_argument(err_msg);
+  }
   NDObject *op;
   auto [lhs_is_scalar, lhs_scalar] = GetScalar<float>(lhs);
   auto [rhs_is_scalar, rhs_scalar] = GetScalar<float>(rhs);

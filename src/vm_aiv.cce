@@ -964,10 +964,7 @@ __aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head) {
   uint64_t simd_valid = op.iter_size - (op.iter_stride - op.simd_width);
   set_vector_mask(0, simd_mask & (0xffffffffffffffffllu << simd_valid));
   __ubuf__ float *fill = (__ubuf__ float*)(op.xd) + op.iter_size - simd_valid;
-  for (uint64_t i = 0; i < op.iter_num; ++i) {
-    vector_dup(fill, 0.0f, 1, 1, 1, 8, 8);
-    fill += op.iter_stride;
-  }
+  repeat_vector_dup(fill, 0.0f, op.iter_num, 1, 1, op.iter_stride >> 3, op.iter_stride >> 3);
   set_vector_mask(0, simd_mask);
 }
 

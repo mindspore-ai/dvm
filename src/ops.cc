@@ -1178,36 +1178,35 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   }
   *shape_ref_ = shape_;
   size_t stuff_idx = 0;
-  int red_start = dims_.front();
-  int red_ext = dims_.front() + 1;
+  int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
   nd_ = input->nd_;
-  bool real_reduce = nd_[red_start] > 1;
-  nd_[red_start] = 1;
-  while (red_ext < static_cast<int>(nd_.size()) && nd_[red_ext] == 1) red_ext++;
-  for (size_t i = 1; i < dims_.size(); ++i) {
-    auto d = dims_[i];
-    if (d < red_ext) continue;
-    if (d > red_ext && real_reduce) {
-      if (stuff_idx == stuff_ops_.size()) {
-        stuff_ops_.push_back(new _ReduceOp(input, red_op_));
+  for (auto d : dims_) {
+    if (nd_[d] == 1) continue;
+    if (d != red_ext) {
+      if (lead_dim  == -1) {
+        for (lead_dim = 0; lead_dim < d && nd_[lead_dim] == 1; lead_dim++);
       }
-      auto obj = stuff_ops_[stuff_idx++];
-      input = obj;
-      std::swap(obj->nd_, nd_);
-      nd_ = obj->nd_;
-      obj->SetRange(red_start, red_ext-1);
+      if (red_start >= 0) {
+        if (stuff_idx == stuff_ops_.size()) {
+          stuff_ops_.push_back(new _ReduceOp(input, red_op_));
+        }
+        auto obj = stuff_ops_[stuff_idx++];
+        input = obj;
+        std::swap(obj->nd_, nd_);
+        nd_ = obj->nd_;
+        // align tile may revert to 0. let lead reduce to 0
+        obj->SetRange(red_start == lead_dim ? 0 : red_start, red_end);
+        run_ops.push_back(obj);
+      }
       red_start = d;
-      run_ops.push_back(obj);
-      real_reduce = false;
     }
-    real_reduce = real_reduce || nd_[d] > 1;
     nd_[d] = 1;
-    red_ext = d + 1;
-    while (red_ext < static_cast<int>(nd_.size()) && nd_[red_ext] == 1) red_ext++;
+    red_end = d;
+    for (red_ext = d + 1; red_ext < static_cast<int>(nd_.size()) && nd_[red_ext] == 1; red_ext++);
   }
-  if (real_reduce) {
+  if (red_start != -1) {
     lhs_ = input;
-    SetRange(red_start, red_ext-1);
+    SetRange(red_start == lead_dim ? 0 : red_start, red_end);
   } else if (stuff_idx > 0) {
     _ReduceOp *last = stuff_ops_.back();
     lhs_ = last->lhs_;

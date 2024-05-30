@@ -109,6 +109,42 @@ uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t simd_width) {
   clr_op.simd_width = simd_width;
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
+
+void BuildDimRounds(const std::vector<int64_t> &round_tile, uint64_t rounds[]) {
+  switch (round_tile.size()) {
+    case 1: {
+      auto r1 = round_tile[0];
+      rounds[0] = r1;
+      break;
+    }
+    case 2: {
+      auto r1 = round_tile[0] * round_tile[1];
+      auto r2 = round_tile[1];
+      rounds[0] = r2 << 32 | r1;
+      break;
+    }
+    case 3: {
+      auto r1 = round_tile[0] * round_tile[1] * round_tile[2];
+      auto r2 = round_tile[1];
+      auto r3 = round_tile[2];
+      rounds[0] = r2 << 32 | r1;
+      rounds[1] = r3;
+      break;
+    }
+    case 4: {
+      auto r1 = round_tile[0] * round_tile[1] * round_tile[2] * round_tile[3];
+      auto r2 = round_tile[1];
+      auto r3 = round_tile[2] * round_tile[3];
+      auto r4 = round_tile[3];
+      rounds[0] = r2 << 32 | r1;
+      rounds[1] = r4 << 32 | r3;
+      break;
+    }
+    default:
+      EXCEPTION_IF(true, "multi-broadcast rank exceed max limit(4)");
+      break;
+  }
+}
 }  // namespace
 
 int64_t NDObject::Size() {
@@ -184,39 +220,7 @@ void NDLoad::Tile(const TileParam &tp) {
 int NDLoad::Emit(Code &code) {
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
-    switch (round_tile_.size()) {
-      case 1: {
-        auto r1 = round_tile_[0];
-        rounds[0] = r1;
-        break;
-      }
-      case 2: {
-        auto r1 = round_tile_[0] * round_tile_[1];
-        auto r2 = round_tile_[1];
-        rounds[0] = r2 << 32 | r1;
-        break;
-      }
-      case 3: {
-        auto r1 = round_tile_[0] * round_tile_[1] * round_tile_[2];
-        auto r2 = round_tile_[1];
-        auto r3 = round_tile_[2];
-        rounds[0] = r2 << 32 | r1;
-        rounds[1] = r3;
-        break;
-      }
-      case 4: {
-        auto r1 = round_tile_[0] * round_tile_[1] * round_tile_[2] * round_tile_[3];
-        auto r2 = round_tile_[1];
-        auto r3 = round_tile_[2] * round_tile_[3];
-        auto r4 = round_tile_[3];
-        rounds[0] = r2 << 32 | r1;
-        rounds[1] = r4 << 32 | r3;
-        break;
-      }
-      default:
-        EXCEPTION_IF(true, "multi-broadcast rank exceed max limit(4)");
-        break;
-    }
+    BuildDimRounds(round_tile_, rounds);
   }
   int64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
@@ -448,9 +452,10 @@ int NDStore::Emit(Code &code) {
     reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
     return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);;
   } else if (lhs_->obj_id_ == kReduce || (lhs_->obj_id_ == kRemovePad && lhs_->lhs_->obj_id_ == kReduce)) {
-    auto reduce_op = lhs_->obj_id_ == kRemovePad ? lhs_->lhs_ : lhs_;
-    auto red_op = static_cast<ReduceOp *>(reduce_op);
-    if (red_op->factor_ > 1) {
+    auto red_op = static_cast<ReduceOp *>(lhs_->obj_id_ == kRemovePad ? lhs_->lhs_ : lhs_);
+    if (!red_op->round_tile_.empty()) {
+      uint64_t rounds[2];
+      BuildDimRounds(red_op->round_tile_, rounds);
       vStoreAtomic op;
       op.to = reinterpret_cast<uint64_t>(gm_);
       op.xn = lhs_->xbuf_;
@@ -463,8 +468,7 @@ int NDStore::Emit(Code &code) {
         op.iter_tail = op.iter_num / nd_[tail_dim_] * tail_size_;
       }
       op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
-      op.round = red_op->round_;
-      op.factor = red_op->factor_;
+      op.round_rank = red_op->round_tile_.size();
       if (lhs_->obj_id_ == kRemovePad) {
         op.pad_size = 0;
       }
@@ -480,7 +484,7 @@ int NDStore::Emit(Code &code) {
       clear_kernel_->CodeGen();
       code.atomic_clean_.push_back(&(clear_kernel_->code_));
       reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
-      return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op);
+      return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
     }
   }
   if (lead_align == static_cast<uint64_t>(lhs_->nd_[lhs_->lead_dim_])) {
@@ -1070,7 +1074,9 @@ void _ReduceOp::Tile(const TileParam &tp) {
 
 int _ReduceOp::Emit(Code &code) {
   ASSERT(red_op_ == ReduceOp::SUM);
-  if (start_dim_ <= lhs_->lead_dim_) { // reduce x
+  if (lead_dim_ == lhs_->lead_dim_ && nd_[lead_dim_] == lhs_->nd_[lead_dim_] && strides_.back() == lhs_->strides_.back()) {
+    return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
+  } else if (start_dim_ <= lhs_->lead_dim_) { // reduce x
     uint32_t size = 0;
     uint32_t insn_num = 1;
     if (lhs_->nd_[lhs_->lead_dim_] != lhs_->strides_[lhs_->lead_dim_]) {
@@ -1106,6 +1112,7 @@ int _ReduceOp::Emit(Code &code) {
     op.xn = lhs_->xbuf_;
     op.iter_size = strides_[start_dim_];
     op.red_size = lhs_->strides_[end_dim_] / op.iter_size;
+    ASSERT(op.red_size > 1);
     if (InRange(tail_dim_)) {
       op.red_tail = op.red_size / lhs_->nd_[tail_dim_] * tail_size_;
     } else {
@@ -1125,8 +1132,7 @@ ReduceOp::~ReduceOp() {
 
 void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   ASSERT(dims_ref_ != nullptr);
-  factor_ = 0;
-  round_ = 0;
+  round_tile_.clear();
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
   auto input_shape_ref = input->shape_ref_;
   //update dims
@@ -1218,31 +1224,38 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
 }
 
 void ReduceOp::Tile(const TileParam &tp) {
-  if (!(tp.end < start_dim_ || tp.start > end_dim_)) {
-    if (round_ == 0) {
-      auto end = std::min(end_dim_, tp.end);
-      for (auto i = std::max(start_dim_, tp.start); i <= end; ++i) {
-        if (lhs_->nd_[i] > 1) {
-          factor_ = tp.num;
-          round_ = 1;
-          break;
-        }
+  if (tp.start <= end_dim_) {
+    NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
+    for (NDObject *p = this; p != input; p = p->lhs_) {
+      _ReduceOp *op = static_cast<_ReduceOp*>(p);
+      if (tp.start > op->end_dim_) {
+        goto ELEMWISE_ROUND;
       }
-    } else {
-      ASSERT(round_ == 1); // restrict: only continuous reduce
-      factor_ *= tp.num;
+      if (tp.start >= op->start_dim_ || tp.end >= op->start_dim_ ) { // reduce
+        if (round_tile_.size() % 2 == 0) {
+          round_tile_.push_back(tp.num);
+        } else {
+          round_tile_.back() *= tp.num;
+        }
+        goto REDUCE_TILE;
+      }
     }
-  } else if (factor_ > 1) {
-    round_ *= tp.num;
-    factor_ *= tp.num;
+ELEMWISE_ROUND:
+    if (!round_tile_.empty()) {
+      if (round_tile_.size() % 2 == 0) {
+        round_tile_.back() *= tp.num;
+      } else {
+        round_tile_.push_back(tp.num);
+      }
+    }
   }
+REDUCE_TILE:
   _ReduceOp::Tile(tp);
 }
 
 int ReduceOp::Emit(Code &code) {
-  auto num = start_dim_ >= 0 ? _ReduceOp::Emit(code) :
-        EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
-  if (DeviceInfo::Instance().Arch() != kAiCore_C220 && factor_ > 0 &&
+  auto num = _ReduceOp::Emit(code);
+  if (DeviceInfo::Instance().Arch() != kAiCore_C220 && !round_tile_.empty() &&
       nd_[lead_dim_] != strides_[lead_dim_]) {
     tail_insn_ = insn_ + num;
     auto size = EmitClearPad(tail_insn_, this, code.simd_width_);

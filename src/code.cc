@@ -235,10 +235,10 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("iter_tail", op.iter_tail, oss);
   oss << ", ";
   DumpVal("pad_size", op.pad_size, oss);
-  oss << ", ";
-  DumpVal("round", op.round, oss);
-  oss << ", ";
-  DumpVal("factor", op.factor, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vStoreAtomic::ROUND_OFFSET, oss);
+  }
 }
 
 void DumpStoreStatus(const DumpInfo &dump_info, std::ostringstream &oss) {

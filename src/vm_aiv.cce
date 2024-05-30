@@ -877,11 +877,6 @@ __aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ float *xn = (__ubuf__ float*)(op.xn);
   __ubuf__ float *xd = (__ubuf__ float*)(op.xd);
   uint64_t red_size = IsLastTile(tile) ? op.red_tail : op.red_size;
-  if (red_size == 1) {
-    uint64_t lenburst = op.dup_num * op.iter_size * sizeof(float) / 32;
-    copy_ubuf_to_ubuf(xd, xn, 0, 1, lenburst, 0, 0);
-    return;
-  }
   uint64_t simd_width = TileSimdWidth(tile);
   uint64_t repeat_stride = simd_width >> SIMD_WIDTH_SHIFT(xn);
   uint64_t iter_repeat_num = op.iter_size / simd_width;
@@ -1010,6 +1005,36 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t p2 = tile_idx % (r2*r3);
     uint64_t p3 = p2 / r3;
     return p3 * r3 == p2 || IsBeginTile(tile) ? p1 + p3: -1;
+  } else {
+    uint64_t r2_r1 = rounds[0];
+    uint64_t r1 = r2_r1 & MASK_32;
+    uint64_t r2 = r2_r1 >> 32;
+    uint64_t r4_r3 = rounds[1];
+    uint64_t r3 = r4_r3 & MASK_32;
+    uint64_t r4 = r4_r3 >> 32;
+    return (tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3) * r4 + tile_idx % r4;
+  }
+}
+
+__aicore_inline__ uint64_t RoundDownTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
+  if (round_rank == 1) {
+    uint64_t r1 = rounds[0];
+    uint64_t r_tile_idx = tile_idx / r1;
+    return r_tile_idx;
+  } else if (round_rank == 2) {
+    uint64_t r2_r1 = rounds[0];
+    uint64_t r1 = r2_r1 & MASK_32;
+    uint64_t r2 = r2_r1 >> 32;
+    return tile_idx / r1 * r2 + tile_idx % r2;
+  } else if (round_rank == 3) {
+    uint64_t r2_r1 = rounds[0];
+    uint64_t r1 = r2_r1 & MASK_32;
+    uint64_t r2 = r2_r1 >> 32;
+    uint64_t r3 = rounds[1];
+    uint64_t p1 = tile_idx / r1 * r2;
+    uint64_t p2 = tile_idx % (r2*r3);
+    uint64_t p3 = p2 / r3;
+    return p1 + p3;
   } else {
     uint64_t r2_r1 = rounds[0];
     uint64_t r1 = r2_r1 & MASK_32;
@@ -1251,10 +1276,12 @@ static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t t
   vStoreAtomic::Decode(pc, head, op);
   set_atomic_f32();
   uint64_t tile_idx = TileIdx(tile);
+  if (op.round_rank > 0) {
+    tile_idx = RoundDownTileIdx(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET);
+  }
   if (IsLastTile(tile)) {
     op.iter_num = op.iter_tail;
   }
-  tile_idx = tile_idx / op.factor * op.round + tile_idx % op.round;
   __gm__ uint8_t* gm = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
   if (op.pad_size == 0) {
     copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);

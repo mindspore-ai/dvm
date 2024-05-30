@@ -462,8 +462,7 @@ class ReduceOp : public _ReduceOp {
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
 
-  uint64_t factor_{0};
-  uint64_t round_{0};
+  std::vector<int64_t> round_tile_;
 
  private:
   std::vector<int64_t> dims_;

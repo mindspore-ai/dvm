@@ -148,6 +148,7 @@ class CodeGenHelper {
     *code_ptr++ = vMakeHead(vLoadInsnID::V_LOAD_NONE, 0, 0, V_PIPE_LOAD);
     BackwardSync();
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
+    ASSERT(code.data_size_ <= code_reserved + code.HeadSize());
     if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
       OverWriteCoreLimit();
     }
@@ -213,7 +214,7 @@ class CodeGenHelper {
 
   void OverWriteCoreLimit() {
     for (auto op : kernel_->static_ops_) {
-      if (op->Pipe() == V_PIPE_LOAD || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && static_cast<ReduceOp*>(op)->factor_ > 1)) {
+      if (op->Pipe() == V_PIPE_LOAD || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && !static_cast<ReduceOp*>(op)->round_tile_.empty())) {
         continue;
       }
       // producer node for Store

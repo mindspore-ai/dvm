@@ -466,7 +466,7 @@ int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
     tile_size_ = tile_size_ / space * CeilDiv(space, num);
   } else {
     auto align_size = CeilDiv<int64_t>(tp.tile, block_align_) * block_align_;
-    tile_size_ = tile_size_ / align_.space * align_size;
+    tile_size_ = tile_size_ / (CeilDiv<int64_t>(align_.space, block_align_) * block_align_) * align_size;
     align_.space = align_size;
   }
   tile_num_ *= num;
@@ -591,6 +591,8 @@ class ShapeTiling {
     PropRange fold;
     fold.base = prim_dom_.DimSpace().size() - 1;
     int64_t tile_size = prim_dom_.TileSize();
+    bool core_spread = true;
+  TILE_BEGIN:
     do  {
       if (fold.base + 1 > align_depth) {
         fold.depth = fold.base + 1;
@@ -614,6 +616,10 @@ class ShapeTiling {
         }
       }
     } while(tile_size > tile_size_limit_);
+    if (core_spread && prim_dom_.TileNum() * 2 < core_limit_ && tile_size > 1024) {
+      core_spread = false;
+      goto TILE_BEGIN;
+    }
     if (align_depth > 1) {
       prim_dom_.Tile(0, align_depth - 1, prim_dom_.align_.space, 1);
     }

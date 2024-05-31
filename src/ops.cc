@@ -1074,7 +1074,7 @@ void _ReduceOp::Tile(const TileParam &tp) {
 
 int _ReduceOp::Emit(Code &code) {
   ASSERT(red_op_ == ReduceOp::SUM);
-  if (lead_dim_ == lhs_->lead_dim_ && nd_[lead_dim_] == lhs_->nd_[lead_dim_] && strides_.back() == lhs_->strides_.back()) {
+  if (nd_[lhs_->lead_dim_] == lhs_->nd_[lhs_->lead_dim_] && strides_.back() == lhs_->strides_.back()) {
     return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
   } else if (start_dim_ <= lhs_->lead_dim_) { // reduce x
     uint32_t size = 0;

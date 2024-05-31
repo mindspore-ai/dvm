@@ -947,11 +947,16 @@ __aicore_inline__ void Reshape(bcodeptr_t pc, uint64_t head) {
   wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
 }
 
-__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
+enum RoundCacheMode { kRoundCacheLoad, kRoundCacheNone };
+__aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds, RoundCacheMode mode) {
   if (round_rank == 1) {
     uint64_t r1 = rounds[0];
     uint64_t r_tile_idx = tile_idx / r1;
-    return r_tile_idx * r1 == tile_idx || IsBeginTile(tile)? r_tile_idx : -1;
+    if (mode == kRoundCacheLoad) {
+      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile)? r_tile_idx : -1;
+    } else {
+      return r_tile_idx;
+    }
   } else if (round_rank == 2) {
     uint64_t r2_r1 = rounds[0];
     uint64_t r1 = r2_r1 & MASK_32;
@@ -965,37 +970,11 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t p1 = tile_idx / r1 * r2;
     uint64_t p2 = tile_idx % (r2*r3);
     uint64_t p3 = p2 / r3;
-    return p3 * r3 == p2 || IsBeginTile(tile) ? p1 + p3: -1;
-  } else {
-    uint64_t r2_r1 = rounds[0];
-    uint64_t r1 = r2_r1 & MASK_32;
-    uint64_t r2 = r2_r1 >> 32;
-    uint64_t r4_r3 = rounds[1];
-    uint64_t r3 = r4_r3 & MASK_32;
-    uint64_t r4 = r4_r3 >> 32;
-    return (tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3) * r4 + tile_idx % r4;
-  }
-}
-
-__aicore_inline__ uint64_t RoundDownTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
-  if (round_rank == 1) {
-    uint64_t r1 = rounds[0];
-    uint64_t r_tile_idx = tile_idx / r1;
-    return r_tile_idx;
-  } else if (round_rank == 2) {
-    uint64_t r2_r1 = rounds[0];
-    uint64_t r1 = r2_r1 & MASK_32;
-    uint64_t r2 = r2_r1 >> 32;
-    return tile_idx / r1 * r2 + tile_idx % r2;
-  } else if (round_rank == 3) {
-    uint64_t r2_r1 = rounds[0];
-    uint64_t r1 = r2_r1 & MASK_32;
-    uint64_t r2 = r2_r1 >> 32;
-    uint64_t r3 = rounds[1];
-    uint64_t p1 = tile_idx / r1 * r2;
-    uint64_t p2 = tile_idx % (r2*r3);
-    uint64_t p3 = p2 / r3;
-    return p1 + p3;
+    if (mode == kRoundCacheLoad) {
+      return p3 * r3 == p2 || IsBeginTile(tile) ? p1 + p3: -1;
+    } else {
+      return p1 + p3;
+    }
   } else {
     uint64_t r2_r1 = rounds[0];
     uint64_t r1 = r2_r1 & MASK_32;
@@ -1012,7 +991,7 @@ static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vDMA::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank) {
-    tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET);
+    tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET, kRoundCacheLoad);
     if (tile_idx == -1) {
       return;
     }
@@ -1099,7 +1078,7 @@ static inline [aicore] void Load2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
-    tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET);
+    tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET, kRoundCacheLoad);
     if (tile_idx == -1) {
       return;
     }
@@ -1183,9 +1162,7 @@ static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t t
   vStoreAtomic::Decode(pc, head, op);
   set_atomic_f32();
   uint64_t tile_idx = TileIdx(tile);
-  if (op.round_rank > 0) {
-    tile_idx = RoundDownTileIdx(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET);
-  }
+  tile_idx = RoundUpTileIdx(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET, kRoundCacheNone);
   if (IsLastTile(tile)) {
     op.iter_num = op.iter_tail;
   }

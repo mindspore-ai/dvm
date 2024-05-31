@@ -591,8 +591,7 @@ class ShapeTiling {
     PropRange fold;
     fold.base = prim_dom_.DimSpace().size() - 1;
     int64_t tile_size = prim_dom_.TileSize();
-    bool core_spread = true;
-  TILE_BEGIN:
+    int64_t num;
     do  {
       if (fold.base + 1 > align_depth) {
         fold.depth = fold.base + 1;
@@ -603,23 +602,17 @@ class ShapeTiling {
         if (start_dim < align_depth) { // axis of 1
           start_dim = align_depth;
         }
-        int64_t num = CalcTile(tile_size, fold);
+        num = CalcTile(tile_size, fold);
         if (num > 1) {
           tile_size = prim_dom_.Tile(start_dim, fold.base, fold.space, num);
         }
         fold.base = start_dim - 1;
       } else {
-        int64_t num = CalcLeadTile(tile_size, prim_dom_.align_);
-        if (num > 1) {
-          tile_size = prim_dom_.Tile(0, fold.base, prim_dom_.align_.space, num);
-          return;
-        }
+        num = CalcLeadTile(tile_size, prim_dom_.align_);
+        tile_size = prim_dom_.Tile(0, fold.base, prim_dom_.align_.space, num);
+        return;
       }
-    } while(tile_size > tile_size_limit_);
-    if (core_spread && prim_dom_.TileNum() * 2 < core_limit_ && tile_size > 1024) {
-      core_spread = false;
-      goto TILE_BEGIN;
-    }
+    } while(tile_size > tile_size_limit_ || (num > 1 && num == fold.space));
     if (align_depth > 1) {
       prim_dom_.Tile(0, align_depth - 1, prim_dom_.align_.space, 1);
     }

@@ -34,7 +34,7 @@ def test_stage_vec_vec():
 
 @pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
-def test_stage_vec_cube():
+def test_stage_vec_mix():
     t = Tester("stages")
     t.stage_switch("static");
     ax = np.random.normal(0, 1, [1024,512]).astype(np.float16)
@@ -47,6 +47,26 @@ def test_stage_vec_cube():
     fx = np.random.normal(0, 1, [512,1024]).astype(np.float16)
     f = t.load(fx)
     g = t.matmul(e, f, False, False)
+    h = t.cast(g, "float32")
     expect = np.matmul(((ax + 0.02) * ax).astype(np.float32), fx.astype(np.float32))
-    t.store_expect(g, expect.astype(np.float16))
+    t.store_expect(h, expect, 1e-3)
+    assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_stage_mix_vec():
+    t = Tester("stages")
+    t.stage_switch("mix");
+    ax = np.random.normal(0, 1, [512,512]).astype(np.float16)
+    bx = np.random.normal(0, 1, [512,512]).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    d = t.cast(c, "float32")
+    e = t.stage_store(d)
+    t.stage_switch("static");
+    f = t.stage_load(e)
+    g = t.binary("Add", f, 0.02)
+    expect = np.matmul(ax.astype(np.float32), bx.astype(np.float32)) + 0.02
+    t.store_expect(g, expect, 1e-3)
     assert(t.run_check())

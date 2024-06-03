@@ -419,14 +419,20 @@ STAGE_ENTRY:
       wait_flag_dev(1);
     }
     uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
-    switch (op->dtype) {
-      case vCubeOp::FP16:
-        CutMKN<MatMul<half>, half>(op, tile_num);
-        break;
-      case vCubeOp::BF16:
-        CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_num);
-        break;
-      default: break;
+    if (block_idx < tile_num) {
+      switch (op->dtype) {
+        case vCubeOp::FP16:
+          CutMKN<MatMul<half>, half>(op, tile_num);
+          break;
+        case vCubeOp::BF16:
+          CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_num);
+          break;
+        default: break;
+      }
+    } else {
+      if (flags & V_CUBE_FLAG_GROUP_SET) {
+        ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
+      }
     }
     if (flags & V_CUBE_FLAG_POST_BAR) {
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(0, 0));

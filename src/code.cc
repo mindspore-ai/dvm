@@ -758,20 +758,6 @@ class DisAssembler {
     DumpVal("trans_a", bool(op->flags & V_CUBE_FLAG_TRANS_A), oss);
     oss << ", ";
     DumpVal("trans_b", bool(op->flags & V_CUBE_FLAG_TRANS_B), oss);
-    oss << std::endl << indent << " {";
-    if (op->flags & V_CUBE_FLAG_GROUP_SET) {
-      oss << ", group_set(1)";
-    }
-    if (op->flags & V_CUBE_FLAG_POST_SET) {
-      oss << ", post_set(1)";
-    }
-    if (op->flags & V_CUBE_FLAG_PRE_WAIT) {
-      oss << ", pre_wait(1)";
-    }
-    if (op->flags & V_CUBE_FLAG_POST_BAR) {
-      oss << ", post_bar(1)";
-    }
-    oss << "}";
   }
 
   void DasVec(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
@@ -799,8 +785,21 @@ class DisAssembler {
   }
 
   void DasCube(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
-    oss << indent << "aic() {" << std::endl;
+    oss << indent << "aic(mix=" << bool(entry & V_ENTRY_FLAG_MIX);
     vCubeOp *cube = reinterpret_cast<vCubeOp*>(bcode);
+    if (cube->flags & V_CUBE_FLAG_GROUP_SET) {
+      oss << ", group_set=1";
+    }
+    if (cube->flags & V_CUBE_FLAG_POST_SET) {
+      oss << ", post_set=1";
+    }
+    if (cube->flags & V_CUBE_FLAG_PRE_WAIT) {
+      oss << ", pre_wait=1";
+    }
+    if (cube->flags & V_CUBE_FLAG_POST_BAR) {
+      oss << ", post_bar=1";
+    }
+    oss << ") {" << std::endl;
     DasCubeBody(cube, indent + "  ");
     oss << std::endl << indent << "}";
   }
@@ -812,7 +811,7 @@ class DisAssembler {
     }
     oss << ") {" << std::endl;
     DasCube(entry, bcode, sizeof(vCubeOp), indent + "  ");
-    oss << std::endl << indent << "  }" << std::endl;
+    oss << std::endl;
     DasVec(entry, bcode + sizeof(vCubeOp), bcode_size - sizeof(vCubeOp), indent + "  ");
     oss << std::endl << indent << "}";
   }
@@ -831,7 +830,7 @@ class DisAssembler {
     std::vector<Summary> summays;
     Summary *current = nullptr;
     uint64_t *summaries = reinterpret_cast<uint64_t*>(bcode);
-    auto block_dim = vGetBitRange(entry, V_ENTRY_PARALLEL_BLOCK_OFFSET, V_ENTRY_PARALLEL_BLOCK_BITS);
+    auto block_dim = vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
     for (uint64_t i = 0; i < block_dim; ++i) {
       uint64_t sum_data = *summaries++;
       uint64_t start_idx = sum_data & 0xffffful;

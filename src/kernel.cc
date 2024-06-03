@@ -1622,10 +1622,14 @@ uint64_t StagesKernel::CodeGen() {
       pre_entry |= V_ENTRY_FLAG_NEXT_STAGE;
       if (pre_entry & V_ENTRY_FLAG_MIX) {
         vCubeOp *cube = reinterpret_cast<vCubeOp*>(pre_code + sizeof(uint64_t));
-        cube->flags |= V_CUBE_FLAG_POST_BAR;
-        if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
-          cube->flags |= V_CUBE_FLAG_POST_SET;
-          cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
+        if (cube->flags & V_CUBE_FLAG_GROUP_SET) {
+          pre_entry |= V_ENTRY_FLAG_POST_BAR;
+        } else {
+          cube->flags |= V_CUBE_FLAG_POST_BAR;
+          if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
+            cube->flags |= V_CUBE_FLAG_POST_SET;
+            cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
+          }
         }
       } else {
         pre_entry |= V_ENTRY_FLAG_POST_BAR;

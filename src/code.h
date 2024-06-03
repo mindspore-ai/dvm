@@ -132,7 +132,7 @@ struct Code {
              (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET | flags;
   }
   void UpdateParallelHead() {
-    UpdateHead(0, block_dim_, V_ENTRY_FLAG_PARALLEL);
+    UpdateHead(block_dim_, 0, V_ENTRY_FLAG_PARALLEL);
   }
 
   uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry

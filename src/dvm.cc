@@ -368,7 +368,8 @@ NDObject* Kernel::StageLoad(NDObject *stage_store) {
 
 NDObject* Kernel::StageStore(NDObject *input) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDStore(nullptr, input);
+  auto op = static_cast<StagesKernel*>(kernel_)->Current()->KType() == kStaticMix ?
+     new NDSStore(nullptr, input) : new NDStore(nullptr, input);
   static_cast<StagesKernel*>(kernel_)->StageStore(op);
   return op;
 }

@@ -60,6 +60,17 @@ __aicore_inline__ void SetVectorMask(uint64_t simd_width) {
   }
 }
 
+#ifdef DEBUG
+__aicore_inline__ void OVER_WRITE_CHECK(bcodeptr_t pc, uint64_t head, uint64_t write_end) {
+  uint64_t debug_size = *(pc + (((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) - 1));
+  if (write_end > debug_size) {
+    trap();
+  }
+}
+#else
+#define OVER_WRITE_CHECK(pc, head, write_end)
+#endif
+
 // unary
 __aicore_inline__ void vAbs(__ubuf__ half *dst, __ubuf__ half *src, uint8_t repeat, uint16_t repeatStride) {
   vabs(dst, src, repeat, 1, 1, repeatStride, repeatStride);
@@ -877,6 +888,11 @@ __aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ float *xn = (__ubuf__ float*)(op.xn);
   __ubuf__ float *xd = (__ubuf__ float*)(op.xd);
   uint64_t red_size = IsLastTile(tile) ? op.red_tail : op.red_size;
+  if (red_size == 1) { // red_tail may 1
+    uint64_t lenburst = op.dup_num * op.iter_size * sizeof(float) / 32;
+    copy_ubuf_to_ubuf(xd, xn, 0, 1, lenburst, 0, 0);
+    return;
+  }
   uint64_t simd_width = TileSimdWidth(tile);
   uint64_t repeat_stride = simd_width >> SIMD_WIDTH_SHIFT(xn);
   uint64_t iter_repeat_num = op.iter_size / simd_width;
@@ -1211,6 +1227,7 @@ static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __gm__ void* gm = (__gm__ uint8_t*)op.gm + op.tile_stride * tile_idx;
   uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
   copy_ubuf_to_gm(gm, (__ubuf__ void*)op.xn, 0, 1, len_burst, 0, 0);
+  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + (len_burst << 5) - 31); // max 31 overflow
 }
 
 static inline [aicore] void Load2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1240,7 +1257,8 @@ static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   if (IsLastTile(tile)) {
     uint64_t iter_tail = (config >> 18) & V_X_MASK;
     if (config >> 62) { // lead tiling
-      copy_ubuf_to_gm(dst, src, 0, 1, (iter_tail + 31) >> 5, 0, 0);
+      copy_ubuf_to_gm_align_b8(dst, src, 0, 1, iter_tail, 0, 0, 0, 0);
+      OVER_WRITE_CHECK(pc, head, tile_stride * tile_idx + iter_tail);
       return;
     }
     iter_body = iter_tail;
@@ -1248,6 +1266,7 @@ static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   uint64_t pad_size = (config >> 54) & 0xfful;
   uint64_t iter_size = (config >> 36) & V_X_MASK;
   copy_ubuf_to_gm_align_b8(dst, src, 0, iter_body, iter_size, 0, 0, pad_size >> 5, 0);
+  OVER_WRITE_CHECK(pc, head, tile_stride * tile_idx + iter_body * iter_size);
 }
 
 static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1266,6 +1285,7 @@ static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t t
     copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
   }
   set_atomic_none();
+  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
 }
 
 __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {

@@ -538,6 +538,11 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
     id = convert_id(g_store_func_offset, V_STORE_NONE, id);
     if (store_dump_func_table.find(id) != store_dump_func_table.end()) {
       store_dump_func_table[id](info, oss);
+#ifdef DEBUG
+      uint64_t debug_size = *(insn + (((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) - 1));
+      oss << ", ";
+      DumpVal("dbg_size", debug_size, oss);
+#endif
     } else {
       oss << "Unknown insn: ";
       DumpVal("id", id, oss);

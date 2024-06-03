@@ -2,14 +2,15 @@ VPATH = ./src:./include
 OBJ = ops.o kernel.o code.o dvm.o pass.o msprof.o
 
 CFLGAS = --std=c++17 -Werror -Wall -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC -fvisibility=hidden
+CCE_FLGAS_C100 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100
+CCE_FLGAS_C220 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
+
 ifneq ($(dbg),)
 CFLGAS += -g -O0 -DDEBUG
+CCE_FLGAS_C220 += -DDEBUG
 else
 CFLGAS += -O2
 endif
-
-CCE_FLGAS_C100 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100
-CCE_FLGAS_C220 = -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
 
 ifneq ($(sim),)
 LD_FLAGS = -L${ASCEND_PATH}/latest/toolkit/tools/simulator/Ascend$(sim)/lib -lruntime_camodel

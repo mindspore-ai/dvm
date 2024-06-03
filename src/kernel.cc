@@ -138,6 +138,14 @@ class CodeGenHelper {
         case kGenStore: {
           code_ptr += op->Emit(code);
           StoreSync(op->lhs_, op);
+#ifdef DEBUG
+          auto head = *(op->tail_insn_);
+          ASSERT((head & 1ul << V_HEAD_SIMD_FLAG_OFFSET) == 0);
+          *code_ptr++ = op->Size();
+          auto new_head_size = ((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) + 1;
+          vClrBitRange(head, V_M_HEAD_SIZE_OFFSET, 4);
+          *(op->tail_insn_) = head | new_head_size << V_M_HEAD_SIZE_OFFSET;
+#endif
           break;
         }
         default:

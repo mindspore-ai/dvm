@@ -429,7 +429,13 @@ py::object KernelPy::DumpGraph() {
 void KernelPy::Run() {
   PrepareOutput();
   ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
-  ASCEND_CALL(aclrtSynchronizeStream(nullptr));
+  auto ret = aclrtSynchronizeStream(nullptr);
+  if (ret != 0) {
+    std::cerr << kernel_.GetImpl()->DumpGraph() << std::endl;
+    std::cerr << kernel_.GetImpl()->DisAssemble() << std::endl;
+    std::cerr << "******** Kernel Execute Exception: " << ret << " ********" << std::endl;
+    exit(0);
+  }
 }
 
 py::object KernelPy::Perf() {

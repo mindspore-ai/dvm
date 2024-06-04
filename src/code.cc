@@ -135,11 +135,11 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << "sload " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
-  oss << " //";
+  oss << ", ";
   DumpVal("cube_m", op.slice_m, oss);
-  oss << " //";
+  oss << ", ";
   DumpVal("cube_n", op.slice_n, oss);
-  oss << " //";
+  oss << ", ";
   DumpVal("src_n", op.src_n, oss);
 }
 
@@ -149,9 +149,9 @@ void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << "sstore " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.gm) << ", " << reinterpret_cast<void *>(op.xn);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
-  oss << " //";
+  oss << ", ";
   DumpVal("cube_m", op.slice_m, oss);
-  oss << " //";
+  oss << ", ";
   DumpVal("cube_n", op.slice_n, oss);
 }
 
@@ -161,6 +161,8 @@ void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << "slice_load " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("offset", op.offset, oss);
 }
 
 void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {

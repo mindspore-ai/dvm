@@ -196,13 +196,13 @@ class CodeGenHelper {
         }
       } else if (pipe == V_PIPE_SIMD && op->lhs_) { // SIMD -> LOAD
         NDObject *load = nullptr;
-        if (op->lhs_->Pipe() == V_PIPE_LOAD) load = op->lhs_;
+        if (op->lhs_->IsLoad()) load = op->lhs_;
         auto rhs = op->rhs_;
         if (rhs) {
-          if (rhs->Pipe() == V_PIPE_LOAD && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
+          if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
           if (op->obj_id_ == ObjectType::kSelect) {
             NDObject *cond = reinterpret_cast<SelectOp*>(op)->cond_;
-            if (cond->Pipe() == V_PIPE_LOAD && (load == nullptr || cond->index_ < load->index_)) load = cond;
+            if (cond->IsLoad() && (load == nullptr || cond->index_ < load->index_)) load = cond;
           }
         }
         if (load != nullptr && load->index_ < vl_event.sync_idx) {
@@ -222,7 +222,7 @@ class CodeGenHelper {
 
   void OverWriteCoreLimit() {
     for (auto op : kernel_->static_ops_) {
-      if (op->Pipe() == V_PIPE_LOAD || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && !static_cast<ReduceOp*>(op)->round_tile_.empty())) {
+      if (op->IsLoad() || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && !static_cast<ReduceOp*>(op)->round_tile_.empty())) {
         continue;
       }
       // producer node for Store
@@ -293,7 +293,7 @@ class CodeGenHelper {
   }
 
   void SimdSync(NDObject *from, NDObject *to) {
-    if (from->Pipe() == V_PIPE_SIMD) {
+    if (from->IsSimd()) {
       SimdBarrier(from, to);
       return;
     }
@@ -375,14 +375,14 @@ void PropDomain::Normalize() {
     }
     NDObject *cand = nullptr;
     auto obj_type = op->GetObjectType();
-    if (obj_type == kStore || obj_type == kReduce || obj_type == kElementAny) {
+    if (op->IsStore() || obj_type == kReduce || obj_type == kElementAny) {
       if (op->lhs_ != dom_) cand = op->lhs_;
     } else if (obj_type == kBroadcastTo) {
       if (op != dom_) cand = op;
     }
     if (cand) {
       if (dom_ == nullptr || select_dom(cand)) dom_ = cand;
-    } else if (dom_ == nullptr && obj_type != kStore && obj_type != kLoadDummy) {
+    } else if (dom_ == nullptr && !op->IsStore() && obj_type != kLoadDummy) {
       dom_ = op;
     }
   }
@@ -986,7 +986,7 @@ int VKernelBase::Analyze() {
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
   auto LivenessEnd = [&cur_live](NDObject *op, NDObject *end) {
-    if (end->Pipe() == V_PIPE_SIMD && !OP_LIVE(end)) {
+    if (end->IsSimd() && !OP_LIVE(end)) {
       OP_GEN_D(end);
       return true;
     }
@@ -996,7 +996,7 @@ int VKernelBase::Analyze() {
     op->lead_dim_ = 0;
   }
   for (auto op : static_ops_) {
-    if (op->Pipe() == V_PIPE_SIMD) {
+    if (op->IsSimd()) {
       OP_GEN_S(op);
     }
   }
@@ -1004,7 +1004,7 @@ int VKernelBase::Analyze() {
     auto op = *it;
     op->index_ = --op_index;
     op->flags_ = 0;
-    if (op->Pipe() == V_PIPE_SIMD) {
+    if (op->IsSimd()) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
         if (OP_LIVE_D(op) && LhsInplaceCheck(op)) {
@@ -1139,7 +1139,7 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
     auto type = op->GetObjectType();
     if (type == kReshape) {
       slow_build_path = true;
-    } else if (type == kCast || type == kLoad) {
+    } else if (type == kCast || op->IsLoad()) {
       int type = op->type_id_;
       if (type > max_type_) {
         max_type_ = type;
@@ -1147,9 +1147,9 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
         min_type_ = type;
       }
     }
-    if (op->Pipe() == V_PIPE_LOAD) {
+    if (op->IsLoad()) {
       static_ops_.push_back(op);
-    } else if (op->Pipe() == V_PIPE_STORE) {
+    } else if (op->IsStore()) {
       static_ops_.push_back(op->lhs_);
       op->xbuf_ = -1;
     }
@@ -1296,7 +1296,7 @@ uint64_t VKernelP::CodeGen() {
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + offsets[i]);
     uint64_t *old_base = reinterpret_cast<uint64_t*>(children_[i]->code_.data_);
     for (auto op :  children_[i]->objects_) {
-      if (op->Pipe() != V_PIPE_SIMD) {
+      if (!op->IsSimd()) {
         auto io = static_cast<NDAccess*>(op);
         io->reloc_addr_ = new_base + (io->reloc_addr_ - old_base);
       }
@@ -1368,7 +1368,7 @@ MixKernel::~MixKernel() {
 void MixKernel::Append(NDObject *obj) {
   const uint32_t LOAD_PENDING = 1;
   if (cube_op_ == nullptr) {
-    if (obj->obj_id_ == kLoad) {
+    if (obj->IsLoad()) {
       obj->flags_ = LOAD_PENDING;
     } else if (obj->obj_id_ != kCubeOp) {
       if (pre_fusion_ == nullptr) {
@@ -1393,7 +1393,7 @@ void MixKernel::Append(NDObject *obj) {
     } else {
       EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
       auto lhs = obj->lhs_;
-      if (lhs->obj_id_ != kLoad) {
+      if (!lhs->IsLoad()) {
         lhs = new NDStore(nullptr, lhs);
         pre_fusion_->Append(lhs);
         obj->lhs_ = lhs;
@@ -1401,7 +1401,7 @@ void MixKernel::Append(NDObject *obj) {
         lhs->Normalize(pre_fusion_->objects_);
       }
       auto rhs = obj->rhs_;
-      if (rhs->obj_id_ != kLoad) {
+      if (!rhs->IsLoad()) {
         rhs = new NDStore(nullptr, rhs);
         pre_fusion_->Append(rhs);
         obj->rhs_ = rhs;
@@ -1411,7 +1411,7 @@ void MixKernel::Append(NDObject *obj) {
       cube_op_ = static_cast<CubeOp*>(obj);
       cube_op_->NormalizeCube();
     }
-  } else if (obj->obj_id_ == kStore && obj->lhs_ == cube_op_) {
+  } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
     cube_op_->output_ = obj;
   } else {
     if (post_fusion_ == nullptr) {
@@ -1437,9 +1437,9 @@ void MixKernel::Append(NDObject *obj) {
         }
       }
     }
-    if (obj->GetObjectType() == kLoad) {
+    if (obj->IsLoad()) {
       static_cast<NDSLoad*>(obj)->SetCubeOp(cube_op_);
-    } else if (obj->GetObjectType() == kStore) {
+    } else if (obj->IsStore()) {
       static_cast<NDSStore*>(obj)->SetCubeOp(cube_op_);
     }
     post_fusion_->Append(obj);
@@ -1491,29 +1491,29 @@ uint64_t MixKernel::CodeGen() {
 
 uint64_t MixKernel::UpdateReloc() {
   uint64_t workspace = 0;
-  reloc_workspaces_.clear();
+  code_.reloc_workspaces_.clear();
   vCubeOp *op = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
-  if (cube_op_->lhs_->Pipe() == V_PIPE_LOAD) {
+  if (cube_op_->lhs_->IsLoad()) {
     static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &op->gm_a;
   } else {
     // TODO: pre fusion
   }
-  if (cube_op_->rhs_->Pipe() == V_PIPE_LOAD) {
+  if (cube_op_->rhs_->IsLoad()) {
     static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &op->gm_b;
   } else {
     // TODO: pre fusion
   }
-  if (cube_op_->output_->Pipe() == V_PIPE_STORE) {
+  if (cube_op_->output_->IsStore()) {
     static_cast<NDAccess*>(cube_op_->output_)->reloc_addr_ = &op->gm_c;
   } else {
     uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + sizeof(vCubeOp));
     uint64_t *old_base = reinterpret_cast<uint64_t*>(post_fusion_->code_.data_);
     workspace += cube_op_->output_->Size();
     NDAccess* load = static_cast<NDAccess*>(cube_op_->output_);
-    reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
-    reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
+    code_.reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
+    code_.reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
     for (auto op :  post_fusion_->objects_) {
-      if (op->Pipe() != V_PIPE_SIMD) {
+      if (!op->IsSimd()) {
         auto io = static_cast<NDAccess*>(op);
         io->reloc_addr_ = new_base + (io->reloc_addr_ - old_base);
       }
@@ -1565,7 +1565,7 @@ StagesKernel::~StagesKernel() {
 
 void StagesKernel::Append(NDObject *obj) {
   stages_.back()->kernel->Append(obj);
-  if (obj->obj_id_ == ObjectType::kLoad || obj->obj_id_ == ObjectType::kStore) {
+  if (!obj->IsSimd()) {
     stages_.back()->ios.push_back(static_cast<NDAccess*>(obj));
   }
 }
@@ -1590,7 +1590,7 @@ uint64_t StagesKernel::CodeGen() {
       ws_size += workspace;
     }
     for (auto op : s->stage_stores) {
-      SetStageStoreWorkspace(op, ws_size);
+      op->SetWorkspace(ws_size);
       ws_size += get_tensor_size(op);
     }
     s->code_offset = code_size;
@@ -1648,16 +1648,16 @@ uint64_t StagesKernel::CodeGen() {
       a->reloc_addr_ = (a->reloc_addr_ - old_base) + new_base;
     }
     for (auto op : stage->stage_loads) {
-      auto offset = GetStageStoreWorkspace(GetStageStore(op));
-      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
+      auto offset = op->GetStageStore()->GetWorkspace();
+      code_.reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
     }
     for (auto op : stage->stage_stores) {
-      auto offset = GetStageStoreWorkspace(op);
-      reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
+      auto offset = op->GetWorkspace();
+      code_.reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
     }
     if (stage->ws_offset >= 0) {
-      for (auto &reloc : stage->kernel->reloc_workspaces_) {
-        reloc_workspaces_.emplace_back(std::make_pair((reloc.first - old_base) + new_base, reloc.second + stage->ws_offset));
+      for (auto &reloc : stage->kernel->code_.reloc_workspaces_) {
+        code_.reloc_workspaces_.emplace_back(std::make_pair((reloc.first - old_base) + new_base, reloc.second + stage->ws_offset));
       }
     }
   }

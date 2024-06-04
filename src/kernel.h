@@ -81,16 +81,6 @@ class VKernel {
   virtual uint64_t CodeGen() = 0;
   virtual void DumpKernel(std::ostringstream &oss, const std::string &indent) = 0;
 
-  inline void RelocInput(NDObject *load, void *gm) { static_cast<NDLoad*>(load)->Reloc(gm); }
-  inline void RelocOutput(NDObject *store, void *gm) { static_cast<NDStore*>(store)->Reloc(gm); }
-  inline void RelocWorkspace(void *workspace) {
-    if (workspace) {
-      for (auto &r : reloc_workspaces_) {
-        *(r.first) = reinterpret_cast<uint64_t>(static_cast<char*>(workspace) + r.second);
-      }
-    }
-  }
-
   std::string& DumpGraph() {
     std::ostringstream oss;
     DumpKernel(oss, "");
@@ -99,8 +89,6 @@ class VKernel {
   }
   std::string& DisAssemble();
   KernelType KType() const { return ktype_; }
-
-  std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
 
   Code code_;
 
@@ -262,13 +250,15 @@ class StagesKernel : public VKernel {
   }
 
   void StageStore(NDAccess *store) {
+    store->is_stage_ = true;
     stages_.back()->kernel->Append(store);
     stages_.back()->stage_stores.push_back(store);
   }
 
   void StageLoad(NDAccess *load, NDAccess *store) {
+    load->is_stage_ = true;
     stages_.back()->kernel->Append(load);
-    load->gm_ = reinterpret_cast<uint8_t*>(store);
+    load->SetStageStore(store);
     stages_.back()->stage_loads.push_back(load);
   }
 
@@ -279,10 +269,6 @@ class StagesKernel : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  NDAccess* GetStageStore(NDAccess* load) { return reinterpret_cast<NDAccess*>(load->gm_); }
-  void SetStageStoreWorkspace(NDAccess* store, int64_t offset) { store->gm_ = reinterpret_cast<uint8_t*>(offset); }
-  int64_t GetStageStoreWorkspace(NDAccess* store) { return reinterpret_cast<int64_t>(store->gm_); }
-
   struct Stage {
     Stage(VKernel *k) : kernel(k) {}
     VKernel* kernel;

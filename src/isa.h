@@ -742,12 +742,17 @@ struct vSliceSL {
   uint64_t src_n;
   uint64_t slice_m;
   uint64_t slice_n;
-  uint64_t pad_size;
   uint64_t slice_k;
+  uint64_t pad_size;
   uint64_t type_size;
-
+  uint64_t offset;
+  // pc[0]: tile_stride(18) << 18 | xn(18)
+  // pc[1]: dst
+  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | src_m(16)
+  // pc[3]: slice_k(16) << 48 | pad_size(8) << 40 | type_size(8) << 32 | offset(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceSL &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.tile_stride = (head >> (V_M_HEAD_EXT_OFFSET + 18)) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
     op.src_m = data & 0xfffful;
@@ -755,18 +760,18 @@ struct vSliceSL {
     op.slice_m = (data >> 32) & 0xfffful;
     op.slice_n = (data >> 48) & 0xfffful;
     data = pc[3];
-    op.type_size = data & 0xfful;
-    op.tile_stride = (data >> 8) & 0xfffffful;
-    op.pad_size = (data >> 32) & 0xfffful;
+    op.offset = data & 0xfffffffful;
+    op.type_size = (data >> 32) & 0xfful;
+    op.pad_size = (data >> 40) & 0xfful;
     op.slice_k = (data >> 48) & 0xfffful;
   }
 
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vSliceSL &op) {
     uint64_t size = 4;
-    pc[0] = vMakeHead(id, op.xn, size, pipe);
+    pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, pipe);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.src_m;
-    pc[3] = op.slice_k << 48 | op.pad_size << 32 | op.tile_stride << 8 | op.type_size;
+    pc[3] = op.slice_k << 48 | op.pad_size << 40 | op.type_size << 32 | op.offset;
     return size;
   }
 };

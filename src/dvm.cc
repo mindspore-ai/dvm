@@ -361,7 +361,7 @@ void Kernel::StageSwitch(KernelType type) {
 
 NDObject* Kernel::StageLoad(NDObject *stage_store) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_, stage_store->lhs_->shape_ref_);
+  auto op = new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
   static_cast<StagesKernel*>(kernel_)->StageLoad(op, static_cast<NDStore*>(stage_store));
   return op;
 }
@@ -394,8 +394,9 @@ uint64_t Kernel::CodeGen() {
 }
 
 int Kernel::Launch(void *workspace, void* stream) {
-  kernel_->RelocWorkspace(workspace);
-  return kernel_->code_.Launch(stream);
+  auto &code = kernel_->code_;
+  code.RelocWorkspace(workspace);
+  return code.Launch(stream);
 }
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
@@ -410,24 +411,24 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
   info.op_fullname = op_fullname;
   info.input_size = reloc_table.inputs_size;
   info.output_size = reloc_table.outputs_size;
-  auto loads = reloc_table.inputs;
+  auto loads = reinterpret_cast<NDAccess**>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
     auto shape_ref = GetShape(*loads);
     info.data_formats.emplace_back(kOpFormat_DEFAULT);
     info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
     info.data_types.emplace_back(v_type_map[GetDType(*loads)]);
-    kernel_->RelocInput(*loads++, *inputs++);
+    (*loads++)->Reloc(*inputs++);
   }
-  auto stores = reloc_table.outputs;
+  auto stores = reinterpret_cast<NDAccess**>(reloc_table.outputs);
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
     auto shape_ref = GetShape(*stores);
     info.data_formats.emplace_back(kOpFormat_DEFAULT);
     info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
     info.data_types.emplace_back(v_type_map[GetDType(*stores)]);
-    kernel_->RelocOutput(*stores++, *outputs++);
+    (*stores++)->Reloc(*outputs++);
   }
-  kernel_->RelocWorkspace(workspace);
   auto &code = kernel_->code_;
+  code.RelocWorkspace(workspace);
   info.block_dim = code.block_dim_;
 
   MsProfHelper helper(info);
@@ -438,16 +439,17 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 }
 
 int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void *workspace, void* stream) {
-  auto loads = reloc_table.inputs;
+  auto loads = reinterpret_cast<NDAccess**>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    kernel_->RelocInput(*loads++, *inputs++);
+    (*loads++)->Reloc(*inputs++);
   }
-  auto stores = reloc_table.outputs;
+  auto stores = reinterpret_cast<NDAccess**>(reloc_table.outputs);
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    kernel_->RelocOutput(*stores++, *outputs++);
+    (*stores++)->Reloc(*outputs++);
   }
-  kernel_->RelocWorkspace(workspace);
-  return kernel_->code_.Launch(stream);
+  auto &code = kernel_->code_;
+  code.RelocWorkspace(workspace);
+  return code.Launch(stream);
 }
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {

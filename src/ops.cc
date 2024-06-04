@@ -297,6 +297,7 @@ int NDPadStore::Emit(Code &code) {
     op.slice_k *= shape_ref_->data[i];
   }
   op.type_size = ITEM_SIZE[type_id_];
+  op.offset = 0;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
   return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
 }
@@ -387,28 +388,32 @@ int64_t NDSliceLoad::CalcOffset() {
 }
 
 int NDSliceLoad::Emit(Code &code) {
-  reloc_offset_ = CalcOffset();
-  if (nd_.size() == 1) {
-    gm_ += reloc_offset_;
-    return NDLoad::Emit(code);
-  }
+  auto reloc_offset = CalcOffset();
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
   vSliceSL op;
   auto size = size_ref_->size;
-  op.gm = gm_ + reloc_offset_;
+  op.gm = gm_;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
   op.slice_k = 1;
-  op.slice_m = size_ref_->data[size - 2];
-  op.slice_n = size_ref_->data[size - 1];
-  op.src_m = src_ref_->data[size - 2];
-  op.src_n = src_ref_->data[size - 1];
-  for (size_t i = 0; i + 2 < size; i++) {
-    op.slice_k *= size_ref_->data[i];
+  if (nd_.size() == 1) {
+    op.slice_m = 1;
+    op.slice_n = size_ref_->data[0];
+    op.src_m = 1;
+    op.src_n = src_ref_->data[0];
+  } else {
+    op.slice_m = size_ref_->data[size - 2];
+    op.slice_n = size_ref_->data[size - 1];
+    op.src_m = src_ref_->data[size - 2];
+    op.src_n = src_ref_->data[size - 1];
+    for (size_t i = 0; i + 2 < size; i++) {
+      op.slice_k *= size_ref_->data[i];
+    }
   }
   op.type_size = ITEM_SIZE[type_id_];
+  op.offset = reloc_offset;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
   return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op);
 }
@@ -484,6 +489,7 @@ int NDStore::Emit(Code &code) {
       clear_kernel_->CodeGen();
       code.atomic_clean_.push_back(&(clear_kernel_->code_));
       reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
+      code.reloc_reuse_.emplace_back(std::make_pair(clear_store_->reloc_addr_, reloc_addr_));
       return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
     }
   }
@@ -1293,13 +1299,13 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
 }
 
 CubeOp::~CubeOp() {
-  if (lhs_->obj_id_ == kLoad) {
+  if (lhs_->IsLoad()) {
     delete lhs_;
   }
-  if (rhs_->obj_id_ == kLoad) {
+  if (rhs_->IsLoad()) {
     delete rhs_;
   }
-  if (output_->obj_id_ == kStore) {
+  if (output_->IsStore()) {
     delete output_;
   }
 }
@@ -1314,15 +1320,17 @@ void CubeOp::NormalizeCube() {
 
   auto lhs_load = static_cast<NDLoad *>(lhs_);
   // if the original shape reference is not nullptr, then this matmul must be padded, we need to get its original shape
-  if (lhs_load->ori_shape_ref_ != nullptr) {
-    std::vector<int64_t> lhs_real_nd(lhs_load->ori_shape_ref_->data, lhs_load->ori_shape_ref_->data + lhs_load->ori_shape_ref_->size);
+  if (lhs_load->is_stage_) {
+    auto ori_shape_ref = lhs_load->GetStageStore()->lhs_->shape_ref_;
+    std::vector<int64_t> lhs_real_nd(ori_shape_ref->data, ori_shape_ref->data + ori_shape_ref->size);
     std::reverse(lhs_real_nd.begin(), lhs_real_nd.end());
     m_real_ = trans_a_ ? lhs_real_nd[0] : lhs_real_nd[1];
     k_real_ = trans_a_ ? lhs_real_nd[1] : lhs_real_nd[0];
   }
   auto rhs_load = static_cast<NDLoad *>(rhs_);
-  if (rhs_load->ori_shape_ref_ != nullptr) {
-    std::vector<int64_t> rhs_real_nd(rhs_load->ori_shape_ref_->data, rhs_load->ori_shape_ref_->data + rhs_load->ori_shape_ref_->size);
+  if (rhs_load->is_stage_) {
+    auto ori_shape_ref = rhs_load->GetStageStore()->lhs_->shape_ref_;
+    std::vector<int64_t> rhs_real_nd(ori_shape_ref->data, ori_shape_ref->data + ori_shape_ref->size);
     std::reverse(rhs_real_nd.begin(), rhs_real_nd.end());
     k_real_ = trans_b_ ? rhs_real_nd[0] : rhs_real_nd[1];
     n_real_ = trans_b_ ? rhs_real_nd[1] : rhs_real_nd[0];
@@ -1449,7 +1457,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->n_real = n_real_;
   op->k_real = k_real_;
 
-  if (lhs_->Pipe() == V_PIPE_LOAD) {
+  if (lhs_->IsLoad()) {
     auto a = static_cast<NDAccess*>(lhs_);
     op->gm_a = reinterpret_cast<uint64_t>(a->gm_);
     op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
@@ -1457,7 +1465,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   } else {
     ASSERT(0); // TODO: pre fusion
   }
-  if (rhs_->Pipe() == V_PIPE_LOAD) {
+  if (rhs_->IsLoad()) {
     auto b = static_cast<NDAccess*>(rhs_);
     op->gm_b = reinterpret_cast<uint64_t>(b->gm_);
     op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;

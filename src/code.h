@@ -137,6 +137,19 @@ struct Code {
 
   uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry
 
+  void RelocWorkspace(void *workspace) {
+    if (workspace) {
+      for (auto &r : reloc_workspaces_) {
+        *(r.first) = reinterpret_cast<uint64_t>(static_cast<char*>(workspace) + r.second);
+      }
+    }
+    if (!reloc_reuse_.empty()) {
+      for (auto &r : reloc_reuse_) {
+        *(r.first) = *(r.second);
+      }
+    }
+  }
+
   int Launch(void* stream) {
     if (target_ == kTargetMix) {
       uint32_t ffts_len;
@@ -162,6 +175,8 @@ struct Code {
   uint32_t block_dim_{0};
   int target_{0};
   std::vector<Code*> atomic_clean_;
+  std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
+  std::vector<std::pair<uint64_t*, uint64_t*>> reloc_reuse_;
 
   uint64_t simd_width_{0};
 };

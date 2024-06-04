@@ -97,7 +97,10 @@ class NDObject {
   int64_t LeadAlign() const { return strides_[lead_dim_]; }
   uint64_t GetBlocks(int64_t size) const { return (size * ITEM_SIZE[type_id_] + 31) >> 5; }
   ObjectType GetObjectType() const { return obj_id_; }
-  int Pipe() const { return obj_id_ <= kLoad ?  V_PIPE_LOAD : (obj_id_ == kStore ? V_PIPE_STORE : V_PIPE_SIMD); }
+  int Pipe() const { return obj_id_ <= kLoad ?  V_PIPE_LOAD : (obj_id_ <= kStore ? V_PIPE_STORE : V_PIPE_SIMD); }
+  bool IsLoad() const { return obj_id_ <= kLoad; }
+  bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
+  bool IsSimd() const { return obj_id_ > kStore; }
 
   std::vector<int64_t> nd_;
   std::vector<int64_t> strides_;
@@ -120,8 +123,20 @@ class NDObject {
 class NDAccess : public NDObject {
  public:
   NDAccess(uint8_t *gm, NDObject *lhs, DType type_id, ObjectType obj_id) : NDObject(lhs, nullptr, type_id, obj_id), gm_(gm) {}
+  void Reloc(void *dst) {
+    *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
+  }
+
+  // stage store
+  void SetWorkspace(int64_t offset) { gm_ = reinterpret_cast<uint8_t*>(offset); }
+  int64_t GetWorkspace() const { return reinterpret_cast<int64_t>(gm_); }
+  // stage load
+  void SetStageStore(NDAccess* store) { gm_ = reinterpret_cast<uint8_t*>(store); }
+  NDAccess* GetStageStore() const { return reinterpret_cast<NDAccess*>(gm_); }
+
   uint8_t *gm_;
   uint64_t *reloc_addr_{nullptr};
+  bool is_stage_{false};
 };
 
 class NDLoadDummy : public NDAccess {
@@ -141,20 +156,13 @@ class NDLoadDummy : public NDAccess {
 
 class NDLoad : public NDAccess {
  public:
-  NDLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32, ShapeRef *ori_shape_ref = nullptr)
+  NDLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32)
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
-    ori_shape_ref_ = ori_shape_ref;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
-  inline void Reloc(void *src) {
-    *reloc_addr_ = reinterpret_cast<uint64_t>(static_cast<uint8_t *>(src) + reloc_offset_);
-  }
-
-  uint64_t reloc_offset_{0};
-  ShapeRef *ori_shape_ref_;
 
  private:
   int tail_dim_{-1};
@@ -208,10 +216,6 @@ class NDStore : public NDAccess {
     shape_ref_ = src->shape_ref_;
   }
   ~NDStore() override;
-  void Reloc(void *dst) {
-    *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
-    if (clear_store_) clear_store_->Reloc(dst);
-  }
   void Normalize(std::vector<NDObject*> &run_ops) override {
     nd_ = lhs_->nd_;
     tail_dim_ = -1;

@@ -105,11 +105,11 @@ size_t MaxLive(BasicBlock &bb) {
   };
   // Store and Load always occupy a variable
   for (auto &obj : bb) {
-    if (obj.Pipe() == V_PIPE_LOAD) {
+    if (obj.IsLoad()) {
       current_live++;
       num_users[&obj] = kNumUsersBig;
     }
-    if (obj.Pipe() == V_PIPE_STORE) {
+    if (obj.IsStore()) {
       current_live++;
       num_users[obj.lhs_] = kNumUsersBig;
     }
@@ -118,7 +118,7 @@ size_t MaxLive(BasicBlock &bb) {
   peak = current_live;
   for (auto &obj : bb) {
     // Store doesn't introduce new variable
-    if (obj.Pipe() != V_PIPE_SIMD) {
+    if (!obj.IsSimd()) {
       continue;
     }
     if (num_users.find(&obj) == num_users.end()) {
@@ -195,17 +195,17 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     if (obj->lhs_ == nullptr) {
       return 0;
     }
-    if (obj->lhs_->Pipe() != V_PIPE_LOAD) {
+    if (!obj->lhs_->IsLoad()) {
       ++res;
     }
     if (obj->rhs_ == nullptr) {
       return res;
     }
-    if (obj->rhs_->Pipe() != V_PIPE_LOAD) {
+    if (!obj->rhs_->IsLoad()) {
       ++res;
     }
     if (obj->GetObjectType() == ObjectType::kSelect &&
-        reinterpret_cast<SelectOp *>(obj)->cond_->Pipe() != V_PIPE_LOAD) {
+        !reinterpret_cast<SelectOp *>(obj)->cond_->IsLoad()) {
       ++res;
     }
     return res;
@@ -216,7 +216,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     for (auto user : GetSuccs(iter.get(), bb)) {
       heights[obj] = std::max(heights[obj], heights[user] + 1);
     }
-    if (obj->Pipe() != V_PIPE_SIMD) {
+    if (!obj->IsSimd()) {
       points[obj] = B3;
     }
     points[obj] += get_reducable_inputs_num(obj) * B2;
@@ -269,14 +269,14 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
   // Init in_degrees
   for (auto &obj : bb) {
     in_degrees_bak[&obj] = GetInputsNum(&obj);
-    if (in_degrees_bak[&obj] == 0 && obj.Pipe() != V_PIPE_LOAD) {
+    if (in_degrees_bak[&obj] == 0 && !obj.IsLoad()) {
       readys_bak.emplace_back(&obj);
     }
   }
   // Init arrange and out_degrees
   for (auto &obj : bb) {
     out_degrees_bak[&obj] = GetSuccs(&obj, bb).size();
-    if (obj.Pipe() == V_PIPE_LOAD) {
+    if (obj.IsLoad()) {
       cur_live++;
       arrange_bak.emplace_back(&obj);
       out_degrees_bak[&obj] += kNumUsersBig;  // Load won't be deallocated
@@ -286,7 +286,7 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
           readys_bak.emplace_back(user);
         }
       }
-    } else if (obj.Pipe() == V_PIPE_STORE) {
+    } else if (obj.IsStore()) {
       cur_live++;
       out_degrees_bak[obj.lhs_] += kNumUsersBig;  // Variable used by Store won't be deallocated
       static_obj.insert(obj.lhs_);
@@ -530,7 +530,7 @@ void BasicBlock::UpdateContext() { context_.Init(begin(), end(), capacity_); }
 
 void ReorderStore(BasicBlock &block) {
   for (auto iter = block.begin(); iter != block.end();) {
-    if (iter->Pipe() == V_PIPE_STORE) {
+    if (iter->IsStore()) {
       auto obj = BasicBlock::iterator(iter->lhs_);
       auto store = iter.get();
       iter++;
@@ -549,9 +549,9 @@ void ReorderLoad(BasicBlock &block) {
   std::unordered_set<NDObject *> load_set;
   // Get order of Load by usage
   for (auto iter = block.begin(); iter != block.end(); ++iter) {
-    if (iter->Pipe() != V_PIPE_LOAD) {
+    if (!iter->IsLoad()) {
       for (auto pred : GetPreds(iter.get())) {
-        if (pred->Pipe() == V_PIPE_LOAD && load_set.find(pred) == load_set.end()) {
+        if (pred->IsLoad() && load_set.find(pred) == load_set.end()) {
           load_set.insert(pred);
           load_order.push({idx, pred});
         }
@@ -589,7 +589,7 @@ void InsertRemovePad(BasicBlock &block) {
     op.AlignProp(range);
   }
   for (auto iter = block.begin(); iter != block.end(); iter++) {
-    if (iter->GetObjectType() == kStore) {
+    if (iter->IsStore()) {
       if (iter->lhs_->obj_id_ == kElementAny || static_cast<int>(iter->nd_.size()) == range.depth) {
         continue;
       }

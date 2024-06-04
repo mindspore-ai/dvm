@@ -412,7 +412,6 @@ void KernelPy::CodeGen(const py::object &pass_names) {
   }
   if (workspace_size > 0) {
     ASCEND_CALL(aclrtMalloc(&workspace_, workspace_size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    kernel_.GetImpl()->RelocWorkspace(workspace_);
   }
 }
 
@@ -508,7 +507,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
   op->gm_ = reinterpret_cast<uint8_t*>(info.dev);
   if (op->reloc_addr_) {
-    kernel_.GetImpl()->RelocInput(op, info.dev);
+    op->Reloc(info.dev);
   }
   if (kernel_.GetImpl()->KType() == kDynShape) {
     info.shape.resize(buf.ndim);
@@ -571,8 +570,9 @@ void KernelPy::PrepareOutput() {
       std::memset(info.host, 0, info.size);
       ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
-    kernel_.GetImpl()->RelocOutput(op, info.dev);
+    static_cast<NDAccess*>(op)->Reloc(info.dev);
   }
+  kernel_.GetImpl()->code_.RelocWorkspace(workspace_);
 }
 
 class DevicePy {

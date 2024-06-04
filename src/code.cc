@@ -624,7 +624,7 @@ DeviceInfo::DeviceInfo() {
       vector_core_num_ = 40;
       cube_core_num_ = 20;
     }
-    l2_size_ = soc_name == "Ascend910B4" ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
+    l2_size_ = (soc_name == "Ascend910B4" || soc_name == "Ascend910C4") ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
     l1_size_ = 512 * 1024;
     l0c_size_ = 128 * 1024;
   } else {

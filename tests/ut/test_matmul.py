@@ -80,8 +80,9 @@ def test_matmul_bf16(trans):
 @pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
-    [[254, 255], [255, 254]],
-    [[1022, 111], [111, 1010]],
+    [[211, 211], [211, 230]],      # gemm normal case
+    [[193, 193], [193, 193]],      # m0 == 1
+    [[1, 1024], [1024, 32]],       # m == 1
 ])
 def test_unaligned_matmul(shape_a, shape_b):
     np_a = np.random.normal(0, 1, shape_a).astype(np.float16)
@@ -154,3 +155,4 @@ def test_matmul_post_broadcast_fusion_1(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     o = t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
+

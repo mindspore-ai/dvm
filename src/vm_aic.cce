@@ -45,8 +45,8 @@ class MatMul {
     swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
     k0_part_len = min((uint64_t)(L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16), k0);
-    m_loop = (m_align + m0 - 1) / m0;
-    n_loop = (n_align + n0 - 1) / n0;
+    m_loop = (m_real + m0 - 1) / m0;
+    n_loop = (n_real + n0 - 1) / n0;
   }
 
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst,
@@ -56,34 +56,41 @@ class MatMul {
                                          int64_t m_actual,
                                          int64_t k_actual) {
     // load GM to L1: ND -> zN
-    if (flags & V_CUBE_FLAG_TRANS_A) {
-      copy_gm_to_cbuf_multi_nd2nz_b16(
-        dst,
-        src + kidx * k0 * m_align + midx * m0,
-        0,                                                                         // sid
-        1,                                                                         // ndNum
-        k_actual,                                                                  // nValue
-        m_actual,                                                                  // dValue
-        0,                                                                         // srcNdMatrixStride, unused if nd_num=1
-        m_align,                                                                   // srcDValue
-        RoundUp(k_actual, BLOCK_SIZE),                                             // dstNzC0Stride
-        1,                                                                         // dstNzNStride
-        0                                                                          // dstNzMatrixStride, unused if nd_num=1
-      );
+    bool transpose_a = flags & V_CUBE_FLAG_TRANS_A;
+    uint64_t offset_a = transpose_a ? (kidx * k0 * m_align + midx * m0) : (midx * m0 * k_align + kidx * k0);
+    if (m_actual == 1 && !transpose_a) {
+      // GEMV mode
+      copy_gm_to_cbuf(dst, src + offset_a, 0, 1, RoundUp(k_actual, BLOCK_SIZE) / BLOCK_SIZE, 0, 0, PAD_NONE);
     } else {
-      copy_gm_to_cbuf_multi_nd2nz_b16(
-        dst,
-        src + midx * m0 * k_align + kidx * k0,
-        0,                                                                         // sid
-        1,                                                                         // ndNum
-        m_actual,                                                                  // nValue
-        k_actual,                                                                  // dValue
-        0,                                                                         // srcNdMatrixStride, unused if nd_num=1
-        k_align,                                                                   // srcDValue
-        RoundUp(m_actual, BLOCK_SIZE),                                             // dstNzC0Stride
-        1,                                                                         // dstNzNStride
-        0                                                                          // dstNzMatrixStride, unused if nd_num=1
-      );
+      if (transpose_a) {
+        copy_gm_to_cbuf_multi_nd2nz_b16(
+          dst,
+          src + offset_a,
+          0,                                                                         // sid
+          1,                                                                         // ndNum
+          k_actual,                                                                  // nValue
+          m_actual,                                                                  // dValue
+          0,                                                                         // srcNdMatrixStride, unused if nd_num=1
+          m_align,                                                                   // srcDValue
+          RoundUp(k_actual, BLOCK_SIZE),                                             // dstNzC0Stride
+          1,                                                                         // dstNzNStride
+          0                                                                          // dstNzMatrixStride, unused if nd_num=1
+        );
+      } else {
+        copy_gm_to_cbuf_multi_nd2nz_b16(
+          dst,
+          src + offset_a,
+          0,                                                                         // sid
+          1,                                                                         // ndNum
+          m_actual,                                                                  // nValue
+          k_actual,                                                                  // dValue
+          0,                                                                         // srcNdMatrixStride, unused if nd_num=1
+          k_align,                                                                   // srcDValue
+          RoundUp(m_actual, BLOCK_SIZE),                                             // dstNzC0Stride
+          1,                                                                         // dstNzNStride
+          0                                                                          // dstNzMatrixStride, unused if nd_num=1
+        );
+      }
     }
   }
 
@@ -134,31 +141,45 @@ class MatMul {
                                            int64_t m_actual) {
     // load L1 to L0A: zN -> zZ
     int64_t m_round = RoundUp(m_actual, BLOCK_SIZE);
-    if (flags & V_CUBE_FLAG_TRANS_A) {
-      for (size_t i = 0; i < m_round / BLOCK_SIZE; i++) {
-        load_cbuf_to_ca(
-          dst + i * BLOCK_SIZE * k0_round,
-          src + i * k_round * BLOCK_SIZE + k0_part_len * k_part_idx * BLOCK_SIZE,
-          0,
-          k0_round / BLOCK_SIZE,           // repeat: number of fractal
-          1,                               // srcstride: number of fractal
-          0,                               // dststride: number of fractal
-          0,
-          true,                            // transpose
-          inc);
-      }
+    // GEMV mode
+    if ((m_actual == 1 && !(flags & V_CUBE_FLAG_TRANS_A))) {
+      load_cbuf_to_ca(
+        dst,
+        src + k_part_idx * k0_part_len,
+        0,
+        (k0_round + BLOCK_SIZE * BLOCK_SIZE - 1) / (BLOCK_SIZE * BLOCK_SIZE),
+        1,
+        0,
+        0,
+        false,
+        inc);
     } else {
-      for (size_t i = 0; i < m_round / BLOCK_SIZE; i++) {
-        load_cbuf_to_ca(
-          dst + i * BLOCK_SIZE * k0_round,
-          src + m_round * k0_part_len * k_part_idx + i * BLOCK_SIZE * BLOCK_SIZE,
-          0,
-          k0_round / BLOCK_SIZE,           // repeat: number of fractal
-          m_round / BLOCK_SIZE,            // srcstride: number of fractal
-          0,                               // dststride: number of fractal
-          0,
-          false,                           // transpose
-          inc);
+      if (flags & V_CUBE_FLAG_TRANS_A) {
+        for (size_t i = 0; i < m_round / BLOCK_SIZE; i++) {
+          load_cbuf_to_ca(
+            dst + i * BLOCK_SIZE * k0_round,
+            src + i * k_round * BLOCK_SIZE + k0_part_len * k_part_idx * BLOCK_SIZE,
+            0,
+            k0_round / BLOCK_SIZE,           // repeat: number of fractal
+            1,                               // srcstride: number of fractal
+            0,                               // dststride: number of fractal
+            0,
+            true,                            // transpose
+            inc);
+        }
+      } else {
+        for (size_t i = 0; i < m_round / BLOCK_SIZE; i++) {
+          load_cbuf_to_ca(
+            dst + i * BLOCK_SIZE * k0_round,
+            src + m_round * k0_part_len * k_part_idx + i * BLOCK_SIZE * BLOCK_SIZE,
+            0,
+            k0_round / BLOCK_SIZE,           // repeat: number of fractal
+            m_round / BLOCK_SIZE,            // srcstride: number of fractal
+            0,                               // dststride: number of fractal
+            0,
+            false,                           // transpose
+            inc);
+        }
       }
     }
   }
@@ -207,17 +228,18 @@ class MatMul {
                                        int64_t m_actual, 
                                        int64_t n_actual,
                                        int64_t k0_actual) {
+    bool special_handle_req = (m_real != 1 && m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
     mad(
       c,
       a,
       b,
-      m_actual,         // m
-      k0_actual,        // k
-      n_actual,         // n
-      unit_flag,        // unitFlag
-      0,                // kDirectionAlign
-      0,                // cmatrixSource
-      init_c            // cmatrixInitVal
+      special_handle_req ? 16 : m_actual,     // m
+      k0_actual,                              // k
+      n_actual,                               // n
+      unit_flag,                              // unitFlag
+      0,                                      // kDirectionAlign
+      0,                                      // cmatrixSource
+      init_c                                  // cmatrixInitVal
     );
   }
 
@@ -301,8 +323,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
-  uint64_t k_loop = (mat.k_align + mat.k0 - 1) / mat.k0;
-  uint64_t k_actual = (1 == k_loop) ? mat.k_real : mat.k0;
+  uint64_t k_loop = (mat.k_real + mat.k0 - 1) / mat.k0;
+  int64_t k_actual = (1 == k_loop) ? mat.k_real : mat.k0;
   int64_t pingpong = 1;
   //if (op->forward_fusion) { wait_flag_dev(flag_id); }
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
@@ -329,13 +351,13 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
-      k_actual = ((k == k_loop - 1)) ? (mat.k_real - k * mat.k0) : mat.k0;
+      k_actual = (k == k_loop - 1) ? (mat.k_real - k * mat.k0) : mat.k0;
       uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
       uint64_t k_part_loop = (k_actual + mat.k0_part_len - 1) / mat.k0_part_len;
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       auto event_id_next = pingpong ? EVENT_ID1 : EVENT_ID0;
       if (k < k_loop - 1) {
-        uint64_t k_actual_next = (k + 1 == k_loop - 1) ? (mat.k_real - (k + 1) * mat.k0) : mat.k0;
+        int64_t k_actual_next = (k + 1 == k_loop - 1) ? (mat.k_real - (k + 1) * mat.k0) : mat.k0;
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         mat.LoadA(n_l1a, gm_a + offset_a, midx, k + 1, m_actual, k_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
@@ -361,8 +383,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       for (int64_t k_part_idx = 0; k_part_idx < k_part_loop; ++k_part_idx) {
         __ca__ T *__restrict__ l0a = (k_part_idx & 1) ? l0a_next : l0a_base;
         __cb__ T *__restrict__ l0b = (k_part_idx & 1) ? l0b_next : l0b_base;
-        uint64_t k0_round = (k_part_idx == k_part_loop - 1) ? k_round - k_part_idx * mat.k0_part_len : mat.k0_part_len;
-        uint64_t k0_actual = (k_part_idx == k_part_loop - 1) ? k_actual - k_part_idx * mat.k0_part_len : mat.k0_part_len;
+        int64_t k0_round = (k_part_idx == k_part_loop - 1) ? k_round - k_part_idx * mat.k0_part_len : mat.k0_part_len;
+        int64_t k0_actual = (k_part_idx == k_part_loop - 1) ? k_actual - k_part_idx * mat.k0_part_len : mat.k0_part_len;
         auto mte1_mad_event_id = (k_part_idx & 1) ? EVENT_ID1 : EVENT_ID0;
         if (k_part_idx == 0) {
           wait_flag(PIPE_MTE2, PIPE_MTE1, event_id);

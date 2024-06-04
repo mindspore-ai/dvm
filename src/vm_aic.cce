@@ -140,7 +140,7 @@ class MatMul {
           dst + i * BLOCK_SIZE * k0_round,
           src + i * k_round * BLOCK_SIZE + k0_part_len * k_part_idx * BLOCK_SIZE,
           0,
-          k0_round / BLOCK_SIZE,       // repeat: number of fractal
+          k0_round / BLOCK_SIZE,           // repeat: number of fractal
           1,                               // srcstride: number of fractal
           0,                               // dststride: number of fractal
           0,
@@ -153,8 +153,8 @@ class MatMul {
           dst + i * BLOCK_SIZE * k0_round,
           src + m_round * k0_part_len * k_part_idx + i * BLOCK_SIZE * BLOCK_SIZE,
           0,
-          k0 / total_k / BLOCK_SIZE,       // repeat: number of fractal
-          m0 / BLOCK_SIZE,                 // srcstride: number of fractal
+          k0_round / BLOCK_SIZE,           // repeat: number of fractal
+          m_round / BLOCK_SIZE,            // srcstride: number of fractal
           0,                               // dststride: number of fractal
           0,
           false,                           // transpose

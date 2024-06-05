@@ -337,6 +337,8 @@ int NDSStore::Emit(Code &code) { // TODO: broadcast
   op.slice_m = cube_op_->m0_;
   op.slice_n = cube_op_->n0_;
   op.src_n = cube_op_->n_real_;
+  op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
+  op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
   op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSStore::RELOC_OFFSET;
   return vSStore::Encode(insn_, vStoreInsnID::V_SSTORE, op);;
@@ -354,6 +356,8 @@ int NDSLoad::Emit(Code &code) {
   op.slice_n = cube_op_->n0_;
   size_t shape_size = shape_ref_->size;
   op.src_n = cube_op_->n_real_;
+  op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
+  op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
   auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
   auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
   op.flags = broadcast_m << 1 | broadcast_n;

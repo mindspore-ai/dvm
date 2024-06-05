@@ -142,6 +142,10 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("cube_n", op.slice_n, oss);
   oss << ", ";
   DumpVal("src_n", op.src_n, oss);
+  oss << ", ";
+  DumpVal("tail_m", op.tail_m, oss);
+  oss << ", ";
+  DumpVal("tail_n", op.tail_n, oss);
 }
 
 void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -746,7 +750,7 @@ class DisAssembler {
     }
   }
 
-  void DasVecBody(uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent ) {
+  void DasVecBody(uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
     DasBody(oss, bcode, bcode_size, simd_width, indent);
   }
 
@@ -791,6 +795,7 @@ class DisAssembler {
     oss << indent << "aic(mix=" << bool(entry & V_ENTRY_FLAG_MIX);
     vCubeOp *cube = reinterpret_cast<vCubeOp*>(bcode);
     if (cube->flags & V_CUBE_FLAG_GROUP_SET) {
+      oss << ", sub_tile_num=[" << (cube->subtilenum & 0xfffffffful) << ", " << (cube->subtilenum >> 32) << "]";
       oss << ", group_set=1";
     }
     if (cube->flags & V_CUBE_FLAG_POST_SET) {

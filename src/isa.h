@@ -665,13 +665,15 @@ struct vSLoad {
   uint64_t src_n;
   uint64_t slice_n;
   uint64_t slice_m;
+  uint64_t tail_n;
+  uint64_t tail_m;
   uint64_t pad_size;
   uint64_t type_size;
   uint64_t flags;
   // pc[0]: xn(18)
   // pc[1]: src
   // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
-  // pc[2]: tile_stride(32) << 32 | flags(8) << 8 | type_size(8)
+  // pc[2]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | op.flags(4) << 4 | type_size(4)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSLoad &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
@@ -681,9 +683,11 @@ struct vSLoad {
     op.slice_n = (data >> 48) & 0xfffful;
     op.pad_size = data & 0xfffful;
     data = pc[3];
-    op.tile_stride = (data >> 32) & 0xfffffffful;
-    op.flags = (data >> 8) & 0xfful;
-    op.type_size = data & 0xfful;
+    op.tail_n = (data >> 48) & 0xfffful;
+    op.tail_m = (data >> 32) & 0xfffful;
+    op.tile_stride = (data >> 8) & 0xfffffful;
+    op.flags = (data >> 4) & 0xful;
+    op.type_size = data & 0xful;
   }
 
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSLoad &op) {
@@ -691,7 +695,7 @@ struct vSLoad {
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
-    pc[3] = op.tile_stride << 32 | op.flags << 8 | op.type_size;
+    pc[3] = op.tail_n << 48 | op.tail_m << 32 | op.tile_stride << 8 | op.flags << 4 | op.type_size;
     return size;
   }
 };
@@ -704,12 +708,14 @@ struct vSStore {
   uint64_t src_n;
   uint64_t slice_n;
   uint64_t slice_m;
+  uint64_t tail_n;
+  uint64_t tail_m;
   uint64_t pad_size;
   uint64_t type_size;
   // pc[0]: xn(18)
   // pc[1]: dst
   // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
-  // pc[2]: tile_stride(32) << 32 | type_size(8)
+  // pc[2]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | type_size(4)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSStore &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
@@ -719,8 +725,10 @@ struct vSStore {
     op.slice_n = (data >> 48) & 0xfffful;
     op.pad_size = data & 0xfffful;
     data = pc[3];
-    op.tile_stride = (data >> 32) & 0xfffffffful;
-    op.type_size = data & 0xfful;
+    op.tail_n = (data >> 48) & 0xfffful;
+    op.tail_m = (data >> 32) & 0xfffful;
+    op.tile_stride = (data >> 8) & 0xfffffful;
+    op.type_size = data & 0xful;
   }
 
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSStore &op) {
@@ -728,7 +736,7 @@ struct vSStore {
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_STORE);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
-    pc[3] = op.tile_stride << 32 | op.type_size;
+    pc[3] = op.tail_n << 48 | op.tail_m << 32 | op.tile_stride << 8 | op.type_size;
     return size;
   }
 };
@@ -913,13 +921,16 @@ struct vCubeOp {
     int64_t start_m, start_n;
     uint64_t swizzle_dir = op->swizzle >> 16;
     uint64_t swizzle_cnt = op->swizzle & 0xffff;
-    uint64_t m_loop = (op->m_align + op->m0 - 1) / op->m0;
-    uint64_t n_loop = (op->n_align + op->n0 - 1) / op->n0;
+    uint64_t m_loop = op->m_align / op->m0;
+    uint64_t n_loop = op->n_align / op->n0;
     TileMap(block_tile, m_loop, n_loop, swizzle_dir, swizzle_cnt, start_m, start_n);
+    int64_t m_end = op->m_real / op->m0;
+    int64_t n_end = op->n_real / op->n0;
+    uint64_t tile_flag = (start_m == m_end) << 1 | (start_n == n_end);
     start_m *= op->m0;
     start_n *= op->n0;
-    uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n_align * op->m_align;
-    return start_m * op->n_align + start_n + batch_offset;
+    uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n_real * op->m_real;
+    return tile_flag << 30 | (start_m * op->n_real + start_n + batch_offset);
   }
 
   __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,

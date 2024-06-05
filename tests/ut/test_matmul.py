@@ -156,3 +156,36 @@ def test_matmul_post_broadcast_fusion_1(shape_a, shape_b):
     o = t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
 
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[211, 211], [211, 230]],      # gemm normal case
+    [[193, 193], [193, 193]],      # m0 == 1
+])
+def test_unaligned_matmul_post_fusion(shape_a, shape_b):
+    np_a = np.random.normal(0, 1, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 1, shape_b).astype(np.float16)
+    expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)) + 2.5
+    # compute pad size
+    shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
+    shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]
+    pad_size_a = [shape_a_pad[i] - shape_a[i] for i in range(2)]
+    pad_size_b = [shape_b_pad[i] - shape_b[i] for i in range(2)]
+
+    t = Tester("stages")
+    t.stage_switch("static")
+    a = t.load(np_a)
+    a = t.copy(a)
+    pad_a = t.stage_pad_store(a, pad_size_a)
+    t.stage_switch("static")
+    b = t.load(np_b)
+    b = t.copy(b)
+    pad_b = t.stage_pad_store(b, pad_size_b)
+    t.stage_switch("mix")
+    mat_a = t.stage_load(pad_a)
+    mat_b = t.stage_load(pad_b)
+    res = t.matmul(mat_a, mat_b, False, False)
+    res = t.cast(res, "float32")
+    res = t.binary("Add", res, 2.5)
+    t.store_expect(res, expect, 2e-3)
+    assert (t.run_check())

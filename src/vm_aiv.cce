@@ -30,7 +30,7 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TYPE_SHIFT(x) (32 / sizeof(x))
 #define BlockDataShift(x)  (5 - sizeof(x) / 2)   // 1B - 5, 2B - 4, 4B - 3, 8B - not support
 
-// tile : simd_width(8) << 56 | group_idx(32) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// tile : simd_width(8) << 56 | is_last_tile_m(1) << 55 | is_last_tile_n(1) << 54 | group_idx_offset(30) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
 #define V_TILE_N_BEGIN_FLAG_OFFSET  0
 #define V_TILE_END_FLAG_OFFSET      1
 #define V_TILE_TAIL_FLAG_OFFSET     2
@@ -41,7 +41,9 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define V_SLOAD_FLAG_BROADCAST_M    2
 
 #define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
-#define TileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 32)
+#define TileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 30)
+#define IsLastTileN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 30, 1)
+#define IsLastTileM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 31, 1)
 #define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
 #define IsBeginTile(tile)     ((tile & (1ul << V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
 #define IsEndTile(tile)       ((tile) &(1ul << V_TILE_END_FLAG_OFFSET))
@@ -1060,9 +1062,9 @@ static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 static inline [aicore] void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                         uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                         uint64_t pad_size, uint64_t type_size) {
-  if (begin_m == end_m) {
+  if (begin_m == end_m && begin_n <= end_n) {
     copy_gm_to_ubuf_align_b8(dst, src, 0, 1, (end_n - begin_n + 1) * type_size, 0, 0, 0, 0);
-  } else {
+  } else if (begin_m < end_m) {
     uint64_t num = end_m - begin_m + 1;
     copy_gm_to_ubuf_align_b8(dst, src, 0, num, slice_n * type_size, 0, 0, (src_n - slice_n) * type_size,
                              (pad_size * type_size) >> 5);
@@ -1072,9 +1074,9 @@ static inline [aicore] void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *s
 static inline [aicore] void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                          uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                          uint64_t pad_size, uint64_t type_size) {
-  if (begin_m == end_m) {
+  if (begin_m == end_m && begin_n <= end_n) {
     copy_ubuf_to_gm_align_b8(dst, src, 0, 1, (end_n - begin_n + 1) * type_size, 0, 0, 0, 0);
-  } else {
+  } else if (begin_m < end_m) {
     uint64_t num = end_m - begin_m + 1;
     copy_ubuf_to_gm_align_b8(dst, src, 0, num, slice_n * type_size, 0, 0, (pad_size * type_size) >> 5,
                              (src_n - slice_n) * type_size);
@@ -1103,9 +1105,19 @@ static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     uint64_t begin_n = begin_tmp % op.slice_n;
     uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % op.slice_n;
 
+    uint64_t slice_n = op.slice_n;
+    uint64_t pad_size = op.pad_size;
+    if (IsLastTileM(tile)) {
+      end_m = min(end_m, op.tail_m - 1);
+    }
+    if (IsLastTileN(tile)) {
+      end_n = min(end_n, op.tail_n - 1);
+      slice_n = op.tail_n;
+      pad_size += op.slice_n - op.tail_n;
+    }
     uint64_t offset_slice = begin_m * op.src_n + begin_n + TileGroupOffset(tile);
     src +=  offset_slice * op.type_size;
-    SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
+    SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
   }
 }
 
@@ -1121,10 +1133,20 @@ static inline [aicore] void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   uint64_t begin_n = begin_tmp % op.slice_n;
   uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % op.slice_n;
 
+  uint64_t slice_n = op.slice_n;
+  uint64_t pad_size = op.pad_size;
+  if (IsLastTileM(tile)) {
+    end_m = min(end_m, op.tail_m - 1);
+  }
+  if (IsLastTileN(tile)) {
+    end_n = min(end_n, op.tail_n - 1);
+    slice_n = op.tail_n;
+    pad_size += op.slice_n - op.tail_n;
+  }
   uint64_t offset_slice = begin_m * op.src_n + begin_n + TileGroupOffset(tile);
   __gm__ uint8_t *dst = (__gm__ uint8_t *)op.gm + offset_slice * op.type_size;
   __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
-  SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size);
+  SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
 }
 
 static inline [aicore] void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {

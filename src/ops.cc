@@ -267,7 +267,7 @@ void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
     shape_[i] = lhs_->shape_ref_->data[i] + pad_shape_->data[i];
   }
   *shape_ref_= shape_;
-  NDStore::Normalize(run_ops);
+  nd_ = lhs_->nd_;
 }
 
 void NDPadStore::AlignProp(PropRange &range) {
@@ -431,12 +431,6 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   NDSliceLoad::Normalize(run_ops);
 }
 
-NDStore::~NDStore() {
-  if (clear_kernel_ != nullptr) {
-    delete clear_kernel_;
-  }
-}
-
 void NDStore::Tile(const TileParam &tp) {
   if (tp.tail > 0) {
     ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
@@ -477,19 +471,10 @@ int NDStore::Emit(Code &code) {
       if (lhs_->obj_id_ == kRemovePad) {
         op.pad_size = 0;
       }
-      if (clear_kernel_ == nullptr) {
-        clear_kernel_ = new VKernelD();
-        auto dummy_load = new NDLoadDummy(type_id_);
-        clear_kernel_->Append(dummy_load);
-        auto broadcast_scalar_op = new BroadcastScalarOp<float>(0.0, shape_ref_, type_id_, dummy_load);
-        clear_kernel_->Append(broadcast_scalar_op);
-        clear_store_ = new NDStore(gm_, broadcast_scalar_op);
-        clear_kernel_->Append(clear_store_);
-      }
-      clear_kernel_->CodeGen();
-      code.atomic_clean_.push_back(&(clear_kernel_->code_));
       reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
-      code.reloc_reuse_.emplace_back(std::make_pair(clear_store_->reloc_addr_, reloc_addr_));
+      red_op->GenClearKernel(this);
+      code.atomic_clean_.push_back(&(red_op->clear_kernel_->code_));
+      code.reloc_reuse_.emplace_back(std::make_pair(red_op->clear_store_->reloc_addr_, reloc_addr_));
       return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
     }
   }
@@ -1134,6 +1119,9 @@ ReduceOp::~ReduceOp() {
     delete op;
   }
   delete shape_ref_;
+  if (clear_kernel_ != nullptr) {
+    delete clear_kernel_;
+  }
 }
 
 void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -1271,6 +1259,19 @@ int ReduceOp::Emit(Code &code) {
   return num;
 }
 
+void ReduceOp::GenClearKernel(NDAccess *store) {
+ if (clear_kernel_ == nullptr) {
+    clear_kernel_ = new VKernelD();
+    auto dummy_load = new NDLoadDummy(type_id_);
+    clear_kernel_->Append(dummy_load);
+    auto broadcast_scalar_op = new BroadcastScalarOp<float>(0.0, shape_ref_, type_id_, dummy_load);
+    clear_kernel_->Append(broadcast_scalar_op);
+    clear_store_ = new NDStore(store->gm_, broadcast_scalar_op);
+    clear_kernel_->Append(clear_store_);
+  }
+  clear_kernel_->CodeGen();
+}
+
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   int n = std::max(lhs->nd_.size(), rhs->nd_.size());
   nd_.reserve(n);
@@ -1318,17 +1319,17 @@ void CubeOp::NormalizeCube() {
   k_real_ = k_align_;
   n_real_ = n_align_;
 
-  auto lhs_load = static_cast<NDLoad *>(lhs_);
+  auto lhs_load = static_cast<NDAccess*>(lhs_);
   // if the original shape reference is not nullptr, then this matmul must be padded, we need to get its original shape
-  if (lhs_load->is_stage_) {
+  if (lhs_load->is_stage_ && lhs_load->GetStageStore()->obj_id_ == ObjectType::kPadStore) {
     auto ori_shape_ref = lhs_load->GetStageStore()->lhs_->shape_ref_;
     std::vector<int64_t> lhs_real_nd(ori_shape_ref->data, ori_shape_ref->data + ori_shape_ref->size);
     std::reverse(lhs_real_nd.begin(), lhs_real_nd.end());
     m_real_ = trans_a_ ? lhs_real_nd[0] : lhs_real_nd[1];
     k_real_ = trans_a_ ? lhs_real_nd[1] : lhs_real_nd[0];
   }
-  auto rhs_load = static_cast<NDLoad *>(rhs_);
-  if (rhs_load->is_stage_) {
+  auto rhs_load = static_cast<NDAccess*>(rhs_);
+  if (rhs_load->is_stage_ && rhs_load->GetStageStore()->obj_id_ == ObjectType::kPadStore) {
     auto ori_shape_ref = rhs_load->GetStageStore()->lhs_->shape_ref_;
     std::vector<int64_t> rhs_real_nd(ori_shape_ref->data, ori_shape_ref->data + ori_shape_ref->size);
     std::reverse(rhs_real_nd.begin(), rhs_real_nd.end());

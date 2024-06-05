@@ -109,7 +109,9 @@ const uint64_t SIMD_REPEAT_SIZE = 256;
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
 
-struct Code {
+class NDAccess;
+class Code {
+ public:
   enum { kTargetVec = 0, kTargetCube, kTargetMix };
   Code() = default;
   Code(const Code&obj) = delete;
@@ -168,6 +170,7 @@ struct Code {
     return launch_func(stub_func, block_dim_, data_, data_size_, nullptr, stream);
   }
 
+  void LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess*> &ios, uint64_t ws_base);
   void DisAssemble(std::ostringstream &oss);
 
   unsigned char *data_{nullptr};

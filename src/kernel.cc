@@ -48,6 +48,7 @@ class CodeGenHelper {
     static const CodeGenType codegen_types[ObjectType::kObjectBulk] = {
       kGenLoad,  // loaddummy
       kGenLoad,  // load
+      kGenStore, // padstore
       kGenStore, // store
       kGenSimd1, // reshape
       kGenSimd1, // copy
@@ -861,6 +862,7 @@ void VKernelBase::DumpKernel(std::ostringstream &oss, const std::string &indent)
   static const char* obj_names[ObjectType::kObjectBulk] = {
     "LoadDummy",
     "Load",
+    "PadStore",
     "Store",
     "Reshape",
     "Copy",
@@ -1290,24 +1292,6 @@ uint64_t VKernelP::CodeGen() {
     total_workload -= workload;
     core_num -= k->code_.block_dim_;
   }
-  std::vector<uint64_t> offsets;
-  LinkAll(offsets);
-  for (size_t i = 0; i < children_.size(); ++i) {
-    uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + offsets[i]);
-    uint64_t *old_base = reinterpret_cast<uint64_t*>(children_[i]->code_.data_);
-    for (auto op :  children_[i]->objects_) {
-      if (!op->IsSimd()) {
-        auto io = static_cast<NDAccess*>(op);
-        io->reloc_addr_ = new_base + (io->reloc_addr_ - old_base);
-      }
-    }
-  }
-  EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
-  return 0;
-}
-
-void VKernelP::LinkAll(std::vector<uint64_t> &offsets) {
-  code_.atomic_clean_.clear();
   code_.block_dim_ = 0;
   uint64_t code_size = 0;
   for (auto c : children_) {
@@ -1321,32 +1305,30 @@ void VKernelP::LinkAll(std::vector<uint64_t> &offsets) {
   uint64_t *summaries = reinterpret_cast<uint64_t*>(code_.data_ + code_.HeadSize());
   uint64_t summary_idx = 0;
   for (size_t k = 0; k < children_.size(); ++k) {
-    Code *code = &(children_[k]->code_);
+    Code &code = children_[k]->code_;
     auto tile_num = children_[k]->tile_num_;
     ASSERT(tile_num <= 0xffffful);
     // summary
-    uint64_t lenburst = (code->data_size_ - code->HeadSize() + 31) / 32;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | code->simd_width_ << 41;
-    uint64_t tile_per_block = (tile_num - 1) / code->block_dim_ + 1;
+    uint64_t lenburst = (code.data_size_ - code.HeadSize() + 31) / 32;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | code.simd_width_ << 41;
+    uint64_t tile_per_block = (tile_num - 1) / code.block_dim_ + 1;
     uint64_t start_idx = 0;
-    for (uint64_t i = 0; i < code->block_dim_ - 1; ++i) {
+    for (uint64_t i = 0; i < code.block_dim_ - 1; ++i) {
       summaries[summary_idx++] = summary | tile_per_block << 20 | start_idx;
       start_idx += tile_per_block;
     }
     summaries[summary_idx++] = summary | (tile_num - start_idx) << 20 | start_idx | 1ul << 40;
     // data
-    offsets.push_back(offset);
-    uint64_t cpy_size = code->data_size_ - code->HeadSize();
-    memcpy(code_.data_ + code_.HeadSize() + offset, code->data_ + code->HeadSize(), cpy_size);
-    offset += ((cpy_size + 31) >> 5) << 5;
-    // atomic clean
-    if (!code->atomic_clean_.empty()) {
-      for (auto ac : code->atomic_clean_) {
-        code_.atomic_clean_.push_back(ac);
-      }
+    std::vector<NDAccess*> ios;
+    for (auto op :  children_[k]->objects_) {
+      if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
     }
+    code_.LinkBody(code_.HeadSize() + offset, code, ios, 0);
+    offset += ((code.data_size_ - code.HeadSize() + 31) >> 5) << 5;
   }
   code_.UpdateParallelHead();
+  EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
+  return 0;
 }
 
 void VKernelP::DumpKernel(std::ostringstream &oss, const std::string &indent) {
@@ -1412,7 +1394,7 @@ void MixKernel::Append(NDObject *obj) {
       cube_op_->NormalizeCube();
     }
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
-    cube_op_->output_ = obj;
+    cube_op_->output_ = static_cast<NDAccess*>(obj);
   } else {
     if (post_fusion_ == nullptr) {
       post_fusion_ = new VKernelS();
@@ -1479,47 +1461,23 @@ uint64_t MixKernel::CodeGen() {
   code_.data_size_ = size;
   code_.Alloc(size);
   code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
-  uint64_t offset = code_.HeadSize();
-  std::memcpy(code_.data_ + offset, &cube_code, sizeof(vCubeOp));
-  offset += sizeof(vCubeOp);
-  if (post_fusion_) {
-    auto &post_code = post_fusion_->code_;
-    std::memcpy(code_.data_ + offset, post_code.data_ + post_code.HeadSize(), post_code.data_size_ - post_code.HeadSize());
+  std::memcpy(code_.data_ + code_.HeadSize(), &cube_code, sizeof(vCubeOp));
+  // only support post fusion
+  vCubeOp *link_cube = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
+  static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
+  static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &link_cube->gm_b;
+  if (!post_fusion_) {
+    static_cast<NDAccess*>(cube_op_->output_)->reloc_addr_ = &link_cube->gm_c;
+    return 0;
   }
-  return UpdateReloc();
-}
-
-uint64_t MixKernel::UpdateReloc() {
-  uint64_t workspace = 0;
-  code_.reloc_workspaces_.clear();
-  vCubeOp *op = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
-  if (cube_op_->lhs_->IsLoad()) {
-    static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &op->gm_a;
-  } else {
-    // TODO: pre fusion
+  std::vector<NDAccess*> ios;
+  for (auto op :  post_fusion_->objects_) {
+    if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
   }
-  if (cube_op_->rhs_->IsLoad()) {
-    static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &op->gm_b;
-  } else {
-    // TODO: pre fusion
-  }
-  if (cube_op_->output_->IsStore()) {
-    static_cast<NDAccess*>(cube_op_->output_)->reloc_addr_ = &op->gm_c;
-  } else {
-    uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + sizeof(vCubeOp));
-    uint64_t *old_base = reinterpret_cast<uint64_t*>(post_fusion_->code_.data_);
-    workspace += cube_op_->output_->Size();
-    NDAccess* load = static_cast<NDAccess*>(cube_op_->output_);
-    code_.reloc_workspaces_.emplace_back(std::make_pair(new_base + (load->reloc_addr_ - old_base), 0));
-    code_.reloc_workspaces_.emplace_back(std::make_pair(&op->gm_c, 0));
-    for (auto op :  post_fusion_->objects_) {
-      if (!op->IsSimd()) {
-        auto io = static_cast<NDAccess*>(op);
-        io->reloc_addr_ = new_base + (io->reloc_addr_ - old_base);
-      }
-    }
-  }
-  return workspace;
+  code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
+  code_.reloc_workspaces_.emplace_back(std::make_pair(&link_cube->gm_c, 0));
+  code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, &link_cube->gm_c));
+  return cube_op_->output_->Size();
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
@@ -1589,9 +1547,11 @@ uint64_t StagesKernel::CodeGen() {
       s->ws_offset = ws_size;
       ws_size += workspace;
     }
-    for (auto op : s->stage_stores) {
-      op->SetWorkspace(ws_size);
-      ws_size += get_tensor_size(op);
+    for (auto op : s->ios) {
+      if (op->is_stage_ && op->IsStore()) {
+        op->SetWorkspace(ws_size);
+        ws_size += get_tensor_size(op);
+      }
     }
     s->code_offset = code_size;
     auto &stage_code = s->kernel->code_;
@@ -1613,8 +1573,18 @@ uint64_t StagesKernel::CodeGen() {
   for (size_t sidx = 0; sidx < stages_.size(); ++sidx) {
     auto stage = stages_[sidx];
     auto &src_code = stage->kernel->code_;
-    std::memcpy(code_.data_ + stage->code_offset, src_code.data_ + ffts_size, src_code.data_size_ - ffts_size);
-    auto cur_entry = *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
+    code_.LinkBody(stage->code_offset + sizeof(uint64_t), src_code, stage->ios, stage->ws_offset);
+    for (auto op : stage->ios) {
+      if (op->is_stage_) {
+        if (op->IsStore()) {
+          auto offset = op->GetWorkspace();
+          code_.reloc_workspaces_.emplace_back(std::make_pair(op->reloc_addr_, offset));
+        } else {
+          code_.reloc_reuse_.emplace_back(std::make_pair(op->reloc_addr_, op->GetStageStore()->reloc_addr_));
+        }
+      }
+    }
+    auto cur_entry = *reinterpret_cast<uint64_t*>(src_code.data_ + ffts_size);
     cur_entry |= V_ENTRY_FLAG_GROUP;
     if (sidx > 0) { // add sync
       auto pre_code = code_.data_ + stages_[sidx - 1]->code_offset;
@@ -1642,24 +1612,6 @@ uint64_t StagesKernel::CodeGen() {
       *reinterpret_cast<uint64_t*>(pre_code) = pre_entry;
     }
     *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset) = cur_entry;
-    uint64_t *new_base = reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset);
-    uint64_t *old_base = reinterpret_cast<uint64_t*>(stage->kernel->code_.data_ + ffts_size);
-    for (auto a :  stage->ios) {
-      a->reloc_addr_ = (a->reloc_addr_ - old_base) + new_base;
-    }
-    for (auto op : stage->stage_loads) {
-      auto offset = op->GetStageStore()->GetWorkspace();
-      code_.reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
-    }
-    for (auto op : stage->stage_stores) {
-      auto offset = op->GetWorkspace();
-      code_.reloc_workspaces_.emplace_back(std::make_pair((op->reloc_addr_ - old_base) + new_base, offset));
-    }
-    if (stage->ws_offset >= 0) {
-      for (auto &reloc : stage->kernel->code_.reloc_workspaces_) {
-        code_.reloc_workspaces_.emplace_back(std::make_pair((reloc.first - old_base) + new_base, reloc.second + stage->ws_offset));
-      }
-    }
   }
   return ws_size;
 }

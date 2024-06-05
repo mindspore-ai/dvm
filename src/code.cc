@@ -23,6 +23,7 @@
 #include "acl/acl_base.h"
 #endif
 #include "code.h"
+#include "ops.h"
 
 // rts_runtime
 #if defined(__cplusplus)
@@ -900,5 +901,32 @@ class DisAssembler {
 
 void Code::DisAssemble(std::ostringstream &oss) {
   DisAssembler(oss).Run(this);
+}
+
+void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess*> &ios, uint64_t ws_offset) {
+  std::memcpy(data_ + offset, code.data_ + HeadSize(), code.data_size_ - HeadSize());
+  uint64_t *new_base = reinterpret_cast<uint64_t*>(data_ + offset);
+  uint64_t *old_base = reinterpret_cast<uint64_t*>(code.data_ + HeadSize());
+  for (auto a :  ios) {
+    a->reloc_addr_ = a->reloc_addr_ - old_base + new_base;
+  }
+  if (!code.reloc_workspaces_.empty()) {
+    for (auto &r: code.reloc_workspaces_) {
+      reloc_workspaces_.emplace_back(std::make_pair(r.first - old_base + new_base, r.second + ws_offset));
+    }
+  }
+  if (!code.reloc_reuse_.empty()) {
+    for (auto &r: code.reloc_reuse_) {
+      uint64_t *src = r.second - old_base + new_base;
+      uint64_t *dst = r.first >= old_base && r.first < reinterpret_cast<uint64_t*>(code.data_ + code.data_size_)
+                    ? r.first - old_base + new_base : r.first;
+      reloc_reuse_.emplace_back(std::make_pair(dst, src));
+    }
+  }
+  if (!code.atomic_clean_.empty()) {
+    for (auto a : code.atomic_clean_) {
+      atomic_clean_.push_back(a);
+    }
+  }
 }
 }  // namespace dvm

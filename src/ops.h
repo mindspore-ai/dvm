@@ -24,9 +24,13 @@
 
 namespace dvm {
 enum ObjectType {
+  // Load
   kLoadDummy = 0,
   kLoad,
+  // Store
+  kPadStore,
   kStore,
+  // Simd
   kReshape,
   kCopy,
   kUnary,
@@ -215,7 +219,6 @@ class NDStore : public NDAccess {
   NDStore(uint8_t *dst, NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
-  ~NDStore() override;
   void Normalize(std::vector<NDObject*> &run_ops) override {
     nd_ = lhs_->nd_;
     tail_dim_ = -1;
@@ -227,13 +230,11 @@ class NDStore : public NDAccess {
  private:
   int tail_dim_{-1};
   int tail_size_{0};
-  NDStore *clear_store_{nullptr};
-  VKernel *clear_kernel_{nullptr};
 };
 
-class NDPadStore : public NDStore {
+class NDPadStore : public NDAccess {
  public:
-  NDPadStore(NDObject *src, ShapeRef *pad_shape) : NDStore(src), pad_shape_(pad_shape) {
+  NDPadStore(NDObject *src, ShapeRef *pad_shape) : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_shape_(pad_shape) {
     shape_ref_ = &shape_ref_data_;
   }
   NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) {
@@ -466,6 +467,9 @@ class ReduceOp : public _ReduceOp {
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
 
+  void GenClearKernel(NDAccess *store);
+  NDStore *clear_store_{nullptr};
+  VKernel *clear_kernel_{nullptr};
   std::vector<int64_t> round_tile_;
 
  private:
@@ -485,7 +489,7 @@ class CubeOp : public NDObject {
   void CodeGen(vCubeOp *code);
   void NormalizeCube();
 
-  NDObject *output_{nullptr};
+  NDAccess *output_{nullptr};
   uint64_t block_dim_{0};
   uint64_t core_loop_{0};
   int64_t m_align_{0};

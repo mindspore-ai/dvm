@@ -203,7 +203,6 @@ class VKernelP : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  void LinkAll(std::vector<uint64_t> &offsets);
   std::vector<VKernelS*> children_;
 };
 
@@ -217,8 +216,6 @@ class MixKernel : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  uint64_t UpdateReloc();
-
   VKernelS *pre_fusion_{nullptr};
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
@@ -252,14 +249,14 @@ class StagesKernel : public VKernel {
   void StageStore(NDAccess *store) {
     store->is_stage_ = true;
     stages_.back()->kernel->Append(store);
-    stages_.back()->stage_stores.push_back(store);
+    stages_.back()->ios.push_back(store);
   }
 
   void StageLoad(NDAccess *load, NDAccess *store) {
     load->is_stage_ = true;
-    stages_.back()->kernel->Append(load);
     load->SetStageStore(store);
-    stages_.back()->stage_loads.push_back(load);
+    stages_.back()->kernel->Append(load);
+    stages_.back()->ios.push_back(load);
   }
 
   VKernel* Current() const { return stages_.back()->kernel; }
@@ -274,8 +271,6 @@ class StagesKernel : public VKernel {
     VKernel* kernel;
     int64_t ws_offset{-1};
     int64_t code_offset{-1};
-    std::vector<NDAccess*> stage_stores; // gm_ is offset
-    std::vector<NDAccess*> stage_loads; // gm_ is NDStore*
     std::vector<NDAccess*> ios;
   };
   std::vector<Stage*> stages_;

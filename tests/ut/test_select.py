@@ -67,3 +67,15 @@ def test_select_bool_input(shape, type, eps):
     z = t.select(x, y, z)
     t.store_expect(z, np.select([c == True, c == False],[a, b]), eps)
     assert(t.run_check())
+
+def test_select_scalar():
+    t = Tester()
+    a = np.random.randint(1024, size=(1024, 10)).astype(np.float16)
+    b = np.random.randint(1024, size=()).astype(np.float16)
+    c = np.array(True)
+    e = t.load(a)
+    f = t.load(b)
+    g = t.load(c)
+    l = t.select(g, e, f)
+    t.store_expect(l, np.select([c,~c], [a,b]).astype(np.float16))
+    assert(t.run_check())

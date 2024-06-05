@@ -828,7 +828,7 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
     int64_t len[3];
     for (size_t j = 0; j < 3; j++) {
       auto obj = *input[j];
-      len[j] = (obj->shape_ref_->size < i) ? 1 : obj->shape_ref_->data[obj->shape_ref_->size - 1 - i];
+      len[j] = (obj->shape_ref_->size < i + 1) ? 1 : obj->shape_ref_->data[obj->shape_ref_->size - 1 - i];
     }
     shape_[max_size - 1 - i] = std::max({len[0], len[1], len[2]});
   }

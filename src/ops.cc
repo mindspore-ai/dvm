@@ -1354,10 +1354,10 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   float a_coef = 1.0f;
   float b_coef = 1.0f;
   float bw_coef = 5.0f;
-  auto m_loop = CeilDiv(op->m_align, m0);
-  auto n_loop = CeilDiv(op->n_align, n0);
+  auto m_loop = CeilDiv(op->m_real, m0);
+  auto n_loop = CeilDiv(op->n_real, n0);
   if (m_loop == 0 || n_loop == 0) {
-    return 1.0f;
+    return 3.125f;
   }
   auto core_need = m_loop * n_loop;
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
@@ -1365,11 +1365,11 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   uint32_t block_dim = core_need < core_num ? core_need : core_num;
   uint32_t m_once = block_dim < n_loop ? m0 : block_dim / n_loop * m0;
 
-  uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n_align;
-  if (m_once * op->k_align > l2_num) {
+  uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n_real;
+  if (m_once * op->k_real > l2_num) {
       a_coef = bw_coef;
   }
-  if (n_once * op->k_align > l2_num) {
+  if (n_once * op->k_real > l2_num) {
       b_coef = bw_coef;
   }
   // calibrate bandwidth
@@ -1390,7 +1390,11 @@ void CubeOp::Tile(vCubeOp *op) {
   auto l0c_num = DeviceInfo::Instance().L0CSize() / FP32_SIZE;
   uint32_t pri_axis0_init = BLOCK_SIZE;
   uint32_t axis0_init = BLOCK_SIZE;
-  float min_cost = 1.0f;
+  // The maximum value can be returned by cost function.
+  // cost function: 1.0f / (a_coef * n0) + 1.0f / (b_coef * m0)
+  // a_coef and b_coef are not less than 1 / core_num, which is 0.04
+  // m0 and n0 are not less than BLOCK_SIZE, which is 16
+  float min_cost = 3.125f;
   // m0, n0
   for (uint32_t pri_axis0 = pri_axis0_init; pri_axis0 <= pri_axis0_max; pri_axis0 *= 2) {
     for (uint32_t axis0 = axis0_init; axis0 <= axis0_max; axis0 *= 2) {
@@ -1486,9 +1490,9 @@ void CubeOp::CodeGen(vCubeOp *op) {
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
   Tile(op);
-  auto m_loop = op->m_align / op->m0;
+  auto m_loop = CeilDiv(op->m_real, op->m0);
   ASSERT(op->m_align % op->m0 == 0); // after padding, m_align must be divisible by m0
-  auto n_loop = op->n_align / op->n0;
+  auto n_loop = CeilDiv(op->n_real, op->n0);
   ASSERT(op->m_align % op->m0 == 0); // after padding, n_align must be divisible by n0
   core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);

@@ -760,6 +760,8 @@ class DisAssembler {
     oss << " //";
     DumpVal("m0", op->m0, oss);
     oss << ", ";
+    DumpVal("k0", op->m0, oss);
+    oss << ", ";
     DumpVal("n0", op->n0, oss);
     oss << ", ";
     DumpVal("trans_a", bool(op->flags & V_CUBE_FLAG_TRANS_A), oss);

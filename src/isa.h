@@ -921,8 +921,8 @@ struct vCubeOp {
     int64_t start_m, start_n;
     uint64_t swizzle_dir = op->swizzle >> 16;
     uint64_t swizzle_cnt = op->swizzle & 0xffff;
-    uint64_t m_loop = op->m_align / op->m0;
-    uint64_t n_loop = op->n_align / op->n0;
+    uint64_t m_loop = (op->m_real + op->m0 - 1) / op->m0;
+    uint64_t n_loop = (op->n_real + op->n0 - 1) / op->n0;
     TileMap(block_tile, m_loop, n_loop, swizzle_dir, swizzle_cnt, start_m, start_n);
     int64_t m_end = op->m_real / op->m0;
     int64_t n_end = op->n_real / op->n0;

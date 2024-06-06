@@ -371,11 +371,12 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         vCubeOp::TileMap(tile + block_num, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, n_midx, n_nidx);
         int64_t m_actual_next = (n_midx == (mat.m_loop - 1)) ? (mat.m_real - n_midx * mat.m0) : mat.m0;
         int64_t n_actual_next = (n_nidx == (mat.n_loop - 1)) ? (mat.n_real - n_nidx * mat.n0) : mat.n0;
+        int64_t k_actual_next = (1 == k_loop) ? mat.k_real : mat.k0;
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
-        mat.LoadA(n_l1a, gm_a + offset_a, n_midx, 0, m_actual_next, k_actual);
+        mat.LoadA(n_l1a, gm_a + offset_a, n_midx, 0, m_actual_next, k_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
-        mat.LoadB(n_l1b, gm_b + offset_b, 0, n_nidx, k_actual, n_actual_next);
+        mat.LoadB(n_l1b, gm_b + offset_b, 0, n_nidx, k_actual_next, n_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
       set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);

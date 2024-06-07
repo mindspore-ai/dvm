@@ -176,6 +176,8 @@ void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << "slice_store " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("one_flag", op.one_flag, oss);
 }
 
 void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) {

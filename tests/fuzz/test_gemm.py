@@ -8,8 +8,8 @@ from dvm.tester import Tester
 def test_gemm():
     m = np.random.randint(1, high = 1025)
     # 06/06/2024: padding does not support lowest dim equal to 1.
-    n = np.random.randint(2, high = 1025)
-    k = np.random.randint(2, high = 1025)
+    n = np.random.randint(1, high = 1025)
+    k = np.random.randint(1, high = 1025)
     shape_a = [m, k]
     shape_b = [k, n]
     np_a = np.random.normal(0, 1, shape_a).astype(np.float16)
@@ -42,8 +42,8 @@ def test_gemm():
 def test_gemm_post_fusion():
     m = np.random.randint(1, high = 1025)
     # 06/06/2024: padding does not support lowest dim equal to 1.
-    n = np.random.randint(2, high = 1025)
-    k = np.random.randint(2, high = 1025)
+    n = np.random.randint(1, high = 1025)
+    k = np.random.randint(1, high = 1025)
     shape_a = [m, k]
     shape_b = [k, n]
     np_a = np.random.normal(0, 1, shape_a).astype(np.float32)

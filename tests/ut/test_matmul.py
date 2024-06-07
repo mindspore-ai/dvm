@@ -162,6 +162,7 @@ def test_matmul_post_broadcast_fusion_1(shape_a, shape_b):
     [[211, 211], [211, 230]],      # gemm normal case
     [[193, 193], [193, 193]],      # m0 == 1
     [[1, 127], [127, 127]],        # m == 1
+    [[123, 1], [1, 777]],        # k == 1
 ])
 def test_unaligned_matmul_post_fusion(shape_a, shape_b):
     np_a = np.random.normal(0, 1, shape_a).astype(np.float16)

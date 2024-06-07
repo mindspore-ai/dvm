@@ -298,6 +298,11 @@ int NDPadStore::Emit(Code &code) {
   }
   op.type_size = ITEM_SIZE[type_id_];
   op.offset = 0;
+  op.one_flag = 0;
+  if (op.slice_n == 1 && lead_dim_ != 0) {
+    op.pad_size = 0;
+    op.one_flag = 1;
+  }
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
   return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
 }
@@ -418,6 +423,7 @@ int NDSliceLoad::Emit(Code &code) {
   }
   op.type_size = ITEM_SIZE[type_id_];
   op.offset = reloc_offset;
+  op.one_flag = 0;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
   return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op);
 }

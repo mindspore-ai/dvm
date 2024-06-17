@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ============================================================================
-
+import sys
 import numpy as np
 import dvm
 from dvm.tester import Tester
@@ -32,7 +32,7 @@ def run_perf(op_args):
     _ = t.store(c)
     t.codegen()
     min_time, max_time, avg_time = t.perf()
-    return min_time
+    return round(min_time, 2)
 
 all_cases = [
 ([(256, 10240), (10240, 1280), False, False], {B1: 132.91, B4: 139.76}),
@@ -73,6 +73,15 @@ all_cases = [
 ]
 
 if __name__ == "__main__":
+    if len(sys.argv) > 1:
+        if not sys.argv[1].isdigit():
+            print("Usage: python3 {} [case_index]".format(sys.argv[0]))
+        else:
+            idx = int(sys.argv[1])
+            cs = all_cases[idx]
+            perf = run_perf(cs[0])
+            print("{}: {} : {} -> {}".format(idx, cs[0], cs[1].get(soc_name, "None"), perf))
+        exit(0)
     bads, goods, news = [], [], []
     for i, cs in enumerate(all_cases):
         perf = run_perf(cs[0])

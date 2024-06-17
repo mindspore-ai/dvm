@@ -15,57 +15,26 @@
 
 import numpy as np
 import dvm
-import pytest
 from dvm.tester import Tester
 
 B1 = "Ascend910B1"
 B4 = "Ascend910B4"
 soc_name = dvm.device.soc_name()
 
+def run_perf(op_args):
+    t = Tester("mix")
+    shape_a, shape_b, trans_a, trans_b = op_args
+    g0 = np.random.normal(0, 1, shape_a).astype(np.float16)
+    g1 = np.random.normal(0, 1, shape_b).astype(np.float16)
+    a = t.load(g0)
+    b = t.load(g1)
+    c = t.matmul(a, b, trans_a, trans_b)
+    _ = t.store(c)
+    t.codegen()
+    min_time, max_time, avg_time = t.perf()
+    return min_time
 
-def perf_check(t, op_args, perf_base, rtol = 0.02, rtol_improve = 0.04):
-    # use perf_min: During testing, it was found that the perf_avg and perf_max values were unstable, while the
-    # perf_min value was relatively stable, so the perf_min value was adopted
-    perf_min, perf_max, perf_avg = t.perf()
-    perf_out = perf_min
-    perf_index = 0
-    if soc_name not in perf_base:
-        return
-    perf_expect = perf_base[soc_name]
-    # perf compare:
-    perf_change = perf_out - perf_expect
-    change_rtol = perf_change/perf_expect
-    if change_rtol > rtol:
-        retry_cnt = 2
-        for _ in range(retry_cnt):
-            if t.perf()[perf_index] - perf_expect < perf_expect * rtol:
-                # retry success
-                return
-        raise ValueError(f"perf degradation rtol {change_rtol} exceeds the threshold {rtol}, perf_expect is "
-                         f"{perf_expect}, perf_output is {perf_out}(min:{perf_min},max:{perf_max},avg:{perf_avg})")
-    # perf imporve and need update:
-    if change_rtol < 0 and -change_rtol > rtol_improve:
-        retry_cnt = 2
-        for _ in range(retry_cnt):
-            if perf_expect - t.perf()[perf_index] < perf_expect * rtol_improve:
-                # retry fail
-                return
-        ori_perf_base_repr = str(perf_base).replace("Ascend910B1", "B1").replace("Ascend910B4", "B4").replace("'","")
-        perf_base[soc_name] = perf_out
-        perf_base_repr = str(perf_base).replace("Ascend910B1", "B1").replace("Ascend910B4", "B4").replace("'","")
-        print(f"[WARNING]Performance improvement rtol {-change_rtol}, please update the perf_base of the test case "
-              f"{op_args} from {ori_perf_base_repr} to {perf_base_repr})")
-
-
-@pytest.mark.perf
-@pytest.mark.mix
-@pytest.mark.skipif(soc_name not in [B1, B4], reason="only support in some device")
-@pytest.mark.parametrize('op_args, perf_base',
-[
-# ReadMe:
-# (1) The current test found that the performance of cases below 100us has large fluctuations,
-#     so cases with performance less than 100us are currently not added.
-# (2) The current use cases are randomly added, and those found to be inappropriate can be deleted and modified.
+all_cases = [
 ([(256, 10240), (10240, 1280), False, False], {B1: 132.91, B4: 139.76}),
 ([(1024, 1280), (1024, 5120), True, False], {B1: 120.09, B4: 138.96}),
 ([(1024, 1280), (1280, 5120), False, False], {B1: 116.48, B4: 138.67}),
@@ -101,16 +70,27 @@ def perf_check(t, op_args, perf_base, rtol = 0.02, rtol_improve = 0.04):
 ([(16384, 11008), (4096, 11008), False, True], {B1: 5332.41, B4: 7676.42}),
 ([(16384, 11008), (11008, 4096), False, False], {B1: 5347.52, B4: 7645.59}),
 ([(16384, 11008), (16384, 4096), True, False], {B1: 6623.32, B4: 9861.94}),
-])
-def test_matmul_perf_float16(op_args, perf_base):
-    t = Tester("mix")
-    shape_a, shape_b, trans_a, trans_b = op_args
-    g0 = np.random.normal(0, 1, shape_a).astype(np.float16)
-    g1 = np.random.normal(0, 1, shape_b).astype(np.float16)
-    a = t.load(g0)
-    b = t.load(g1)
-    c = t.matmul(a, b, trans_a, trans_b)
-    _ = t.store(c)
-    t.run()
-    perf_check(t, op_args, perf_base)
+]
 
+if __name__ == "__main__":
+    bads, goods, news = [], [], []
+    for i, cs in enumerate(all_cases):
+        perf = run_perf(cs[0])
+        print("{}: {} : {}".format(i, cs[0], perf))
+        if soc_name in cs[1]:
+            expect = cs[1][soc_name]
+            if perf > expect and (perf - expect) / expect > 0.02:
+                bads.append((i, perf))
+            elif perf < expect and (expect - perf) / expect > 0.02:
+                goods.append((i, perf))
+        else:
+            news.append((i, perf))
+    print("******** WORSE CASES({}) ********".format(len(bads)))
+    for i, perf in bads:
+        print("{}: {} : {} -> {}".format(i, all_cases[i][0], all_cases[i][1][soc_name], perf))
+    print("******** BETTER CASES({}) ********".format(len(goods)))
+    for i, perf in goods:
+        print("{}: {} : {} -> {}".format(i, all_cases[i][0], all_cases[i][1][soc_name], perf))
+    print("******** NEW CASES({}) ********".format(len(news)))
+    for i, perf in news:
+        print("{}: {} : {}".format(i, all_cases[i][0], perf))

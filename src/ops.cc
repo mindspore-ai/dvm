@@ -1357,9 +1357,9 @@ void CubeOp::NormalizeCube() {
 }
 
 float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
-  float a_coef = 1.0f;
-  float b_coef = 1.0f;
-  float bw_coef = 5.0f;
+  float a_coef = 5.0f;
+  float b_coef = 5.0f;
+  float bw_coef = 1.0f;
   auto m_loop = CeilDiv(op->m_real, m0);
   auto n_loop = CeilDiv(op->n_real, n0);
   if (m_loop == 0 || n_loop == 0) {

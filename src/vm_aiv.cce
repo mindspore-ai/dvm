@@ -867,7 +867,6 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       repeat_vcadd(xd, xn, op.dup_size, op.red_size, op.red_size >> 3);
       xd++;
       xn += simd_width;
-      pipe_barrier(PIPE_V);
     }
     xn = xd = (__ubuf__ float*)(vReduceX::GetXd(pc, head));
     pipe_barrier(PIPE_V);
@@ -880,7 +879,6 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     repeat_vcadd(xd, xn, iter_num, dst_rs, src_rs);
     xd++;
     xn += op.red_size;
-    pipe_barrier(PIPE_V);
   }
 }
 

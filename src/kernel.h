@@ -131,6 +131,8 @@ class VKernelBase : public VKernel {
   int Analyze();
   void DoCodeGen(uint64_t core_limit);
 
+  NDAccess* FindInplaceStore(NDAccess *load) const;
+
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
   RootDomain root_dom_;

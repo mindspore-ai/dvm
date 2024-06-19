@@ -762,13 +762,15 @@ class DisAssembler {
     oss << " //";
     DumpVal("m0", op->m0, oss);
     oss << ", ";
-    DumpVal("k0", op->m0, oss);
+    DumpVal("k0", op->k0, oss);
     oss << ", ";
     DumpVal("n0", op->n0, oss);
     oss << ", ";
     DumpVal("trans_a", bool(op->flags & V_CUBE_FLAG_TRANS_A), oss);
     oss << ", ";
     DumpVal("trans_b", bool(op->flags & V_CUBE_FLAG_TRANS_B), oss);
+    oss << ", ";
+    DumpVal("swizzle", op->swizzle, oss);
   }
 
   void DasVec(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {

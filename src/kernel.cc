@@ -1169,6 +1169,58 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
   }
 }
 
+NDAccess* VKernelBase::FindInplaceStore(NDAccess *load) const {
+  const static bool elem_objects[ObjectType::kObjectBulk] = {
+    true, // loaddummy
+    true, // load
+    false, // padstore
+    true,  // store
+    true,  // reshape
+    true,  // copy
+    true,  // unary
+    true,  // binary
+    false, // cast
+    true,  // binarys
+    false, // broadcastto
+    false, // broadcasts
+    false, // reduce
+    true,  // select
+    false, // elementany
+    true,  // RemovePad
+  };
+  auto update_flag = [](int input_flag, bool elem_type, int &flag) {
+    // undetermined -> elemwise -> no-elemwise
+    //          |___________________|
+    if (input_flag != 0 && flag != -1) {
+      if (flag == 0) {
+        flag = input_flag == 1 && elem_type ? 1 : -1;
+      } else if (input_flag == -1 || !elem_type) { // 1
+        flag = -1;
+      }
+    }
+  };
+  std::vector<int> elem_flags(objects_.size(), 0); // 1: elemwise, 0: undetermined, -1: no-elemwise
+  elem_flags[load->index_] = 1;
+  for (size_t i = 0; i < objects_.size(); ++i) {
+    auto op = objects_[i];
+    auto &flag = elem_flags[op->index_];
+    if (op->lhs_) {
+      auto elem_type = elem_objects[op->obj_id_];
+      update_flag(elem_flags[op->lhs_->index_], elem_type, flag);
+      if (op->rhs_) {
+        update_flag(elem_flags[op->rhs_->index_], elem_type, flag);
+        if (op->GetObjectType() == kSelect) {
+          update_flag(elem_flags[reinterpret_cast<SelectOp*>(op)->cond_->index_], elem_type, flag);
+        }
+      }
+    }
+    if (op->IsStore() && flag == 1) {
+      return static_cast<NDAccess*>(op);
+    }
+  }
+  return nullptr;
+}
+
 void VKernelS::Append(NDObject *obj) {
   build_ops_.push_back(obj);
   obj->Normalize(objects_);
@@ -1475,9 +1527,16 @@ uint64_t MixKernel::CodeGen() {
     if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
   }
   code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
-  code_.reloc_workspaces_.emplace_back(std::make_pair(&link_cube->gm_c, 0));
-  code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, &link_cube->gm_c));
-  return cube_op_->output_->Size();
+  auto inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_);
+  if (inplace_store) {
+    code_.reloc_reuse_.emplace_back(std::make_pair(&link_cube->gm_c, inplace_store->reloc_addr_));
+    code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, inplace_store->reloc_addr_));
+    return 0;
+  } else {
+    code_.reloc_workspaces_.emplace_back(std::make_pair(&link_cube->gm_c, 0));
+    code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, &link_cube->gm_c));
+    return cube_op_->output_->Size();
+  }
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {

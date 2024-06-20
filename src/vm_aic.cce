@@ -354,7 +354,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
-      k_actual = (k == k_loop - 1) ? (mat.k_real - k * mat.k0) : mat.k0;
+      shuffle_k = (k + block_idx) % k_loop;
+      k_actual = (shuffle_k == k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
       uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
       uint64_t k_part_loop = (k_actual + mat.k0_part_len - 1) / mat.k0_part_len;
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
@@ -376,8 +377,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         int64_t m_actual_next = (n_midx == (mat.m_loop - 1)) ? (mat.m_real - n_midx * mat.m0) : mat.m0;
         int64_t n_actual_next = (n_nidx == (mat.n_loop - 1)) ? (mat.n_real - n_nidx * mat.n0) : mat.n0;
         int64_t shuffle_k_next = block_idx % k_loop;
-        int64_t k_actual = (shuffle_k_next == k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
-        int64_t k_actual_next = (1 == k_loop) ? mat.k_real : mat.k0;
+        int64_t k_actual_next = (shuffle_k_next == k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         mat.LoadA(n_l1a, gm_a + offset_a, n_midx, shuffle_k_next, m_actual_next, k_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);

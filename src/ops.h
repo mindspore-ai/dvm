@@ -505,6 +505,7 @@ class CubeOp : public NDObject {
   int64_t m0_{0};
   int64_t n0_{0};
   int64_t k0_{0};
+  bool pingpong_store_{false};
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);

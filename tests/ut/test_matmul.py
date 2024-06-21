@@ -192,3 +192,19 @@ def test_unaligned_matmul_post_fusion(shape_a, shape_b):
     res = t.binary("Add", res, 2.5)
     t.store_expect(res, expect, 2e-3)
     assert (t.run_check())
+
+def test_matmul_post_fusion_inplace():
+    shape_a, shape_b = [1024, 512], [512, 1024]
+    t = Tester("mix")
+    ax = np.random.normal(0, 1, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 1, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    zx = np.random.normal(0, 1, np_c.shape).astype(np.float16)
+    z = t.load(zx)
+    d = t.binary("Add", c, z)
+    d = t.binary("Add", d, 0.1)
+    t.store_expect(d, np_c + zx + 0.1, 2e-3)
+    assert (t.run_check())

@@ -1450,7 +1450,14 @@ uint64_t MixKernel::CodeGen() {
   cube_code.subtilenum = 0;
   uint64_t head_flags = V_ENTRY_FLAG_MIX;
   uint64_t head_simd = 0;
+  NDAccess *inplace_store = nullptr;
   if (post_fusion_) {
+    inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_);
+    if (inplace_store == nullptr) {
+      cube_op_->pingpong_store_ = true;
+      cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
+      head_flags |= V_ENTRY_FLAG_POST_SET;
+    }
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
     post_fusion_->NormalizeDomain();
@@ -1468,7 +1475,7 @@ uint64_t MixKernel::CodeGen() {
     uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
     cube_code.subtilenum = subtile_1 << 32 | subtile_0;
     cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
-    head_flags |= V_ENTRY_FLAG_PRE_WAIT | V_ENTRY_FLAG_POST_SET;
+    head_flags |= V_ENTRY_FLAG_PRE_WAIT;
     head_simd = post_fusion_->code_.simd_width_;
   }
   code_.target_ = post_fusion_ ? Code::kTargetMix : Code::kTargetCube;
@@ -1489,7 +1496,6 @@ uint64_t MixKernel::CodeGen() {
     if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
   }
   code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
-  auto inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_);
   if (inplace_store) {
     code_.reloc_reuse_.emplace_back(std::make_pair(&link_cube->gm_c, inplace_store->reloc_addr_));
     code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, inplace_store->reloc_addr_));

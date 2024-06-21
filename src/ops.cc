@@ -356,7 +356,7 @@ int NDSStore::Emit(Code &code) { // TODO: broadcast
 int NDSLoad::Emit(Code &code) {
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  if (cube_op_->output_ == this) {
+  if (cube_op_->output_ == this && cube_op_->pingpong_store_) {
     uint64_t rounds[2];
     if (!round_tile_.empty()) {
       BuildDimRounds(round_tile_, rounds);

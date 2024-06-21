@@ -376,7 +376,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
       mat.LoadB(l1b, gm_b + offset_b, shuffle_k, nidx, k_actual, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
-    } else if ((mat.flags & V_CUBE_FLAG_GROUP_SET) && (tile > block_idx + block_num)) {
+    } else if ((mat.flags & V_CUBE_FLAG_PINGPONG_STORE) && (tile > block_idx + block_num)) {
       wait_flag_dev(1);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
@@ -448,11 +448,13 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       Swap(l1b, n_l1b);
     }
     uint8_t unit_flag = 0b11;
-    if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+    if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
       mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual);
-      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
     } else {
       mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
+    }
+    if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
@@ -461,7 +463,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
-  if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+  if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
     wait_flag_dev(1);
     if (block_idx + block_num < tile_end) {
       wait_flag_dev(1);
@@ -493,7 +495,9 @@ STAGE_ENTRY:
     } else {
       if (flags & V_CUBE_FLAG_GROUP_SET) {
         ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
-        wait_flag_dev(1);
+        if (flags & V_CUBE_FLAG_PINGPONG_STORE) {
+          wait_flag_dev(1);
+        }
       }
     }
     if (flags & V_CUBE_FLAG_POST_BAR) {

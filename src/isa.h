@@ -49,6 +49,7 @@ enum vLoadInsnID {
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
   V_SLOAD,
+  V_PINGPONG_LOAD,
   V_LOAD_NONE,
 };
 
@@ -818,7 +819,55 @@ struct vLoad {
     pc[1] = reinterpret_cast<uint64_t>(op.from);
     pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
     for (uint64_t i = 0; i < round_size; ++i) {
-      pc[vDMA::ROUND_OFFSET + i] = rounds[i];
+      pc[vLoad::ROUND_OFFSET + i] = rounds[i];
+    }
+    return size;
+  }
+};
+
+struct vPingPongLoad {
+  enum { ROUND_OFFSET = 4 };
+  enum { RELOC_OFFSET = 1 };
+  __gm__ void *from;
+  uint64_t xn;
+  uint64_t tile_stride;
+  uint64_t body_iter;
+  uint64_t tail_iter;
+  uint64_t iter_size;
+  uint64_t pad_size;
+  uint64_t round_rank;
+  uint64_t pingpong;
+  uint64_t pingpong_stride;
+  // pc[0]: tile_stride(18) << 13 | c_xn(13)
+  // pc[1]: from
+  // pc[2]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
+  // pc[3]: pingpong_stride(32) << 32 | pingpong(16)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vPingPongLoad &op) {
+    op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + 13, 18);
+    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13));
+    op.from = reinterpret_cast<__gm__ void *>(pc[1]);
+    uint64_t data = pc[2];
+    op.round_rank = data >> 60;
+    op.pad_size = (data >> 50) & 0xfful;
+    op.iter_size = (data >> 32) & 0x3fffful;
+    op.tail_iter = (data >> 16) & 0xfffful;
+    op.body_iter = data & 0xfffful;
+    data = pc[3];
+    op.pingpong_stride = data >> 32;
+    op.pingpong = data & 0xfffful;
+  }
+  __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) {
+    pc[3] ^= 0x1ul;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongLoad &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vPingPongLoad::ROUND_OFFSET + round_size;
+    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, V_PIPE_LOAD);
+    pc[1] = reinterpret_cast<uint64_t>(op.from);
+    pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
+    pc[3] = op.pingpong_stride << 32 | op.pingpong;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vPingPongLoad::ROUND_OFFSET + i] = rounds[i];
     }
     return size;
   }

@@ -316,15 +316,19 @@ void NDSStore::AlignProp(PropRange &range) {
 }
 
 void NDSLoad::FoldProp(PropRange &range) {
-  range.depth = nd_.size() - 1;
+  range.depth = std::min(static_cast<int>(nd_.size() - 1), range.depth);
 }
 
 void NDSStore::FoldProp(PropRange &range) {
-  range.depth = nd_.size() - 1;
+  range.depth = std::min(static_cast<int>(nd_.size() - 1), range.depth);
 }
 
 void NDSLoad::Tile(const TileParam &tp) {
-  NDObject::Tile(tp);
+  if (tp.group_tile) {
+    NDObject::Tile(tp);
+  } else {
+    NDLoad::Tile(tp);
+  }
 }
 
 void NDSStore::Tile(const TileParam &tp) {
@@ -352,23 +356,43 @@ int NDSStore::Emit(Code &code) { // TODO: broadcast
 int NDSLoad::Emit(Code &code) {
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  vSLoad op;
-  op.gm = gm_;
-  op.xn = xbuf_;
-  op.tile_stride = src_tile_stride_;
-  op.pad_size = lead_align - nd_[lead_dim_];
-  op.slice_m = cube_op_->m0_;
-  op.slice_n = cube_op_->n0_;
-  size_t shape_size = shape_ref_->size;
-  op.src_n = cube_op_->n_real_;
-  op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
-  op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
-  auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
-  auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
-  op.flags = broadcast_m << 1 | broadcast_n;
-  op.type_size = ITEM_SIZE[type_id_];
-  reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
-  return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);
+  if (cube_op_->output_ == this) {
+    uint64_t rounds[2];
+    if (!round_tile_.empty()) {
+      BuildDimRounds(round_tile_, rounds);
+    }
+    vPingPongLoad op;
+    op.from = gm_;
+    op.xn = xbuf_;
+    op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
+    op.body_iter = strides_.back() / lead_align;
+    op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+    op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+    op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+    op.pingpong = 0;
+    op.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
+    op.round_rank = round_tile_.size();
+    reloc_addr_ = insn_ + vPingPongLoad::RELOC_OFFSET;
+    return vPingPongLoad::Encode(insn_, vLoadInsnID::V_PINGPONG_LOAD, op, rounds);
+  } else {
+    vSLoad op;
+    op.gm = gm_;
+    op.xn = xbuf_;
+    op.tile_stride = src_tile_stride_;
+    op.pad_size = lead_align - nd_[lead_dim_];
+    op.slice_m = cube_op_->m0_;
+    op.slice_n = cube_op_->n0_;
+    size_t shape_size = shape_ref_->size;
+    op.src_n = cube_op_->n_real_;
+    op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
+    op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
+    auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
+    auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
+    op.flags = broadcast_m << 1 | broadcast_n;
+    op.type_size = ITEM_SIZE[type_id_];
+    reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
+    return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);
+  }
 }
 
 void NDSliceLoad::AlignProp(PropRange &range) {

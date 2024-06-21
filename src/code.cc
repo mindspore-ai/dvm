@@ -212,6 +212,25 @@ void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
+void DumpPingPongLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vPingPongLoad op;
+  vPingPongLoad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "PingPongLoad.u8." << op.iter_size << "x" << op.body_iter;
+  oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.tail_iter, oss);
+  oss << ", ";
+  DumpVal("pingpong_stride", op.pingpong_stride, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vLoad::ROUND_OFFSET, oss);
+  }
+}
+
 void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStore *op = reinterpret_cast<vStore *>(dump_info.insn);
   auto tile_stride = dump_info.ext >> V_C_X_BITS;
@@ -410,6 +429,7 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
   {V_SLOAD, &DumpSLoad},
+  {V_PINGPONG_LOAD, &DumpPingPongLoad},
   {V_LOAD_NONE, &DumpLoadExit},
 };
 

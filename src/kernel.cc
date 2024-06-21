@@ -1394,54 +1394,16 @@ void VKernelP::DumpKernel(std::ostringstream &oss, const std::string &indent) {
 }
 
 MixKernel::~MixKernel() {
-  if (pre_fusion_) delete pre_fusion_;
   if (post_fusion_) delete post_fusion_;
   if (cube_op_) delete cube_op_;
 }
 
 void MixKernel::Append(NDObject *obj) {
-  const uint32_t LOAD_PENDING = 1;
   if (cube_op_ == nullptr) {
-    if (obj->IsLoad()) {
-      obj->flags_ = LOAD_PENDING;
-    } else if (obj->obj_id_ != kCubeOp) {
-      if (pre_fusion_ == nullptr) {
-        pre_fusion_ = new VKernelS();
-      }
-      auto AppendPending = [this](NDObject *op) {
-        if (op->flags_ == LOAD_PENDING) {
-          pre_fusion_->Append(op);
-          op->flags_ = 0;
-        }
-      };
-      if (obj->lhs_) {
-        AppendPending(obj->lhs_);
-        if (obj->rhs_) {
-          AppendPending(obj->rhs_);
-          if (obj->obj_id_ == kSelect) {
-            AppendPending(static_cast<SelectOp*>(obj)->cond_);
-          }
-        }
-      }
-      pre_fusion_->Append(obj);
-    } else {
-      EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
-      auto lhs = obj->lhs_;
-      if (!lhs->IsLoad()) {
-        lhs = new NDStore(nullptr, lhs);
-        pre_fusion_->Append(lhs);
-        obj->lhs_ = lhs;
-      } else {
-        lhs->Normalize(pre_fusion_->objects_);
-      }
-      auto rhs = obj->rhs_;
-      if (!rhs->IsLoad()) {
-        rhs = new NDStore(nullptr, rhs);
-        pre_fusion_->Append(rhs);
-        obj->rhs_ = rhs;
-      } else {
-        rhs->Normalize(pre_fusion_->objects_);
-      }
+    if (obj->obj_id_ == kCubeOp) {
+      std::vector<NDObject*> empty_run_ops;
+      obj->lhs_->Normalize(empty_run_ops);
+      obj->rhs_->Normalize(empty_run_ops);
       cube_op_ = static_cast<CubeOp*>(obj);
       cube_op_->NormalizeCube();
     }
@@ -1506,10 +1468,10 @@ uint64_t MixKernel::CodeGen() {
     uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
     cube_code.subtilenum = subtile_1 << 32 | subtile_0;
     cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
-    head_flags |= V_ENTRY_FLAG_PRE_WAIT;
+    head_flags |= V_ENTRY_FLAG_PRE_WAIT | V_ENTRY_FLAG_POST_SET;
     head_simd = post_fusion_->code_.simd_width_;
   }
-  code_.target_ = pre_fusion_ || post_fusion_ ? Code::kTargetMix : Code::kTargetCube;
+  code_.target_ = post_fusion_ ? Code::kTargetMix : Code::kTargetCube;
   code_.data_size_ = size;
   code_.Alloc(size);
   code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
@@ -1535,7 +1497,7 @@ uint64_t MixKernel::CodeGen() {
   } else {
     code_.reloc_workspaces_.emplace_back(std::make_pair(&link_cube->gm_c, 0));
     code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, &link_cube->gm_c));
-    return cube_op_->output_->Size();
+    return cube_op_->PostFusionWorkSpace();
   }
 }
 
@@ -1552,11 +1514,6 @@ void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   };
   oss << indent << "vgraph.mix() {\n";
   std::string body_indent = indent + "  ";
-  if (pre_fusion_) {
-    oss << body_indent << "// pre_fusion" << std::endl;
-    pre_fusion_->DumpKernel(oss, body_indent);
-    oss << std::endl;
-  }
   oss << body_indent << "// cube" << std::endl;
   oss << body_indent << "%" << cube_op_->output_->index_;
   dump_nd(cube_op_->output_->nd_);

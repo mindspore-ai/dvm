@@ -218,7 +218,6 @@ class MixKernel : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  VKernelS *pre_fusion_{nullptr};
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
 };

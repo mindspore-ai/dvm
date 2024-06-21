@@ -168,7 +168,6 @@ class NDLoad : public NDAccess {
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
 
- private:
   int tail_dim_{-1};
   int tail_size_{0};
   std::vector<int64_t> round_tile_;
@@ -488,6 +487,11 @@ class CubeOp : public NDObject {
   int Emit(Code &code) override { return 0; }
   void CodeGen(vCubeOp *code);
   void NormalizeCube();
+
+  uint64_t PostFusionWorkSpace() const {
+    uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];
+    return core_loop_ < block_dim_ * 2 ? pingpong_size * core_loop_ : pingpong_size * block_dim_ * 2;
+  }
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};

@@ -11,7 +11,8 @@ def test_matmul(trans):
     t = Tester("mix")
     g0 = np.random.normal(0, 1, [1024, 1024]).astype(np.float16)
     g1 = np.random.normal(0, 1, [1024, 1024]).astype(np.float16)
-    expect = np.matmul(g0 if not trans[0] else g0.transpose(), g1 if not trans[1] else g1.transpose())
+    expect = np.matmul((g0 if not trans[0] else g0.transpose()).astype(np.float32),
+                       (g1 if not trans[1] else g1.transpose()).astype(np.float32)).astype(np.float16)
     a = t.load(g0)
     b = t.load(g1)
     c = t.matmul(a, b, trans[0], trans[1])
@@ -33,7 +34,7 @@ def test_batchmatmul(shape_a, shape_b):
     t = Tester("mix")
     g0 = np.random.normal(0, 1, shape_a).astype(np.float16)
     g1 = np.random.normal(0, 1, shape_b).astype(np.float16)
-    expect = np.matmul(g0, g1)
+    expect = np.matmul(g0.astype(np.float32), g1.astype(np.float32)).astype(np.float16)
     a = t.load(g0)
     b = t.load(g1)
     c = t.matmul(a, b, False, False)
@@ -87,7 +88,7 @@ def test_matmul_bf16(trans):
 def test_unaligned_matmul(shape_a, shape_b):
     np_a = np.random.normal(0, 1, shape_a).astype(np.float16)
     np_b = np.random.normal(0, 1, shape_b).astype(np.float16)
-    expect = np.matmul(np_a, np_b)
+    expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
     # compute pad size
     shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
     shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]

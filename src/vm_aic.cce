@@ -279,6 +279,29 @@ class MatMul {
     );
   }
 
+  __force_inline__ __aicore__ void StoreC_PingPong(__gm__ T *__restrict__ dst,
+                                          __cc__ float *__restrict__ c,
+                                          uint8_t unit_flag,
+                                          int64_t m_actual,
+                                          int64_t n_actual) {
+    int64_t pingpong_offset = pingpong_store ? block_num + block_idx : block_idx;
+    pingpong_store ^= 0x1u;
+    copy_matrix_cc_to_gm(
+      dst + m0 * n0 * pingpong_offset,        // dst
+      c,                                      // src
+      0,                                      // sid
+      n_actual,                               // NSize
+      m_actual,                               // MSize
+      n0,                               // dstStride_dst_D
+      RoundUp(m_actual, BLOCK_SIZE),          // srcStride
+      unit_flag,                              // UnitFlagMode
+      (QuantMode_t)QuantPRE<T>::type,         // QuantPRE
+      0,                                      // ReLUPRE
+      false,                                  // channelSplit
+      true                                    // NZ2ND_EN
+    );
+  }
+
   // Compute global memory offset of matrix A and B based on batch idx of matrix C
   __force_inline__ __aicore__ void ComputeOffset(uint64_t c_idx, uint64_t &offset_a, uint64_t &offset_b) {
     uint64_t c_idx0 = c_idx / batch_c1;
@@ -302,6 +325,7 @@ class MatMul {
   uint64_t swizzle_dir;
   uint64_t swizzle_cnt;
   uint32_t flags;
+  uint32_t pingpong_store{0};
 };
 
 template <typename M, typename T>
@@ -352,6 +376,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
       mat.LoadB(l1b, gm_b + offset_b, shuffle_k, nidx, k_actual, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+    } else if ((mat.flags & V_CUBE_FLAG_GROUP_SET) && (tile > block_idx + block_num)) {
+      wait_flag_dev(1);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
       shuffle_k = (k + block_idx) % k_loop;
@@ -422,9 +448,11 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       Swap(l1b, n_l1b);
     }
     uint8_t unit_flag = 0b11;
-    mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+      mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual);
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
+    } else {
+      mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
@@ -433,6 +461,12 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+  if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+    wait_flag_dev(1);
+    if (block_idx + block_num < tile_end) {
+      wait_flag_dev(1);
+    }
+  }
 }
 
 extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t entry) {
@@ -459,6 +493,7 @@ STAGE_ENTRY:
     } else {
       if (flags & V_CUBE_FLAG_GROUP_SET) {
         ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
+        wait_flag_dev(1);
       }
     }
     if (flags & V_CUBE_FLAG_POST_BAR) {

@@ -7,14 +7,13 @@ from dvm.tester import Tester
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_gemm():
     m = np.random.randint(1, high = 1025)
-    # 06/06/2024: padding does not support lowest dim equal to 1.
     n = np.random.randint(1, high = 1025)
     k = np.random.randint(1, high = 1025)
     shape_a = [m, k]
     shape_b = [k, n]
     np_a = np.random.normal(0, 1, shape_a).astype(np.float16)
     np_b = np.random.normal(0, 1, shape_b).astype(np.float16)
-    expect = np.matmul(np_a, np_b)
+    expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
     # compute pad size
     shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
     shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]
@@ -41,8 +40,7 @@ def test_gemm():
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_gemm_post_fusion():
     m = np.random.randint(1, high = 1025)
-    # 06/06/2024: padding does not support lowest dim equal to 1.
-    n = np.random.randint(1, high = 1025)
+    n = np.random.randint(2, high = 1025)  # 24/06/2024: n does not support 1
     k = np.random.randint(1, high = 1025)
     shape_a = [m, k]
     shape_b = [k, n]

@@ -1390,11 +1390,12 @@ STAGE_ENTRY:
       uint64_t subtile_0 = subtilenum & MASK_32;
       simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
       tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | vCubeOp::GetCubeOffset(cube, block_idx) << V_TILE_GROUP_IDX_OFFSET;
+      tile_loops = block_idx << 32;
       if (get_subblockid() == 0) {
-        tile_loops = block_idx << 32 | subtile_0;
+        tile_loops |= subtile_0;
         if (subtile_1 == 0) tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
-      } else if (subtile_1 > 0) {
-        tile_loops = block_idx << 32 | subtile_1;
+      } else {
+        tile_loops |= subtile_1;
         tile |= subtile_0 << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_TAIL_FLAG_OFFSET;
       }
     }

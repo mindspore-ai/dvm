@@ -833,6 +833,9 @@ class DisAssembler {
     if (cube->flags & V_CUBE_FLAG_POST_BAR) {
       oss << ", post_bar=1";
     }
+    if (cube->flags & V_CUBE_FLAG_PINGPONG_STORE) {
+      oss << ", pingpong_store=1";
+    }
     oss << ") {" << std::endl;
     DasCubeBody(cube, indent + "  ");
     oss << std::endl << indent << "}";

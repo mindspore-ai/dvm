@@ -1399,14 +1399,16 @@ MixKernel::~MixKernel() {
 }
 
 void MixKernel::Append(NDObject *obj) {
-  if (cube_op_ == nullptr) {
-    if (obj->obj_id_ == kCubeOp) {
-      std::vector<NDObject*> empty_run_ops;
-      obj->lhs_->Normalize(empty_run_ops);
-      obj->rhs_->Normalize(empty_run_ops);
-      cube_op_ = static_cast<CubeOp*>(obj);
-      cube_op_->NormalizeCube();
-    }
+  const uint32_t LOAD_PENDING = 1;
+  if (obj->IsLoad()) {
+    obj->flags_ = LOAD_PENDING;
+  } else if (obj->obj_id_ == kCubeOp) {
+    EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
+    std::vector<NDObject*> empty_run_ops;
+    obj->lhs_->Normalize(empty_run_ops);
+    obj->rhs_->Normalize(empty_run_ops);
+    cube_op_ = static_cast<CubeOp*>(obj);
+    cube_op_->NormalizeCube();
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
     cube_op_->output_ = static_cast<NDAccess*>(obj);
   } else {
@@ -1417,11 +1419,13 @@ void MixKernel::Append(NDObject *obj) {
       if (op == cube_op_) {
         if (cube_op_->output_ == nullptr) {
           auto load = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
-          load->SetCubeOp(cube_op_);
           cube_op_->output_ = load;
           post_fusion_->Append(cube_op_->output_);
         }
         op = cube_op_->output_;
+      } else if (op->IsLoad()) {
+        op->flags_ = 0;
+        post_fusion_->Append(op);
       }
     };
     if (obj->lhs_) {
@@ -1432,11 +1436,6 @@ void MixKernel::Append(NDObject *obj) {
           WorkLoad(static_cast<SelectOp*>(obj)->cond_);
         }
       }
-    }
-    if (obj->IsLoad()) {
-      static_cast<NDSLoad*>(obj)->SetCubeOp(cube_op_);
-    } else if (obj->IsStore()) {
-      static_cast<NDSStore*>(obj)->SetCubeOp(cube_op_);
     }
     post_fusion_->Append(obj);
   }
@@ -1457,6 +1456,13 @@ uint64_t MixKernel::CodeGen() {
       cube_op_->pingpong_store_ = true;
       cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
       head_flags |= V_ENTRY_FLAG_POST_SET;
+    }
+    for (auto op : post_fusion_->objects_) {
+      if (op->IsLoad()) {
+        static_cast<NDSLoad*>(op)->SetCubeOp(cube_op_);
+      } else if (op->IsStore()) {
+        static_cast<NDSStore*>(op)->SetCubeOp(cube_op_);
+      }
     }
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
@@ -1518,7 +1524,7 @@ void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
     }
     oss << "]";
   };
-  oss << indent << "vgraph.mix() {\n";
+  oss << indent << "vgraph.mix(tile_num=" << cube_op_->core_loop_ << ") {\n";
   std::string body_indent = indent + "  ";
   oss << body_indent << "// cube" << std::endl;
   oss << body_indent << "%" << cube_op_->output_->index_;

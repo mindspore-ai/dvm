@@ -1347,7 +1347,9 @@ CubeOp::~CubeOp() {
 
 void CubeOp::NormalizeCube() {
   m_align_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
-  k_align_ = trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0];
+  // Only pad the rows, which may result in matrices A and B where some K matrices are padded and some are not.
+  // Therefore, we take the maximum among them.
+  k_align_ = std::max(trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0], trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1]);
   n_align_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
   m_real_ = m_align_;
   k_real_ = k_align_;
@@ -1369,7 +1371,7 @@ void CubeOp::NormalizeCube() {
     std::reverse(rhs_real_nd.begin(), rhs_real_nd.end());
     k_real_ = trans_b_ ? rhs_real_nd[0] : rhs_real_nd[1];
     n_real_ = trans_b_ ? rhs_real_nd[1] : rhs_real_nd[0];
-  }  
+  }
   if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
     nd_ = {n_real_, m_real_};
     shape_ = {m_real_, n_real_};
@@ -1495,6 +1497,8 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->m_real = m_real_;
   op->n_real = n_real_;
   op->k_real = k_real_;
+  op->a_size = lhs_->nd_[0] * lhs_->nd_[1];
+  op->b_size = rhs_->nd_[0] * rhs_->nd_[1];
 
   if (lhs_->IsLoad()) {
     auto a = static_cast<NDAccess*>(lhs_);
@@ -1521,9 +1525,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
   Tile(op);
   auto m_loop = CeilDiv(op->m_real, op->m0);
-  ASSERT(op->m_align % op->m0 == 0); // after padding, m_align must be divisible by m0
   auto n_loop = CeilDiv(op->n_real, op->n0);
-  ASSERT(op->m_align % op->m0 == 0); // after padding, n_align must be divisible by n0
   core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
   block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;

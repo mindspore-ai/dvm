@@ -15,8 +15,8 @@ def test_gemm():
     np_b = np.random.normal(0, 1, shape_b).astype(np.float16)
     expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
     # compute pad size
-    shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
-    shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]
+    shape_a_pad = [(i + 128 - 1) // 128 * 128 for i in shape_a]
+    shape_b_pad = [(i + 128 - 1) // 128 * 128 for i in shape_b]
     pad_size_a = [shape_a_pad[i] - shape_a[i] for i in range(2)]
     pad_size_b = [shape_b_pad[i] - shape_b[i] for i in range(2)]
 
@@ -51,8 +51,8 @@ def test_gemm_post_fusion():
     expect = np_c + np_cc
 
     # compute pad size
-    shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
-    shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]
+    shape_a_pad = [(i + 128 - 1) // 128 * 128 for i in shape_a]
+    shape_b_pad = [(i + 128 - 1) // 128 * 128 for i in shape_b]
     pad_size_a = [shape_a_pad[i] - shape_a[i] for i in range(2)]
     pad_size_b = [shape_b_pad[i] - shape_b[i] for i in range(2)]
 
@@ -73,4 +73,47 @@ def test_gemm_post_fusion():
     res = t.cast(res, "float32")
     res = t.binary("Add", res, c)
     t.store_expect(res, expect, 2e-3)
+    assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_gemm_row_nopad_transpose():
+    m = np.random.randint(1, high = 1025)
+    n = np.random.randint(2, high = 1025)
+    k = np.random.randint(1, high = 128) * 128
+    shape_a = [m, k]
+    shape_b = [n, k]
+    np_a = np.random.normal(0, 0.1, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 0.1, shape_b).astype(np.float16)
+    np_c = np.matmul(np_a.astype(np.float32), np_b.transpose().astype(np.float32)) + 2.5
+
+    t = Tester("mix")
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
+    res = t.matmul(mat_a, mat_b, False, True)
+    res = t.binary("Add", res, 2.5)
+    t.store_expect(res, np_c)
+    assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_gemm_row_nopad():
+    m = np.random.randint(1, high = 1025)
+    k = np.random.randint(1, high = 1025)
+    n = np.random.randint(1, high = 128) * 128
+    shape_a = [m, k]
+    shape_b = [k, n]
+    np_a = np.random.normal(0, 0.1, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 0.1, shape_b).astype(np.float16)
+    np_c = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
+    t = Tester("stages")
+    t.stage_switch("static")
+    a = t.load(np_a)
+    a = t.copy(a)
+    pad_a = t.stage_pad_store(a, [0, (128 - k % 128) % 128])
+    t.stage_switch("mix")
+    mat_a = t.stage_load(pad_a)
+    mat_b = t.load(np_b)
+    res = t.matmul(mat_a, mat_b, False, False)
+    t.store_expect(res, np_c)
     assert(t.run_check())

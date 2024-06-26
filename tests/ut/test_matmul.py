@@ -210,3 +210,41 @@ def test_matmul_post_fusion_inplace():
     d = t.binary("Add", d, 0.1)
     t.store_expect(d, np_c + zx * 0.5 + 0.1, 2e-3)
     assert (t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_matmul_col_nopad():
+    m = 800
+    n = 700
+    k = 1024
+    shape_a = [m, k]
+    shape_b = [n, k]
+    np_a = np.random.normal(0, 0.1, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 0.1, shape_b).astype(np.float16)
+    np_c = np.matmul(np_a.astype(np.float32), np_b.transpose().astype(np.float32)).astype(np.float16)
+
+    t = Tester("mix")
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
+    res = t.matmul(mat_a, mat_b, False, True)
+    t.store_expect(res, np_c)
+    assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_batchmatmul_col_nopad():
+    m = 800
+    n = 700
+    k = 1024
+    shape_a = [1, 2, m, k]
+    shape_b = [3, 1, n, k]
+    np_a = np.random.normal(0, 0.1, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 0.1, shape_b).astype(np.float16)
+    np_c = np.matmul(np_a.astype(np.float32), np_b.transpose((0, 1, 3, 2)).astype(np.float32)).astype(np.float16)
+
+    t = Tester("mix")
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
+    res = t.matmul(mat_a, mat_b, False, True)
+    t.store_expect(res, np_c)
+    assert(t.run_check())

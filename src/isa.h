@@ -966,6 +966,7 @@ struct vCubeOp {
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;
+  uint64_t a_size, b_size;
   // for aiv
   uint64_t subtilenum; // subblockid1 << 32 | subblockid0
 

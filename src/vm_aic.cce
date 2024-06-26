@@ -35,6 +35,8 @@ class MatMul {
     batch_a1 = op->batch_a1;
     batch_b0 = op->batch_b0;
     batch_b1 = op->batch_b1;
+    a_size = op->a_size;
+    b_size = op->b_size;
     batch_c0 = batch_a0 > batch_b0 ? batch_a0 : batch_b0;
     batch_c1 = batch_a1 > batch_b1 ? batch_a1 : batch_b1;
     m0 = op->m0;
@@ -312,8 +314,8 @@ class MatMul {
     uint64_t b_idx1 = c_idx1 >= batch_b1 ? batch_b1 - 1 : c_idx1;
     uint64_t a_idx = a_idx0 * batch_a1 + a_idx1;
     uint64_t b_idx = b_idx0 * batch_b1 + b_idx1;
-    offset_a = a_idx * m_align * k_align;
-    offset_b = b_idx * k_align * n_align;
+    offset_a = a_idx * a_size;
+    offset_b = b_idx * b_size;
   }
 
   uint64_t n_loop, m_loop;
@@ -324,6 +326,8 @@ class MatMul {
   uint64_t m0, n0, k0;
   uint64_t swizzle_dir;
   uint64_t swizzle_cnt;
+  uint64_t a_size;
+  uint64_t b_size;
   uint32_t flags;
   uint32_t pingpong_store{0};
 };

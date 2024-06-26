@@ -19,6 +19,7 @@
 
 #include <string>
 #include <vector>
+#include <functional>
 #include "code.h"
 #include "ops.h"
 #include "pass.h"
@@ -131,7 +132,7 @@ class VKernelBase : public VKernel {
   int Analyze();
   void DoCodeGen(uint64_t core_limit);
 
-  NDAccess* FindInplaceStore(NDAccess *load) const;
+  NDAccess* FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const;
 
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
@@ -267,9 +268,12 @@ class StagesKernel : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
+  uint64_t AllocWorkspace();
+
   struct Stage {
     Stage(VKernel *k) : kernel(k) {}
     VKernel* kernel;
+    int64_t ws_size{-1};
     int64_t ws_offset{-1};
     int64_t code_offset{-1};
     std::vector<NDAccess*> ios;

@@ -1169,7 +1169,7 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
   }
 }
 
-NDAccess* VKernelBase::FindInplaceStore(NDAccess *load) const {
+NDAccess* VKernelBase::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
   const static bool elem_objects[ObjectType::kObjectBulk] = {
     true, // loaddummy
     true, // load
@@ -1214,7 +1214,7 @@ NDAccess* VKernelBase::FindInplaceStore(NDAccess *load) const {
         }
       }
     }
-    if (op->IsStore() && flag == 1) {
+    if (op->IsStore() && flag == 1 && (check == nullptr || check(static_cast<NDAccess*>(op)))) {
       return static_cast<NDAccess*>(op);
     }
   }
@@ -1451,7 +1451,7 @@ uint64_t MixKernel::CodeGen() {
   uint64_t head_simd = 0;
   NDAccess *inplace_store = nullptr;
   if (post_fusion_) {
-    inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_);
+    inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_, nullptr);
     if (inplace_store == nullptr) {
       cube_op_->pingpong_store_ = true;
       cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
@@ -1556,31 +1556,16 @@ void StagesKernel::Append(NDObject *obj) {
   }
 }
 
+#define STAGE_FLAG_WORKSPACE  1
+#define STAGE_FLAG_REUSE      2
+
 uint64_t StagesKernel::CodeGen() {
-  auto get_tensor_size = [](NDObject *op) -> int64_t {
-    int64_t size = ITEM_SIZE[op->type_id_];
-    for (size_t i = 0; i < op->shape_ref_->size; ++i) {
-      size *= op->shape_ref_->data[i];
-    }
-    return size;
-  };
   constexpr int64_t ffts_size = sizeof(uint64_t);
-  uint64_t ws_size = 0;
   uint64_t code_size = ffts_size;
   code_.target_ = Code::kTargetMix;
   code_.block_dim_ = 0;
   for (auto &s : stages_) {
-    auto workspace = s->kernel->CodeGen();
-    if (workspace > 0) {
-      s->ws_offset = ws_size;
-      ws_size += workspace;
-    }
-    for (auto op : s->ios) {
-      if (op->is_stage_ && op->IsStore()) {
-        op->SetWorkspace(ws_size);
-        ws_size += get_tensor_size(op);
-      }
-    }
+    s->ws_size = s->kernel->CodeGen();
     s->code_offset = code_size;
     auto &stage_code = s->kernel->code_;
     code_size += stage_code.data_size_ - ffts_size;
@@ -1594,6 +1579,7 @@ uint64_t StagesKernel::CodeGen() {
       for (auto ac : stage_code.atomic_clean_) code_.atomic_clean_.push_back(ac);
     }
   }
+  uint64_t ws_size = AllocWorkspace();
   // link
   code_.Alloc(code_size);
   code_.data_size_ = code_size;
@@ -1602,16 +1588,6 @@ uint64_t StagesKernel::CodeGen() {
     auto stage = stages_[sidx];
     auto &src_code = stage->kernel->code_;
     code_.LinkBody(stage->code_offset + sizeof(uint64_t), src_code, stage->ios, stage->ws_offset);
-    for (auto op : stage->ios) {
-      if (op->is_stage_) {
-        if (op->IsStore()) {
-          auto offset = op->GetWorkspace();
-          code_.reloc_workspaces_.emplace_back(std::make_pair(op->reloc_addr_, offset));
-        } else {
-          code_.reloc_reuse_.emplace_back(std::make_pair(op->reloc_addr_, op->GetStageStore()->reloc_addr_));
-        }
-      }
-    }
     auto cur_entry = *reinterpret_cast<uint64_t*>(src_code.data_ + ffts_size);
     cur_entry |= V_ENTRY_FLAG_GROUP;
     if (sidx > 0) { // add sync
@@ -1641,7 +1617,126 @@ uint64_t StagesKernel::CodeGen() {
     }
     *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset) = cur_entry;
   }
+  for (auto stage : stages_) {
+    for (auto op : stage->ios) {
+      if (op->is_stage_) {
+        if (op->IsStore()) {
+          if (op->flags_ == STAGE_FLAG_REUSE) {
+            auto reuse = op->GetOutputReuse();
+            code_.reloc_reuse_.emplace_back(std::make_pair(op->reloc_addr_, reuse->reloc_addr_));
+          } else {
+            auto offset = op->GetWorkspace();
+            code_.reloc_workspaces_.emplace_back(std::make_pair(op->reloc_addr_, offset));
+          }
+        } else {
+          code_.reloc_reuse_.emplace_back(std::make_pair(op->reloc_addr_, op->GetStageStore()->reloc_addr_));
+        }
+      }
+    }
+  }
   return ws_size;
+}
+
+uint64_t StagesKernel::AllocWorkspace() {
+  struct Group {
+    Group(uint64_t s, bool l) : size(s), live(l) {}
+    std::vector<NDAccess*> ops;
+    std::vector<Stage*> wss;
+    uint64_t size;
+    bool live;
+  };
+  std::vector<Group> groups;
+  groups.reserve(stages_.size() * 8);
+  std::unordered_map<NDAccess*, int> lives; // >= 0: group_idx. -1: reused
+  auto select_group = [&groups](uint64_t size) -> int {
+    int up = -1, down = -1;
+    for (int i = 0; i < static_cast<int>(groups.size()); ++i) {
+      auto &g = groups[i];
+      if (g.live) continue;
+      if (g.size >= size) {
+        if (up == -1 || g.size < groups[up].size) {
+          up = i;
+        }
+      } else if (up == -1 && (down == -1|| g.size > groups[down].size)) {
+        down = i;
+      }
+    }
+    return up >= 0 ? up : down;
+  };
+  for (auto it = stages_.rbegin(); it != stages_.rend(); ++it) {
+    auto stage = *it;
+    // stage buffer gen
+    for (auto io : stage->ios) {
+      if (io->IsLoad() && io->is_stage_) {
+        auto store = io->GetStageStore();
+        if (lives.find(store) != lives.end()) continue;
+        if (stage->kernel->KType() == kStaticShape) { // TODO: parallel fusion
+          NDAccess *inplace_stage = nullptr;
+          auto inplace_out = static_cast<VKernelBase*>(stage->kernel)->FindInplaceStore(io,
+            [&lives, &inplace_stage](NDAccess *op) -> bool {
+              if (!op->is_stage_ || op->flags_ == STAGE_FLAG_REUSE) {
+                return true;
+              }
+              if (inplace_stage == nullptr && lives[op] >= 0) {
+                inplace_stage = op;
+              }
+              return false;
+          });
+          if (inplace_out) {
+            store->flags_ = STAGE_FLAG_REUSE;
+            store->SetOutputReuse(inplace_out->is_stage_ ? inplace_out->GetOutputReuse() : inplace_out);
+            lives[store] = -1;
+            continue;
+          }
+          if (inplace_stage) {
+            auto inplace_it = lives.find(inplace_stage);
+            groups[inplace_it->second].ops.push_back(store);
+            lives[store] = inplace_it->second;
+            inplace_it->second = -1;
+            continue;
+          }
+        }
+        auto size = store->Size();
+        int index = select_group(size);
+        if (index == -1) {
+          index = groups.size();
+          groups.emplace_back(size, true);
+        }
+        groups[index].ops.emplace_back(store);
+        lives[store] = index;
+      }
+    }
+    if (stage->ws_size > 0) {
+      auto index = select_group(stage->ws_size);
+      if (index == -1) {
+        index = groups.size();
+        groups.emplace_back(stage->ws_size, false);
+      }
+      groups[index].wss.push_back(stage);
+    }
+    // stage buffer kill
+    for (auto io : stage->ios) {
+      if (io->IsStore() && io->is_stage_) {
+        auto live_it = lives.find(io);
+        if (live_it->second >= 0) {
+          groups[live_it->second].live = false;
+        }
+        lives.erase(live_it);
+      }
+    }
+  }
+  uint64_t workspace_size = 0;
+  for (auto &g : groups) {
+    for (auto op : g.ops) {
+      op->flags_ = STAGE_FLAG_WORKSPACE;
+      op->SetWorkspace(workspace_size);
+    }
+    for (auto stage : g.wss) {
+      stage->ws_offset = workspace_size;
+    }
+    workspace_size += g.size;
+  }
+  return workspace_size;
 }
 
 void StagesKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {

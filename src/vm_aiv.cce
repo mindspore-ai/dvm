@@ -1369,10 +1369,15 @@ __aicore_inline__ uint64_t vBlockNum(uint64_t entry) {
 }
 
 extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
+  __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
+  if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
+    __gm__ uint64_t *ext_addr = reinterpret_cast<__gm__ uint64_t*>(ffts_addr);
+    ffts_addr = *ext_addr;
+    body_addr = reinterpret_cast<__gm__ uint8_t*>(ext_addr + 2);
+  }
   set_atomic_none();
   set_mask_norm();
   set_ffts_base_addr(ffts_addr);
-  __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   uint64_t tile, tile_loops, simd_width;
 
 STAGE_ENTRY:

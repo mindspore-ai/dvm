@@ -20,7 +20,7 @@
 #include <cstring>
 #include <stdexcept>
 #ifndef VK_SIM_MODEL
-#include "acl/acl_base.h"
+#include "acl/acl_rt.h"
 #endif
 #include "code.h"
 #include "ops.h"
@@ -963,4 +963,27 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
     }
   }
 }
+
+int Code::LaunchAtomicClean(void* stream) {
+  for (auto a : atomic_clean_) {
+    uint8_t* a_stub = DeviceInfo::Instance().StubFunc(a->target_);
+    auto ret = DeviceInfo::Instance().launch_func_(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
+    if (ret != RT_ERROR_NONE) return ret;
+  }
+  return 0;
+}
+
+int Code::LaunchEx(void *workspace, void* stream) {
+#ifdef VK_SIM_MODEL
+  return -1;
+#else
+  auto data_dev = reinterpret_cast<uint8_t*>(workspace) + extern_code_;
+  auto ret = aclrtMemcpy(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE);
+  EXCEPTION_IF(ret != 0, "aclrtMemcpy error");
+  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t*>(data_) + 1)};
+  auto stub_func = DeviceInfo::Instance().StubFunc(target_);
+  return DeviceInfo::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);
+#endif
+}
+
 }  // namespace dvm

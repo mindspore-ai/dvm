@@ -390,13 +390,13 @@ DType Kernel::GetDType(NDObject* op) const {
 }
 
 uint64_t Kernel::CodeGen() {
-  return kernel_->CodeGen();
+  uint64_t ws_size = kernel_->CodeGen();
+  return kernel_->code_.ReserveWorkspace(ws_size);
 }
 
 int Kernel::Launch(void *workspace, void* stream) {
   auto &code = kernel_->code_;
-  code.RelocWorkspace(workspace);
-  return code.Launch(stream);
+  return code.Launch(workspace, stream);
 }
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
@@ -428,12 +428,11 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
     (*stores++)->Reloc(*outputs++);
   }
   auto &code = kernel_->code_;
-  code.RelocWorkspace(workspace);
   info.block_dim = code.block_dim_;
 
   MsProfHelper helper(info);
   helper.InitReportNode();
-  auto ret = code.Launch(stream);
+  auto ret = code.Launch(workspace, stream);
   helper.ReportTask();
   return ret;
 }
@@ -448,8 +447,7 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
     (*stores++)->Reloc(*outputs++);
   }
   auto &code = kernel_->code_;
-  code.RelocWorkspace(workspace);
-  return code.Launch(stream);
+  return code.Launch(workspace, stream);
 }
 
 int Kernel::Launch(NDObject **op, int size, void* stream) {

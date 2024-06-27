@@ -105,6 +105,7 @@ class DeviceInfo {
 
 const uint64_t SIMD_BLOCK_SIZE  = 32;
 const uint64_t SIMD_REPEAT_SIZE = 256;
+const uint64_t PARAM_TABLE_LIMIT = 4096;
 
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
@@ -139,7 +140,19 @@ class Code {
 
   uint64_t HeadSize() const { return sizeof(uint64_t) * 2; } // ffts + entry
 
-  void RelocWorkspace(void *workspace) {
+  uint64_t ReserveWorkspace(uint64_t workspace_size) {
+    if (data_size_ <= PARAM_TABLE_LIMIT) {
+      extern_code_ = -1;
+      return workspace_size;
+    }
+    uint64_t *head = reinterpret_cast<uint64_t*>(data_);
+    head[1] |= V_ENTRY_FLAG_EXTERN_CODE;
+    const uint64_t align = 512;
+    extern_code_ = (workspace_size + align) & ~(align- 1);
+    return extern_code_ + data_size_;
+  }
+
+  int Launch(void *workspace, void* stream) {
     if (workspace) {
       for (auto &r : reloc_workspaces_) {
         *(r.first) = reinterpret_cast<uint64_t>(static_cast<char*>(workspace) + r.second);
@@ -150,24 +163,20 @@ class Code {
         *(r.first) = *(r.second);
       }
     }
-  }
-
-  int Launch(void* stream) {
     if (target_ == kTargetMix) {
       uint32_t ffts_len;
       auto ret = DeviceInfo::Instance().get_c2c_addr_func_(reinterpret_cast<uint64_t*>(data_), &ffts_len);
       if (ret != RT_ERROR_NONE) return ret;
     }
-    auto launch_func = DeviceInfo::Instance().launch_func_;
-    uint8_t* stub_func = DeviceInfo::Instance().StubFunc(target_);
     if (!atomic_clean_.empty()) {
-      for (auto a : atomic_clean_) {
-        uint8_t* a_stub = DeviceInfo::Instance().StubFunc(a->target_);
-        auto ret = launch_func(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
-        if (ret != RT_ERROR_NONE) return ret;
-      }
+      auto ret = LaunchAtomicClean(stream);
+      if (ret != RT_ERROR_NONE) return ret;
     }
-    return launch_func(stub_func, block_dim_, data_, data_size_, nullptr, stream);
+    if (extern_code_ >= 0) {
+      return LaunchEx(workspace, stream);
+    }
+    uint8_t* stub_func = DeviceInfo::Instance().StubFunc(target_);
+    return DeviceInfo::Instance().launch_func_(stub_func, block_dim_, data_, data_size_, nullptr, stream);
   }
 
   void LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess*> &ios, uint64_t ws_base);
@@ -182,6 +191,11 @@ class Code {
   std::vector<std::pair<uint64_t*, uint64_t*>> reloc_reuse_;
 
   uint64_t simd_width_{0};
+  int64_t extern_code_{-1};
+
+ private:
+  int LaunchAtomicClean(void* stream);
+  int LaunchEx(void *workspace, void* stream);
 };
 } // namespace dvm 
 #endif // _DVM_CODE_H_

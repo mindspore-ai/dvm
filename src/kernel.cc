@@ -1171,18 +1171,18 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
 
 NDAccess* VKernelBase::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
   const static bool elem_objects[ObjectType::kObjectBulk] = {
-    true, // loaddummy
-    true, // load
+    true,  // loaddummy
+    true,  // load
     false, // padstore
     true,  // store
     true,  // reshape
     true,  // copy
     true,  // unary
     true,  // binary
-    false, // cast
+    true,  // cast
     true,  // binarys
     false, // broadcastto
-    false, // broadcasts
+    true,  // broadcasts
     false, // reduce
     true,  // select
     false, // elementany
@@ -1214,7 +1214,8 @@ NDAccess* VKernelBase::FindInplaceStore(NDAccess *load, const std::function<bool
         }
       }
     }
-    if (op->IsStore() && flag == 1 && (check == nullptr || check(static_cast<NDAccess*>(op)))) {
+    if (op->IsStore() && flag == 1 && op->type_id_ == load->type_id_ &&
+        (check == nullptr || check(static_cast<NDAccess*>(op)))) {
       return static_cast<NDAccess*>(op);
     }
   }
@@ -1240,7 +1241,6 @@ uint64_t VKernelS::CodeGen() {
   BuildDomain(objects_);
   NormalizeDomain();
   DoCodeGen(DeviceInfo::Instance().CoreNum());
-  EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
   return 0;
 }
 
@@ -1294,7 +1294,6 @@ uint64_t VKernelD::CodeGen() {
     BuildDomain(objects_);
     NormalizeDomain();
     DoCodeGen(DeviceInfo::Instance().CoreNum());
-    EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
     return 0;
   }
   if (pd_nexts_.empty()) { // first
@@ -1379,7 +1378,6 @@ uint64_t VKernelP::CodeGen() {
     offset += ((code.data_size_ - code.HeadSize() + 31) >> 5) << 5;
   }
   code_.UpdateParallelHead();
-  EXCEPTION_IF(code_.data_size_ > 4096, "kernel code size exceed limit(4096)");
   return 0;
 }
 

@@ -402,7 +402,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     }
   }
   auto begin = GetTimeX();
-  auto workspace_size = kernel_.GetImpl()->CodeGen();
+  auto workspace_size = kernel_.CodeGen();
   auto end = GetTimeX();
   std::cout << "codegen time(us): " << end - begin << std::endl;
   std::swap(old_passes, pass::passes);
@@ -572,7 +572,6 @@ void KernelPy::PrepareOutput() {
     }
     static_cast<NDAccess*>(op)->Reloc(info.dev);
   }
-  kernel_.GetImpl()->code_.RelocWorkspace(workspace_);
 }
 
 class DevicePy {

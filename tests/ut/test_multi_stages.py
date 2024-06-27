@@ -138,5 +138,25 @@ def test_stage_workspace_reuse():
     g1 = t.cast(g0, "float32")
     expect = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
     g2 = t.store_expect(g1, expect, 1e-2)
-    print(t.dump())
+    assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_stage_extern_code():
+    t = Tester("stages")
+    t.stage_switch("mix");
+    ax = np.random.normal(0, 1, [512,512]).astype(np.float16)
+    bx = np.random.normal(0, 1, [512,512]).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    d = t.cast(c, "float32")
+    e = t.stage_store(d)
+    t.stage_switch("static")
+    f = t.stage_load(e)
+    for i in range(200):
+      f = t.binary("Add", f, 0.01)
+      f = t.binary("Sub", f, 0.01)
+    expect = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
+    g2 = t.store_expect(f, expect, 1e-2)
     assert(t.run_check())

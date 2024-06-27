@@ -1031,6 +1031,7 @@ struct vCubeOp {
 #define V_ENTRY_FLAG_GROUP               16
 #define V_ENTRY_FLAG_NEXT_STAGE          32
 #define V_ENTRY_FLAG_POST_BAR            64
+#define V_ENTRY_FLAG_EXTERN_CODE        128
 
 #define V_ENTRY_CODE_SIZE_OFFSET         24
 #define V_ENTRY_SIMD_WIDTH_OFFSET        36

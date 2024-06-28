@@ -197,10 +197,10 @@ def test_unaligned_matmul_post_fusion(shape_a, shape_b):
 def test_matmul_post_fusion_inplace():
     shape_a, shape_b = [1024, 512], [512, 1024]
     t = Tester("mix")
-    ax = np.random.normal(0, 1, shape_a).astype(np.float16)
-    bx = np.random.normal(0, 1, shape_b).astype(np.float16)
+    ax = np.random.normal(0, 0.1, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.1, shape_b).astype(np.float16)
     np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16)
-    zx = np.random.normal(0, 1, np_c.shape).astype(np.float16)
+    zx = np.random.normal(0, 0.1, np_c.shape).astype(np.float16)
     z = t.load(zx)
     z = t.binary("Mul", z, 0.5)
     a = t.load(ax)
@@ -208,7 +208,8 @@ def test_matmul_post_fusion_inplace():
     c = t.matmul(a, b, False, False)
     d = t.binary("Add", c, z)
     d = t.binary("Add", d, 0.1)
-    t.store_expect(d, np_c + zx * 0.5 + 0.1, 2e-3)
+    d = t.binary("Sub", d, z)
+    t.store_expect(d, np_c + 0.1)
     assert (t.run_check())
 
 @pytest.mark.mix

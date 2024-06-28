@@ -77,7 +77,7 @@ def test_gemm_post_fusion():
 
 @pytest.mark.mix
 @pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
-def test_gemm_row_nopad_transpose():
+def test_gemm_row_nopad_transposeB():
     m = np.random.randint(1, high = 1025)
     n = np.random.randint(2, high = 1025)
     k = np.random.randint(1, high = 128) * 128
@@ -91,6 +91,26 @@ def test_gemm_row_nopad_transpose():
     mat_a = t.load(np_a)
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, True)
+    res = t.binary("Add", res, 2.5)
+    t.store_expect(res, np_c)
+    assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
+def test_gemm_row_nopad_transposeA():
+    m = np.random.randint(1, high = 32) * 128
+    n = np.random.randint(1, high = 32) * 128
+    k = np.random.randint(1, high = 1025)
+    shape_a = [k, m]
+    shape_b = [k, n]
+    np_a = np.random.normal(0, 0.1, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 0.1, shape_b).astype(np.float16)
+    np_c = np.matmul(np_a.transpose().astype(np.float32), np_b.astype(np.float32)) + 2.5
+
+    t = Tester("mix")
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
+    res = t.matmul(mat_a, mat_b, True, False)
     res = t.binary("Add", res, 2.5)
     t.store_expect(res, np_c)
     assert(t.run_check())

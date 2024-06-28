@@ -1421,7 +1421,7 @@ void MixKernel::Append(NDObject *obj) {
           post_fusion_->Append(cube_op_->output_);
         }
         op = cube_op_->output_;
-      } else if (op->IsLoad()) {
+      } else if (op->IsLoad() && op->flags_ == LOAD_PENDING) {
         op->flags_ = 0;
         post_fusion_->Append(op);
       }
@@ -1449,6 +1449,9 @@ uint64_t MixKernel::CodeGen() {
   uint64_t head_simd = 0;
   NDAccess *inplace_store = nullptr;
   if (post_fusion_) {
+    post_fusion_->Optimize();
+    post_fusion_->BuildDomain(post_fusion_->objects_);
+    post_fusion_->NormalizeDomain();
     inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_, nullptr);
     if (inplace_store == nullptr) {
       cube_op_->pingpong_store_ = true;
@@ -1462,9 +1465,6 @@ uint64_t MixKernel::CodeGen() {
         static_cast<NDSStore*>(op)->SetCubeOp(cube_op_);
       }
     }
-    post_fusion_->Optimize();
-    post_fusion_->BuildDomain(post_fusion_->objects_);
-    post_fusion_->NormalizeDomain();
     auto m = cube_op_->output_->nd_[1];
     auto n = cube_op_->output_->nd_[0];
     post_fusion_->root_dom_.GroupTile(1, m, cube_code.m0);

@@ -1454,6 +1454,9 @@ void CubeOp::Tile(vCubeOp *op) {
   }
   if (op->k0 > op->k_align) {
     op->k0 = op->k_align;
+    if (op->k0 % BLOCK_SIZE) {
+      op->k0 += BLOCK_SIZE - op->k0 % BLOCK_SIZE;
+    }
   }
   m0_ = op->m0;
   n0_ = op->n0;

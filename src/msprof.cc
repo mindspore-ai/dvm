@@ -94,36 +94,28 @@ MsProfHolder::MsProfHolder() {
 #endif
 }
 
-void MsProfHelper::BuildSingleTensorInfo(const uint64_t opName_hash_id, const size_t index, const uint32_t tensor_num,
-                                         TensorInfoWrapper *tensor_info_wrapper) {
+void MsProfHelper::BuildSingleTensorInfo(const uint64_t opName_hash_id, const size_t index_begin,
+                                         const size_t index_end, TensorInfoWrapper *tensor_info_wrapper) {
   auto &tensor_info = tensor_info_wrapper->tensor_info;
   tensor_info.type = MSPROF_REPORT_NODE_TENSOR_INFO_TYPE;
   tensor_info.level = MSPROF_REPORT_NODE_LEVEL;
-  tensor_info_wrapper->tensor_num = tensor_num;
-  tensor_info.dataLen = kTensorInfoBytesWithCap + kTensorInfoBytes * (static_cast<uint32_t>(tensor_num) - 1U);
+  tensor_info_wrapper->tensor_num = index_end - index_begin;
+  tensor_info.dataLen =
+    kTensorInfoBytesWithCap + kTensorInfoBytes * (static_cast<uint32_t>(tensor_info_wrapper->tensor_num) - 1U);
   auto prof_tensor_data = reinterpret_cast<MsprofTensorInfo *>(tensor_info.data);
   prof_tensor_data->opName = opName_hash_id;
-  prof_tensor_data->tensorNum = tensor_num;
-  for (size_t k = 0UL; k < static_cast<size_t>(tensor_num); k++) {
-    const size_t tensor_index = (index * static_cast<size_t>(MSPROF_GE_TENSOR_DATA_NUM)) + k;
-    InitProfTensorData(tensor_index, k, prof_tensor_data);
+  prof_tensor_data->tensorNum = tensor_info_wrapper->tensor_num;
+  for (size_t tensor_index = index_begin; tensor_index < index_end; tensor_index++) {
+    size_t k = tensor_index - index_begin;
+    prof_tensor_data->tensorData[k].tensorType =
+      tensor_index < info_.input_size ? MSPROF_GE_TENSOR_TYPE_INPUT : MSPROF_GE_TENSOR_TYPE_OUTPUT;
+    prof_tensor_data->tensorData[k].format = OpFormat2Index[kOpFormat_DEFAULT] + MSPROF_DIFFERENCE;
+    prof_tensor_data->tensorData[k].dataType = info_.data_types[tensor_index] + MSPROF_DIFFERENCE;
+    auto shape_size =
+      std::min(static_cast<uint64_t>(MSPROF_GE_TENSOR_DATA_SHAPE_LEN), info_.shapes[tensor_index]->size);
+    (void)std::copy(info_.shapes[tensor_index]->data, info_.shapes[tensor_index]->data + shape_size,
+                    prof_tensor_data->tensorData[k].shape);
   }
-}
-
-void MsProfHelper::InitProfTensorData(const size_t index, const uint64_t offset_idx, MsprofTensorInfo *tensor_info) {
-  const auto InitTensorDesc = [&tensor_info](const MsprofGeTensorType tensor_type, const ShapeVector &shape,
-                                             const std::string &format, const uint32_t vm_data_type,
-                                             const uint64_t offset_idx) {
-    tensor_info->tensorData[offset_idx].tensorType = static_cast<uint32_t>(tensor_type);
-    // when enum Format is changed, profiling analyze needs to be synchronized
-    tensor_info->tensorData[offset_idx].format = OpFormat2Index[format] + MSPROF_DIFFERENCE;
-    // when enum DataType is changed, profiling analyze needs to be synchronized
-    tensor_info->tensorData[offset_idx].dataType = vm_data_type + MSPROF_DIFFERENCE;
-    auto shape_size = std::min(static_cast<uint64_t>(MSPROF_GE_TENSOR_DATA_SHAPE_LEN), shape.size());
-    (void)std::copy(shape.begin(), shape.begin() + shape_size, tensor_info->tensorData[offset_idx].shape);
-  };
-  InitTensorDesc(index < info_.input_size ? MSPROF_GE_TENSOR_TYPE_INPUT : MSPROF_GE_TENSOR_TYPE_OUTPUT,
-                 info_.shapes[index], info_.data_formats[index], info_.data_types[index], offset_idx);
 }
 
 void MsProfHelper::InitReportNode() {
@@ -135,19 +127,14 @@ void MsProfHelper::InitReportNode() {
   prof_node_basic_info.opName = opName_hash_id;
   prof_node_basic_info.opType = GetMsprofHashId(info_.op_name);
   prof_node_basic_info.blockDim = info_.block_dim;
-  prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
-
+  prof_node_basic_info.taskType = (info_.kernel_type == kStaticMix || info_.kernel_type == kStaticStages)
+                                    ? static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC)
+                                    : static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
   size_t total_size = info_.input_size + info_.output_size;
-  const size_t batch_size = total_size / MSPROF_GE_TENSOR_DATA_NUM;
-  for (size_t i = 0U; i < batch_size; i++) {
-    TensorInfoWrapper tensor_info_wrapper{};
-    BuildSingleTensorInfo(opName_hash_id, i, MSPROF_GE_TENSOR_DATA_NUM, &tensor_info_wrapper);
-    addition_info_.tensor_info_wrappers.emplace_back(tensor_info_wrapper);
-  }
-  const size_t remain_index = total_size % static_cast<size_t>(MSPROF_GE_TENSOR_DATA_NUM);
-  if (remain_index != 0UL) {
-    TensorInfoWrapper tensor_info_wrapper{};
-    BuildSingleTensorInfo(opName_hash_id, batch_size, remain_index, &tensor_info_wrapper);
+  for (size_t i = 0U; i < total_size; i += MSPROF_GE_TENSOR_DATA_NUM) {
+    TensorInfoWrapper tensor_info_wrapper;
+    BuildSingleTensorInfo(opName_hash_id, i, std::min(total_size, (i + MSPROF_GE_TENSOR_DATA_NUM)),
+                          &tensor_info_wrapper);
     addition_info_.tensor_info_wrappers.emplace_back(tensor_info_wrapper);
   }
   InitLaunchApi(opName_hash_id, &addition_info_.api);

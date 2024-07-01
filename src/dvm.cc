@@ -401,11 +401,6 @@ int Kernel::Launch(void *workspace, void* stream) {
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                          void **outputs, void *workspace, void *stream) {
-  static std::unordered_map<dvm::DType, uint32_t> v_type_map = {{dvm::DType::kFloat32, 43},
-                                                                {dvm::DType::kFloat16, 42},
-                                                                {dvm::DType::kInt8, 30},
-                                                                {dvm::DType::kInt32, 34},
-                                                                {dvm::DType::kBFloat16, 45}};
   NodeInfo info;
   info.op_name = op_name;
   info.op_fullname = op_fullname;
@@ -413,23 +408,19 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
   info.output_size = reloc_table.outputs_size;
   auto loads = reinterpret_cast<NDAccess**>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    auto shape_ref = GetShape(*loads);
-    info.data_formats.emplace_back(kOpFormat_DEFAULT);
-    info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
-    info.data_types.emplace_back(v_type_map[GetDType(*loads)]);
+    info.shapes.emplace_back(GetShape(*loads));
+    info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
     (*loads++)->Reloc(*inputs++);
   }
   auto stores = reinterpret_cast<NDAccess**>(reloc_table.outputs);
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    auto shape_ref = GetShape(*stores);
-    info.data_formats.emplace_back(kOpFormat_DEFAULT);
-    info.shapes.emplace_back(std::vector<int64_t>(shape_ref->data, shape_ref->data + shape_ref->size));
-    info.data_types.emplace_back(v_type_map[GetDType(*stores)]);
+    info.shapes.emplace_back(GetShape(*stores));
+    info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
     (*stores++)->Reloc(*outputs++);
   }
   auto &code = kernel_->code_;
   info.block_dim = code.block_dim_;
-
+  info.kernel_type = kernel_->KType();
   MsProfHelper helper(info);
   helper.InitReportNode();
   auto ret = code.Launch(workspace, stream);

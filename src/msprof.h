@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include <map>
+#include <dvm.h>
 
 // rts_msprof
 #if defined(__cplusplus)
@@ -266,15 +267,35 @@ static std::map<std::string, uint32_t> OpFormat2Index{{kOpFormat_DEFAULT, 1},
                                                       {kOpFormat_DHWCN, 21}};
 
 namespace dvm {
+enum DTypeMs {
+  kTypeUnKnown = 0,
+  kNumberTypeBool = 30,
+  kNumberTypeInt8 = 32,
+  kNumberTypeInt16 = 33,
+  kNumberTypeInt32 = 34,
+  kNumberTypeInt64 = 35,
+  kNumberTypeUInt8 = 37,
+  kNumberTypeUInt16 = 38,
+  kNumberTypeUInt32 = 39,
+  kNumberTypeUInt64 = 40,
+  kNumberTypeFloat16 = 42,
+  kNumberTypeFloat32 = 43,
+  kNumberTypeFloat64 = 43,
+  kNumberTypeBFloat16 = 45,
+};
+
+static const DTypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {
+  kNumberTypeInt8, kNumberTypeFloat16, kNumberTypeBFloat16, kNumberTypeFloat32, kNumberTypeInt32, kTypeUnKnown};
+
 struct NodeInfo {
   const char *op_name;
   const char *op_fullname;
   uint32_t block_dim;
   uint64_t input_size{0};
   uint64_t output_size{0};
-  std::vector<std::vector<int64_t>> shapes;
-  std::vector<std::string> data_formats;
-  std::vector<uint32_t> data_types;
+  KernelType kernel_type;
+  std::vector<ShapeRef *> shapes;
+  std::vector<DTypeMs> data_types;
 };
 
 class MsProfHelper {
@@ -287,7 +308,7 @@ class MsProfHelper {
 
  private:
   void InitProfTensorData(const size_t index, const uint64_t offset_idx, MsprofTensorInfo *tensor_info);
-  void BuildSingleTensorInfo(const uint64_t opName_hash_id, const size_t index, const uint32_t tensor_num,
+  void BuildSingleTensorInfo(const uint64_t opName_hash_id, const size_t index_begin, const size_t index_end,
                              TensorInfoWrapper *tensor_info_wrapper);
 
   ProfNodeAdditionInfo addition_info_;

@@ -2,7 +2,6 @@ VPATH = ./src:./include
 OBJ = ops.o kernel.o code.o dvm.o pass.o msprof.o
 
 CFLGAS = --std=c++17 -Werror -Wall -I./include -I./third_party/pybind11/include -I${PY_INCLUDE} -I${ASCEND_PATH}/latest/include -fPIC -fvisibility=hidden
-CCE_FLGAS_C100 = --std=c++17 -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C100
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast --cce-aicore-only -DAICORE_ARCH_C220 --cce-auto-sync=off -mllvm -cce-aicore-function-stack-size=16000 -mllvm -cce-aicore-record-overflow=false  -mllvm -cce-aicore-addr-transform -mllvm --cce-aicore-jump-expand=true -mllvm -cce-aicore-mask-opt=false
 
 ifneq ($(dbg),)
@@ -39,19 +38,14 @@ pybind_api.o: pybind_api.cc pybind_api.h $(HEADERS)
 ${OBJ}: %.o: %.cc $(HEADERS)
 	g++ -c $(CFLGAS) $< -o $@
 
-vm.o: g_vkernel_bin g_vkernel_910b_bin
+vm.o: g_vkernel_c220_bin
 	echo "extern const" > vm.cc
-	xxd -i g_vkernel_bin >> vm.cc
-	echo "extern const" >> vm.cc
-	xxd -i g_vkernel_910b_bin >> vm.cc
-	llvm-objdump -t g_vkernel_910b_bin | grep " F " | python scripts/find_addrs.py src/isa.h >> vm.cc
+	xxd -i g_vkernel_c220_bin >> vm.cc
+	llvm-objdump -t g_vkernel_c220_bin | grep " F " | python scripts/find_addrs.py src/isa.h >> vm.cc
 	g++ -c $(CFLGAS) vm.cc -o vm.o
 
-g_vkernel_910b_bin: vm_aiv_c220.o vm_aic_c220.o
-	ld.lld -Ttext=0 vm_aic_c220.o vm_aiv_c220.o -static -o g_vkernel_910b_bin
-
-g_vkernel_bin: vm_aiv_c100.cce isa.h
-	ccec -c -O2 $(CCE_FLGAS_C100) --cce-aicore-arch=dav-c100 src/vm_aiv_c100.cce -o g_vkernel_bin
+g_vkernel_c220_bin: vm_aiv_c220.o vm_aic_c220.o
+	ld.lld -Ttext=0 vm_aic_c220.o vm_aiv_c220.o -static -o g_vkernel_c220_bin
 
 vm_aiv_c220.o: vm_aiv.cce isa.h vm_aic_c220.o
 	ccec -c -O2 $(CCE_FLGAS_C220) -D VMAIN_OFFSET=$(VMAIN_OFFSET) --cce-aicore-arch=dav-c220-vec src/vm_aiv.cce -o vm_aiv_c220.o

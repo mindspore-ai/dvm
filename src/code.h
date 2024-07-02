@@ -47,7 +47,6 @@ namespace dvm {
 void DvmException(const char* error_str);
 
 enum AiCoreArch {
-  kAiCore_C100,
   kAiCore_C220,
 };
 

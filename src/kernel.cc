@@ -158,9 +158,6 @@ class CodeGenHelper {
     BackwardSync();
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     ASSERT(code.data_size_ <= code_reserved + code.HeadSize());
-    if (DeviceInfo::Instance().Arch() == kAiCore_C100) {
-      OverWriteCoreLimit();
-    }
     code.UpdateHead(kernel_->tile_num_, code.simd_width_, 0);
     return true;
   }
@@ -216,23 +213,6 @@ class CodeGenHelper {
           }
           *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
           vl_event.sync_idx = load->index_;
-        }
-      }
-    }
-  }
-
-  void OverWriteCoreLimit() {
-    for (auto op : kernel_->static_ops_) {
-      if (op->IsLoad() || op->obj_id_ == kElementAny || (op->obj_id_ == kReduce && !static_cast<ReduceOp*>(op)->round_tile_.empty())) {
-        continue;
-      }
-      // producer node for Store
-      uint64_t size = op->strides_.back() / op->LeadAlign() * op->nd_[op->lead_dim_] * ITEM_SIZE[op->type_id_];
-      if (size < SIMD_BLOCK_SIZE) {
-        // TODO: optimize me
-        auto core_tile_least = CeilDiv(SIMD_BLOCK_SIZE, size);
-        while (kernel_->code_.block_dim_ > 1 && core_tile_least * kernel_->code_.block_dim_ > kernel_->tile_num_) {
-          kernel_->code_.block_dim_--;
         }
       }
     }

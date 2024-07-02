@@ -578,7 +578,7 @@ void KernelPy::PrepareOutput() {
 class DevicePy {
  public:
   static std::string Arch() {
-    static const char* soc_names[] = {"AscendC100", "AscendC220"};
+    static const char* soc_names[] = {"AscendC220"};
     return soc_names[DeviceInfo::Instance().Arch()];
   }
   static int CoreNum() {

@@ -1,11 +1,9 @@
 import numpy as np
-import dvm
 import pytest
 from dvm.tester import Tester
 
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('trans', [[False, False], [False, True], [True, False], [True, True]])
 def test_matmul(trans):
     t = Tester("mix")
@@ -21,7 +19,6 @@ def test_matmul(trans):
 
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[2, 4, 256, 256], [2, 4, 256, 256]],  # no broadcast
     [[256, 256], [3, 1, 256, 256]],        # different dim, broadcast A
@@ -42,7 +39,6 @@ def test_batchmatmul(shape_a, shape_b):
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[4, 1, 256, 256], [1, 8, 256, 256]],
     [[768, 1024], [1024, 10240]],
@@ -65,7 +61,6 @@ def test_matmul_post_fusion(shape_a, shape_b):
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('trans', [[False, False]])
 def test_matmul_bf16(trans):
     t = Tester("mix")
@@ -79,7 +74,6 @@ def test_matmul_bf16(trans):
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[211, 211], [211, 230]],      # gemm normal case
     [[193, 193], [193, 193]],      # m0 == 1
@@ -112,7 +106,6 @@ def test_unaligned_matmul(shape_a, shape_b):
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],
     [[2048, 1024], [1024, 5120]],
@@ -135,7 +128,6 @@ def test_matmul_post_broadcast_fusion_0(shape_a, shape_b):
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[512, 128], [128, 256]],
     [[768, 1024], [1024, 10240]],
@@ -158,7 +150,6 @@ def test_matmul_post_broadcast_fusion_1(shape_a, shape_b):
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[211, 211], [211, 230]],      # gemm normal case
     [[193, 193], [193, 193]],      # m0 == 1
@@ -213,7 +204,6 @@ def test_matmul_post_fusion_inplace():
     assert (t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_matmul_col_nopad():
     m = 800
     n = 700
@@ -232,7 +222,6 @@ def test_matmul_col_nopad():
     assert(t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_batchmatmul_col_nopad():
     m = 800
     n = 700

@@ -102,7 +102,7 @@ if __name__ == '__main__':
 
     for i in range(3):
         # Output function addresses
-        print('unsigned long int g_{}_func_offset[] = {{'.format(pipe_names[i]))
+        print('extern const unsigned long int g_{}_func_offset[] = {{'.format(pipe_names[i]))
         for ins_name in insn_names[i]:
             print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
         print('0\n};')

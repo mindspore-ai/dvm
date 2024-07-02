@@ -52,13 +52,8 @@ rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 }
 #endif
 
-extern uint64_t g_simd_func_offset[];
-extern uint64_t g_load_func_offset[];
-extern uint64_t g_store_func_offset[];
-extern const unsigned char g_vkernel_bin[];
-extern unsigned int  g_vkernel_bin_len;
-extern const unsigned char g_vkernel_910b_bin[];
-extern unsigned int  g_vkernel_910b_bin_len;
+extern const unsigned char g_vkernel_c220_bin[];
+extern unsigned int g_vkernel_c220_bin_len;
 
 namespace dvm {
 namespace {
@@ -552,7 +547,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
 };
 
 size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
-  auto convert_id = [](uint64_t offsets[], uint64_t none_idx, uint64_t id) -> uint64_t {
+  auto convert_id = [](const uint64_t offsets[], uint64_t none_idx, uint64_t id) -> uint64_t {
     for (uint64_t i = 0; i <= none_idx; ++i) {
       if (offsets[i] == id) {
         return i;
@@ -669,39 +664,22 @@ void DvmException(const char* error_str) {
 
 DeviceInfo::DeviceInfo() {
   auto soc_name = GetSocName();
-  if (soc_name.find("Ascend910B") != std::string::npos || soc_name.find("Ascend910C") != std::string::npos) {
-    arch_ = kAiCore_C220;
-    local_mem_size_ = 192 * 1024;
-    event_num_ = 8;
-    if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2" || soc_name == "Ascend910C1" ||
-        soc_name == "Ascend910C2") {
-      vector_core_num_ = 48;
-      cube_core_num_ = 24;
-    } else {
-      vector_core_num_ = 40;
-      cube_core_num_ = 20;
-    }
-    l2_size_ = (soc_name == "Ascend910B4" || soc_name == "Ascend910C4") ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
-    l1_size_ = 512 * 1024;
-    l0c_size_ = 128 * 1024;
+  EXCEPTION_IF(soc_name.find("Ascend910B") == std::string::npos && soc_name.find("Ascend910C") == std::string::npos,
+              "Only Ascend910B and Ascend910C is supported");
+  arch_ = kAiCore_C220;
+  local_mem_size_ = 192 * 1024;
+  event_num_ = 8;
+  if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2" || soc_name == "Ascend910C1" ||
+      soc_name == "Ascend910C2") {
+    vector_core_num_ = 48;
+    cube_core_num_ = 24;
   } else {
-    arch_ = kAiCore_C100;
-    local_mem_size_ = 256 * 1024;
-    event_num_ = 4;
-    vector_core_num_ = 32;
-    cube_core_num_ = vector_core_num_;
-    l2_size_ = 32 * 1024 * 1024;
-    l1_size_ = 1024 * 1024;
-    l0c_size_ = 256 * 1024;
-    auto set_func_ids = [](uint64_t offsets[], uint64_t size) {
-      for (uint64_t i = 0; i <= size; ++i) {
-        offsets[i] = i;
-      }
-    };
-    set_func_ids(g_simd_func_offset, V_NONE);
-    set_func_ids(g_load_func_offset, V_LOAD_NONE);
-    set_func_ids(g_store_func_offset, V_STORE_NONE);
+    vector_core_num_ = 40;
+    cube_core_num_ = 20;
   }
+  l2_size_ = (soc_name == "Ascend910B4" || soc_name == "Ascend910C4") ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
+  l1_size_ = 512 * 1024;
+  l0c_size_ = 128 * 1024;
   ub_workspace_size_ = 1024;
   std::unordered_map<std::string, SocType> soc_name_map = {{"Ascend910B1", kAscend910B1},
                                                            {"Ascend910B2", kAscend910B2},
@@ -733,45 +711,33 @@ DeviceInfo::DeviceInfo() {
   void *module = nullptr;
   rtDevBinary_t dev_bin;
   dev_bin.version = 0;
-  if (arch_ == kAiCore_C100) {
-    dev_bin.data = g_vkernel_bin;
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-    dev_bin.length = g_vkernel_bin_len;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg binary failed");
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
-    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg function failed");
-  } else {
-    dev_bin.data = g_vkernel_910b_bin;
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-    dev_bin.length = g_vkernel_910b_bin_len;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-    uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
-    err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
+  dev_bin.data = g_vkernel_c220_bin;
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
+  dev_bin.length = g_vkernel_c220_bin_len;
+  err = rt_binary_register(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
+  uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
+  err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
 
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-    stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetCube;
-    err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
+  err = rt_binary_register(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
+  stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetCube;
+  err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
 
-    dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-    err = rt_binary_register(&dev_bin, &module);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-    stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetMix;
-    err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
-    EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
-
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
+  err = rt_binary_register(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
+  stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetMix;
+  err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 #ifdef VK_SIM_MODEL
-    get_c2c_addr_func_ = rtGetC2cCtrlAddr;
+  get_c2c_addr_func_ = rtGetC2cCtrlAddr;
 #else
-    get_c2c_addr_func_ = reinterpret_cast<rtError_t(*)(uint64_t*, uint32_t*)>(dlsym(handle, "rtGetC2cCtrlAddr"));
+  get_c2c_addr_func_ = reinterpret_cast<rtError_t(*)(uint64_t*, uint32_t*)>(dlsym(handle, "rtGetC2cCtrlAddr"));
 #endif
-  }
 }
 
 class DisAssembler {

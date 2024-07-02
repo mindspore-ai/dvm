@@ -22,11 +22,7 @@
 #ifdef _CCE_KERNEL_
 #define INSN_ATTR __attribute__((device_immutable))
 #define __aicore_inline__ static inline [aicore]
-#ifdef AICORE_ARCH_C100
-#define __bcode__ __ubuf__
-#else
 #define __bcode__ __gm__
-#endif
 #define bcodeptr_t __bcode__ uint64_t* __restrict__
 #else
 #define __gm__
@@ -197,9 +193,9 @@ enum vSimdInsnID {
 #define vDeCompactX(x)  ((x) << 5)
 
 #ifndef _CCE_KERNEL_
-extern uint64_t g_simd_func_offset[];
-extern uint64_t g_load_func_offset[];
-extern uint64_t g_store_func_offset[];
+extern const uint64_t g_simd_func_offset[];
+extern const uint64_t g_load_func_offset[];
+extern const uint64_t g_store_func_offset[];
 __aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
   if (pipe == V_PIPE_SIMD) {
     return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | g_simd_func_offset[id] << V_HEAD_ID_OFFSET | 1 << V_HEAD_SIMD_FLAG_OFFSET;

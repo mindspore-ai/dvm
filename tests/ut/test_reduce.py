@@ -16,7 +16,6 @@
 import copy
 import pytest
 import numpy as np
-import dvm
 from dvm.tester import Tester
 
 @pytest.mark.parametrize('dim', [64, 256, 251])
@@ -101,19 +100,6 @@ def test_reduce(in_shape, dims):
     y = t.reduce("sum", x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     t.store_expect(y, res, 1e-4)
-    assert(t.run_check())
-
-@pytest.mark.skipif(dvm.device.arch() != "AscendC100", reason = "only support 910 tiling")
-def test_reduce_store_with_lead_dim_tiling():
-    in_shape = [521, 1024]
-    dims = (1,)
-    t = Tester()
-    a = np.random.normal(0, 1, in_shape).astype(np.float32)
-    x = t.load(a)
-    y = t.reduce("sum", x, dims, True)
-    res = np.sum(a, dims, keepdims=True)
-    t.store_expect(y, res, 1e-4)
-    t.tile(1, 1, 20);
     assert(t.run_check())
 
 def test_reduce_x_tail():

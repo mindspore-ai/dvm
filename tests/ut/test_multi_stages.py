@@ -15,7 +15,6 @@
 
 import pytest
 import numpy as np
-import dvm
 from dvm.tester import Tester
 
 def test_stage_vec_vec():
@@ -33,7 +32,6 @@ def test_stage_vec_vec():
     assert(t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_stage_vec_mix():
     t = Tester("stages")
     t.stage_switch("static");
@@ -53,7 +51,6 @@ def test_stage_vec_mix():
     assert(t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_stage_mix_vec():
     t = Tester("stages")
     t.stage_switch("mix");
@@ -118,7 +115,6 @@ def test_stage_inplace_stage():
     assert(t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_stage_workspace_reuse():
     t = Tester("stages")
     t.stage_switch("mix");
@@ -141,7 +137,6 @@ def test_stage_workspace_reuse():
     assert(t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.skipif(dvm.device.arch() == "AscendC100", reason="matmul not support 910a")
 def test_stage_extern_code():
     t = Tester("stages")
     t.stage_switch("mix");

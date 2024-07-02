@@ -43,7 +43,7 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VKernelBase *kernel): kernel_(kernel) {}
+  CodeGenHelper(VectorKernel &kernel): kernel_(kernel) {}
   bool Generate() {
     static const CodeGenType codegen_types[ObjectType::kObjectBulk] = {
       kGenLoad,  // loaddummy
@@ -63,22 +63,23 @@ class CodeGenHelper {
       kGenSimd1, // elementany
       kGenSimd1, // RemovePad
     };
-    auto &code = kernel_->code_;
-    auto code_reserved = kernel_->ReserveCodeSize();
+    auto &code = kernel_.code_;
+    auto code_reserved = kernel_.ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
     uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
     static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize() + code_reserved;
-    for (auto op : kernel_->static_ops_) {
+    for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     }
-    for (auto op: kernel_->objects_) {
-      op->UpdateStride(code.simd_width_);
+    auto simd_width = kernel_.simd_width_;
+    for (auto op: kernel_.objects_) {
+      op->UpdateStride(simd_width);
       op->tail_insn_ = op->insn_ = code_ptr;
       switch (codegen_types[op->obj_id_]) {
         case kGenSimd0: {
           auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
-          code_ptr += op->Emit(code);
+          code_ptr += op->Emit(kernel_);
           if (anti_dep) {
             SimdBarrier(anti_dep, op);
           }
@@ -89,7 +90,7 @@ class CodeGenHelper {
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.emplace(op->lhs_, op);
           }
-          code_ptr += op->Emit(code);
+          code_ptr += op->Emit(kernel_);
           if (anti_dep) {
             SimdBarrier(anti_dep, op);
           }
@@ -104,7 +105,7 @@ class CodeGenHelper {
           if (op->flags_ & OBJ_FLAG_FREE_RHS) {
             free_xbuf_.emplace(op->rhs_, op);
           }
-          code_ptr += op->Emit(code);
+          code_ptr += op->Emit(kernel_);
           if (anti_dep) {
             SimdBarrier(anti_dep, op);
           }
@@ -125,7 +126,7 @@ class CodeGenHelper {
           if (op->flags_ & OBJ_FLAG_FREE_RHS) {
             free_xbuf_.emplace(op->rhs_, op);
           }
-          code_ptr += op->Emit(code);
+          code_ptr += op->Emit(kernel_);
           if (anti_dep) {
             SimdBarrier(anti_dep, op);
           }
@@ -133,11 +134,11 @@ class CodeGenHelper {
           break;
         }
         case kGenLoad: {
-          code_ptr += op->Emit(code);
+          code_ptr += op->Emit(kernel_);
           break;
         }
         case kGenStore: {
-          code_ptr += op->Emit(code);
+          code_ptr += op->Emit(kernel_);
           StoreSync(op->lhs_, op);
 #ifdef DEBUG
           auto head = *(op->tail_insn_);
@@ -158,13 +159,13 @@ class CodeGenHelper {
     BackwardSync();
     code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
     ASSERT(code.data_size_ <= code_reserved + code.HeadSize());
-    code.UpdateHead(kernel_->tile_num_, code.simd_width_, 0);
+    code.UpdateHead(kernel_.tile_num_, simd_width, 0);
     return true;
   }
 
  private:
   void BackwardSync() {
-    auto &objects = kernel_->objects_;
+    auto &objects = kernel_.objects_;
     EventManager vl_event, sv_event;
     auto alloc_event = [](EventManager &m, uint64_t &event) -> bool {
       event = m.hold_event + 1;
@@ -186,7 +187,7 @@ class CodeGenHelper {
           if (alloc_event(sv_event, event)) {
             *(op->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
           } else {
-            auto to_sync = kernel_->objects_[sv_event.sync_idx]->insn_;
+            auto to_sync = kernel_.objects_[sv_event.sync_idx]->insn_;
             *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
           }
           *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
@@ -208,7 +209,7 @@ class CodeGenHelper {
           if (alloc_event(vl_event, event)) {
             *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
           } else {
-            auto to_sync = kernel_->objects_[vl_event.sync_idx]->insn_;
+            auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
             *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
           }
           *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
@@ -286,7 +287,7 @@ class CodeGenHelper {
     if (AllocForwardEvent(lv_event_, from_pipe_idx, to->index_, event)) {
       *to_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | event << V_HEAD_WAIT_EVENT_OFFSET;
     } else {
-      auto from_sync = kernel_->objects_[lv_event_.sync_idx]->tail_insn_;
+      auto from_sync = kernel_.objects_[lv_event_.sync_idx]->tail_insn_;
       *from_sync &= ~(0x1ul << V_M_HEAD_SET_FLAG_OFFSET);
     }
     *from_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
@@ -302,7 +303,7 @@ class CodeGenHelper {
     if (AllocForwardEvent(vs_event_, from_pipe_idx, to->index_, event)) {
       *to_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
     } else {
-      auto from_sync = kernel_->objects_[vs_event_.sync_idx]->tail_insn_;
+      auto from_sync = kernel_.objects_[vs_event_.sync_idx]->tail_insn_;
       *from_sync &= ~(0x1ul << V_HEAD_SET_FLAG_OFFSET);
     }
     *from_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET | event << V_HEAD_SET_EVENT_OFFSET;
@@ -331,8 +332,8 @@ class CodeGenHelper {
   EventManager lv_event_;
   EventManager vs_event_;
 
-  VKernelBase *kernel_;
-  friend VKernelBase;
+  VectorKernel &kernel_;
+  friend VectorKernel;
 };
 
 void PropDomain::Normalize() {
@@ -421,7 +422,7 @@ void PropDomain::TileProp(const TileParam &tp) {
   }
 }
 
-void RootDomain::Normalize(VKernelBase *kernel) {
+void RootDomain::Normalize(VectorKernel *kernel) {
   tile_num_ = 1;
   PropDomain::Normalize();
   auto &nd = dom_->nd_;
@@ -569,7 +570,7 @@ class ReshapeDomain : public PropDomain {
 
 class ShapeTiling {
  public:
-  ShapeTiling(VKernelBase *kernel, RootDomain &prim_dom, int64_t core_limit)
+  ShapeTiling(VectorKernel *kernel, RootDomain &prim_dom, int64_t core_limit)
   : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {
     repeat_size_ = ITEM_SIMD_WIDTH_MAX[kernel->MaxType()];
   }
@@ -770,7 +771,7 @@ class ShapeTiling {
     return best_tile;
   }
 
-  VKernelBase* kernel_;
+  VectorKernel* kernel_;
   RootDomain &prim_dom_;
   int64_t tile_size_limit_;
   int64_t repeat_size_;
@@ -784,13 +785,13 @@ std::string& VKernel::DisAssemble() {
   return dump_str_;
 }
 
-VKernelBase::~VKernelBase() {
+VectorKernel::~VectorKernel() {
   for (auto &op: build_ops_) {
     delete op;
   }
 }
 
-void VKernelBase::DoCodeGen(uint64_t core_limit) {
+void VectorKernel::DoCodeGen(uint64_t core_limit) {
   int peak_live = Analyze();
   int64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize() - ReserveCodeSize();
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);
@@ -820,25 +821,25 @@ void VKernelBase::DoCodeGen(uint64_t core_limit) {
   int64_t best_repeat;
   if (tiling.proposal_sw_) {
     best_repeat = CeilDiv(lead_dim, tiling.proposal_sw_) * tile_outer;
-    code_.simd_width_ = tiling.proposal_sw_;
+    simd_width_ = tiling.proposal_sw_;
   } else {
-    code_.simd_width_ = block_sw;
+    simd_width_ = block_sw;
     best_repeat = CeilDiv(lead_dim, block_sw) * tile_outer;
     for (int64_t sw = ITEM_SIMD_WIDTH_MAX[max_type_]; sw > block_sw; sw -= block_sw) {
       int64_t repeat = CeilDiv(lead_dim, sw) * tile_outer;
       if (repeat * sw <= tile_size_limit && repeat <= best_repeat) {
-        code_.simd_width_ = sw;
+        simd_width_ = sw;
         best_repeat = repeat;
       }
     }
   }
   // codegen
-  CodeGenHelper helper(this);
-  helper.xbuf_size_ = best_repeat * code_.simd_width_ * ITEM_SIZE[max_type_];
+  CodeGenHelper helper(*this);
+  helper.xbuf_size_ = best_repeat * simd_width_ * ITEM_SIZE[max_type_];
   helper.Generate();
 }
 
-void VKernelBase::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   static const char* obj_names[ObjectType::kObjectBulk] = {
     "LoadDummy",
     "Load",
@@ -879,7 +880,7 @@ void VKernelBase::DumpKernel(std::ostringstream &oss, const std::string &indent)
     }
     oss << "]<" << dtype_names[op->type_id_] << ">";
   };
-  oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width="<<code_.simd_width_ << ") {" << std::endl;
+  oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width="<< simd_width_ << ") {" << std::endl;
   std::string body_indent = indent + "  ";
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
@@ -917,7 +918,7 @@ void VKernelBase::DumpKernel(std::ostringstream &oss, const std::string &indent)
   oss << indent << "}";
 }
 
-void VKernelBase::CollectMetrics(Metrics &metrics) const {
+void VectorKernel::CollectMetrics(Metrics &metrics) const {
   ASSERT(code_.data_ != nullptr);
   uint64_t max_xbuf_ = 0;
   for (auto op : objects_) {
@@ -933,7 +934,7 @@ void VKernelBase::CollectMetrics(Metrics &metrics) const {
   for (auto d : dom->nd_) {
     tiled_shape_size *= d;
   }
-  metrics.simd_usage = float(tiled_shape_size) / float(dom->strides_.back() / code_.simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
+  metrics.simd_usage = float(tiled_shape_size) / float(dom->strides_.back() / simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
 }
 
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
@@ -963,7 +964,7 @@ static inline bool LhsInplaceCheck(NDObject *obj) {
   return false;
 }
 
-int VKernelBase::Analyze() {
+int VectorKernel::Analyze() {
   int op_index = objects_.size();
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
@@ -1112,7 +1113,7 @@ class PropDomainBuilder {
   int link_num_;
 };
 
-void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
+void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
   static_ops_.clear();
   max_type_ = objects.front()->type_id_;
   min_type_ = objects.front()->type_id_;
@@ -1149,7 +1150,7 @@ void VKernelBase::BuildDomain(const std::vector<NDObject *> &objects) {
   }
 }
 
-NDAccess* VKernelBase::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
+NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
   const static bool elem_objects[ObjectType::kObjectBulk] = {
     true,  // loaddummy
     true,  // load
@@ -1341,7 +1342,7 @@ uint64_t VKernelP::CodeGen() {
     ASSERT(tile_num <= 0xffffful);
     // summary
     uint64_t lenburst = (code.data_size_ - code.HeadSize() + 31) / 32;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | code.simd_width_ << 41;
+    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | children_[k]->simd_width_ << 41;
     uint64_t tile_per_block = (tile_num - 1) / code.block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code.block_dim_ - 1; ++i) {
@@ -1460,7 +1461,7 @@ uint64_t MixKernel::CodeGen() {
     cube_code.subtilenum = subtile_1 << 32 | subtile_0;
     cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
     head_flags |= V_ENTRY_FLAG_PRE_WAIT;
-    head_simd = post_fusion_->code_.simd_width_;
+    head_simd = post_fusion_->simd_width_;
   }
   code_.target_ = post_fusion_ ? Code::kTargetMix : Code::kTargetCube;
   code_.data_size_ = size;
@@ -1567,7 +1568,6 @@ uint64_t StagesKernel::CodeGen() {
     auto &src_code = stage->kernel->code_;
     code_.LinkBody(stage->code_offset + sizeof(uint64_t), src_code, stage->ios, stage->ws_offset);
     auto cur_entry = *reinterpret_cast<uint64_t*>(src_code.data_ + ffts_size);
-    cur_entry |= V_ENTRY_FLAG_GROUP;
     if (sidx > 0) { // add sync
       auto pre_code = code_.data_ + stages_[sidx - 1]->code_offset;
       auto pre_entry = *reinterpret_cast<uint64_t*>(pre_code);
@@ -1650,7 +1650,7 @@ uint64_t StagesKernel::AllocWorkspace() {
         if (lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == kStaticShape) { // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
-          auto inplace_out = static_cast<VKernelBase*>(stage->kernel)->FindInplaceStore(io,
+          auto inplace_out = static_cast<VectorKernel*>(stage->kernel)->FindInplaceStore(io,
             [&lives, &inplace_stage](NDAccess *op) -> bool {
               if (!op->is_stage_ || op->flags_ == STAGE_FLAG_REUSE) {
                 return true;

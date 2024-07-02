@@ -69,7 +69,7 @@ struct PropRange {
   int64_t space;
 };
 
-class VKernel;
+class VectorKernel;
 
 #define OBJ_FLAG_FREE_LHS   1
 #define OBJ_FLAG_FREE_RHS   2
@@ -93,7 +93,7 @@ class NDObject {
   virtual void AlignProp(PropRange &range) {}
   // tile nd range
   virtual void Tile(const TileParam &tp);
-  virtual int Emit(Code &code) = 0;
+  virtual int Emit(VectorKernel &k) = 0;
 
   void UpdateStride(uint64_t simd_width);
 
@@ -153,7 +153,7 @@ class NDLoadDummy : public NDAccess {
     shape_ref_ = &shape_ref_data_;
   }
   void Tile(const TileParam &tp) override { }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
  private:
   std::vector<int64_t> shape_{1};
@@ -168,7 +168,7 @@ class NDLoad : public NDAccess {
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
   int tail_dim_{-1};
   int tail_size_{0};
@@ -184,7 +184,7 @@ class NDSliceLoad : public NDLoad {
     NDLoad::Normalize(run_ops);
   }
 
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
 
@@ -224,15 +224,13 @@ class NDStore : public NDAccess {
     nd_ = lhs_->nd_;
     tail_dim_ = -1;
     tail_size_ = 0;
-    tile_num_ = 1;
   }
   void Tile(const TileParam &tp) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
  private:
   int tail_dim_{-1};
   int tail_size_{0};
-  uint64_t tile_num_{0}; //TODO: emit with VKernelBase
 };
 
 class NDPadStore : public NDAccess {
@@ -245,7 +243,7 @@ class NDPadStore : public NDAccess {
   }
 
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
 
@@ -262,7 +260,7 @@ class CopyOp : public NDObject {
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 };
 
 class ReshapeOp : public CopyOp {
@@ -275,7 +273,7 @@ class ReshapeOp : public CopyOp {
   }
   ~ReshapeOp() { delete shape_ref_; }
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
  private:
   ShapeRef *dst_shape_ref_;
@@ -286,7 +284,7 @@ class UnaryOp : public NDObject {
  public:
   UnaryOp(int op_type, NDObject *input);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
  protected:
   vSimdInsnID id_;
@@ -295,7 +293,7 @@ class UnaryOp : public NDObject {
 class RemovePadOp : public CopyOp {
 public:
   RemovePadOp(NDObject *NDObject);
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 };
 
 class ElementAnyOp: public NDObject {
@@ -305,7 +303,7 @@ class ElementAnyOp: public NDObject {
     shape_ref_data_ = shape_;
     shape_ref_ = &shape_ref_data_;
   }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   void Tile(const TileParam &tp) override;
   void Normalize(std::vector<NDObject *> &run_ops) override {
     tail_dim_ = -1;
@@ -328,7 +326,7 @@ class CastOp : public NDObject {
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 };
 
 enum BinarySOpType {
@@ -344,7 +342,7 @@ class BinaryScalarOp : public NDObject {
  public:
   BinaryScalarOp(int op_type, NDObject *input, T scalar);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
  private:
   vSimdInsnID id_;
@@ -356,7 +354,7 @@ class BinaryOp : public NDObject {
   BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
   ~BinaryOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   vSimdInsnID id_;
 
  protected:
@@ -374,7 +372,7 @@ class SelectOp : public NDObject {
   }
   ~SelectOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   NDObject *cond_{nullptr};
   bool free_cond{false};
 
@@ -392,7 +390,7 @@ class _BroadcastOp : public NDObject {
   }
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
  private:
   int64_t EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_width);
@@ -432,7 +430,7 @@ class BroadcastScalarOp : public NDObject {
       nd_[i] = shape_ref_->data[dims - i - 1];
     }
   }
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
  private:
   T scalar_;
   std::vector<int64_t> shape_;
@@ -447,7 +445,7 @@ class _ReduceOp : public NDObject {
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; tail_dim_ = -1; }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
@@ -468,11 +466,11 @@ class ReduceOp : public _ReduceOp {
   ~ReduceOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
 
   void GenClearKernel(NDAccess *store);
   NDStore *clear_store_{nullptr};
-  VKernel *clear_kernel_{nullptr};
+  VectorKernel *clear_kernel_{nullptr};
   std::vector<int64_t> round_tile_;
 
  private:
@@ -491,7 +489,7 @@ class CubeOp : public NDObject {
  public:
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   ~CubeOp() override;
-  int Emit(Code &code) override { return 0; }
+  int Emit(VectorKernel &k) override { return 0; }
   void CodeGen(vCubeOp *code);
   void NormalizeCube();
 
@@ -530,7 +528,7 @@ class NDSStore : public NDStore {
  public:
   using NDStore::NDStore;
   void Tile(const TileParam &tp) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
@@ -543,7 +541,7 @@ class NDSLoad : public NDLoad {
  public:
   using NDLoad::NDLoad;
   void Tile(const TileParam &tp) override;
-  int Emit(Code &code) override;
+  int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }

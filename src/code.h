@@ -187,12 +187,10 @@ class Code {
   uint32_t data_size_{0};
   uint32_t block_dim_{0};
   int target_{0};
+  int extern_code_{-1};
   std::vector<Code*> atomic_clean_;
   std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
   std::vector<std::pair<uint64_t*, uint64_t*>> reloc_reuse_;
-
-  uint64_t simd_width_{0};
-  int64_t extern_code_{-1};
 
  private:
   int LaunchAtomicClean(void* stream);

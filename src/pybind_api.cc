@@ -382,7 +382,7 @@ py::object KernelPy::StagePadStore(const py::object &input, const py::object &pa
 }
 
 void KernelPy::Tile(int start, int end, int64_t num) {
-  static_cast<VKernelBase*>(kernel_.GetImpl())->SetTile(start, end, num);
+  static_cast<VectorKernel*>(kernel_.GetImpl())->SetTile(start, end, num);
 }
 
 void KernelPy::CodeGen(const py::object &pass_names) {
@@ -483,7 +483,7 @@ py::object KernelPy::Measure() {
     return py::none();
   }
   Metrics met;
-  VKernelBase* base_kernel = static_cast<VKernelBase*>(kernel_.GetImpl());
+  VectorKernel* base_kernel = static_cast<VectorKernel*>(kernel_.GetImpl());
   base_kernel->CollectMetrics(met);
   py::dict ret = py::dict();
   ret["core_usage"] = py::float_(met.core_usage);

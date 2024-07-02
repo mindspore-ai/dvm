@@ -1073,15 +1073,14 @@ struct vCubeOp {
 
 // [entry]
 // tilenum(20) << 44 | simd_width(8) << 36 | code_size_8B(12) << 24 |
-// post_sync(1) << 6 | next_stage(1) << 5 | group(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
+// post_sync(1) << 6 | next_stage(1) << 5 | extern_code(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
 #define V_ENTRY_FLAG_PRE_WAIT            1
 #define V_ENTRY_FLAG_POST_SET            2
 #define V_ENTRY_FLAG_PARALLEL            4
 #define V_ENTRY_FLAG_MIX                 8
-#define V_ENTRY_FLAG_GROUP               16
+#define V_ENTRY_FLAG_EXTERN_CODE         16
 #define V_ENTRY_FLAG_NEXT_STAGE          32
 #define V_ENTRY_FLAG_POST_BAR            64
-#define V_ENTRY_FLAG_EXTERN_CODE        128
 
 #define V_ENTRY_CODE_SIZE_OFFSET         24
 #define V_ENTRY_SIMD_WIDTH_OFFSET        36

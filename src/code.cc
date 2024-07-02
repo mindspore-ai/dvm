@@ -800,9 +800,6 @@ class DisAssembler {
     if (entry & V_ENTRY_FLAG_MIX) {
       oss <<", mix=1";
     }
-    if (entry & V_ENTRY_FLAG_GROUP) {
-      oss <<", group=1";
-    }
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
     }
@@ -842,11 +839,7 @@ class DisAssembler {
   }
 
   void DasMix(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
-    oss << indent << "mix(tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
-    if (entry & V_ENTRY_FLAG_GROUP) {
-      oss <<", group=1";
-    }
-    oss << ") {" << std::endl;
+    oss << indent << "mix(tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS) << ") {" << std::endl;
     DasCube(entry, bcode, sizeof(vCubeOp), indent + "  ");
     oss << std::endl;
     DasVec(entry, bcode + sizeof(vCubeOp), bcode_size - sizeof(vCubeOp), indent + "  ");

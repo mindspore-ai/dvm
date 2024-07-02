@@ -1415,12 +1415,12 @@ __aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
   return base_addr + id;
 }
 
-__aicore_inline__ uint64_t vBlockIdx(uint64_t entry) {
-  return (entry & V_ENTRY_FLAG_GROUP) == 0 ? block_idx : block_idx * 2 + get_subblockid();
+__aicore_inline__ uint64_t vBlockIdx() {
+  return get_subblockdim() * block_idx + get_subblockid();
 }
 
-__aicore_inline__ uint64_t vBlockNum(uint64_t entry) {
-  return (entry & V_ENTRY_FLAG_GROUP) == 0 ? block_num : block_num * 2;
+__aicore_inline__ uint64_t vBlockNum() {
+  return get_subblockdim() * block_num;
 }
 
 extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
@@ -1462,8 +1462,9 @@ STAGE_ENTRY:
   } else if (entry & V_ENTRY_FLAG_PARALLEL) {
     // summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
     // summary = lenburst(6) << 58 | offset(9) << 49 | simdwidth(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
-    if (vBlockIdx(entry) < tile_num) {
-      uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(body_addr) + vBlockIdx(entry));
+    uint64_t blockidx = vBlockIdx();
+    if (blockidx < tile_num) {
+      uint64_t summary = *(reinterpret_cast<__gm__ uint64_t*>(body_addr) + blockidx);
       uint64_t offset = (summary >> (49 - 5)) & (0x1fful << 5);
       uint64_t lenburst = summary >> 58;
       copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + offset, 0, 1, lenburst, 0, 0);
@@ -1474,8 +1475,8 @@ STAGE_ENTRY:
             (summary >> (40 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
     }
   } else {
-    uint64_t per_block_tile = (tile_num - 1) / vBlockNum(entry) + 1;
-    uint64_t tile_start_idx = per_block_tile * vBlockIdx(entry);
+    uint64_t per_block_tile = (tile_num - 1) / vBlockNum() + 1;
+    uint64_t tile_start_idx = per_block_tile * vBlockIdx();
     if (tile_start_idx < tile_num) {
       uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
       copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);

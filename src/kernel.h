@@ -28,7 +28,7 @@ namespace dvm {
 template<typename T>
 static inline T CeilDiv(T a, T b)  { return (a - 1) / b + 1; }
 
-class VKernelBase;
+class VectorKernel;
 class PropDomainBuilder;
 class PropDomain {
  public:
@@ -57,7 +57,7 @@ class RootDomain : public PropDomain {
  public:
   RootDomain() = default;
   void SetHead(NDObject *head) { head_ = head; }
-  void Normalize(VKernelBase *kernel);
+  void Normalize(VectorKernel *kernel);
   int64_t Tile(int start, int end, int64_t space, int64_t num);
   void GroupTile(int dim, int64_t space, int64_t tile);
 
@@ -105,10 +105,10 @@ struct Metrics {
 };
 
 class CodeGenHelper;
-class VKernelBase : public VKernel {
+class VectorKernel : public VKernel {
  public:
-  VKernelBase(KernelType ktype) : VKernel(ktype) {}
-  virtual ~VKernelBase();
+  VectorKernel(KernelType ktype) : VKernel(ktype) {}
+  virtual ~VectorKernel();
 
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
   void CollectMetrics(Metrics &metrics) const;
@@ -139,6 +139,7 @@ class VKernelBase : public VKernel {
   RootDomain root_dom_;
 
   uint64_t tile_num_{0};
+  uint64_t simd_width_{0};
 
  protected:
   int max_type_{-1};
@@ -155,9 +156,9 @@ class VKernelBase : public VKernel {
   friend CodeGenHelper;
 };
 
-class VKernelS : public VKernelBase {
+class VKernelS : public VectorKernel {
  public:
-  VKernelS() : VKernelBase(KernelType::kStaticShape) {}
+  VKernelS() : VectorKernel(KernelType::kStaticShape) {}
   void Append(NDObject *obj) override;
   void Optimize();
   uint64_t CodeGen() override;
@@ -165,9 +166,9 @@ class VKernelS : public VKernelBase {
   static std::vector<pass::Pass> passes;
 };
 
-class VKernelD : public VKernelBase {
+class VKernelD : public VectorKernel {
  public:
-  VKernelD() : VKernelBase(KernelType::kDynShape) {}
+  VKernelD() : VectorKernel(KernelType::kDynShape) {}
   void Append(NDObject *obj) override {
     build_ops_.push_back(obj);
     if (obj->obj_id_ == ObjectType::kReshape) {

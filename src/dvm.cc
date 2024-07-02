@@ -339,7 +339,7 @@ void Kernel::Reserve(size_t size) {
   if (ktype == KernelType::kStaticParallel) {
     static_cast<VKernelP*>(kernel_)->Reserve(size);
   } else {
-    static_cast<VKernelBase*>(kernel_)->Reserve(size);
+    static_cast<VectorKernel*>(kernel_)->Reserve(size);
   }
 }
 

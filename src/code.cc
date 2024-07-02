@@ -269,6 +269,33 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
+void DumpStoreAtomicDeterm(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vStoreAtomicDeterm op;
+  vStoreAtomicDeterm::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "store_atomic_determ.u8." << op.base.iter_size << "x" << op.base.iter_num;
+  oss << " " << reinterpret_cast<void *>(op.base.to) << ", " << reinterpret_cast<void *>(op.base.xn);
+  oss << " //";
+  DumpVal("tile_stride", op.base.tile_stride, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.base.iter_tail, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.base.pad_size, oss);
+  oss << ", ";
+  DumpVal("step", *op.step_addr, oss);
+  oss << ", ";
+  DumpVal("step_end", *op.step_end_addr, oss);
+  oss << ", ";
+  DumpVal("core_tile_num", op.core_tile_num, oss);
+  oss << ", ";
+  DumpVal("tail_tile_num", op.tail_tile_num, oss);
+  oss << ", ";
+  DumpVal("step_offset", op.step_offset, oss);
+  if (op.base.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.base.round_rank, dump_info.insn + vStoreAtomicDeterm::ROUND_OFFSET, oss);
+  }
+}
+
 void DumpStoreStatus(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreStatus op;
   vStoreStatus::Decode(dump_info.insn, *dump_info.insn, op);
@@ -437,6 +464,7 @@ std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE, &DumpStore},
   {V_STORE_2, &DumpStore2},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
+  {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_SSTORE, &DumpSStore},
   {V_SLICE_STORE, &DumpSliceStore},
@@ -750,13 +778,19 @@ class DisAssembler {
  public:
   DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
 
-  void Run(Code *code) {
+  void Run(Code *code, const char *prefix) {
     void* ffts = *reinterpret_cast<void**>(code->data_);
     uint64_t entry = *reinterpret_cast<uint64_t*>(code->data_ + sizeof(uint64_t));
     uint8_t *bcode = code->data_ + code->HeadSize();
     uint64_t bcode_size = code->data_size_ - code->HeadSize();
-    oss << "// block_dim=" << code->block_dim_ << ", ffts_addr=" << ffts << std::endl;
-    oss << "vmain.";
+    if (!code->atomic_clean_.empty()) {
+      for (auto ac : code->atomic_clean_) {
+        Run(ac, "atomic_clean");
+        oss << std::endl;
+      }
+    }
+    oss << "// target=" << code->target_ << ", block_dim=" << code->block_dim_ << ", ffts_addr=" << ffts << std::endl;
+    oss << prefix << ".";
     if (entry & V_ENTRY_FLAG_NEXT_STAGE) {
       DasStages(entry, bcode, bcode_size, "");
     } else if (entry & V_ENTRY_FLAG_PARALLEL) {
@@ -934,7 +968,7 @@ class DisAssembler {
 };
 
 void Code::DisAssemble(std::ostringstream &oss) {
-  DisAssembler(oss).Run(this);
+  DisAssembler(oss).Run(this, "vmain");
 }
 
 void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess*> &ios, uint64_t ws_offset) {

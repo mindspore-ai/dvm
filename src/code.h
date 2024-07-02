@@ -89,6 +89,8 @@ class DeviceInfo {
 
   uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t*>(this) + target; }
 
+  bool deterministic_{false};
+
  private:
   DeviceInfo();
   AiCoreArch arch_;

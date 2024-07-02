@@ -13,6 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
+import copy
 import pytest
 import numpy as np
 import dvm
@@ -147,3 +148,23 @@ def test_reduce_fake_atomic():
     x3 = t.reduce("sum", x2, [0], True)
     t.store_expect(x3, 4096.0)
     assert(t.run_check())
+
+@pytest.mark.parametrize('in_shape, dims', [
+    [[400, 4096], (0,)], # reduce y
+    [[40000], (0,)], # reduce x
+    ])
+def test_atomic_determ(in_shape, dims):
+    t = Tester()
+    t.set_determ(True)
+    a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
+    x = t.load(a)
+    y = t.reduce("sum", x, dims, True)
+    res = np.sum(a, dims, keepdims=True)
+    out = t.store(y)
+    t.run()
+    expect = copy.deepcopy(t.output(out))
+    t.run()
+    output = t.output(out)
+    t.set_determ(False)
+    assert(np.allclose(output, res, rtol=1e-4, atol=1e-4, equal_nan=True))
+    assert(np.allclose(output, expect, rtol=1e-8, atol=1e-8, equal_nan=True))

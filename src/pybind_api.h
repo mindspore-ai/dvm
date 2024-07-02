@@ -111,6 +111,10 @@ class KernelPy {
   py::object Measure();
   py::object Perf();
 
+  static void SetDeterm(bool enable) {
+    SetDeterministic(enable);
+  }
+
  protected:
   ShapeRef* GetShapeRef(const py::object &shape);
   void PrepareOutput();

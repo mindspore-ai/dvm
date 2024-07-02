@@ -57,6 +57,7 @@ enum vStoreInsnID {
   V_STORE = 0,
   V_STORE_2,
   V_STORE_ATOMIC,
+  V_STORE_ATOMIC_DETERM,
   V_STORE_STATUS,
   V_SSTORE,
   V_SLICE_STORE,
@@ -910,13 +911,66 @@ struct vStoreAtomic {
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreAtomic &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
-    uint64_t size = vLoad::ROUND_OFFSET + round_size;
+    uint64_t size = vStoreAtomic::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | vCompactX(op.xn);
     pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
     pc[1] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 | op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vStoreAtomic::ROUND_OFFSET + i] = rounds[i];
+    }
+    return size;
+  }
+};
+
+// [iter_num/iter_tail, iter_size+pad_size]
+struct vStoreAtomicDeterm {
+  enum { RELOC_OFFSET = 2 };
+  enum { ROUND_OFFSET = 5 };
+  vStoreAtomic base;
+  uint64_t step_offset;
+  __bcode__ float* __restrict__ step_addr;
+  __bcode__ float* __restrict__ step_end_addr;
+  uint64_t core_tile_num;
+  uint64_t tail_tile_num;
+  // pc[0]: tile_stride(18) << 13 | c_xn(13)
+  // pc[1]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
+  // pc[2]: to
+  // pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | step_offset(20)
+  // pc[4]: step_end(32) << 32 | step(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomicDeterm &op) {
+    op.base.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
+    op.base.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
+    uint64_t data = pc[1];
+    op.base.round_rank = data >> 60;
+    op.base.pad_size = (data >> 50) & 0xfful;
+    op.base.iter_size = (data >> 32) & 0x3fffful;
+    op.base.iter_tail = (data >> 16) & 0xfffful;
+    op.base.iter_num = data & 0xfffful;
+    op.base.to = pc[2];
+    data = pc[3];
+    op.step_offset = data & 0xffffful;
+    op.core_tile_num = (data >> 20) & 0xffffful;
+    op.tail_tile_num = data >> 40;
+    op.step_addr = reinterpret_cast<__bcode__ float*>(pc + 4);
+    op.step_end_addr = op.step_addr + 1;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, uint32_t core_num,
+                                   const vStoreAtomicDeterm &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.base.round_rank + 1) / 2;
+    uint64_t size = vStoreAtomicDeterm::ROUND_OFFSET + round_size;
+    uint64_t ext = op.base.tile_stride << 13 | vCompactX(op.base.xn);
+    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[1] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.iter_tail << 16 | op.base.iter_num;
+    pc[2] = op.base.to;
+    pc[3] = op.tail_tile_num << 40 | op.core_tile_num << 20 | op.step_offset;
+    __bcode__ float* fp_data = reinterpret_cast<__bcode__ float*>(pc + 4);
+    fp_data[0] = 1.0f;
+#ifndef _CCE_KERNEL_
+    fp_data[1] = float(core_num);
+#endif
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vStoreAtomicDeterm::ROUND_OFFSET + i] = rounds[i];
     }
     return size;
   }

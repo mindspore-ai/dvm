@@ -454,4 +454,8 @@ const char* Kernel::Das() const {
   std::string &das = kernel_->DisAssemble();
   return das.c_str();
 }
+
+void SetDeterministic(bool enable) {
+  DeviceInfo::Instance().deterministic_ = enable;
+}
 } // namespace dvm

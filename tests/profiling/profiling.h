@@ -19,6 +19,7 @@
 #include <assert.h>
 #include <random>
 #include <memory>
+#include <cstring>
 #include <iostream>
 #include <functional>
 #include <cstdio>
@@ -59,9 +60,12 @@ struct Tensor {
   std::shared_ptr<dvm::ShapeRef> shape_ref_;
 
   Tensor(const std::vector<int64_t> shape) : shape_(shape) {
-    host_ = malloc(this->size() * sizeof(T));
+    int64_t size = this->size() + 512;
+    host_ = malloc(size);
+    std::memset(host, 0, size);
     shape_ref_ = std::make_shared<dvm::ShapeRef>(shape_);
-    ToDev();
+    ASCEND_CALL(rtMalloc(&dev_, size, RT_MEMORY_HBM, 0));
+    ASCEND_CALL(rtMemcpy(dev_, size, host_, size, RT_MEMCPY_HOST_TO_DEVICE));
   }
   Tensor(const std::vector<int64_t> shape, T v) : Tensor(shape) {
     T *data = ToData();

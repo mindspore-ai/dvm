@@ -1325,6 +1325,14 @@ static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   OVER_WRITE_CHECK(pc, head, tile_stride * tile_idx + iter_body * iter_size);
 }
 
+static inline [aicore] void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreAtomic &op) {
+  if (op.pad_size == 0) {
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
+  } else {
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
+  }
+}
+
 static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreAtomic op;
   vStoreAtomic::Decode(pc, head, op);
@@ -1335,13 +1343,60 @@ static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t t
     op.iter_num = op.iter_tail;
   }
   __gm__ uint8_t* gm = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
-  if (op.pad_size == 0) {
-    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
-  } else {
-    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
-  }
+  CopyUbufToGmAtomic(gm, op);
   set_atomic_none();
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
+}
+
+static inline [aicore] void StoreAtomicDeterm(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vStoreAtomicDeterm op;
+  vStoreAtomicDeterm::Decode(pc, head, op);
+  set_atomic_f32();
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.base.round_rank, pc + vStoreAtomicDeterm::ROUND_OFFSET);
+  if (IsLastTile(tile)) {
+    op.base.iter_num = op.base.iter_tail;
+  }
+  __gm__ uint8_t* gm_data = (__gm__ uint8_t*)op.base.to + op.base.tile_stride * tile_offset;
+  __gm__ volatile float *gm_step = (__gm__ float*)(op.base.to + op.step_offset);
+  if (tile_idx > 0) {
+    uint64_t core_idx = tile_idx / op.core_tile_num;
+    float expect;
+    set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    if (core_idx > 0) {
+      expect = 1.0f * core_idx;
+    } else {
+      expect = *op.step_end_addr;
+      if (tile_idx == 1) {
+        *op.step_addr = 1.0f - expect;
+      } else if (tile_idx == op.tail_tile_num) {
+        expect -= 1.0f;
+        *op.step_end_addr = expect;
+        *op.step_addr = 1.0f - expect;
+      }
+    }
+    while (1) {
+      __asm__ __volatile__("");
+      dcci(gm_step, 0);
+      __asm__ __volatile__("");
+      float delta = expect - *gm_step;
+      if (delta > -0.1f && delta < 0.1f) break;
+      float rest_step = delta  > 0.0f ? delta : *op.step_end_addr + delta;
+      for (int64_t i = 0; i < (int64_t(rest_step) - 1) * 10; ++i) {
+        __asm__ __volatile__("nop");
+      }
+    }
+  }
+  CopyUbufToGmAtomic(gm_data, op.base);
+  pipe_barrier(PIPE_MTE3);
+  uint64_t step_addr = (uint64_t)op.step_addr & 0x1fffful;
+  uint64_t align_step_addr = (step_addr >> 5) << 5;
+  uint64_t align_size = step_addr - align_step_addr;
+  copy_ubuf_to_gm_align_b32((__gm__ uint8_t*)gm_step - align_size, (__ubuf__ void *)(align_step_addr),
+                            0, 1, align_size + sizeof(float), 0, 0, 0, 0);
+  set_atomic_none();
+  OVER_WRITE_CHECK(pc, head, op.base.tile_stride * tile_offset + op.base.iter_num * op.base.iter_size);
 }
 
 __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
@@ -1554,6 +1609,7 @@ DEF_DISP_FUNC(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))
 DEF_DISP_FUNC(V_STORE, Store(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_2, Store2(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
+DEF_DISP_FUNC(V_STORE_ATOMIC_DETERM, StoreAtomicDeterm(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_STATUS, StoreStatus(pc, head))
 DEF_DISP_FUNC(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_FUNC(V_SLICE_STORE, SliceStore(pc, head, tile))

@@ -471,6 +471,7 @@ void NDStore::Tile(const TileParam &tp) {
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
   }
+  tile_num_ *= tp.num;
   NDObject::Tile(tp);
 }
 
@@ -489,27 +490,42 @@ int NDStore::Emit(Code &code) {
     if (!red_op->round_tile_.empty()) {
       uint64_t rounds[2];
       BuildDimRounds(red_op->round_tile_, rounds);
-      vStoreAtomic op;
-      op.to = reinterpret_cast<uint64_t>(gm_);
-      op.xn = lhs_->xbuf_;
-      op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
-      op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-      op.iter_num = strides_.back() / lead_align;
-      if (tail_dim_ < 0 || red_op->InRange(tail_dim_)) {
-        op.iter_tail = op.iter_num;
+      auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
+        op.to = reinterpret_cast<uint64_t>(gm_);
+        op.xn = lhs_->xbuf_;
+        op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+        op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+        op.iter_num = strides_.back() / lead_align;
+        if (tail_dim_ < 0 || red_op->InRange(tail_dim_)) {
+          op.iter_tail = op.iter_num;
+        } else {
+          op.iter_tail = op.iter_num / nd_[tail_dim_] * tail_size_;
+        }
+        op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
+        op.round_rank = red_op->round_tile_.size();
+        if (lhs_->obj_id_ == kRemovePad) {
+          op.pad_size = 0;
+        }
+      };
+      int code_size;
+      if (DeviceInfo::Instance().deterministic_) {
+        vStoreAtomicDeterm op;
+        build_atomic_store(op.base);
+        op.core_tile_num = (tile_num_ + code.block_dim_ - 1) / code.block_dim_;
+        op.tail_tile_num = tile_num_ % op.core_tile_num ? tile_num_ % op.core_tile_num + 1 : 0;
+        op.step_offset = Size() + 32 - 4;
+        reloc_addr_ = insn_ + vStoreAtomicDeterm::RELOC_OFFSET;
+        code_size = vStoreAtomicDeterm::Encode(insn_, V_STORE_ATOMIC_DETERM, code.block_dim_, op, rounds);
       } else {
-        op.iter_tail = op.iter_num / nd_[tail_dim_] * tail_size_;
+        vStoreAtomic op;
+        build_atomic_store(op);
+        reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
+        code_size = vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
       }
-      op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
-      op.round_rank = red_op->round_tile_.size();
-      if (lhs_->obj_id_ == kRemovePad) {
-        op.pad_size = 0;
-      }
-      reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
       red_op->GenClearKernel(this);
       code.atomic_clean_.push_back(&(red_op->clear_kernel_->code_));
       code.reloc_reuse_.emplace_back(std::make_pair(red_op->clear_store_->reloc_addr_, reloc_addr_));
-      return vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
+      return code_size;
     }
   }
   if (lead_align == static_cast<uint64_t>(lhs_->nd_[lhs_->lead_dim_])) {
@@ -1298,10 +1314,16 @@ void ReduceOp::GenClearKernel(NDAccess *store) {
     clear_kernel_ = new VKernelD();
     auto dummy_load = new NDLoadDummy(type_id_);
     clear_kernel_->Append(dummy_load);
-    auto broadcast_scalar_op = new BroadcastScalarOp<float>(0.0, shape_ref_, type_id_, dummy_load);
+    clear_shape_.data = &clear_shape_data_;
+    clear_shape_.size = 1;
+    auto broadcast_scalar_op = new BroadcastScalarOp<float>(0.0, &clear_shape_, type_id_, dummy_load);
     clear_kernel_->Append(broadcast_scalar_op);
     clear_store_ = new NDStore(store->gm_, broadcast_scalar_op);
     clear_kernel_->Append(clear_store_);
+  }
+  clear_shape_data_ = std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{});
+  if (DeviceInfo::Instance().deterministic_) {
+    clear_shape_data_ += 32 / sizeof(float);
   }
   clear_kernel_->CodeGen();
 }

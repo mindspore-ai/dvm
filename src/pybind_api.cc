@@ -565,7 +565,8 @@ void KernelPy::PrepareOutput() {
       info.size *= op->shape_ref_->data[i];
     }
     info.host = std::malloc(info.size);
-    ASCEND_CALL(aclrtMalloc(&info.dev, info.size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    const uint64_t reserve_mem = 512;
+    ASCEND_CALL(aclrtMalloc(&info.dev, info.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     if (info.clear_mem) {
       std::memset(info.host, 0, info.size);
       ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
@@ -634,7 +635,8 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("dump", &KernelPy::DumpGraph, "dump graph")
       .def("perf", &KernelPy::Perf, "perf test")
       .def("measure", &KernelPy::Measure, "measure metrics")
-      .def("run", &KernelPy::Run, "run kernel");
+      .def("run", &KernelPy::Run, "run kernel")
+      .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic");
 
   (void)py::class_<DevicePy, std::shared_ptr<DevicePy>>(m, "Device")
       .def_static("arch", &DevicePy::Arch, "Get system architecture")

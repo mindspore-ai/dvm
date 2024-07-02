@@ -217,13 +217,14 @@ class NDStore : public NDAccess {
   NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
-  NDStore(uint8_t *dst, NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) {
+  NDStore(uint8_t *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override {
     nd_ = lhs_->nd_;
     tail_dim_ = -1;
     tail_size_ = 0;
+    tile_num_ = 1;
   }
   void Tile(const TileParam &tp) override;
   int Emit(Code &code) override;
@@ -231,6 +232,7 @@ class NDStore : public NDAccess {
  private:
   int tail_dim_{-1};
   int tail_size_{0};
+  uint64_t tile_num_{0}; //TODO: emit with VKernelBase
 };
 
 class NDPadStore : public NDAccess {
@@ -480,6 +482,9 @@ class ReduceOp : public _ReduceOp {
   std::vector<int64_t> shape_;
   bool keepdims_;
   ShapeRef *dims_ref_;
+
+  ShapeRef clear_shape_;
+  int64_t clear_shape_data_;
 };
 
 class CubeOp : public NDObject {

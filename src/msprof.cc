@@ -15,6 +15,7 @@
  */
 
 #include <map>
+#include <algorithm>
 #include <dlfcn.h>
 #include <cstring>
 #include <unistd.h>
@@ -113,8 +114,9 @@ void MsProfHelper::BuildSingleTensorInfo(const uint64_t opName_hash_id, const si
     prof_tensor_data->tensorData[k].dataType = info_.data_types[tensor_index] + MSPROF_DIFFERENCE;
     auto shape_size =
       std::min(static_cast<uint64_t>(MSPROF_GE_TENSOR_DATA_SHAPE_LEN), info_.shapes[tensor_index]->size);
-    (void)std::copy(info_.shapes[tensor_index]->data, info_.shapes[tensor_index]->data + shape_size,
-                    prof_tensor_data->tensorData[k].shape);
+    memset(prof_tensor_data->tensorData[k].shape, 0, sizeof(prof_tensor_data->tensorData[k].shape));
+    (void)std::transform(info_.shapes[tensor_index]->data, info_.shapes[tensor_index]->data + shape_size,
+                    prof_tensor_data->tensorData[k].shape,[](uint64_t value){return static_cast<uint32_t>(value);});
   }
 }
 

@@ -222,6 +222,7 @@ class MixKernel : public VKernel {
  protected:
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
+  NDAccess *sload_{nullptr};
 };
 
 class StagesKernel : public VKernel {

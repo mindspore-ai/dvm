@@ -1389,6 +1389,7 @@ void MixKernel::Append(NDObject *obj) {
     cube_op_ = static_cast<CubeOp*>(obj);
     cube_op_->NormalizeCube();
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
+    obj->nd_ = cube_op_->nd_;
     cube_op_->output_ = static_cast<NDAccess*>(obj);
   } else {
     if (post_fusion_ == nullptr) {
@@ -1396,12 +1397,11 @@ void MixKernel::Append(NDObject *obj) {
     }
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
-        if (cube_op_->output_ == nullptr) {
-          auto load = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
-          cube_op_->output_ = load;
-          post_fusion_->Append(cube_op_->output_);
+        if (sload_ == nullptr) {
+          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          post_fusion_->Append(sload_);
         }
-        op = cube_op_->output_;
+        op = sload_;
       } else if (op->IsLoad() && op->flags_ == LOAD_PENDING) {
         op->flags_ = 0;
         post_fusion_->Append(op);
@@ -1421,6 +1421,9 @@ void MixKernel::Append(NDObject *obj) {
 }
 
 uint64_t MixKernel::CodeGen() {
+  if (sload_ && cube_op_->output_ == nullptr) {
+    cube_op_->output_ = sload_;
+  }
   size_t size = code_.HeadSize() + sizeof(vCubeOp);
   vCubeOp cube_code;
   cube_op_->CodeGen(&cube_code);
@@ -1433,10 +1436,12 @@ uint64_t MixKernel::CodeGen() {
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
     post_fusion_->NormalizeDomain();
-    inplace_store = post_fusion_->FindInplaceStore(cube_op_->output_, nullptr);
-    if (inplace_store == nullptr) {
-      cube_op_->pingpong_store_ = true;
-      cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
+    if (cube_op_->output_ == sload_) {
+      inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr);
+      if (inplace_store == nullptr) {
+        cube_op_->pingpong_store_ = true;
+        cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
+      }
     }
     head_flags |= V_ENTRY_FLAG_POST_SET;
     for (auto op : post_fusion_->objects_) {
@@ -1473,7 +1478,7 @@ uint64_t MixKernel::CodeGen() {
   static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
   static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &link_cube->gm_b;
   if (!post_fusion_) {
-    static_cast<NDAccess*>(cube_op_->output_)->reloc_addr_ = &link_cube->gm_c;
+    cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
     return 0;
   }
   std::vector<NDAccess*> ios;
@@ -1485,11 +1490,16 @@ uint64_t MixKernel::CodeGen() {
     code_.reloc_reuse_.emplace_back(std::make_pair(&link_cube->gm_c, inplace_store->reloc_addr_));
     code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, inplace_store->reloc_addr_));
     return 0;
+  } else if (cube_op_->output_->IsStore()) {
+    cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
+    code_.reloc_reuse_.emplace_back(std::make_pair(sload_->reloc_addr_, &link_cube->gm_c));
+    return 0;
   } else {
     code_.reloc_workspaces_.emplace_back(std::make_pair(&link_cube->gm_c, 0));
     code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, &link_cube->gm_c));
     return cube_op_->PostFusionWorkSpace();
   }
+  return 0;
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
@@ -1506,8 +1516,8 @@ void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "vgraph.mix(tile_num=" << cube_op_->core_loop_ << ") {\n";
   std::string body_indent = indent + "  ";
   oss << body_indent << "// cube" << std::endl;
-  oss << body_indent << "%" << cube_op_->output_->index_;
-  dump_nd(cube_op_->output_->nd_);
+  oss << body_indent << "%" << cube_op_->index_;
+  dump_nd(cube_op_->nd_);
   oss << " = MatMul(%" << cube_op_->lhs_->index_;
   dump_nd(cube_op_->lhs_->nd_);
   oss << ", %" << cube_op_->rhs_->index_;

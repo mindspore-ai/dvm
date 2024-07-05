@@ -1437,8 +1437,8 @@ uint64_t MixKernel::CodeGen() {
     if (inplace_store == nullptr) {
       cube_op_->pingpong_store_ = true;
       cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      head_flags |= V_ENTRY_FLAG_POST_SET;
     }
+    head_flags |= V_ENTRY_FLAG_POST_SET;
     for (auto op : post_fusion_->objects_) {
       if (op->IsLoad()) {
         static_cast<NDSLoad*>(op)->SetCubeOp(cube_op_);

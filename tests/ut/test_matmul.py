@@ -78,6 +78,7 @@ def test_matmul_bf16(trans):
     [[211, 211], [211, 230]],      # gemm normal case
     [[193, 193], [193, 193]],      # m0 == 1
     [[1, 1024], [1024, 32]],       # m == 1
+    [[70000, 10], [10, 32]],
 ])
 def test_unaligned_matmul(shape_a, shape_b):
     np_a = np.random.normal(0, 1, shape_a).astype(np.float16)

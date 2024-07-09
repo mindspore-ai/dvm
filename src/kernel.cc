@@ -1262,6 +1262,7 @@ void VKernelD::RecoverOpRelation() {
 
 uint64_t VKernelD::CodeGen() {
   objects_.clear();
+  code_.Clear();
   if (elim_reshape_) {
     RecoverOpRelation();
     for (auto op : build_ops_) {

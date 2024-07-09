@@ -86,3 +86,31 @@ def test_broadcast():
         shape.update(broad_shape)
         t.run()
         t.check(out, np.broadcast_to(x_data, broad_shape) * 0.2)
+
+# llava dynamic shape inference
+def test_atomic_reduce():
+    t = Tester('dyn')
+    para0 = t.load([-1], "float16")
+    para1 = t.load([-1], "float16")
+    y0 = t.binary("Add", para0, para1)
+    out0 = t.store(y0)
+    y1 = t.cast(y0, "float32")
+    out1 = t.store(y1)
+    y2 = t.binary("Mul", y1, y1)
+    y3 = t.reduce("sum", y2,  [2], True)
+    out2 = t.store(y3)
+    iterations = [[[1, 2685, 4096], [1, 2685, 4096]],
+                  [[1, 2686, 4096], [1, 2686, 4096]],
+                  [[1, 2687, 4096], [1, 2687, 4096]]]
+    for x_shape, y_shape in iterations:
+        x_data = np.random.normal(0, 1, x_shape).astype(np.float16)
+        y_data = np.random.normal(0, 1, y_shape).astype(np.float16)
+        t.input(para0, x_data)
+        t.input(para1, y_data)
+        t.run()
+        np_out0 = x_data + y_data
+        np_out1 = np_out0.astype(np.float32)
+        np_out2 = np.sum(np_out1 * np_out1, (2), keepdims=True)
+        t.check(out0, np_out0)
+        t.check(out1, np_out1)
+        t.check(out2, np_out2, 1e-4)

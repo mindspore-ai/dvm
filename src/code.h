@@ -122,6 +122,11 @@ class Code {
     if (data_)
       std::free(data_);
   }
+  void Clear() {
+    atomic_clean_.clear();
+    reloc_reuse_.clear();
+    reloc_workspaces_.clear();
+  }
   void Alloc(size_t s) {
     if (data_) {
       data_ = static_cast<unsigned char *>(std::realloc(data_, s));

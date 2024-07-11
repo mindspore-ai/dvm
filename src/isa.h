@@ -926,7 +926,7 @@ struct vStoreAtomicDeterm {
   enum { RELOC_OFFSET = 2 };
   enum { ROUND_OFFSET = 5 };
   vStoreAtomic base;
-  uint64_t step_offset;
+  uint64_t stride_num;
   __bcode__ float* __restrict__ step_addr;
   __bcode__ float* __restrict__ step_end_addr;
   uint64_t core_tile_num;
@@ -934,7 +934,7 @@ struct vStoreAtomicDeterm {
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
   // pc[1]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
   // pc[2]: to
-  // pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | step_offset(20)
+  // pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | stride_num(20)
   // pc[4]: step_end(32) << 32 | step(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomicDeterm &op) {
     op.base.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
@@ -947,7 +947,7 @@ struct vStoreAtomicDeterm {
     op.base.iter_num = data & 0xfffful;
     op.base.to = pc[2];
     data = pc[3];
-    op.step_offset = data & 0xffffful;
+    op.stride_num = data & 0xffffful;
     op.core_tile_num = (data >> 20) & 0xffffful;
     op.tail_tile_num = data >> 40;
     op.step_addr = reinterpret_cast<__bcode__ float*>(pc + 4);
@@ -961,7 +961,7 @@ struct vStoreAtomicDeterm {
     pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
     pc[1] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.iter_tail << 16 | op.base.iter_num;
     pc[2] = op.base.to;
-    pc[3] = op.tail_tile_num << 40 | op.core_tile_num << 20 | op.step_offset;
+    pc[3] = op.tail_tile_num << 40 | op.core_tile_num << 20 | op.stride_num;
     __bcode__ float* fp_data = reinterpret_cast<__bcode__ float*>(pc + 4);
     fp_data[0] = 1.0f;
 #ifndef _CCE_KERNEL_

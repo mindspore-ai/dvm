@@ -284,7 +284,7 @@ void DumpStoreAtomicDeterm(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << ", ";
   DumpVal("tail_tile_num", op.tail_tile_num, oss);
   oss << ", ";
-  DumpVal("step_offset", op.step_offset, oss);
+  DumpVal("stride_num", op.stride_num, oss);
   if (op.base.round_rank > 0) {
     oss << ", ";
     DumpRounds(op.base.round_rank, dump_info.insn + vStoreAtomicDeterm::ROUND_OFFSET, oss);

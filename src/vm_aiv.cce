@@ -1358,7 +1358,7 @@ static inline [aicore] void StoreAtomicDeterm(bcodeptr_t pc, uint64_t head, uint
     op.base.iter_num = op.base.iter_tail;
   }
   __gm__ uint8_t* gm_data = (__gm__ uint8_t*)op.base.to + op.base.tile_stride * tile_offset;
-  __gm__ volatile float *gm_step = (__gm__ float*)(op.base.to + op.step_offset);
+  __gm__ volatile float *gm_step = (__gm__ float*)(op.base.to + op.stride_num * op.base.tile_stride + 28);
   if (tile_idx > 0) {
     uint64_t core_idx = tile_idx / op.core_tile_num;
     float expect;

@@ -513,7 +513,7 @@ int NDStore::Emit(VectorKernel &k) {
         build_atomic_store(op.base);
         op.core_tile_num = (k.tile_num_ + code.block_dim_ - 1) / code.block_dim_;
         op.tail_tile_num = k.tile_num_ % op.core_tile_num ? k.tile_num_ % op.core_tile_num + 1 : 0;
-        op.step_offset = Size() + 32 - 4;
+        op.stride_num = Size() / op.base.tile_stride;
         reloc_addr_ = insn_ + vStoreAtomicDeterm::RELOC_OFFSET;
         code_size = vStoreAtomicDeterm::Encode(insn_, V_STORE_ATOMIC_DETERM, code.block_dim_, op, rounds);
       } else {

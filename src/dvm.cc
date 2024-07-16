@@ -404,9 +404,8 @@ int Kernel::Launch(void *workspace, void* stream) {
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                          void **outputs, void *workspace, void *stream) {
-
   if (msprof_helper_ == nullptr) {
-    NodeInfoPtr info;
+    NodeInfoPtr info = std::make_shared<NodeInfo>();
     info->op_name = op_name;
     info->op_fullname = op_fullname;
     info->input_size = reloc_table.inputs_size;

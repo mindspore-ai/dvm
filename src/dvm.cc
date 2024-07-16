@@ -97,11 +97,14 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
 }
 }  // namespace
 
-Kernel::Kernel() : kernel_{nullptr} {
+Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr} {
 }
 
 Kernel::~Kernel() {
   delete kernel_;
+  if (msprof_helper_) {
+    delete msprof_helper_;
+  }
 }
 
 void Kernel::Reset(KernelType type) {
@@ -401,30 +404,33 @@ int Kernel::Launch(void *workspace, void* stream) {
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                          void **outputs, void *workspace, void *stream) {
-  NodeInfo info;
-  info.op_name = op_name;
-  info.op_fullname = op_fullname;
-  info.input_size = reloc_table.inputs_size;
-  info.output_size = reloc_table.outputs_size;
-  auto loads = reinterpret_cast<NDAccess**>(reloc_table.inputs);
-  for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    info.shapes.emplace_back(GetShape(*loads));
-    info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
-    (*loads++)->Reloc(*inputs++);
+
+  if (msprof_helper_ == nullptr) {
+    NodeInfoPtr info;
+    info->op_name = op_name;
+    info->op_fullname = op_fullname;
+    info->input_size = reloc_table.inputs_size;
+    info->output_size = reloc_table.outputs_size;
+    info->kernel_type = kernel_->KType();
+    info->block_dim = kernel_->code_.block_dim_;
+    auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
+    for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
+      info->shapes.emplace_back(GetShape(*loads));
+      info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
+    }
+    auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
+    for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
+      info->shapes.emplace_back(GetShape(*stores));
+      info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
+    }
+    msprof_helper_ = new MsProfHelper(info);
+    msprof_helper_->InitReportNode();
+  } else if (kernel_->KType() == kDynShape) {
+    msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
   }
-  auto stores = reinterpret_cast<NDAccess**>(reloc_table.outputs);
-  for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    info.shapes.emplace_back(GetShape(*stores));
-    info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
-    (*stores++)->Reloc(*outputs++);
-  }
-  auto &code = kernel_->code_;
-  info.block_dim = code.block_dim_;
-  info.kernel_type = kernel_->KType();
-  MsProfHelper helper(info);
-  helper.InitReportNode();
-  auto ret = code.Launch(workspace, stream);
-  helper.ReportTask();
+  msprof_helper_->UpdateBeginTime();
+  auto ret = Launch(reloc_table, inputs, outputs, workspace, stream);
+  msprof_helper_->ReportTask();
   return ret;
 }
 

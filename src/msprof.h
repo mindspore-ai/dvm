@@ -19,6 +19,7 @@
 
 #include <string>
 #include <vector>
+#include <memory>
 #include <map>
 #include <dvm.h>
 
@@ -290,29 +291,32 @@ static const DTypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {
 struct NodeInfo {
   const char *op_name;
   const char *op_fullname;
-  uint32_t block_dim;
   uint64_t input_size{0};
   uint64_t output_size{0};
   KernelType kernel_type;
+  uint32_t block_dim;
   std::vector<ShapeRef *> shapes;
   std::vector<DTypeMs> data_types;
 };
-
+using NodeInfoPtr = std::shared_ptr<NodeInfo>;
 class MsProfHelper {
  public:
-  MsProfHelper(const NodeInfo &info) : info_(info){};
+  MsProfHelper(const NodeInfoPtr &info) : info_(info){};
   ~MsProfHelper() = default;
 
   void InitReportNode();
+  void UpdateReportNode(uint32_t block_dim);
+  void UpdateBeginTime();
   void ReportTask();
 
  private:
   void InitProfTensorData(const size_t index, const uint64_t offset_idx, MsprofTensorInfo *tensor_info);
   void BuildSingleTensorInfo(const uint64_t opName_hash_id, const size_t index_begin, const size_t index_end,
                              TensorInfoWrapper *tensor_info_wrapper);
+  void UpdateTensorShape(const size_t index_begin, const size_t index_end, TensorInfoWrapper *tensor_info_wrapper);
 
   ProfNodeAdditionInfo addition_info_;
-  NodeInfo info_;
+  NodeInfoPtr info_;
 };
 }  // namespace dvm
 #endif  // _DVM_MSPROF_H_

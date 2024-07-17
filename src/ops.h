@@ -518,6 +518,8 @@ class CubeOp : public NDObject {
   void Tile(vCubeOp *code);
   void GetSwizzleConfig(vCubeOp *code);
 
+  void TileV2(vCubeOp *op);
+
   bool trans_a_{false};
   bool trans_b_{false};
   std::vector<int64_t> shape_;

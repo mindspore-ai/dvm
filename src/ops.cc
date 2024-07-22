@@ -1492,7 +1492,7 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   for (size_t i = 1; i <= block_dim_; i++) {
     uint32_t c = (block_dim_ + i - 1) / i;
     float cost;
-    if (i * op->n0 + op->m_align < op->m0 * c + op->n_align) {  // zN
+    if (i * op->n0 + op->m_align < op->m0 * i + op->n_align) {  // zN
       uint32_t mem_a_zN = c * op->m0;
       uint32_t mem_b_zN = i * op->n0;
       cost = mem_a_zN + mem_b_zN;
@@ -1515,60 +1515,63 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   op->swizzle = swizzle_dir << 16 | swizzle_cnt;
 }
 
-
- static float GetCostV2(uint64_t major, uint64_t minor, uint64_t major_loop, uint64_t minor_loop, uint64_t k_align,
-                        bool major_align, bool minor_align, uint32_t swizzle_cnt, uint32_t block_dim) {
+static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, uint64_t minor_loop, uint64_t k_align,
+                           bool major_align, bool minor_align, uint32_t block_dim, float &mincost) {
   constexpr float L2_BW = 5.0f;
   constexpr float HBM_BW = 1.0f;
   const uint64_t CACHE_LINE = 512 / ITEM_SIZE[kFloat16];
-  float major_coef, minor_coef, d_coef, s_coef, d_bw, s_bw;
-  uint64_t minor_size, d_loop, s_loop;
-  uint64_t cache_limit = DeviceInfo::Instance().L2Size() / ITEM_SIZE[kFloat16] - major* minor * block_dim * 4;
-  uint64_t swizzle_width = std::min(static_cast<uint64_t>((block_dim - 1) / swizzle_cnt + 1), minor_loop);
-  uint64_t major_range = RoundUp(std::min(static_cast<uint64_t>(swizzle_cnt * 2),  major_loop) * major, CACHE_LINE);
-  if (major_align) major_range += CACHE_LINE;
-  uint64_t major_size = major_range * k_align;
-  if (major_size > cache_limit) {
+  uint64_t cache_limit = (DeviceInfo::Instance().L2Size() / ITEM_SIZE[kFloat16] - major* minor * block_dim * 4) / k_align;
+  auto major_cache = [major, major_align, CACHE_LINE](uint64_t cnt) -> uint64_t {
+    uint64_t size = major * cnt * 2;
+    if (major_align) size = RoundUp(size, CACHE_LINE);
+    return size;
+  };
+  auto minor_cache = [minor, minor_align, block_dim, CACHE_LINE](uint64_t cnt) -> uint64_t {
+    uint64_t size = minor * ((block_dim - 1) / cnt + 1);
+    if (minor_align) size = RoundUp(size, CACHE_LINE);
+    return size;
+  };
+  auto calc_bw_coef = [L2_BW, CACHE_LINE](uint64_t fragc, uint64_t cnt, bool align) -> float {
+    uint64_t hbm_cnt = align && fragc < CACHE_LINE ? std::min(CACHE_LINE / fragc, cnt) : 1;
+    return L2_BW * cnt / (cnt + (L2_BW - 1.0f) * hbm_cnt);
+  };
+  uint64_t swizzle_cnt = 1;
+  uint64_t min_size = swizzle_cnt * major + block_dim * minor;
+  for (uint64_t i = 2; i <= block_dim; ++i) {
+    uint64_t size = i * major + ((block_dim - 1) / i + 1) * minor;
+    if (size < min_size) {
+      swizzle_cnt = i;
+      min_size = size;
+    }
+  }
+  float major_coef, minor_coef;
+  uint64_t major_need = major_cache(swizzle_cnt);
+  if (major_need >= cache_limit) {
     major_coef = minor_coef = HBM_BW;
-    //std::cout << swizzle_cnt << " : stage=0, (1.0, 1.0) | major_size=" << major_size << std::endl;
-    goto CALIBRATE;
+  } else if (minor * minor_loop + major_need < cache_limit) {
+    major_coef = minor_coef = L2_BW;
+  } else {
+    uint64_t next_cnt = swizzle_cnt + 1;
+    uint64_t cache_need = major_cache(next_cnt) + minor_cache(next_cnt);
+    while (cache_need < cache_limit && swizzle_cnt < major_loop) {
+      swizzle_cnt = next_cnt;
+      next_cnt = swizzle_cnt + 1;
+      cache_need = major_cache(next_cnt) + minor_cache(next_cnt);
+    }
+    major_coef = calc_bw_coef(major, minor_loop, !major_align);
+    minor_coef = calc_bw_coef(minor, swizzle_cnt, minor_align);
   }
-  major_coef = L2_BW;
-  minor_size = (minor_align ? RoundUp(swizzle_width * minor, CACHE_LINE) : swizzle_width * minor) * k_align;
-  if (major_size + minor_size > cache_limit) {
-    minor_coef = HBM_BW;
-    //std::cout << swizzle_cnt << " : stage=1, (5.0, 1.0) | major_size=" << major_size << ", width=" << swizzle_width << std::endl;
-    goto CALIBRATE;
-  }
-  d_coef = static_cast<float>(std::min(static_cast<uint64_t>(2 * swizzle_cnt), major_loop));
-  d_bw = d_coef * L2_BW / (L2_BW - 1.0f + d_coef);
-  d_loop = RoundDown((cache_limit - major_size - minor_size) / (k_align * minor), swizzle_width);
-  if (d_loop * 2 >= minor_loop) {
-    minor_coef = d_bw;
-    //std::cout << swizzle_cnt << " : stage=3, (5.0, " << minor_coef << ") | d_bw=" << d_bw << ", dloop=" << d_loop << ", major_size =" << major_size << ", width=" << swizzle_width <<std::endl;
-    goto CALIBRATE;
-  }
-  s_loop = minor_loop - d_loop * 2;
-  s_coef = static_cast<float>(swizzle_cnt);
-  s_bw = s_coef * L2_BW / (L2_BW - 1.0f + s_coef);
-  minor_coef = d_bw * s_bw * static_cast<float>(minor_loop) / (d_bw * s_loop + 2.0f * d_loop * s_bw);
-  //std::cout << swizzle_cnt << " : stage=2, (5.0, " << minor_coef << ") | d_bw=" << d_bw << ", s_bw=" << s_bw << ", dloop=" << d_loop << ", slooloop=" << s_loop << ", major_size =" << major_size << ", width=" << swizzle_width << std::endl;
-CALIBRATE:
-  const float SWIZZLE_COEF = 0.25f;
-  major_coef = major_coef * (1.0f - SWIZZLE_COEF / (swizzle_cnt * swizzle_cnt));
-  minor_coef = minor_coef * (1.0f - SWIZZLE_COEF / (swizzle_width * swizzle_width));
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
   if (block_dim < core_num) {
     major_coef = major_coef * block_dim / core_num;
     minor_coef = minor_coef * block_dim / core_num;
   }
-  if (major_align && major < CACHE_LINE) {
-    major_coef = major_coef * major / 256.0f;
+  float cost = 1.0f / (major_coef * static_cast<float>(minor)) + 1.0f / (minor_coef * static_cast<float>(major));
+  if (cost < mincost) {
+    mincost = cost;
+    return swizzle_cnt;
   }
-  if (minor_align && minor < CACHE_LINE) {
-    minor_coef = minor_coef * minor / 256.0f;
-  }
-  return 1.0f / (major_coef * static_cast<float>(minor)) + 1.0f / (minor_coef * static_cast<float>(major));
+  return 0;
 }
 
 void CubeOp::TileV2(vCubeOp *op) {
@@ -1577,9 +1580,9 @@ void CubeOp::TileV2(vCubeOp *op) {
   auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
   uint32_t align_max = 512 / ITEM_SIZE[type_id_];
   float mincost = 3.125f;
-  uint32_t round_m = RoundUp(op->m_align, BLOCK_SIZE);
-  uint32_t round_n = RoundUp(op->n_align, BLOCK_SIZE);
-  uint32_t round_k = RoundUp(op->k_align, BLOCK_SIZE);
+  uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
+  uint32_t round_n = RoundUp(n_align_, BLOCK_SIZE);
+  uint32_t round_k = RoundUp(k_align_, BLOCK_SIZE);
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
     for (uint32_t y = align_max; y >= BLOCK_SIZE; y >>= 1) {
       // 1. get m0, n0, k0
@@ -1588,7 +1591,8 @@ void CubeOp::TileV2(vCubeOp *op) {
         k0 = x;
         n0 = y;
         if (k0 > round_k || n0 > round_n) continue;
-        m0 = RoundDown(std::min(l0c_max / n0, (l1_max - k0 * n0) / k0), BLOCK_SIZE);
+        uint64_t mx = std::min(l0c_max / n0, (l1_max - k0 * n0) / k0);
+        m0 = RoundDown(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
         ASSERT((k0 * n0 < l1_max) && (m0 > 0));
         if (m0 > round_m) m0 = round_m;
       } else if (!trans_b_) { // trans_a && !trans_b_
@@ -1612,33 +1616,15 @@ void CubeOp::TileV2(vCubeOp *op) {
       uint32_t n_loop = CeilDiv(op->n_real, n0);
       uint32_t core_loop = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
       uint32_t block_dim = core_loop < core_num ? core_loop : core_num;
-      //std::cout << "param: m0=" << m0 << ", n0=" << n0 << ", k0=" << k0 << ", core_loop=" << core_loop << ", block_dim=" << block_dim << std::endl;
       // 3. select swizzle
-      uint32_t swizzle = 0;
-      if (op->m_align < op->n_align) {
-        for (uint32_t swizzle_n = 1; swizzle_n <= std::min(block_dim, n_loop); ++swizzle_n) {
-          auto cost = GetCostV2(n0, m0, n_loop, m_loop, op->k_align, !trans_b_, trans_a_, swizzle_n, block_dim);
-	  //std::cout << "swizzle_zN: swizzle_cnt=" << swizzle_n << ", cost=" << cost << std::endl;
-          if (cost < mincost) {
-            mincost = cost;
-            swizzle = 1u << 16 | swizzle_n;
-          }
-        }
-      } else {
-        for (uint32_t swizzle_m = 1; swizzle_m <= std::min(block_dim, m_loop); ++swizzle_m) {
-          auto cost = GetCostV2(m0, n0, m_loop, n_loop, op->k_align, trans_a_, !trans_b_, swizzle_m, block_dim);
-	  //std::cout << "swizzle_nZ: swizzle_cnt=" << swizzle_m << ", cost=" << cost << std::endl;
-          if (cost < mincost) {
-            mincost = cost;
-            swizzle = swizzle_m;
-          }
-        }
-      }
+      bool swizzle_zN = m_align_ < n_align_;
+      uint32_t swizzle = swizzle_zN ? GetSwizzle(n0, m0, n_loop, m_loop, k_align_, !trans_b_, trans_a_, block_dim, mincost)
+                       : GetSwizzle(m0, n0, m_loop, n_loop, k_align_, trans_a_, !trans_b_, block_dim, mincost);
       if (swizzle) {
         op->m0 = m0_ = m0;
         op->n0 = n0_ = n0;
         op->k0 = k0_ = k0;
-        op->swizzle = swizzle;
+        op->swizzle = swizzle_zN ? 1u << 16 | swizzle : swizzle;
         block_dim_ = block_dim;
         core_loop_ = core_loop;
       }
@@ -1695,5 +1681,6 @@ void CubeOp::CodeGen(vCubeOp *op) {
     block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
     GetSwizzleConfig(op);
   }
+  //std::cout << "result tiling: m0=" << op->m0 << ", n0=" << op->n0 << ", k0=" << op->k0 << ", swizzle=(" << (op->swizzle >> 16) << ", " << (op->swizzle & 0xfffful) << ")" << std::endl;
 }
 } // namespace dvm

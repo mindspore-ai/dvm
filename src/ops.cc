@@ -1553,7 +1553,7 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
   } else {
     uint64_t next_cnt = swizzle_cnt + 1;
     uint64_t cache_need = major_cache(next_cnt) + minor_cache(next_cnt);
-    while (cache_need < cache_limit && swizzle_cnt < major_loop) {
+    while (cache_need < cache_limit && swizzle_cnt <= major_loop) {
       swizzle_cnt = next_cnt;
       next_cnt = swizzle_cnt + 1;
       cache_need = major_cache(next_cnt) + minor_cache(next_cnt);

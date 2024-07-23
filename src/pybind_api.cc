@@ -140,6 +140,7 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
   ASCEND_CALL(aclrtSetDevice(dev_id));
   dev_id_ = dev_id_;
   kernel_.Reset(type);
+  (void)DeviceInfo::Instance(); // early construct DeviceInfo
 }
 
 KernelPy::~KernelPy() {

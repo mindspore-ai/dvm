@@ -467,11 +467,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
-  if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
+  if ((mat.flags & V_CUBE_FLAG_GROUP_SET) && block_idx + block_num < tile_end) {
     wait_flag_dev(1);
-    if (block_idx + block_num < tile_end) {
-      wait_flag_dev(1);
-    }
   }
 }
 
@@ -504,15 +501,18 @@ STAGE_ENTRY:
     } else {
       if (flags & V_CUBE_FLAG_GROUP_SET) {
         ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
-        wait_flag_dev(1);
       }
     }
-    if (flags & V_CUBE_FLAG_POST_BAR) {
+    if ((entry & V_ENTRY_FLAG_NEXT_STAGE) && !(flags & V_CUBE_FLAG_GROUP_SET)) {
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(0, 0));
       wait_flag_dev(0);
-    }
-    if (flags & V_CUBE_FLAG_POST_SET) {
-      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
+      __gm__ uint64_t *next_addr = body_addr + vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
+      entry = *next_addr;
+      if (!(entry & V_ENTRY_FLAG_MIX)) {
+        ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
+      }
+      body_addr = next_addr + 1;
+      goto STAGE_ENTRY;
     }
   }
   if (entry & V_ENTRY_FLAG_NEXT_STAGE) {

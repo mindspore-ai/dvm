@@ -998,9 +998,7 @@ struct vStoreStatus {
 #define V_CUBE_FLAG_TRANS_B  2
 #define V_CUBE_FLAG_GROUP_SET 4
 #define V_CUBE_FLAG_PRE_WAIT  8
-#define V_CUBE_FLAG_POST_SET  16
-#define V_CUBE_FLAG_POST_BAR  32
-#define V_CUBE_FLAG_PINGPONG_STORE 64
+#define V_CUBE_FLAG_PINGPONG_STORE 16
 
 struct vCubeOp {
   enum {FP16, BF16};
@@ -1077,12 +1075,10 @@ struct vCubeOp {
 // tilenum(20) << 44 | simd_width(8) << 36 | code_size_8B(12) << 24 |
 // post_sync(1) << 6 | next_stage(1) << 5 | extern_code(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
 #define V_ENTRY_FLAG_PRE_WAIT            1
-#define V_ENTRY_FLAG_POST_SET            2
 #define V_ENTRY_FLAG_PARALLEL            4
 #define V_ENTRY_FLAG_MIX                 8
 #define V_ENTRY_FLAG_EXTERN_CODE         16
 #define V_ENTRY_FLAG_NEXT_STAGE          32
-#define V_ENTRY_FLAG_POST_BAR            64
 
 #define V_ENTRY_CODE_SIZE_OFFSET         24
 #define V_ENTRY_SIMD_WIDTH_OFFSET        36

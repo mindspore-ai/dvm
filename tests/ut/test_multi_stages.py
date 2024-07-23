@@ -54,8 +54,8 @@ def test_stage_vec_mix():
 def test_stage_mix_vec():
     t = Tester("stages")
     t.stage_switch("mix");
-    ax = np.random.normal(0, 1, [512,512]).astype(np.float16)
-    bx = np.random.normal(0, 1, [512,512]).astype(np.float16)
+    ax = np.random.normal(0, 1, [768,512]).astype(np.float16)
+    bx = np.random.normal(0, 1, [512,128*7]).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)
     c = t.matmul(a, b, False, False)

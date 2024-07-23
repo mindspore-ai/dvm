@@ -1444,7 +1444,6 @@ uint64_t MixKernel::CodeGen() {
         cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
       }
     }
-    head_flags |= V_ENTRY_FLAG_POST_SET;
     for (auto op : post_fusion_->objects_) {
       if (op->IsLoad()) {
         static_cast<NDSLoad*>(op)->SetCubeOp(cube_op_);
@@ -1583,24 +1582,14 @@ uint64_t StagesKernel::CodeGen() {
       auto pre_code = code_.data_ + stages_[sidx - 1]->code_offset;
       auto pre_entry = *reinterpret_cast<uint64_t*>(pre_code);
       pre_entry |= V_ENTRY_FLAG_NEXT_STAGE;
-      if (pre_entry & V_ENTRY_FLAG_MIX) {
-        vCubeOp *cube = reinterpret_cast<vCubeOp*>(pre_code + sizeof(uint64_t));
-        if (cube->flags & V_CUBE_FLAG_GROUP_SET) {
-          pre_entry |= V_ENTRY_FLAG_POST_BAR;
-        } else {
-          cube->flags |= V_CUBE_FLAG_POST_BAR;
-          if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
-            cube->flags |= V_CUBE_FLAG_POST_SET;
-            cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
-          }
+      if ((pre_entry & V_ENTRY_FLAG_MIX) &&
+         !(reinterpret_cast<vCubeOp*>(pre_code + sizeof(uint64_t))->flags & V_CUBE_FLAG_GROUP_SET)) { // cube->vector/cube/mix
+        if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
+          cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
         }
-      } else {
-        pre_entry |= V_ENTRY_FLAG_POST_BAR;
-        if (cur_entry & V_ENTRY_FLAG_MIX) {
-          auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + stage->code_offset + sizeof(uint64_t));
-          pre_entry |= V_ENTRY_FLAG_POST_SET;
-          cube->flags |= V_CUBE_FLAG_PRE_WAIT;
-        }
+      } else if (cur_entry & V_ENTRY_FLAG_MIX) { // vector/mix->cube/mix
+        auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + stage->code_offset + sizeof(uint64_t));
+        cube->flags |= V_CUBE_FLAG_PRE_WAIT;
       }
       *reinterpret_cast<uint64_t*>(pre_code) = pre_entry;
     }

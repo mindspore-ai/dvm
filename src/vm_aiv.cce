@@ -1558,13 +1558,6 @@ TILE_LOOP:
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }
-  if (entry & V_ENTRY_FLAG_POST_BAR) {
-    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
-    wait_flag_dev(0);
-  }
-  if (entry & V_ENTRY_FLAG_POST_SET) {
-    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(2, 1));
-  }
   if (entry & V_ENTRY_FLAG_MIX) {
     tile_loops += block_num << 32;
     uint64_t group_idx = tile_loops >> 32;
@@ -1582,6 +1575,7 @@ TILE_LOOP:
         tile_loops |= subtile_1;
         tile |= subtile_0 << V_TILE_CUR_IDX_OFFSET;
       }
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(2, 1));
       set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
       wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
       goto TILE_LOOP;
@@ -1592,6 +1586,11 @@ TILE_LOOP:
     entry = *head_addr;
     body_addr = reinterpret_cast<__gm__ uint8_t*>(head_addr + 1);
     set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+    wait_flag_dev(0);
+    if (entry & V_ENTRY_FLAG_MIX) {
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(2, 1));
+    }
     wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
     goto STAGE_ENTRY;
   }

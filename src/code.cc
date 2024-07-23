@@ -803,12 +803,6 @@ class DisAssembler {
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
     }
-    if (entry & V_ENTRY_FLAG_POST_SET) {
-      oss << ", post_set=1";
-    }
-    if (entry & V_ENTRY_FLAG_POST_BAR) {
-      oss << ", post_bar=1";
-    }
     oss << ") {" << std::endl;
     DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
     oss << indent << "}";
@@ -821,14 +815,8 @@ class DisAssembler {
       oss << ", sub_tile_num=[" << (cube->subtilenum & 0xfffffffful) << ", " << (cube->subtilenum >> 32) << "]";
       oss << ", group_set=1";
     }
-    if (cube->flags & V_CUBE_FLAG_POST_SET) {
-      oss << ", post_set=1";
-    }
     if (cube->flags & V_CUBE_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
-    }
-    if (cube->flags & V_CUBE_FLAG_POST_BAR) {
-      oss << ", post_bar=1";
     }
     if (cube->flags & V_CUBE_FLAG_PINGPONG_STORE) {
       oss << ", pingpong_store=1";

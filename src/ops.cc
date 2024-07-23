@@ -263,8 +263,11 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
 void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   auto size = lhs_->shape_ref_->size;
   shape_.resize(size);
-  for (size_t i = 0; i < size; i++) {
-    shape_[i] = lhs_->shape_ref_->data[i] + pad_shape_->data[i];
+  for (size_t i = 0; i < pad_shape_->size; i++) {
+    shape_[size - 1 - i] = lhs_->shape_ref_->data[size - 1 - i] + pad_shape_->data[pad_shape_->size - 1 - i];
+  }
+  for (size_t i = pad_shape_->size; i < size; i++) {
+    shape_[size - 1 - i] = lhs_->shape_ref_->data[size - 1 - i];
   }
   *shape_ref_= shape_;
   nd_ = lhs_->nd_;

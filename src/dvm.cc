@@ -38,15 +38,13 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   if (iter_num == 0) {
     return kernel->Broadcast(static_cast<T>(1), obj->shape_ref_, obj->type_id_, false);
   }
-  NDObject *res;
+  NDObject *res = nullptr;
   if (iter_num == 1) {
     res = kernel->Copy(obj);
   } else {
-    res = obj;
-    iter_num--;
     while (iter_num) {
       if (iter_num & 1) {
-        res = kernel->Binary(BinaryOpType::kMul, res, obj);
+        res = res == nullptr ? obj : kernel->Binary(BinaryOpType::kMul, res, obj);
       }
       if (iter_num != 1) {
         obj = kernel->Binary(BinaryOpType::kMul, obj, obj);

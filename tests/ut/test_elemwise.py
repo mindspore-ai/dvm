@@ -236,10 +236,10 @@ def test_unary_int(type, op, func):
     t.store_expect(z, func(a))
     assert (t.run_check())
 
-@pytest.mark.parametrize('shape, num, expect', [([1024], 3, 2), ([1024], 10, 4), ([1024], -8, 3), ([1024], 11, 5)])
-def test_power_s(shape, num, expect):
+@pytest.mark.parametrize('num, expect', [(3, 2), (10, 4), (-8, 3), (11, 5), (15, 6), (20, 5)])
+def test_power_s(num, expect):
     t = Tester()
-    arg = np.random.random(shape).astype(np.float32)
+    arg = np.random.random([1024,]).astype(np.float32)
     a = t.load(arg)
     b = t.binary("Pow", a, num)
     t.store_expect(b, np.power(arg, num))
@@ -247,4 +247,3 @@ def test_power_s(shape, num, expect):
     das = t.das()
     assert (das.count("Mul.fp32") == expect)
     assert (t.run_check())
-

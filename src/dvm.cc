@@ -48,7 +48,9 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
       if (iter_num & 1) {
         res = kernel->Binary(BinaryOpType::kMul, res, obj);
       }
-      obj = kernel->Binary(BinaryOpType::kMul, obj, obj);
+      if (iter_num != 1) {
+        obj = kernel->Binary(BinaryOpType::kMul, obj, obj);
+      }
       iter_num >>= 1;
     }
   }

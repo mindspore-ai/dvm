@@ -118,22 +118,13 @@ class Code {
   Code() = default;
   Code(const Code&obj) = delete;
   Code&operator=(const Code&) = delete;
-  virtual ~Code() {
-    if (data_)
-      std::free(data_);
-  }
+  virtual ~Code();
   void Clear() {
     atomic_clean_.clear();
     reloc_reuse_.clear();
     reloc_workspaces_.clear();
   }
-  void Alloc(size_t s) {
-    if (data_) {
-      data_ = static_cast<unsigned char *>(std::realloc(data_, s));
-    } else {
-      data_ = static_cast<unsigned char *>(std::malloc(s));
-    }
-  }
+  void Alloc(size_t size);
   void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags) {
     uint64_t *head = reinterpret_cast<uint64_t*>(data_);
     head[0] = 0;
@@ -200,6 +191,7 @@ class Code {
  private:
   int LaunchAtomicClean(void* stream);
   int LaunchEx(void *workspace, void* stream);
+  size_t mem_size_{0};
 };
 } // namespace dvm 
 #endif // _DVM_CODE_H_

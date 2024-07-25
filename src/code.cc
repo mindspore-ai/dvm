@@ -52,6 +52,11 @@ rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 }
 #endif
 
+#ifdef VK_SIM_MODEL
+#define aclrtMallocHost(addr, size) 0; *addr = std::malloc(size)
+#define aclrtFreeHost(addr) 0; std::free(addr)
+#endif
+
 extern const unsigned char g_vkernel_c220_bin[];
 extern unsigned int g_vkernel_c220_bin_len;
 
@@ -914,6 +919,44 @@ class DisAssembler {
   std::ostringstream &oss;
 };
 
+Code::~Code() {
+  if (data_) {
+    if (mem_size_ <= PARAM_TABLE_LIMIT) {
+      std::free(data_);
+    } else {
+      auto ret = aclrtFreeHost(data_);
+      EXCEPTION_IF(ret != 0, "aclrtFreeHost error");
+    }
+  }
+}
+
+void Code::Alloc(size_t size) {
+  if (size <= mem_size_) {
+    return;
+  }
+  if (size <= PARAM_TABLE_LIMIT) {
+    if (data_) {
+      data_ = static_cast<unsigned char *>(std::realloc(data_, size));
+    } else {
+      data_ = static_cast<unsigned char *>(std::malloc(size));
+    }
+  } else {
+    if (data_) {
+      if (mem_size_ <= PARAM_TABLE_LIMIT) {
+        std::free(data_);
+      } else {
+        auto ret = aclrtFreeHost(data_);
+        EXCEPTION_IF(ret != 0, "Alloc aclrtFreeHost error");
+      }
+    }
+    constexpr uint32_t RT_MEM_ALIGN = 1024 * 1024;
+    size = (size + RT_MEM_ALIGN - 1) / RT_MEM_ALIGN * RT_MEM_ALIGN;
+    auto ret = aclrtMallocHost(reinterpret_cast<void **>(&data_), size);
+    EXCEPTION_IF(ret != 0, "Alloc aclrtMallocHost error");
+  }
+  mem_size_ = size;
+}
+
 void Code::DisAssemble(std::ostringstream &oss) {
   DisAssembler(oss).Run(this, "vmain");
 }
@@ -959,8 +1002,8 @@ int Code::LaunchEx(void *workspace, void* stream) {
   return -1;
 #else
   auto data_dev = reinterpret_cast<uint8_t*>(workspace) + extern_code_;
-  auto ret = aclrtMemcpy(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE);
-  EXCEPTION_IF(ret != 0, "aclrtMemcpy error");
+  auto ret = aclrtMemcpyAsync(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+  EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t*>(data_) + 1)};
   auto stub_func = DeviceInfo::Instance().StubFunc(target_);
   return DeviceInfo::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);

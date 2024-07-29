@@ -29,6 +29,7 @@ constexpr uint32_t BLOCK_SIZE = 16;
 constexpr uint32_t AXES_ALIGN_SIZE = 512;
 constexpr uint32_t CUBE_BLOCK_SIZE = 256;
 constexpr uint32_t CONST_512 = 512;
+constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
 
 inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
   if (rnd == 0) {
@@ -1489,30 +1490,42 @@ void CubeOp::Tile(vCubeOp *op) {
 }
 
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {
-  uint32_t swizzle_cnt = 1;
+  uint32_t m_loop = (op->m_real + op->m0 - 1) / op->m0;
+  uint32_t n_loop = (op->n_real + op->n0 - 1) / op->n0;
+  uint32_t swizzle_cnt = DEFAULT_SWIZZLE_COUNT;
   uint32_t swizzle_dir = 0;
-  float mincost = op->m_align + op->n_align;
-  for (size_t i = 1; i <= block_dim_; i++) {
-    uint32_t c = (block_dim_ + i - 1) / i;
-    float cost;
-    if (i * op->n0 + op->m_align < op->m0 * i + op->n_align) {  // zN
-      uint32_t mem_a_zN = c * op->m0;
-      uint32_t mem_b_zN = i * op->n0;
-      cost = mem_a_zN + mem_b_zN;
-      if (cost <= mincost) {
-        swizzle_dir = 1;
-        mincost = cost;
-        swizzle_cnt = i;
+  if (DeviceInfo::Instance().SocName() == kAscend910B4) {
+    float mincost = op->m_align + op->n_align;
+    for (size_t i = 1; i <= block_dim_; i++) {
+      uint32_t c = (block_dim_ + i - 1) / i;
+      float cost;
+      if (i * op->n0 + op->m_align < op->m0 * i + op->n_align) {  // zN
+        uint32_t mem_a_zN = c * op->m0;
+        uint32_t mem_b_zN = i * op->n0;
+        cost = mem_a_zN + mem_b_zN;
+        if (cost <= mincost) {
+          swizzle_dir = 1;
+          mincost = cost;
+          swizzle_cnt = i;
+        }
+      } else {  // nZ
+        uint32_t mem_a_nZ = c * op->n0;
+        uint32_t mem_b_nZ = i * op->m0;
+        cost = mem_a_nZ + mem_b_nZ;
+        if (cost < mincost) {
+          swizzle_dir = 0;
+          mincost = cost;
+          swizzle_cnt = i;
+        }
       }
-    } else {  // nZ
-      uint32_t mem_a_nZ = c * op->n0;
-      uint32_t mem_b_nZ = i * op->m0;
-      cost = mem_a_nZ + mem_b_nZ;
-      if (cost < mincost) {
-        swizzle_dir = 0;
-        mincost = cost;
-        swizzle_cnt = i;
-      }
+    }
+  } else {
+    if (op->m_real > op->n_real) {
+      swizzle_dir = 0;
+      swizzle_cnt = std::min(swizzle_cnt, m_loop);
+    } else {
+      swizzle_dir = 1;
+      swizzle_cnt = std::min(swizzle_cnt, n_loop);
     }
   }
   op->swizzle = swizzle_dir << 16 | swizzle_cnt;

@@ -809,7 +809,6 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
       root_dom_.Tile(t.start, t.end, space, t.num);
     }
   }
-  code_.atomic_clean_.clear();
   tile_num_ = root_dom_.TileNum();
   auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
   code_.block_dim_ = (tile_num_ + tile_per_block - 1) / tile_per_block;

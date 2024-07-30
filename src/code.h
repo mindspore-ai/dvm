@@ -118,7 +118,7 @@ class Code {
   Code() = default;
   Code(const Code&obj) = delete;
   Code&operator=(const Code&) = delete;
-  virtual ~Code();
+  ~Code();
   void Clear() {
     atomic_clean_.clear();
     reloc_reuse_.clear();

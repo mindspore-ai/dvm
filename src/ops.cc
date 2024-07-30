@@ -1548,7 +1548,7 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
     if (minor_align) minor_need = RoundUp(minor_need, CACHE_LINE);
     if (minor * minor_loop + major_need * 2 < cache_limit) {
       uint64_t size = major * cnt + minor * width;
-      if (size >= minsize) continue;
+      if (size >= minsize && mincost < 3.125f) continue;
       minsize = size;
       major_hit = static_cast<float>(minor_loop - 1) / minor_loop;
       minor_hit = static_cast<float>(major_loop - 1) / major_loop;

@@ -60,7 +60,7 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
 
 template <typename T>
 NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
-  if (rhs->type_id_ == kInt32 && DeviceInfo::Instance().Arch() != kAiCore_C220) {
+  if (rhs->type_id_ == kInt32 && System::Instance().Arch() != kAiCore_C220) {
     return nullptr;
   }
   auto vkernel = kernel->GetImpl();
@@ -76,13 +76,13 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
       return obj;
     }
     case BinaryOpType::kMaximum:
-      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
+      if (System::Instance().Arch() == kAiCore_C220) {
         auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
         vkernel->Append(obj);
         return obj;
       }
     case BinaryOpType::kMinimum:
-      if (DeviceInfo::Instance().Arch() == kAiCore_C220) {
+      if (System::Instance().Arch() == kAiCore_C220) {
         auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
         vkernel->Append(obj);
         return obj;
@@ -461,6 +461,6 @@ const char* Kernel::Das() const {
 }
 
 void SetDeterministic(bool enable) {
-  DeviceInfo::Instance().deterministic_ = enable;
+  System::Instance().deterministic_ = enable;
 }
 } // namespace dvm

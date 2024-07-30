@@ -567,7 +567,7 @@ void ReorderLoad(BasicBlock &block) {
 }
 
 void InsertRemovePad(BasicBlock &block) {
-  if (DeviceInfo::Instance().Arch() != kAiCore_C220) {
+  if (System::Instance().Arch() != kAiCore_C220) {
     return;
   }
   size_t max_depth = 1;

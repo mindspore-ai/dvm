@@ -512,7 +512,7 @@ int NDStore::Emit(VectorKernel &k) {
       };
       int code_size;
       Code &code = k.code_;
-      if (DeviceInfo::Instance().deterministic_) {
+      if (System::Instance().deterministic_) {
         vStoreAtomicDeterm op;
         build_atomic_store(op.base);
         op.core_tile_num = (k.tile_num_ + code.block_dim_ - 1) / code.block_dim_;
@@ -1303,7 +1303,7 @@ REDUCE_TILE:
 
 int ReduceOp::Emit(VectorKernel &k) {
   auto num = _ReduceOp::Emit(k);
-  if (DeviceInfo::Instance().Arch() != kAiCore_C220 && !round_tile_.empty() &&
+  if (System::Instance().Arch() != kAiCore_C220 && !round_tile_.empty() &&
       nd_[lead_dim_] != strides_[lead_dim_]) {
     tail_insn_ = insn_ + num;
     auto size = EmitClearPad(tail_insn_, this, k.simd_width_);
@@ -1326,7 +1326,7 @@ void ReduceOp::GenClearKernel(NDAccess *store) {
     clear_kernel_->Append(clear_store_);
   }
   clear_shape_data_ = std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{});
-  if (DeviceInfo::Instance().deterministic_) {
+  if (System::Instance().deterministic_) {
     clear_shape_data_ += 32 / sizeof(float);
   }
   clear_kernel_->CodeGen();
@@ -1418,8 +1418,8 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
     return 3.125f;
   }
   auto core_need = m_loop * n_loop;
-  auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
-  auto l2_num = DeviceInfo::Instance().L2Size() / ITEM_SIZE[type_id_];
+  auto core_num = System::Instance().CoreNum(CoreType::kCube);
+  auto l2_num = System::Instance().L2Size() / ITEM_SIZE[type_id_];
   uint32_t block_dim = core_need < core_num ? core_need : core_num;
   uint32_t m_once = block_dim < n_loop ? m0 : block_dim / n_loop * m0;
 
@@ -1445,7 +1445,7 @@ void CubeOp::Tile(vCubeOp *op) {
   auto axis_max = AXES_ALIGN_SIZE / ITEM_SIZE[type_id_];
   auto pri_axis0_max = pri_axis < axis_max ? pri_axis : axis_max;
   auto axis0_max = axis < axis_max ? axis : axis_max;
-  auto l0c_num = DeviceInfo::Instance().L0CSize() / FP32_SIZE;
+  auto l0c_num = System::Instance().L0CSize() / FP32_SIZE;
   uint32_t pri_axis0_init = BLOCK_SIZE;
   uint32_t axis0_init = BLOCK_SIZE;
   // The maximum value can be returned by cost function.
@@ -1472,7 +1472,7 @@ void CubeOp::Tile(vCubeOp *op) {
   // k0
   uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
   uint32_t kBlockSize = BLOCK_SIZE;
-  auto l1_ping_pong_num = DeviceInfo::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
+  auto l1_ping_pong_num = System::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
   op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
   if (op->k0 > CONST_512) {
@@ -1492,7 +1492,7 @@ void CubeOp::Tile(vCubeOp *op) {
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   uint32_t swizzle_cnt = DEFAULT_SWIZZLE_COUNT;
   uint32_t swizzle_dir = 0;
-  if (DeviceInfo::Instance().SocName() == kAscend910B4) {
+  if (System::Instance().SocName() == kAscend910B4) {
     float mincost = op->m_align + op->n_align;
     for (size_t i = 1; i <= block_dim_; i++) {
       uint32_t c = (block_dim_ + i - 1) / i;
@@ -1535,8 +1535,8 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
                            bool major_align, bool minor_align, uint32_t block_dim, float &mincost) {
   constexpr float L2_BW = 5.0f;
   const uint64_t CACHE_LINE = 512 / ITEM_SIZE[kFloat16];
-  uint32_t core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
-  uint64_t cache_limit = (DeviceInfo::Instance().L2Size() / ITEM_SIZE[kFloat16] - 256 * 128 * 8 * core_num) / k_align;
+  uint32_t core_num = System::Instance().CoreNum(CoreType::kCube);
+  uint64_t cache_limit = (System::Instance().L2Size() / ITEM_SIZE[kFloat16] - 256 * 128 * 8 * core_num) / k_align;
   uint64_t swizzle_cnt = 0;
   uint64_t minsize = major * major_loop + minor * minor_loop;
   for (uint64_t cnt = std::min(static_cast<uint64_t>(block_dim), major_loop); cnt >= 1; --cnt) {
@@ -1587,9 +1587,9 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
 }
 
 void CubeOp::TileV2(vCubeOp *op) {
-  auto l0c_max = DeviceInfo::Instance().L0CSize() / FP32_SIZE;
-  auto l1_max = DeviceInfo::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
-  auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
+  auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
+  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
+  auto core_num = System::Instance().CoreNum(CoreType::kCube);
   float mincost = 3.125f;
   uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
   uint32_t round_n = RoundUp(n_align_, BLOCK_SIZE);
@@ -1700,7 +1700,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
     auto m_loop = CeilDiv(op->m_real, op->m0);
     auto n_loop = CeilDiv(op->n_real, op->n0);
     core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
-    auto core_num = DeviceInfo::Instance().CoreNum(CoreType::kCube);
+    auto core_num = System::Instance().CoreNum(CoreType::kCube);
     block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
     GetSwizzleConfig(op);
   }

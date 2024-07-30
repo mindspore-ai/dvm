@@ -14,71 +14,21 @@
  * limitations under the License.
  */
 
-#include <dlfcn.h>
 #include <unordered_map>
 #include <vector>
 #include <cstring>
-#include <stdexcept>
-#ifndef VK_SIM_MODEL
-#include "acl/acl_rt.h"
-#endif
 #include "code.h"
 #include "ops.h"
 
-// rts_runtime
-#if defined(__cplusplus)
-extern "C" {
-#endif
-#define RT_DEV_BINARY_MAGIC_ELF        0x43554245U
-#define RT_DEV_BINARY_MAGIC_ELF_AICPU  0x41415243U
-#define RT_DEV_BINARY_MAGIC_ELF_AIVEC  0x41415246U
-#define RT_DEV_BINARY_MAGIC_ELF_AICUBE 0x41494343U
-
-typedef struct tagRtDevBinary {
-    uint32_t magic;    // magic number
-    uint32_t version;  // version of binary
-    const void *data;  // binary data
-    uint64_t length;   // binary length
-} rtDevBinary_t;
-
-rtError_t rtDevBinaryRegister(const rtDevBinary_t *bin, void **hdl);
-rtError_t rtDevBinaryUnRegister(void *hdl);
-rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName,
-                         const void *kernelInfoExt, uint32_t funcMode);
-rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                         rtSmDesc_t *smDesc, rtStream_t stm);
-rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
-#if defined(__cplusplus)
-}
-#endif
-
-#ifdef VK_SIM_MODEL
+#ifndef VK_SIM_MODEL
+#include "acl/acl_rt.h"
+#else
 #define aclrtMallocHost(addr, size) 0; *addr = std::malloc(size)
 #define aclrtFreeHost(addr) 0; std::free(addr)
 #endif
 
-extern const unsigned char g_vkernel_c220_bin[];
-extern unsigned int g_vkernel_c220_bin_len;
-
 namespace dvm {
 namespace {
-std::string GetSocName() {
-  std::string res;
-  const char *soc_name = getenv("DVM_SOC_NAME");
-  if (soc_name == nullptr) {
-#ifdef VK_SIM_MODEL
-    DvmException("simulator must set environment variable DVM_SOC_NAME");
-#else
-    soc_name = aclrtGetSocName();
-#endif
-  }
-  if (soc_name == nullptr) {
-    return res;
-  }
-  res = soc_name;
-  return res;
-}
-
 std::unordered_map<std::string, vCompareType> cmp_insn_id = {
   {"Greater", V_CMP_GT},
   {"Less", V_CMP_LT},
@@ -661,90 +611,6 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
 }
 }  // namespace
 
-void DvmException(const char* error_str) {
-  std::ostringstream oss;
-  oss << "DVM EXCEPTION. reason: " << error_str;
-  throw std::runtime_error(oss.str());
-}
-
-DeviceInfo::DeviceInfo() {
-  auto soc_name = GetSocName();
-  EXCEPTION_IF(soc_name.find("Ascend910B") == std::string::npos && soc_name.find("Ascend910C") == std::string::npos,
-              "Only Ascend910B and Ascend910C is supported");
-  arch_ = kAiCore_C220;
-  local_mem_size_ = 192 * 1024;
-  event_num_ = 8;
-  if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2" || soc_name == "Ascend910C1" ||
-      soc_name == "Ascend910C2") {
-    vector_core_num_ = 48;
-    cube_core_num_ = 24;
-  } else {
-    vector_core_num_ = 40;
-    cube_core_num_ = 20;
-  }
-  l2_size_ = (soc_name == "Ascend910B4" || soc_name == "Ascend910C4") ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
-  l1_size_ = 512 * 1024;
-  l0c_size_ = 128 * 1024;
-  ub_workspace_size_ = 1024;
-  std::unordered_map<std::string, SocType> soc_name_map = {{"Ascend910B1", kAscend910B1},
-                                                           {"Ascend910B2", kAscend910B2},
-                                                           {"Ascend910B3", kAscend910B3},
-                                                           {"Ascend910B4", kAscend910B4}};
-  if (const auto &iter = soc_name_map.find(soc_name); iter != soc_name_map.end()) {
-    soc_name_ = iter->second;
-  }
-
-#ifdef VK_SIM_MODEL
-  auto rt_binary_register = rtDevBinaryRegister;
-  auto rt_function_register = rtFunctionRegister;
-  launch_func_ = rtKernelLaunch;
-#else
-  void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
-  auto rt_binary_register =
-    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(handle, "rtDevBinaryRegister"));
-  EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
-  auto rt_function_register =
-    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
-      dlsym(handle, "rtFunctionRegister"));
-  EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
-  launch_func_ = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
-    dlsym(handle, "rtKernelLaunch"));
-  EXCEPTION_IF(launch_func_ == nullptr, "load rt_kernel_launch symbol failed");
-#endif
-  rtError_t err;
-  void *module = nullptr;
-  rtDevBinary_t dev_bin;
-  dev_bin.version = 0;
-  dev_bin.data = g_vkernel_c220_bin;
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-  dev_bin.length = g_vkernel_c220_bin_len;
-  err = rt_binary_register(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-  uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
-  err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
-
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
-  err = rt_binary_register(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-  stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetCube;
-  err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
-
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-  err = rt_binary_register(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-  stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetMix;
-  err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
-#ifdef VK_SIM_MODEL
-  get_c2c_addr_func_ = rtGetC2cCtrlAddr;
-#else
-  get_c2c_addr_func_ = reinterpret_cast<rtError_t(*)(uint64_t*, uint32_t*)>(dlsym(handle, "rtGetC2cCtrlAddr"));
-#endif
-}
-
 class DisAssembler {
  public:
   DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
@@ -990,8 +856,8 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
 
 int Code::LaunchAtomicClean(void* stream) {
   for (auto a : atomic_clean_) {
-    uint8_t* a_stub = DeviceInfo::Instance().StubFunc(a->target_);
-    auto ret = DeviceInfo::Instance().launch_func_(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
+    uint8_t* a_stub = System::Instance().StubFunc(a->target_);
+    auto ret = System::Instance().launch_func_(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
     if (ret != RT_ERROR_NONE) return ret;
   }
   return 0;
@@ -1005,8 +871,8 @@ int Code::LaunchEx(void *workspace, void* stream) {
   auto ret = aclrtMemcpyAsync(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t*>(data_) + 1)};
-  auto stub_func = DeviceInfo::Instance().StubFunc(target_);
-  return DeviceInfo::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);
+  auto stub_func = System::Instance().StubFunc(target_);
+  return System::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);
 #endif
 }
 

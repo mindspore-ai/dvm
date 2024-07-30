@@ -67,7 +67,7 @@ class CodeGenHelper {
     auto code_reserved = kernel_.ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
     uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
-    static_xbuf_ = DeviceInfo::Instance().UbWorkspaceSize() + code_reserved;
+    static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserved;
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
@@ -169,7 +169,7 @@ class CodeGenHelper {
     EventManager vl_event, sv_event;
     auto alloc_event = [](EventManager &m, uint64_t &event) -> bool {
       event = m.hold_event + 1;
-      if (event >= DeviceInfo::Instance().EventNum()) {
+      if (event >= System::Instance().EventNum()) {
         event = m.hold_event;
         return false;
       }
@@ -254,7 +254,7 @@ class CodeGenHelper {
       free_xbuf_.pop();
       return nullptr;
     }
-    if (static_xbuf_ + xbuf_size_ <= DeviceInfo::Instance().LocalMemSize()) {
+    if (static_xbuf_ + xbuf_size_ <= System::Instance().LocalMemSize()) {
       obj->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
       return nullptr;
@@ -311,7 +311,7 @@ class CodeGenHelper {
   }
 
   inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
-    int total = DeviceInfo::Instance().EventNum();
+    int total = System::Instance().EventNum();
     for (int i = 1; i <= total; ++i) {
       event = (m.hold_event + i) % total;
       if (from_idx >= m.hold_idx[event]) {
@@ -793,7 +793,7 @@ VectorKernel::~VectorKernel() {
 
 void VectorKernel::DoCodeGen(uint64_t core_limit) {
   int peak_live = Analyze();
-  int64_t free_mem = DeviceInfo::Instance().LocalMemSize() - DeviceInfo::Instance().UbWorkspaceSize() - ReserveCodeSize();
+  int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);
   // tiling
   ShapeTiling tiling(this, root_dom_, core_limit);
@@ -926,9 +926,9 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
     }
   }
   NDObject *dom = root_dom_.DomObject();
-  metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(DeviceInfo::Instance().LocalMemSize()) - ReserveCodeSize();
+  metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(System::Instance().LocalMemSize()) - ReserveCodeSize();
   uint64_t tile_per_block = CeilDiv(tile_num_, static_cast<uint64_t>(code_.block_dim_));
-  metrics.core_usage = float(tile_num_) / float(tile_per_block  * DeviceInfo::Instance().CoreNum());
+  metrics.core_usage = float(tile_num_) / float(tile_per_block  * System::Instance().CoreNum());
   uint64_t tiled_shape_size = 1;
   for (auto d : dom->nd_) {
     tiled_shape_size *= d;
@@ -1220,7 +1220,7 @@ uint64_t VKernelS::CodeGen() {
   Optimize();
   BuildDomain(objects_);
   NormalizeDomain();
-  DoCodeGen(DeviceInfo::Instance().CoreNum());
+  DoCodeGen(System::Instance().CoreNum());
   return 0;
 }
 
@@ -1274,7 +1274,7 @@ uint64_t VKernelD::CodeGen() {
     bb.Export(objects_);
     BuildDomain(objects_);
     NormalizeDomain();
-    DoCodeGen(DeviceInfo::Instance().CoreNum());
+    DoCodeGen(System::Instance().CoreNum());
     return 0;
   }
   if (pd_nexts_.empty()) { // first
@@ -1300,7 +1300,7 @@ uint64_t VKernelD::CodeGen() {
     start = size + 1;
   }
   NormalizeDomain();
-  DoCodeGen(DeviceInfo::Instance().CoreNum());
+  DoCodeGen(System::Instance().CoreNum());
   return 0;
 }
 
@@ -1314,7 +1314,7 @@ uint64_t VKernelP::CodeGen() {
     total_workload += WorkLoad(k);
   }
   std::sort(children_.begin(), children_.end(), [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
-  uint64_t core_num = DeviceInfo::Instance().CoreNum();
+  uint64_t core_num = System::Instance().CoreNum();
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
     auto workload = WorkLoad(k);

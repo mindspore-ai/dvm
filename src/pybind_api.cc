@@ -140,7 +140,7 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
   ASCEND_CALL(aclrtSetDevice(dev_id));
   dev_id_ = dev_id_;
   kernel_.Reset(type);
-  (void)DeviceInfo::Instance(); // early construct DeviceInfo
+  (void)System::Instance(); // early construct System
 }
 
 KernelPy::~KernelPy() {
@@ -580,14 +580,14 @@ class DevicePy {
  public:
   static std::string Arch() {
     static const char* soc_names[] = {"AscendC220"};
-    return soc_names[DeviceInfo::Instance().Arch()];
+    return soc_names[System::Instance().Arch()];
   }
   static int CoreNum() {
-    return DeviceInfo::Instance().CoreNum();
+    return System::Instance().CoreNum();
   }
   static std::string SocName() {
     static const char* soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
-    return soc_names[DeviceInfo::Instance().SocName()];
+    return soc_names[System::Instance().SocName()];
   }
 };
 

@@ -115,6 +115,18 @@ class KernelPy {
     SetDeterministic(enable);
   }
 
+  static std::string Arch() {
+    static const char* soc_names[] = {"AscendC220"};
+    return soc_names[System::Instance().Arch()];
+  }
+  static int CoreNum() {
+    return System::Instance().CoreNum();
+  }
+  static std::string SocName() {
+    static const char* soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
+    return soc_names[System::Instance().SocName()];
+  }
+
  protected:
   ShapeRef* GetShapeRef(const py::object &shape);
   void PrepareOutput();

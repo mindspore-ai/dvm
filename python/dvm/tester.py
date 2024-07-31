@@ -19,6 +19,23 @@ import inspect
 import numpy as np
 from ._dvm_py import Kernel, ShapeRef
 
+class PerformanceResult:
+    def __init__(self, results):
+        self.min = results[0]
+        self.max = results[1]
+        self.mean = results[2]
+
+    def __repr__(self):
+        return "kernel time(fun_min_max_avg, us): {}  {}  {}  {}".format(
+            sys._getframe(1).f_code.co_name, self.min, self.max, self.mean)
+
+    def __str__(self):
+        return (
+            f"Kernel Time Summary: {sys._getframe(1).f_code.co_name}\n"
+            f"{'min (us)':<15} {'median (us)':<15} {'max (us)':<15}\n"
+            f"{self.min:<15.4f} {self.max:<15.4f} {self.mean:<15.4f}\n"
+        )
+
 class Tester(Kernel):
     __test__ = False
     def __init__(self, ker_type=""):
@@ -148,7 +165,7 @@ class Tester(Kernel):
     def run_perf(self):
         self.codegen()
         perf = self.perf()
-        print("kernel time(fun_min_max_avg, us): {}  {}  {}  {}".format(sys._getframe(1).f_code.co_name, perf[0], perf[1], perf[2]))
+        return PerformanceResult(perf)
 
     def set_passes(self, *pass_names):
         self.passes = []

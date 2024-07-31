@@ -32,7 +32,7 @@ class PerformanceResult:
     def __str__(self):
         return (
             f"Kernel Time Summary: {sys._getframe(1).f_code.co_name}\n"
-            f"{'min (us)':<15} {'median (us)':<15} {'max (us)':<15}\n"
+            f"{'min (us)':<15} {'max (us)':<15} {'mean (us)':<15}\n"
             f"{self.min:<15.4f} {self.max:<15.4f} {self.mean:<15.4f}\n"
         )
 

@@ -1632,8 +1632,8 @@ void CubeOp::TileV2(vCubeOp *op) {
     // 3. select swizzle
     bool swizzle_zN = m_align_ < n_align_;
     //std::cout << "param: m0=" << m0 << ", n0=" << n0 << ", k0=" << k0 << ", core_loop=" << core_loop << ", block_dim=" << block_dim << ", swizzle_zN=" << swizzle_zN << std::endl;
-    uint32_t swizzle = swizzle_zN ? GetSwizzle(n0, m0, n_loop, m_loop, k_align_, !trans_b_, trans_a_, block_dim, mincost)
-                      : GetSwizzle(m0, n0, m_loop, n_loop, k_align_, trans_a_, !trans_b_, block_dim, mincost);
+    uint32_t swizzle = swizzle_zN ? GetSwizzle(n0, m0, n_loop, m_loop, k_real_, !trans_b_, trans_a_, block_dim, mincost)
+                      : GetSwizzle(m0, n0, m_loop, n_loop, k_real_, trans_a_, !trans_b_, block_dim, mincost);
     if (swizzle) {
       op->m0 = m0_ = m0;
       op->n0 = n0_ = n0;

@@ -364,7 +364,9 @@ void Kernel::StageSwitch(KernelType type) {
 
 NDObject* Kernel::StageLoad(NDObject *stage_store) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
+  auto op = static_cast<StagesKernel *>(kernel_)->Current()->KType() == kStaticMix
+              ? new NDSLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_)
+              : new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
   static_cast<StagesKernel*>(kernel_)->StageLoad(op, static_cast<NDStore*>(stage_store));
   return op;
 }

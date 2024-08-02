@@ -358,15 +358,15 @@ class MatMul {
 template <typename M, typename T>
 __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end) {
   set_padding((uint64_t)0);
+  uint64_t config = 0x1;
+  set_nd_para(config);
+  M mat(op);
   if (mat.flags & V_CUBE_FLAG_ATOMIC_ADD) {
     set_atomic_add();
     set_atomic_f32();
   } else {
     set_atomic_none();
   }
-  uint64_t config = 0x1;
-  set_nd_para(config);
-  M mat(op);
   __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a);
   __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b);
   __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c);

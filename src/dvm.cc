@@ -332,7 +332,7 @@ NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
 }
 
 NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b) {
-  auto obj = new CubeOp(lhs, rhs, trans_a, trans_b);
+  auto obj = new CubeOp(lhs, rhs, trans_a, trans_b, false, false);
   kernel_->Append(obj);
   return obj;
 }

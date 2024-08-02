@@ -258,6 +258,29 @@ class MatMul {
     static constexpr QuantMode_t type = F322BF16;
   };
 
+  __force_inline__ __aicore__ void StoreC_Fp32(__gm__ float *__restrict__ dst, 
+                                               __cc__ float *__restrict__ c, 
+                                               int64_t midx, 
+                                               int64_t nidx, 
+                                               uint8_t unit_flag,
+                                               int64_t m_actual,
+                                               int64_t n_actual) {
+    copy_matrix_cc_to_gm(
+      dst + midx * m0 * n_real + nidx * n0,        // dst
+      c,                                      // src
+      0,                                      // sid
+      n_actual,                               // NSize
+      m_actual,                               // MSize
+      n_real,                                 // dstStride_dst_D
+      RoundUp(m_actual, BLOCK_SIZE),          // srcStride
+      unit_flag,                              // UnitFlagMode
+      NoQuant,                                // QuantPRE
+      0,                                      // ReLUPRE
+      false,                                  // channelSplit
+      true                                    // NZ2ND_EN
+    );
+  }
+
   __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst, 
                                           __cc__ float *__restrict__ c, 
                                           int64_t midx, 
@@ -335,7 +358,12 @@ class MatMul {
 template <typename M, typename T>
 __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end) {
   set_padding((uint64_t)0);
-  set_atomic_none();
+  if (mat.flags & V_CUBE_FLAG_ATOMIC_ADD) {
+    set_atomic_add();
+    set_atomic_f32();
+  } else {
+    set_atomic_none();
+  }
   uint64_t config = 0x1;
   set_nd_para(config);
   M mat(op);
@@ -454,6 +482,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint8_t unit_flag = 0b11;
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
       mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual);
+    } else if (mat.flags & V_CUBE_FLAG_OUT_FP32) {
+      mat.StoreC_Fp32((__gm__ float *__restrict__)gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     } else {
       mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     }

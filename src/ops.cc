@@ -528,7 +528,7 @@ int NDStore::Emit(VectorKernel &k) {
       }
       red_op->GenClearKernel(this);
       code.atomic_clean_.push_back(&(red_op->clear_kernel_->code_));
-      code.reloc_reuse_.emplace_back(std::make_pair(red_op->clear_store_->reloc_addr_, reloc_addr_));
+      code.reloc_reuse_.emplace_back(red_op->clear_store_->reloc_addr_, reloc_addr_);
       return code_size;
     }
   }
@@ -1355,9 +1355,11 @@ void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   std::reverse_copy(nd_.begin(), nd_.end(), shape_.begin());
 }
 
-CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
-  : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
-}
+CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, bool out_fp32, bool atomic_add)
+    : NDObject(lhs, rhs, out_fp32 ? kFloat32 : lhs->type_id_, kCubeOp),
+      trans_a_(trans_a),
+      trans_b_(trans_b),
+      atomic_add_(atomic_add) {}
 
 CubeOp::~CubeOp() {
   if (lhs_->IsLoad()) {
@@ -1419,7 +1421,7 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   }
   auto core_need = m_loop * n_loop;
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
-  auto l2_num = System::Instance().L2Size() / ITEM_SIZE[type_id_];
+  auto l2_num = System::Instance().L2Size() / ITEM_SIZE[lhs_->type_id_];
   uint32_t block_dim = core_need < core_num ? core_need : core_num;
   uint32_t m_once = block_dim < n_loop ? m0 : block_dim / n_loop * m0;
 
@@ -1442,7 +1444,7 @@ void CubeOp::Tile(vCubeOp *op) {
   auto n_round = RoundUp(static_cast<uint32_t>(n_align_), BLOCK_SIZE);
   auto pri_axis = pri_flag ? m_round : n_round;
   auto axis = pri_flag ? n_round : m_round;
-  auto axis_max = AXES_ALIGN_SIZE / ITEM_SIZE[type_id_];
+  auto axis_max = AXES_ALIGN_SIZE / ITEM_SIZE[lhs_->type_id_];
   auto pri_axis0_max = pri_axis < axis_max ? pri_axis : axis_max;
   auto axis0_max = axis < axis_max ? axis : axis_max;
   auto l0c_num = System::Instance().L0CSize() / FP32_SIZE;
@@ -1472,14 +1474,14 @@ void CubeOp::Tile(vCubeOp *op) {
   // k0
   uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
   uint32_t kBlockSize = BLOCK_SIZE;
-  auto l1_ping_pong_num = System::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
+  auto l1_ping_pong_num = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_];
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
   op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
   if (op->k0 > CONST_512) {
     op->k0 = RoundDown(op->k0, CONST_512);
   }
-  if (op->k0 > op->k_align) {
-    op->k0 = op->k_align;
+  if (op->k0 > op->k_real) {
+    op->k0 = op->k_real;
     if (op->k0 % BLOCK_SIZE) {
       op->k0 += BLOCK_SIZE - op->k0 % BLOCK_SIZE;
     }
@@ -1531,12 +1533,12 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   op->swizzle = swizzle_dir << 16 | swizzle_cnt;
 }
 
-static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, uint64_t minor_loop, uint64_t k_align,
+static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, uint64_t minor_loop, uint64_t k_real,
                            bool major_align, bool minor_align, uint32_t block_dim, float &mincost) {
   constexpr float L2_BW = 5.0f;
   const uint64_t CACHE_LINE = 512 / ITEM_SIZE[kFloat16];
   uint32_t core_num = System::Instance().CoreNum(CoreType::kCube);
-  uint64_t cache_limit = (System::Instance().L2Size() / ITEM_SIZE[kFloat16] - 256 * 128 * 8 * core_num) / k_align;
+  uint64_t cache_limit = (System::Instance().L2Size() / ITEM_SIZE[kFloat16] - 256 * 128 * 8 * core_num) / k_real;
   uint64_t swizzle_cnt = 0;
   uint64_t minsize = major * major_loop + minor * minor_loop;
   for (uint64_t cnt = std::min(static_cast<uint64_t>(block_dim), major_loop); cnt >= 1; --cnt) {
@@ -1588,7 +1590,7 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
 
 void CubeOp::TileV2(vCubeOp *op) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
-  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[type_id_];
+  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_];
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   float mincost = 3.125f;
   uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
@@ -1641,7 +1643,7 @@ void CubeOp::TileV2(vCubeOp *op) {
       core_loop_ = core_loop;
     }
   };
-  uint32_t align_max = 512 / ITEM_SIZE[type_id_];
+  uint32_t align_max = 512 / ITEM_SIZE[lhs_->type_id_];
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
     for (uint32_t y = align_max; y >= x; y >>= 1) {
       tile_select(x, y);
@@ -1664,7 +1666,6 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->k_real = k_real_;
   op->a_size = lhs_->nd_[0] * lhs_->nd_[1];
   op->b_size = rhs_->nd_[0] * rhs_->nd_[1];
-
   if (lhs_->IsLoad()) {
     auto a = static_cast<NDAccess*>(lhs_);
     op->gm_a = reinterpret_cast<uint64_t>(a->gm_);
@@ -1685,6 +1686,8 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->gm_c = reinterpret_cast<uint64_t>(c->gm_);
   op->flags = trans_a_ ? V_CUBE_FLAG_TRANS_A : 0;
   if (trans_b_)  op->flags |= V_CUBE_FLAG_TRANS_B;
+  if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
+  if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
   auto dtype = lhs_->type_id_;
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;

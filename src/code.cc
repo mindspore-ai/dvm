@@ -835,16 +835,17 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
     a->reloc_addr_ = a->reloc_addr_ - old_base + new_base;
   }
   if (!code.reloc_workspaces_.empty()) {
-    for (auto &r: code.reloc_workspaces_) {
-      reloc_workspaces_.emplace_back(std::make_pair(r.first - old_base + new_base, r.second + ws_offset));
+    for (auto &[dst, offset]: code.reloc_workspaces_) {
+      reloc_workspaces_.emplace_back(dst - old_base + new_base, offset + ws_offset);
     }
   }
   if (!code.reloc_reuse_.empty()) {
-    for (auto &r: code.reloc_reuse_) {
-      uint64_t *src = r.second - old_base + new_base;
-      uint64_t *dst = r.first >= old_base && r.first < reinterpret_cast<uint64_t*>(code.data_ + code.data_size_)
-                    ? r.first - old_base + new_base : r.first;
-      reloc_reuse_.emplace_back(std::make_pair(dst, src));
+    for (auto &[old_dst, old_src] : code.reloc_reuse_) {
+      uint64_t *src = old_src - old_base + new_base;
+      uint64_t *dst = old_dst >= old_base && old_dst < reinterpret_cast<uint64_t *>(code.data_ + code.data_size_)
+                        ? old_dst - old_base + new_base
+                        : old_dst;
+      reloc_reuse_.emplace_back(dst, src);
     }
   }
   if (!code.atomic_clean_.empty()) {

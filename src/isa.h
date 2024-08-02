@@ -999,6 +999,8 @@ struct vStoreStatus {
 #define V_CUBE_FLAG_GROUP_SET 4
 #define V_CUBE_FLAG_PRE_WAIT  8
 #define V_CUBE_FLAG_PINGPONG_STORE 16
+#define V_CUBE_FLAG_OUT_FP32 32
+#define V_CUBE_FLAG_ATOMIC_ADD 64
 
 struct vCubeOp {
   enum {FP16, BF16};

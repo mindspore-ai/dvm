@@ -1486,16 +1486,16 @@ uint64_t MixKernel::CodeGen() {
   }
   code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
   if (inplace_store) {
-    code_.reloc_reuse_.emplace_back(std::make_pair(&link_cube->gm_c, inplace_store->reloc_addr_));
-    code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, inplace_store->reloc_addr_));
+    code_.reloc_reuse_.emplace_back(&link_cube->gm_c, inplace_store->reloc_addr_);
+    code_.reloc_reuse_.emplace_back(cube_op_->output_->reloc_addr_, inplace_store->reloc_addr_);
     return 0;
   } else if (cube_op_->output_->IsStore()) {
     cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
-    code_.reloc_reuse_.emplace_back(std::make_pair(sload_->reloc_addr_, &link_cube->gm_c));
+    code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
     return 0;
   } else {
-    code_.reloc_workspaces_.emplace_back(std::make_pair(&link_cube->gm_c, 0));
-    code_.reloc_reuse_.emplace_back(std::make_pair(cube_op_->output_->reloc_addr_, &link_cube->gm_c));
+    code_.reloc_workspaces_.emplace_back(&link_cube->gm_c, 0);
+    code_.reloc_reuse_.emplace_back(cube_op_->output_->reloc_addr_, &link_cube->gm_c);
     return cube_op_->PostFusionWorkSpace();
   }
   return 0;
@@ -1600,13 +1600,13 @@ uint64_t StagesKernel::CodeGen() {
         if (op->IsStore()) {
           if (op->flags_ == STAGE_FLAG_REUSE) {
             auto reuse = op->GetOutputReuse();
-            code_.reloc_reuse_.emplace_back(std::make_pair(op->reloc_addr_, reuse->reloc_addr_));
+            code_.reloc_reuse_.emplace_back(op->reloc_addr_, reuse->reloc_addr_);
           } else {
             auto offset = op->GetWorkspace();
-            code_.reloc_workspaces_.emplace_back(std::make_pair(op->reloc_addr_, offset));
+            code_.reloc_workspaces_.emplace_back(op->reloc_addr_, offset);
           }
         } else {
-          code_.reloc_reuse_.emplace_back(std::make_pair(op->reloc_addr_, op->GetStageStore()->reloc_addr_));
+          code_.reloc_reuse_.emplace_back(op->reloc_addr_, op->GetStageStore()->reloc_addr_);
         }
       }
     }

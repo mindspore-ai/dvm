@@ -487,7 +487,7 @@ class ReduceOp : public _ReduceOp {
 
 class CubeOp : public NDObject {
  public:
-  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
+  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, bool out_fp32, bool atomic_add);
   ~CubeOp() override;
   int Emit(VectorKernel &k) override { return 0; }
   void CodeGen(vCubeOp *code);
@@ -522,6 +522,7 @@ class CubeOp : public NDObject {
 
   bool trans_a_{false};
   bool trans_b_{false};
+  bool atomic_add_{false};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
 };

@@ -61,13 +61,13 @@ class Code {
 
   int Launch(void *workspace, void* stream) {
     if (workspace) {
-      for (auto &r : reloc_workspaces_) {
-        *(r.first) = reinterpret_cast<uint64_t>(static_cast<char*>(workspace) + r.second);
+      for (auto &[dst, offset] : reloc_workspaces_) {
+        *dst = reinterpret_cast<uint64_t>(static_cast<char *>(workspace) + offset);
       }
     }
     if (!reloc_reuse_.empty()) {
-      for (auto &r : reloc_reuse_) {
-        *(r.first) = *(r.second);
+      for (auto &[dst, src] : reloc_reuse_) {
+        *dst = *src;
       }
     }
     if (target_ == kTargetMix) {

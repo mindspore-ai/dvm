@@ -162,7 +162,7 @@ void MsProfHelper::UpdateReportNode(uint32_t block_dim) {
   size_t total_size = info_->input_size + info_->output_size;
   for (size_t i = 0U; i < total_size; i += MSPROF_GE_TENSOR_DATA_NUM) {
     UpdateTensorShape(i, std::min(total_size, (i + MSPROF_GE_TENSOR_DATA_NUM)),
-                      &addition_info_.tensor_info_wrappers[i]);
+                      &addition_info_.tensor_info_wrappers[i / MSPROF_GE_TENSOR_DATA_NUM]);
   }
 }
 

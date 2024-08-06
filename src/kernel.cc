@@ -1563,9 +1563,6 @@ uint64_t StagesKernel::CodeGen() {
     } else if (stage_code.block_dim_ > code_.block_dim_) {
       code_.block_dim_= stage_code.block_dim_;
     }
-    if (!stage_code.atomic_clean_.empty()) {
-      for (auto ac : stage_code.atomic_clean_) code_.atomic_clean_.push_back(ac);
-    }
   }
   uint64_t ws_size = AllocWorkspace();
   // link
@@ -1600,7 +1597,7 @@ uint64_t StagesKernel::CodeGen() {
         if (op->IsStore()) {
           if (op->flags_ == STAGE_FLAG_REUSE) {
             auto reuse = op->GetOutputReuse();
-            code_.reloc_reuse_.emplace_back(op->reloc_addr_, reuse->reloc_addr_);
+            code_.reloc_reuse_.emplace(code_.reloc_reuse_.begin(), std::make_pair(op->reloc_addr_, reuse->reloc_addr_));
           } else {
             auto offset = op->GetWorkspace();
             code_.reloc_workspaces_.emplace_back(op->reloc_addr_, offset);
@@ -1646,7 +1643,7 @@ uint64_t StagesKernel::AllocWorkspace() {
     for (auto io : stage->ios) {
       if (io->IsLoad() && io->is_stage_) {
         auto store = io->GetStageStore();
-        if (lives.find(store) != lives.end()) continue;
+        if (!store->is_stage_ || lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == kStaticShape) { // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
           auto inplace_out = static_cast<VectorKernel*>(stage->kernel)->FindInplaceStore(io,

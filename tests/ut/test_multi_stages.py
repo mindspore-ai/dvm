@@ -155,3 +155,42 @@ def test_stage_extern_code():
     expect = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
     g2 = t.store_expect(f, expect, 1e-2)
     assert(t.run_check())
+
+def test_stage_vec_reduce():
+    np.random.seed(1)
+    a0 = np.random.normal(-1, 1, [1, 2048, 5120]).astype(np.float32)
+    a1 = np.random.normal(-1, 1, [5120]).astype(np.float32)
+    e1 = a0 * a0
+    e2 = np.sum(e1, (2,), keepdims=True)
+    e3 = e2 * 0.000195313
+    e4 = e3 + 1e-6
+    e5 = 1.0 / np.sqrt(e4)
+    e6 = a0 * e5
+    e7 = e6 * a1
+
+    t = Tester("stages")
+    t.stage_switch("static")
+    x0 = t.load(a0, "bfloat16")
+    y0 = t.cast(x0, "float32")
+    o0 = t.store_expect(y0, a0, 1e-2)
+    y1 = t.binary("Mul", y0, y0)
+    y2 = t.reduce("sum", y1, (2,), True)
+    s2 = t.stage_store(y2)
+
+    t.stage_switch("static")
+    l2 = t.stage_load(s2)
+    y3 = t.binary("Mul", l2, 0.000195313)
+    y4 = t.binary("Add", y3, 1e-6)
+    y5 = t.unary("Reciprocal", t.unary("Sqrt", y4))
+    o5 = t.store_expect(y5, e5, 1e-2)
+
+    t.stage_switch("static")
+    l0 = t.stage_load(o0)
+    l5 = t.stage_load(o5)
+    y6 = t.binary("Mul", l0, l5)
+    x1 = t.load(a1)
+    y7 = t.binary("Mul", y6, x1)
+    y8 = t.cast(y7, "bfloat16")
+    t.store_expect(y8, e7, 1e-2)
+    t.set_passes("CompactPeakLiveness", "ReorderLoad", "ReorderStore", "InsertRemovePad")
+    assert(t.run_check())

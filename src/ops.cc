@@ -1377,7 +1377,9 @@ void CubeOp::NormalizeCube() {
   m_align_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
   // Only pad the rows, which may result in matrices A and B where some K matrices are padded and some are not.
   // Therefore, we take the maximum among them.
-  k_align_ = std::max(trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0], trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1]);
+  if (k_align_ == 0) {
+    k_align_ = std::max(trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0], trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1]);
+  }
   n_align_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
   m_real_ = m_align_;
   k_real_ = k_align_;
@@ -1666,6 +1668,8 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->k_real = k_real_;
   op->a_size = lhs_->nd_[0] * lhs_->nd_[1];
   op->b_size = rhs_->nd_[0] * rhs_->nd_[1];
+  op->offset_a = offset_a_;
+  op->offset_b = offset_b_;
   if (lhs_->IsLoad()) {
     auto a = static_cast<NDAccess*>(lhs_);
     op->gm_a = reinterpret_cast<uint64_t>(a->gm_);

@@ -367,8 +367,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   } else {
     set_atomic_none();
   }
-  __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a);
-  __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b);
+  __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a) + op->offset_a;
+  __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b) + op->offset_b;
   __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c);
   int64_t offset = (op->m0 * op->k0 * sizeof(T) + 256 - 1) / 256 * 256;  // TODO: int8 is 512
   __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);

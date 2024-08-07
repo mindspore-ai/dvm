@@ -26,8 +26,24 @@ class Code {
  public:
   enum { kTargetVec = 0, kTargetCube, kTargetMix };
   Code() = default;
-  Code(const Code&obj) = delete;
-  Code&operator=(const Code&) = delete;
+  Code(const Code &obj) = delete;
+  Code &operator=(const Code &) = delete;
+  Code &operator=(Code &&other) {
+    if (this != &other) {
+      data_ = other.data_;
+      data_size_ = other.data_size_;
+      block_dim_ = other.block_dim_;
+      target_ = other.target_;
+      extern_code_ = other.extern_code_;
+      mem_size_ = other.mem_size_;
+      atomic_clean_ = std::move(other.atomic_clean_);
+      reloc_workspaces_ = std::move(other.reloc_workspaces_);
+      reloc_reuse_ = std::move(other.reloc_reuse_);
+
+      other.data_ = nullptr;
+    }
+    return *this;
+  }
   ~Code();
   void Clear() {
     atomic_clean_.clear();
@@ -97,11 +113,11 @@ class Code {
   std::vector<Code*> atomic_clean_;
   std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
   std::vector<std::pair<uint64_t*, uint64_t*>> reloc_reuse_;
+  size_t mem_size_{0};
 
  private:
   int LaunchAtomicClean(void* stream);
   int LaunchEx(void *workspace, void* stream);
-  size_t mem_size_{0};
 };
 } // namespace dvm 
 #endif // _DVM_CODE_H_

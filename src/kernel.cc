@@ -25,6 +25,7 @@
 
 namespace dvm {
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
+constexpr int64_t MAX_K = UINT16_MAX / 2;
 
 class CodeGenHelper {
  public:
@@ -1264,10 +1265,7 @@ uint64_t VKernelD::CodeGen() {
   code_.Clear();
   if (elim_reshape_) {
     RecoverOpRelation();
-    for (auto op : build_ops_) {
-      op->Normalize(objects_);
-      objects_.emplace_back(op);
-    }
+    Normalize();
     RecordOpRelation();
     pass::BasicBlock bb(objects_, build_ops_); // build_ops_ is not used
     pass::EliminateReshape(bb);
@@ -1375,6 +1373,7 @@ void VKernelP::DumpKernel(std::ostringstream &oss, const std::string &indent) {
 MixKernel::~MixKernel() {
   if (post_fusion_) delete post_fusion_;
   if (cube_op_) delete cube_op_;
+  if (stage_kernel_) delete stage_kernel_;
 }
 
 void MixKernel::Append(NDObject *obj) {
@@ -1399,12 +1398,12 @@ void MixKernel::Append(NDObject *obj) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
           sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
-          post_fusion_->Append(sload_);
+          post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;
       } else if (op->IsLoad() && op->flags_ == LOAD_PENDING) {
         op->flags_ = 0;
-        post_fusion_->Append(op);
+        post_fusion_->build_ops_.emplace_back(op);
       }
     };
     if (obj->lhs_) {
@@ -1416,13 +1415,118 @@ void MixKernel::Append(NDObject *obj) {
         }
       }
     }
-    post_fusion_->Append(obj);
+    post_fusion_->build_ops_.emplace_back(obj);
   }
+}
+
+void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node) {
+  auto InplaceOp = [replaced_node, replacing_node](NDObject *&op) {
+    if (op && op == replaced_node) {
+      op = replacing_node;
+    }
+  };
+  for (auto &op : post_fusion_->build_ops_) {
+    if (op != replaced_node) {
+      InplaceOp(op->lhs_);
+      InplaceOp(op->rhs_);
+      if (op->GetObjectType() == ObjectType::kSelect) {
+        InplaceOp(static_cast<SelectOp *>(op)->cond_);
+      }
+      stage_kernel_->GetImpl()->Append(op);
+    }
+  }
+  post_fusion_->build_ops_.clear();
+  if (replaced_node) {
+    post_fusion_->Append(replaced_node);
+  }
+}
+
+uint64_t MixKernel::SplitKCodeGen() {
+  size_t k_stride = MAX_K  >> 1;
+  auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
+  size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
+
+  ShapeRef k_shape_ref_[2];
+  ShapeRef k_tail_shape_ref_[2];
+  std::vector<int64_t> k_shape_[2];
+  std::vector<int64_t> k_tail_shape_[2];
+  auto MakeSplitKShape = [&](ShapeRef *src_shape, size_t input_index) {
+    size_t k_index;
+    if (input_index == 0) {
+      k_index = cube_op_->trans_a_ ? src_shape->size - 2 : src_shape->size - 1;
+    } else {
+      k_index = cube_op_->trans_b_ ? src_shape->size - 1 : src_shape->size - 2;
+    }
+    for (size_t i = 0; i < src_shape->size; i++) {
+      k_shape_[input_index].emplace_back(src_shape->data[i]);
+      k_tail_shape_[input_index].emplace_back(src_shape->data[i]);
+    }
+    k_shape_[input_index][k_index] = k_stride;
+    k_tail_shape_[input_index][k_index] = k_tail;
+    k_shape_ref_[input_index] = k_shape_[input_index];
+    k_tail_shape_ref_[input_index] = k_tail_shape_[input_index];
+  };
+  MakeSplitKShape(cube_op_->lhs_->shape_ref_, 0);
+  MakeSplitKShape(cube_op_->rhs_->shape_ref_, 1);
+
+  stage_kernel_ = new Kernel();
+  stage_kernel_->Reset(KernelType::kStaticStages);
+  auto real_kernel = static_cast<StagesKernel*>(stage_kernel_->GetImpl());
+  std::vector<NDAccess *> split_lhs;
+  std::vector<NDAccess *> split_rhs;
+  std::vector<NDAccess *> split_out;
+  for (size_t i = 0; i < split_num; i++) {
+    size_t offset_a = i * k_stride;
+    size_t offset_b = i * k_stride;
+    if (cube_op_->trans_a_) offset_a *= cube_op_->m_align_;
+    if (!cube_op_->trans_b_) offset_b *= cube_op_->n_align_;
+    stage_kernel_->StageSwitch(KernelType::kStaticMix);
+    auto x = stage_kernel_->Load(nullptr, i + 1 == split_num ? &k_tail_shape_ref_[0] : &k_shape_ref_[0],
+                                 cube_op_->lhs_->type_id_);
+    auto y = stage_kernel_->Load(nullptr, i + 1 == split_num ? &k_tail_shape_ref_[1] : &k_shape_ref_[1],
+                                 cube_op_->rhs_->type_id_);
+    (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
+    (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
+    auto output = new CubeOp(x, y, cube_op_->trans_a_, cube_op_->trans_b_, true, i != 0);
+    real_kernel->Append(output);
+    output->SetSplitK(cube_op_->k_align_, offset_a, offset_b);
+    (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, output)));
+  }
+  auto matmul_fp32 = split_out.back()->lhs_;
+  auto matmul_fp16 = stage_kernel_->Cast(matmul_fp32, cube_op_->lhs_->type_id_);
+  if (post_fusion_) {
+    EmplacePostFusion(sload_, matmul_fp16);
+  }
+  NDAccess *real_out{nullptr};
+  if (post_fusion_ == nullptr || cube_op_->output_ != sload_) {
+    real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_fp16));
+  }
+  auto stage_workspace_size = stage_kernel_->CodeGen();
+  auto workspace_size = stage_workspace_size + split_out.back()->Size();
+  code_ = std::move(real_kernel->code_);
+
+  auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
+  auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
+  src_lhs->reloc_addr_ = split_lhs[0]->reloc_addr_;
+  src_rhs->reloc_addr_ = split_rhs[0]->reloc_addr_;
+  code_.reloc_workspaces_.emplace(code_.reloc_workspaces_.begin(), split_out[0]->reloc_addr_, stage_workspace_size);
+  for (size_t i = 1; i < split_num; i++) {
+    code_.reloc_reuse_.emplace_back(split_lhs[i]->reloc_addr_, src_lhs->reloc_addr_);
+    code_.reloc_reuse_.emplace_back(split_rhs[i]->reloc_addr_, src_rhs->reloc_addr_);
+    code_.reloc_workspaces_.emplace(code_.reloc_workspaces_.begin(), split_out[i]->reloc_addr_, stage_workspace_size);
+  }
+  if (real_out) {
+    cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
+  }
+  return workspace_size;
 }
 
 uint64_t MixKernel::CodeGen() {
   if (sload_ && cube_op_->output_ == nullptr) {
     cube_op_->output_ = sload_;
+  }
+  if (cube_op_->k_real_ > MAX_K) {
+    return SplitKCodeGen();
   }
   size_t size = code_.HeadSize() + sizeof(vCubeOp);
   vCubeOp cube_code;
@@ -1433,6 +1537,7 @@ uint64_t MixKernel::CodeGen() {
   uint64_t head_simd = 0;
   NDAccess *inplace_store = nullptr;
   if (post_fusion_) {
+    post_fusion_->Normalize();
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
     post_fusion_->NormalizeDomain();

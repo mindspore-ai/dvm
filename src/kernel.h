@@ -128,6 +128,12 @@ class VectorKernel : public VKernel {
 
   void BuildDomain(const std::vector<NDObject *> &objects);
   void NormalizeDomain() { root_dom_.Normalize(this); }
+  void Normalize() {
+    for (auto op : build_ops_) {
+      op->Normalize(objects_);
+      objects_.emplace_back(op);
+    }
+  }
 
   int Analyze();
   void DoCodeGen(uint64_t core_limit);
@@ -220,9 +226,13 @@ class MixKernel : public VKernel {
   void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
+  void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
+  uint64_t SplitKCodeGen();
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
   NDAccess *sload_{nullptr};
+
+  Kernel *stage_kernel_{nullptr};
 };
 
 class StagesKernel : public VKernel {

@@ -129,7 +129,7 @@ class KernelPy {
 
  protected:
   ShapeRef* GetShapeRef(const py::object &shape);
-  void PrepareOutput();
+  void PrepareIO();
 
   struct LoadInfo {
     std::vector<int64_t> shape;

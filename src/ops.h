@@ -497,6 +497,11 @@ class CubeOp : public NDObject {
     uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];
     return core_loop_ < block_dim_ * 2 ? pingpong_size * core_loop_ : pingpong_size * block_dim_ * 2;
   }
+  void SetSplitK(int64_t k, size_t offset_a, size_t offset_b) {
+    k_align_ = k;
+    offset_a_ = offset_a;
+    offset_b_ = offset_b;
+  }
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};
@@ -510,6 +515,8 @@ class CubeOp : public NDObject {
   int64_t m0_{0};
   int64_t n0_{0};
   int64_t k0_{0};
+  bool trans_a_{false};
+  bool trans_b_{false};
   bool pingpong_store_{false};
 
  protected:
@@ -520,8 +527,8 @@ class CubeOp : public NDObject {
 
   void TileV2(vCubeOp *op);
 
-  bool trans_a_{false};
-  bool trans_b_{false};
+  size_t offset_a_{0};
+  size_t offset_b_{0};
   bool atomic_add_{false};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;

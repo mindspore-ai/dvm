@@ -427,7 +427,7 @@ py::object KernelPy::DumpGraph() {
 }
 
 void KernelPy::Run() {
-  PrepareOutput();
+  PrepareIO();
   ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   auto ret = aclrtSynchronizeStream(nullptr);
   if (ret != 0) {
@@ -443,7 +443,7 @@ py::object KernelPy::Perf() {
 #ifdef VK_SIM_MODEL
   return py::none();
 #else
-  PrepareOutput();
+  PrepareIO();
   // warm up
   ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
@@ -507,9 +507,6 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
   ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
   op->gm_ = reinterpret_cast<uint8_t*>(info.dev);
-  if (op->reloc_addr_) {
-    op->Reloc(info.dev);
-  }
   if (kernel_.GetImpl()->KType() == kDynShape) {
     info.shape.resize(buf.ndim);
     for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
@@ -551,7 +548,10 @@ void KernelPy::ClearStoreMemory(const py::object &store) {
   it->second.clear_mem = true;
 }
 
-void KernelPy::PrepareOutput() {
+void KernelPy::PrepareIO() {
+  for (auto &[op, info] : loads_) {
+    static_cast<NDAccess *>(op)->Reloc(info.dev);
+  }
   for (auto &it : stores_) {
     auto op = it.first;
     auto &info = it.second;

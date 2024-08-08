@@ -1646,6 +1646,7 @@ void CubeOp::TileV2(vCubeOp *op) {
       core_loop_ = core_loop;
     }
   };
+  block_dim_ = 0;
   uint32_t align_max = 512 / ITEM_SIZE[lhs_->type_id_];
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
     for (uint32_t y = align_max; y >= x; y >>= 1) {
@@ -1653,7 +1654,7 @@ void CubeOp::TileV2(vCubeOp *op) {
       if (x != y) {
         tile_select(y, x);
       }
-      if (block_dim_ == core_num) {
+      if (block_dim_ > 0) {
         return;
       }
     }

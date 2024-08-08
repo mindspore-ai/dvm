@@ -92,6 +92,7 @@ def test_reduce_atomic(dim):
     [[3, 4, 120, 136], (0, 2, 3)], # from sdxl:  two atomic dim range
     [[3, 1280, 2, 2], (0,2,3)], # tile_size_ bugfix
     [[128, 703], (0,)], # reducey with tail=1: 40 blockdim: 703=18*39+1
+    [[1, 1024, 14, 14], (0, 2, 3)], # from video chat: output axis not divided
     [[11, 6000], (0,)]]) # reducey red_size = 1
 def test_reduce(in_shape, dims):
     t = Tester()

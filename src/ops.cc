@@ -502,6 +502,7 @@ int NDStore::Emit(VectorKernel &k) {
         if (tail_dim_ < 0 || red_op->InRange(tail_dim_)) {
           op.iter_tail = op.iter_num;
         } else {
+          ASSERT(op.iter_num > 1); // inner reduce is divided. outer reduce is not lead
           op.iter_tail = op.iter_num / nd_[tail_dim_] * tail_size_;
         }
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
@@ -1272,7 +1273,7 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
 }
 
 void ReduceOp::Tile(const TileParam &tp) {
-  if (tp.start <= end_dim_) {
+  if (tp.num > 1 && tp.start <= end_dim_) {
     NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
     for (NDObject *p = this; p != input; p = p->lhs_) {
       _ReduceOp *op = static_cast<_ReduceOp*>(p);

@@ -474,6 +474,17 @@ void RootDomain::GroupTile(int dim, int64_t space, int64_t tile) {
   PropDomain::TileProp(tp);
 }
 
+void RootDomain::Align(int depth, int64_t space) {
+  TileParam tp;
+  tp.start = 0;
+  tp.end = depth - 1;
+  tp.num = 1;
+  tp.tile = space;
+  tp.tail = 0;
+  tp.group_tile = false;
+  PropDomain::TileProp(tp);
+}
+
 class ReshapeDomain : public PropDomain {
  public:
   ReshapeDomain(NDObject *head, const std::vector<int64_t> &src, const std::vector<int64_t> &dst)
@@ -604,7 +615,7 @@ class ShapeTiling {
       }
     } while(tile_size > tile_size_limit_ || (num > 1 && num == fold.space));
     if (align_depth > 1) {
-      prim_dom_.Tile(0, align_depth - 1, prim_dom_.align_.space, 1);
+      prim_dom_.Align(align_depth, prim_dom_.align_.space);
     }
   }
 

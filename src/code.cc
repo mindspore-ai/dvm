@@ -877,4 +877,60 @@ int Code::LaunchEx(void *workspace, void* stream) {
 #endif
 }
 
+StageLinker::StageLinker(Code &code, int64_t stage_num, int64_t total_size) : code_(code) {
+  constexpr int64_t ffts_size = sizeof(uint64_t);
+  code.Alloc(total_size + ffts_size - ffts_size * stage_num);
+  code_.target_ = Code::kTargetMix;
+  code_.block_dim_ = 0;
+  *reinterpret_cast<uint64_t*>(code_.data_) = 0; //ffts
+  code_.data_size_ = ffts_size;
+}
+
+int StageLinker::Add(const Code &code, int64_t ws_offset, const std::vector<NDAccess*> &ios) {
+  constexpr int64_t ffts_size = sizeof(uint64_t);
+  int64_t code_offset = code_.data_size_;
+  code_.data_size_ += code.data_size_ - ffts_size;
+  if (code.target_ == Code::kTargetVec) {
+    auto group_num = (code.block_dim_ + 1) / 2;
+    if (group_num > code_.block_dim_) code_.block_dim_ = group_num;
+  } else if (code.block_dim_ > code_.block_dim_) {
+    code_.block_dim_ = code.block_dim_;
+  }
+  code_.LinkBody(code_offset + sizeof(uint64_t), code, ios, ws_offset);
+  auto cur_entry = *reinterpret_cast<uint64_t*>(code.data_ + ffts_size);
+  if (!code_offsets_.empty()) { // add sync
+    auto pre_code = code_.data_ + code_offsets_.back();
+    auto pre_entry = *reinterpret_cast<uint64_t*>(pre_code);
+    pre_entry |= V_ENTRY_FLAG_NEXT_STAGE;
+    if ((pre_entry & V_ENTRY_FLAG_MIX) &&
+        !(reinterpret_cast<vCubeOp*>(pre_code + sizeof(uint64_t))->flags & V_CUBE_FLAG_GROUP_SET)) { // cube->vector/cube/mix
+      if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
+        cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
+      }
+    } else if (cur_entry & V_ENTRY_FLAG_MIX) { // vector/mix->cube/mix
+      auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + code_offset + sizeof(uint64_t));
+      cube->flags |= V_CUBE_FLAG_PRE_WAIT;
+    }
+    *reinterpret_cast<uint64_t*>(pre_code) = pre_entry;
+  }
+  *reinterpret_cast<uint64_t*>(code_.data_ + code_offset) = cur_entry;
+  int index = code_offsets_.size();
+  code_offsets_.push_back(code_offset);
+  return index;
+}
+
+void StageLinker::RelocWorkspace(NDAccess* op, int64_t ws_offset) {
+  code_.reloc_workspaces_.emplace_back(op->reloc_addr_, ws_offset);
+}
+
+void StageLinker::RelocReuse(NDAccess* op, NDAccess* reuse) {
+  auto reloc_addr = op->reloc_addr_;
+  for (auto it = code_.reloc_reuse_.begin(); it != code_.reloc_reuse_.end(); ++it) {
+    if (it->second == reloc_addr) {
+      code_.reloc_reuse_.emplace(it, reloc_addr, reuse->reloc_addr_);
+      return;
+    }
+  }
+  code_.reloc_reuse_.emplace_back(reloc_addr, reuse->reloc_addr_);
+}
 }  // namespace dvm

@@ -1653,63 +1653,28 @@ void StagesKernel::Append(NDObject *obj) {
 #define STAGE_FLAG_REUSE      2
 
 uint64_t StagesKernel::CodeGen() {
-  constexpr int64_t ffts_size = sizeof(uint64_t);
-  uint64_t code_size = ffts_size;
-  code_.target_ = Code::kTargetMix;
-  code_.block_dim_ = 0;
+  uint64_t code_size = 0;
   for (auto &s : stages_) {
-    s->ws_size = s->kernel->CodeGen();
-    s->code_offset = code_size;
-    auto &stage_code = s->kernel->code_;
-    code_size += stage_code.data_size_ - ffts_size;
-    if (stage_code.target_ == Code::kTargetVec) {
-      auto group_num = (stage_code.block_dim_ + 1) / 2;
-      if (group_num > code_.block_dim_) code_.block_dim_ = group_num;
-    } else if (stage_code.block_dim_ > code_.block_dim_) {
-      code_.block_dim_= stage_code.block_dim_;
-    }
+    auto kernel = s->kernel;
+    s->ws_size = kernel->CodeGen();
+    code_size += kernel->code_.data_size_;
   }
   uint64_t ws_size = AllocWorkspace();
-  // link
-  code_.Alloc(code_size);
-  code_.data_size_ = code_size;
-  *reinterpret_cast<uint64_t*>(code_.data_) = 0; //ffts
-  for (size_t sidx = 0; sidx < stages_.size(); ++sidx) {
-    auto stage = stages_[sidx];
-    auto &src_code = stage->kernel->code_;
-    code_.LinkBody(stage->code_offset + sizeof(uint64_t), src_code, stage->ios, stage->ws_offset);
-    auto cur_entry = *reinterpret_cast<uint64_t*>(src_code.data_ + ffts_size);
-    if (sidx > 0) { // add sync
-      auto pre_code = code_.data_ + stages_[sidx - 1]->code_offset;
-      auto pre_entry = *reinterpret_cast<uint64_t*>(pre_code);
-      pre_entry |= V_ENTRY_FLAG_NEXT_STAGE;
-      if ((pre_entry & V_ENTRY_FLAG_MIX) &&
-         !(reinterpret_cast<vCubeOp*>(pre_code + sizeof(uint64_t))->flags & V_CUBE_FLAG_GROUP_SET)) { // cube->vector/cube/mix
-        if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
-          cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
-        }
-      } else if (cur_entry & V_ENTRY_FLAG_MIX) { // vector/mix->cube/mix
-        auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + stage->code_offset + sizeof(uint64_t));
-        cube->flags |= V_CUBE_FLAG_PRE_WAIT;
-      }
-      *reinterpret_cast<uint64_t*>(pre_code) = pre_entry;
-    }
-    *reinterpret_cast<uint64_t*>(code_.data_ + stage->code_offset) = cur_entry;
+  StageLinker linker(code_, stages_.size(), code_size);
+  for (auto &s : stages_) {
+    linker.Add(s->kernel->code_, s->ws_offset, s->ios);
   }
   for (auto stage : stages_) {
     for (auto op : stage->ios) {
-      if (op->is_stage_) {
-        if (op->IsStore()) {
-          if (op->flags_ == STAGE_FLAG_REUSE) {
-            auto reuse = op->GetOutputReuse();
-            code_.reloc_reuse_.emplace(code_.reloc_reuse_.begin(), std::make_pair(op->reloc_addr_, reuse->reloc_addr_));
-          } else {
-            auto offset = op->GetWorkspace();
-            code_.reloc_workspaces_.emplace_back(op->reloc_addr_, offset);
-          }
+      if (!op->is_stage_) continue;
+      if (op->IsStore()) {
+        if (op->flags_ == STAGE_FLAG_REUSE) {
+          linker.RelocReuse(op, op->GetOutputReuse());
         } else {
-          code_.reloc_reuse_.emplace_back(op->reloc_addr_, op->GetStageStore()->reloc_addr_);
+          linker.RelocWorkspace(op, op->GetWorkspace());
         }
+      } else {
+        linker.RelocReuse(op, op->GetStageStore());
       }
     }
   }

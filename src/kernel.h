@@ -287,7 +287,6 @@ class StagesKernel : public VKernel {
     VKernel* kernel;
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
-    int64_t code_offset{-1};
     std::vector<NDAccess*> ios;
   };
   std::vector<Stage*> stages_;

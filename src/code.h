@@ -119,5 +119,19 @@ class Code {
   int LaunchAtomicClean(void* stream);
   int LaunchEx(void *workspace, void* stream);
 };
+
+class StageLinker {
+ public:
+  StageLinker(Code &code, int64_t stage_num, int64_t total_size);
+  ~StageLinker() = default;
+
+  int Add(const Code &code, int64_t ws_offset, const std::vector<NDAccess*> &ios);
+  void RelocWorkspace(NDAccess* op, int64_t ws_offset);
+  void RelocReuse(NDAccess* op, NDAccess* reuse);
+
+ private:
+  Code& code_;
+  std::vector<int64_t> code_offsets_;
+};
 } // namespace dvm 
 #endif // _DVM_CODE_H_

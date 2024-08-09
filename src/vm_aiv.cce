@@ -30,7 +30,9 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TYPE_SHIFT(x) (32 / sizeof(x))
 #define BlockDataShift(x)  (5 - sizeof(x) / 2)   // 1B - 5, 2B - 4, 4B - 3, 8B - not support
 
-// tile : simd_width(8) << 56 | is_last_tile_m(1) << 55 | is_last_tile_n(1) << 54 | group_idx_offset(30) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// tile format:
+// mix: simd_width(8) << 56 | is_last_tile_m(1) << 55 | is_last_tile_n(1) << 54 | group_idx_offset(30) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// vec: simd_width(8) << 56 | ------------------------------------------------------------------------------ | tile_idx(32) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
 #define V_TILE_N_BEGIN_FLAG_OFFSET  0
 #define V_TILE_END_FLAG_OFFSET      1
 #define V_TILE_TAIL_FLAG_OFFSET     2
@@ -40,15 +42,17 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define V_SLOAD_FLAG_BROADCAST_N    1
 #define V_SLOAD_FLAG_BROADCAST_M    2
 
-#define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
-#define TileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 30)
-#define IsLastTileN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 30, 1)
-#define IsLastTileM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 31, 1)
+#define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 32)
 #define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
 #define IsBeginTile(tile)     ((tile & (1ul << V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
 #define IsEndTile(tile)       ((tile) &(1ul << V_TILE_END_FLAG_OFFSET))
 #define TileSimdWidth(tile)   (tile >> V_TILE_SIMD_WIDTH_OFFSET)
 #define GetRepeatStride(tile, x)  (tile >> (V_TILE_SIMD_WIDTH_OFFSET + BlockDataShift(x)))
+
+#define MixTileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
+#define MixTileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 30)
+#define MixTileIsLastN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 30, 1)
+#define MixTileIsLastM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 31, 1)
 
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
   return (stride * type_size + 31) >> 5;
@@ -1099,17 +1103,17 @@ static inline [aicore] void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *
 static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSLoad op;
   vSLoad::Decode(pc, head, op);
-  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_idx = MixTileIdx(tile);
   uint64_t begin_tmp = op.tile_stride * tile_idx;
   uint64_t end_tmp = begin_tmp + op.tile_stride - 1;
   __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
   __gm__ uint8_t *src = (__gm__ uint8_t *)op.gm;
   if (op.flags & V_SLOAD_FLAG_BROADCAST_M) {
-    uint64_t start_n = (op.flags & V_SLOAD_FLAG_BROADCAST_N) ? 0 : TileGroupOffset(tile) % op.src_n;
+    uint64_t start_n = (op.flags & V_SLOAD_FLAG_BROADCAST_N) ? 0 : MixTileGroupOffset(tile) % op.src_n;
     src += start_n * op.type_size;
     copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, 0, 0);
   } else if (op.flags & V_SLOAD_FLAG_BROADCAST_N) {
-    uint64_t start_m = TileGroupOffset(tile) / op.src_n;
+    uint64_t start_m = MixTileGroupOffset(tile) / op.src_n;
     src += (start_m + begin_tmp) * op.type_size;
     copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, 0, 0);
   } else {
@@ -1120,15 +1124,15 @@ static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 
     uint64_t slice_n = op.slice_n;
     uint64_t pad_size = op.pad_size;
-    if (IsLastTileM(tile)) {
+    if (MixTileIsLastM(tile)) {
       end_m = min(end_m, op.tail_m - 1);
     }
-    if (IsLastTileN(tile)) {
+    if (MixTileIsLastN(tile)) {
       end_n = min(end_n, op.tail_n - 1);
       slice_n = op.tail_n;
       pad_size += op.slice_n - op.tail_n;
     }
-    uint64_t offset_slice = begin_m * op.src_n + begin_n + TileGroupOffset(tile);
+    uint64_t offset_slice = begin_m * op.src_n + begin_n + MixTileGroupOffset(tile);
     src +=  offset_slice * op.type_size;
     SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
   }
@@ -1137,7 +1141,7 @@ static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 static inline [aicore] void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSStore op;
   vSStore::Decode(pc, head, op);
-  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_idx = MixTileIdx(tile);
   uint64_t begin_tmp = op.tile_stride * tile_idx;
   uint64_t end_tmp = begin_tmp + op.tile_stride - 1;
 
@@ -1148,15 +1152,15 @@ static inline [aicore] void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) 
 
   uint64_t slice_n = op.slice_n;
   uint64_t pad_size = op.pad_size;
-  if (IsLastTileM(tile)) {
+  if (MixTileIsLastM(tile)) {
     end_m = min(end_m, op.tail_m - 1);
   }
-  if (IsLastTileN(tile)) {
+  if (MixTileIsLastN(tile)) {
     end_n = min(end_n, op.tail_n - 1);
     slice_n = op.tail_n;
     pad_size += op.slice_n - op.tail_n;
   }
-  uint64_t offset_slice = begin_m * op.src_n + begin_n + TileGroupOffset(tile);
+  uint64_t offset_slice = begin_m * op.src_n + begin_n + MixTileGroupOffset(tile);
   __gm__ uint8_t *dst = (__gm__ uint8_t *)op.gm + offset_slice * op.type_size;
   __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
   SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
@@ -1288,7 +1292,7 @@ static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t 
   if (IsEndTile(tile)) {
     vPingPongLoad::PingPongSwitch(pc);
   }
-  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_idx = MixTileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vPingPongLoad::ROUND_OFFSET);
     if (tile_idx == -1) {

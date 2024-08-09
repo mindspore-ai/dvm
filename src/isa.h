@@ -1074,21 +1074,21 @@ struct vCubeOp {
 };
 
 // [entry]
-// tilenum(20) << 44 | simd_width(8) << 36 | code_size_8B(12) << 24 |
-// post_sync(1) << 6 | next_stage(1) << 5 | extern_code(1) << 4 | mix(1) << 3 | parallel(1) << 2 | post_set(1) << 1 | pre_wait(1)
+// tilenum(32) << 32 | simd_width(8) << 24 | code_size_8B(12) << 12 |
+// ---(1) << 6 | next_stage(1) << 5 | extern_code(1) << 4 | mix(1) << 3 | parallel(1) << 2 | ---(1) << 1 | pre_wait(1)
 #define V_ENTRY_FLAG_PRE_WAIT            1
 #define V_ENTRY_FLAG_PARALLEL            4
 #define V_ENTRY_FLAG_MIX                 8
 #define V_ENTRY_FLAG_EXTERN_CODE         16
 #define V_ENTRY_FLAG_NEXT_STAGE          32
 
-#define V_ENTRY_CODE_SIZE_OFFSET         24
-#define V_ENTRY_SIMD_WIDTH_OFFSET        36
-#define V_ENTRY_TILE_NUM_OFFSET          44
+#define V_ENTRY_CODE_SIZE_OFFSET         12
+#define V_ENTRY_SIMD_WIDTH_OFFSET        24
+#define V_ENTRY_TILE_NUM_OFFSET          32
 
 #define V_ENTRY_CODE_SIZE_BITS           12
 #define V_ENTRY_SIMD_WIDTH_BITS          8
-#define V_ENTRY_TILE_NUM_BITS            20
+#define V_ENTRY_TILE_NUM_BITS            32
 
 __aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) {
   return 1ul | mode << 4 | event_id << 8;

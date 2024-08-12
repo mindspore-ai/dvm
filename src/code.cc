@@ -648,8 +648,9 @@ class DisAssembler {
   }
 
   void DasCubeBody(vCubeOp *op, const std::string &indent) {
-    oss << indent << "MatMul." << op->m_real << "x" << op->k_real << "x" << op->n_real << " " << reinterpret_cast<void*>(op->gm_c) <<
-        " " << reinterpret_cast<void*>(op->gm_a) << " " << reinterpret_cast<void*>(op->gm_b);
+    oss << indent << "MatMul." << op->m_real << "x" << op->k_real << "x" << op->n_real << " " << op->m_align << "x"
+        << op->k_align << "x" << op->n_align << " " << reinterpret_cast<void *>(op->gm_c) << " "
+        << reinterpret_cast<void *>(op->gm_a) << " " << reinterpret_cast<void *>(op->gm_b);
     oss << " //";
     DumpVal("m0", op->m0, oss);
     oss << ", ";

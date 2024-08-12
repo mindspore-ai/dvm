@@ -243,7 +243,5 @@ def test_power_s(num, expect):
     a = t.load(arg)
     b = t.binary("Pow", a, num)
     t.store_expect(b, np.power(arg, num))
-    t.codegen()
-    das = t.das()
-    assert (das.count("Mul.fp32") == expect)
     assert (t.run_check())
+    assert (t.das().count("Mul.fp32") == expect)

@@ -1452,37 +1452,60 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
   }
 }
 
+uint64_t MixKernel::UnAlignCodeGen() {
+  stage_kernel_ = new Kernel();
+  stage_kernel_->Reset(KernelType::kStaticStages);
+  auto real_kernel = static_cast<StagesKernel *>(stage_kernel_->GetImpl());
+  ShapeRef pad_shape_ref[2] = {ShapeRef(cube_op_->pad_a_), ShapeRef(cube_op_->pad_b_)};
+  NDObject *inputs[2], *pad_inputs[2];
+  NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
+  for (size_t i = 0; i < 2; i++) {
+    if (pad_shape_ref[i].size) {
+      stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
+      pad_inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
+      auto load = stage_kernel_->Copy(pad_inputs[i]);
+      inputs[i] = stage_kernel_->StagePadStore(load, &(pad_shape_ref[i]));
+    }
+  }
+  stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
+  for (size_t i = 0; i < 2; i++) {
+    if (pad_shape_ref[i].size) {
+      inputs[i] = stage_kernel_->StageLoad(inputs[i]);
+    } else {
+      inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
+      pad_inputs[i] = inputs[i];
+    }
+  }
+  auto matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_);
+  if (post_fusion_) {
+    EmplacePostFusion(sload_, matmul_op);
+  }
+  NDAccess *real_out{nullptr};
+  if (cube_op_->output_ != sload_) {
+    real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op));
+  }
+  auto stage_workspace_size = stage_kernel_->CodeGen();
+  auto workspace_size = stage_workspace_size;
+  code_ = std::move(real_kernel->code_);
+
+  auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
+  auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
+  src_lhs->reloc_addr_ = static_cast<NDAccess *>(pad_inputs[0])->reloc_addr_;
+  src_rhs->reloc_addr_ = static_cast<NDAccess *>(pad_inputs[1])->reloc_addr_;
+  if (real_out) {
+    cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
+  }
+  return workspace_size;
+}
+
 uint64_t MixKernel::SplitKCodeGen() {
-  size_t k_stride = MAX_K  >> 1;
+  size_t k_stride = MAX_K >> 1;
   auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
   size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
 
-  ShapeRef k_shape_ref_[2];
-  ShapeRef k_tail_shape_ref_[2];
-  std::vector<int64_t> k_shape_[2];
-  std::vector<int64_t> k_tail_shape_[2];
-  auto MakeSplitKShape = [&](ShapeRef *src_shape, size_t input_index) {
-    size_t k_index;
-    if (input_index == 0) {
-      k_index = cube_op_->trans_a_ ? src_shape->size - 2 : src_shape->size - 1;
-    } else {
-      k_index = cube_op_->trans_b_ ? src_shape->size - 1 : src_shape->size - 2;
-    }
-    for (size_t i = 0; i < src_shape->size; i++) {
-      k_shape_[input_index].emplace_back(src_shape->data[i]);
-      k_tail_shape_[input_index].emplace_back(src_shape->data[i]);
-    }
-    k_shape_[input_index][k_index] = k_stride;
-    k_tail_shape_[input_index][k_index] = k_tail;
-    k_shape_ref_[input_index] = k_shape_[input_index];
-    k_tail_shape_ref_[input_index] = k_tail_shape_[input_index];
-  };
-  MakeSplitKShape(cube_op_->lhs_->shape_ref_, 0);
-  MakeSplitKShape(cube_op_->rhs_->shape_ref_, 1);
-
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
-  auto real_kernel = static_cast<StagesKernel*>(stage_kernel_->GetImpl());
+  auto real_kernel = static_cast<StagesKernel *>(stage_kernel_->GetImpl());
   std::vector<NDAccess *> split_lhs;
   std::vector<NDAccess *> split_rhs;
   std::vector<NDAccess *> split_out;
@@ -1492,15 +1515,14 @@ uint64_t MixKernel::SplitKCodeGen() {
     if (cube_op_->trans_a_) offset_a *= cube_op_->m_align_;
     if (!cube_op_->trans_b_) offset_b *= cube_op_->n_align_;
     stage_kernel_->StageSwitch(KernelType::kStaticMix);
-    auto x = stage_kernel_->Load(nullptr, i + 1 == split_num ? &k_tail_shape_ref_[0] : &k_shape_ref_[0],
-                                 cube_op_->lhs_->type_id_);
-    auto y = stage_kernel_->Load(nullptr, i + 1 == split_num ? &k_tail_shape_ref_[1] : &k_shape_ref_[1],
-                                 cube_op_->rhs_->type_id_);
+    auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
+    auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
     (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
     (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
     auto output = new CubeOp(x, y, cube_op_->trans_a_, cube_op_->trans_b_, true, i != 0);
     real_kernel->Append(output);
-    output->SetSplitK(cube_op_->k_align_, offset_a, offset_b);
+    output->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, i + 1 == split_num ? k_tail : k_stride, offset_a,
+                         offset_b);
     (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, output)));
   }
   auto matmul_fp32 = split_out.back()->lhs_;
@@ -1509,7 +1531,7 @@ uint64_t MixKernel::SplitKCodeGen() {
     EmplacePostFusion(sload_, matmul_fp16);
   }
   NDAccess *real_out{nullptr};
-  if (post_fusion_ == nullptr || cube_op_->output_ != sload_) {
+  if (cube_op_->output_ != sload_) {
     real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_fp16));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
@@ -1532,13 +1554,7 @@ uint64_t MixKernel::SplitKCodeGen() {
   return workspace_size;
 }
 
-uint64_t MixKernel::CodeGen() {
-  if (sload_ && cube_op_->output_ == nullptr) {
-    cube_op_->output_ = sload_;
-  }
-  if (cube_op_->k_real_ > MAX_K) {
-    return SplitKCodeGen();
-  }
+uint64_t MixKernel::AlignCodeGen() {
   size_t size = code_.HeadSize() + sizeof(vCubeOp);
   vCubeOp cube_code;
   cube_op_->CodeGen(&cube_code);
@@ -1597,7 +1613,7 @@ uint64_t MixKernel::CodeGen() {
     return 0;
   }
   std::vector<NDAccess*> ios;
-  for (auto op :  post_fusion_->objects_) {
+  for (auto op : post_fusion_->objects_) {
     if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
   }
   code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
@@ -1615,6 +1631,20 @@ uint64_t MixKernel::CodeGen() {
     return cube_op_->PostFusionWorkSpace();
   }
   return 0;
+}
+
+uint64_t MixKernel::CodeGen() {
+  if (sload_ && cube_op_->output_ == nullptr) {
+    cube_op_->output_ = sload_;
+  }
+  cube_op_->InitPadShape();
+  if (cube_op_->pad_a_.size() || cube_op_->pad_b_.size()) {
+    return UnAlignCodeGen();
+  }
+  if (cube_op_->k_real_ > MAX_K) {
+    return SplitKCodeGen();
+  }
+  return AlignCodeGen();
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {

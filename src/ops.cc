@@ -30,6 +30,9 @@ constexpr uint32_t AXES_ALIGN_SIZE = 512;
 constexpr uint32_t CUBE_BLOCK_SIZE = 256;
 constexpr uint32_t CONST_512 = 512;
 constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
+constexpr int64_t ALIGN_256 = 256;
+constexpr int64_t ALIGN_128 = 128;
+constexpr int64_t ALIGN_32 = 32;
 
 inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
   if (rnd == 0) {
@@ -1374,13 +1377,22 @@ CubeOp::~CubeOp() {
   }
 }
 
+void CubeOp::InitPadShape() {
+  auto GetPad = [](int64_t pad_size) -> std::vector<int64_t> {
+    if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
+      return {};
+    }
+    return {ALIGN_256 - pad_size % ALIGN_256};
+  };
+  pad_a_ = GetPad(trans_a_ ? m_align_ : k_align_);
+  pad_b_ = GetPad(trans_b_ ? k_align_ : n_align_);
+}
+
 void CubeOp::NormalizeCube() {
   m_align_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
   // Only pad the rows, which may result in matrices A and B where some K matrices are padded and some are not.
   // Therefore, we take the maximum among them.
-  if (k_align_ == 0) {
-    k_align_ = std::max(trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0], trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1]);
-  }
+  k_align_ = std::max(trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0], trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1]);
   n_align_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
   m_real_ = m_align_;
   k_real_ = k_align_;

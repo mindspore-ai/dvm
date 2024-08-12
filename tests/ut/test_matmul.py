@@ -19,7 +19,7 @@ def test_matmul(trans):
 
 
 @pytest.mark.mix
-@pytest.mark.parametrize('m, n, k', [[512, 256, 40960], [512, 256, 67584]])
+@pytest.mark.parametrize('m, n, k', [[222, 1111, 40111], [512, 256, 67584]])
 @pytest.mark.parametrize('trans', [[False, True], [True, True], [False, False], [True, False]])
 def test_matmul_split_k(m, n, k, trans):
     shape_a = [k, m] if trans[0] else [m, k]
@@ -36,25 +36,6 @@ def test_matmul_split_k(m, n, k, trans):
     c1 = t.matmul(a1, b1, trans[0], trans[1])
     t.store_expect(c1, expect, 1e-3)
     assert (t.run_check())
-
-
-@pytest.mark.mix
-@pytest.mark.parametrize('m, n, k', [[512, 1024, 40960]])
-def test_matmul_split_k_post_fusion(m, n, k):
-    shape_a = [m, k]
-    shape_b = [k, n]
-    g0 = np.random.normal(0, 0.01, shape_a).astype(np.float16)
-    g1 = np.random.normal(0, 0.01, shape_b).astype(np.float16)
-    expect = np.matmul(g0.astype(np.float32),
-                       g1.astype(np.float32)).astype(np.float16) + 1
-    t = Tester("mix")
-    a1 = t.load(g0)
-    b1 = t.load(g1)
-    c1 = t.matmul(a1, b1, False, False)
-    c1 = t.binary("Add", c1, 1.0)
-    t.store_expect(c1, expect, 1e-3)
-    assert (t.run_check())
-
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
@@ -114,35 +95,21 @@ def test_matmul_bf16(trans):
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[211, 211], [211, 230]],      # gemm normal case
-    [[193, 193], [193, 193]],      # m0 == 1
-    [[1, 1024], [1024, 32]],       # m == 1
+    [[193, 193], [193, 1930]],      # m0 == 1
+    [[1, 1024], [1024, 320]],       # m == 1
     [[70000, 10], [10, 32]],
 ])
 def test_unaligned_matmul(shape_a, shape_b):
     np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     np_b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
     expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
-    # compute pad size
-    shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
-    shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]
-    pad_size_a = [shape_a_pad[i] - shape_a[i] for i in range(2)]
-    pad_size_b = [shape_b_pad[i] - shape_b[i] for i in range(2)]
-
-    t = Tester("stages")
-    t.stage_switch("static")
-    a = t.load(np_a)
-    a = t.copy(a)
-    pad_a = t.stage_pad_store(a, pad_size_a)
-    t.stage_switch("static")
-    b = t.load(np_b)
-    b = t.copy(b)
-    pad_b = t.stage_pad_store(b, pad_size_b)
-    t.stage_switch("mix")
-    mat_a = t.stage_load(pad_a)
-    mat_b = t.stage_load(pad_b)
+    t = Tester("mix")
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, False)
     t.store_expect(res, expect)
     assert (t.run_check())
+    assert (t.das().count("slice_store") > 0)
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
@@ -164,7 +131,7 @@ def test_matmul_post_broadcast_fusion_0(shape_a, shape_b):
     d = t.binary("Add", cc, z)
     e = t.unary("Abs", d)
     expect = np.abs(np_c + zx)
-    o = t.store_expect(e, expect, 2e-3)
+    t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
 
 @pytest.mark.mix
@@ -192,38 +159,25 @@ def test_matmul_post_broadcast_fusion_1(shape_a, shape_b):
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[211, 211], [211, 230]],      # gemm normal case
-    [[193, 193], [193, 193]],      # m0 == 1
+    [[193, 100], [100, 257]],      # m0 == 1
     [[1, 127], [127, 127]],        # m == 1
     [[1, 1000], [1000, 4000]],     # m == 1
     [[123, 1], [1, 777]],        # k == 1
+    [[123, 33333], [33333, 777]],
 ])
 def test_unaligned_matmul_post_fusion(shape_a, shape_b):
     np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     np_b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
     expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)) + 2.5
-    # compute pad size
-    shape_a_pad = [(i + 256 - 1) // 256 * 256 for i in shape_a]
-    shape_b_pad = [(i + 256 - 1) // 256 * 256 for i in shape_b]
-    pad_size_a = [shape_a_pad[i] - shape_a[i] for i in range(2)]
-    pad_size_b = [shape_b_pad[i] - shape_b[i] for i in range(2)]
-
-    t = Tester("stages")
-    t.stage_switch("static")
-    a = t.load(np_a)
-    a = t.copy(a)
-    pad_a = t.stage_pad_store(a, pad_size_a)
-    t.stage_switch("static")
-    b = t.load(np_b)
-    b = t.copy(b)
-    pad_b = t.stage_pad_store(b, pad_size_b)
-    t.stage_switch("mix")
-    mat_a = t.stage_load(pad_a)
-    mat_b = t.stage_load(pad_b)
+    t = Tester("mix")
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, False)
     res = t.cast(res, "float32")
     res = t.binary("Add", res, 2.5)
     t.store_expect(res, expect, 2e-3)
     assert (t.run_check())
+    assert (t.das().count("slice_store") > 0)
 
 @pytest.mark.mix
 def test_matmul_post_fusion_inplace():
@@ -248,6 +202,7 @@ def test_matmul_post_fusion_inplace():
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[1024, 512], [512, 1024]],
     [[1024, 40960], [40960, 512]],
+    [[123, 33333], [33333, 1111]],
 ])
 def test_matmul_post_fusion_matmul_output(shape_a, shape_b):
     t = Tester("mix")
@@ -283,7 +238,8 @@ def test_matmul_col_nopad():
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, True)
     t.store_expect(res, np_c)
-    assert(t.run_check())
+    assert (t.run_check())
+    assert (t.das().count("slice_store") == 0)
 
 @pytest.mark.mix
 def test_batchmatmul_col_nopad():
@@ -301,7 +257,8 @@ def test_batchmatmul_col_nopad():
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, True)
     t.store_expect(res, np_c)
-    assert(t.run_check())
+    assert (t.run_check())
+    assert (t.das().count("slice_store") == 0)
     
 @pytest.mark.mix
 def test_sync_out_limit():

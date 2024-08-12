@@ -497,11 +497,14 @@ class CubeOp : public NDObject {
     uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];
     return core_loop_ < block_dim_ * 2 ? pingpong_size * core_loop_ : pingpong_size * block_dim_ * 2;
   }
-  void SetSplitK(int64_t k, size_t offset_a, size_t offset_b) {
-    k_align_ = k;
+  void SetRealShape(int64_t m, int64_t n, int64_t k, size_t offset_a, size_t offset_b) {
+    m_real_ = m;
+    n_real_ = n;
+    k_real_ = k;
     offset_a_ = offset_a;
     offset_b_ = offset_b;
   }
+  void InitPadShape();
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};
@@ -518,6 +521,8 @@ class CubeOp : public NDObject {
   bool trans_a_{false};
   bool trans_b_{false};
   bool pingpong_store_{false};
+  std::vector<int64_t> pad_a_;
+  std::vector<int64_t> pad_b_;
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);

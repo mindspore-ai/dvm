@@ -229,6 +229,9 @@ class MixKernel : public VKernel {
  protected:
   void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
   uint64_t SplitKCodeGen();
+  uint64_t UnAlignCodeGen();
+  uint64_t AlignCodeGen();
+
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
   NDAccess *sload_{nullptr};

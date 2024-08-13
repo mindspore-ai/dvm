@@ -386,6 +386,8 @@ DELCARE_UNARY(vexp, half)
 
 DELCARE_UNARYS(vector_dup, float)
 DELCARE_UNARYS(vector_dup, half)
+DELCARE_UNARYS(vector_dup, uint16_t)
+DELCARE_UNARYS(vector_dup, uint32_t)
 
 DELCARE_BINARYS(vmuls, float)
 DELCARE_BINARYS(vmuls, half)
@@ -809,25 +811,50 @@ template <typename T>
 __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBroadcastX op;
   vBroadcastX::Decode(pc, head, op);
-  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
   uint64_t rs = GetRepeatStride(tile, T);
-  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
-  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
+  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);
-  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  uint64_t count = op.repeat * simd_width;
+  rs *= op.repeat;
+  if (op.lead_num & 7) {
+    set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+    wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  }
   for (uint64_t i = 0; i < op.iter_num; ++i) {
-    for (uint64_t j = 0; j < op.lead_num; ++j) {
-      T val = static_cast<T>(*xn);
-      uint64_t repeat = op.repeat;
-      for (; repeat > 255; repeat -= 255) {
-        vDup(xd, val, 255, rs);
-        xd += 255 * simd_width;
-      }
-      vDup(xd, val, repeat, rs);
-      xd += repeat * simd_width;
+    uint64_t repeat = op.lead_num >> 3;
+    for (; repeat > 255; repeat -= 255) {
+      vbrcb(xd, xn, rs, rs << 3, 255);
+      xd += count * (255 << 3);
+      xn += 255 << 3;
+    }
+    vbrcb(xd, xn, rs, rs << 3, repeat);
+    xd += count * (repeat << 3);
+    xn += repeat << 3;
+
+    for (uint64_t j = 0; j < (op.lead_num & 7); ++j) {
+      vector_dup(xd, static_cast<T>(*xn), 1, 1, 1, 0, 0);
+      xd += count;
       xn += 1;
     }
     xn += op.lead_pad;
+  }
+  if (count > TYPE_SHIFT(T)) {
+    set_mask_count();
+    set_vector_mask(0, count);
+    xd = (__ubuf__ T *)(op.xd);
+    pipe_barrier(PIPE_V);
+    for (uint64_t i = 0; i < op.iter_num; ++i) {
+      uint64_t repeat = op.lead_num;
+      for (; repeat > 255; repeat -= 255) {
+        vcopy(xd, xd, 255, 1, 0, rs, rs);
+        xd += 255 * count;
+      }
+      vcopy(xd, xd, repeat, 1, 0, rs, rs);
+      xd += repeat * count;
+    }
+    set_mask_norm();
+    SetVectorMask(simd_width);
   }
 }
 
@@ -1619,7 +1646,7 @@ DEF_DISP_FUNC(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_FUNC(V_SLICE_STORE, SliceStore(pc, head, tile))
 
 DEF_DISP_FUNC(V_COPY, Copy(pc, head))
-DEF_DISP_FUNC(V_BROADCAST_X, BroadcastX<float>(pc, head, tile))
+DEF_DISP_FUNC(V_BROADCAST_X_B32, BroadcastX<uint32_t>(pc, head, tile))
 DEF_DISP_FUNC(V_BROADCAST_Y, BroadcastY(pc, head))
 DEF_DISP_FUNC(V_BROADCAST_S, BroadcastS<float>(pc, head, tile))
 DEF_DISP_FUNC(V_SQRT, UNARY(pc, vsqrt, head, tile, float))
@@ -1647,7 +1674,7 @@ DEF_DISP_FUNC(V_POW, Power<float>(pc, head, tile))
 DEF_DISP_FUNC(V_CLR_PAD, ClearPad(pc, head))
 DEF_DISP_FUNC(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile))
 
-DEF_DISP_FUNC(V_BROADCAST_X_FP16, BroadcastX<half>(pc, head, tile))
+DEF_DISP_FUNC(V_BROADCAST_X_B16, BroadcastX<uint16_t>(pc, head, tile))
 DEF_DISP_FUNC(V_BROADCAST_S_FP16, BroadcastS<half>(pc, head, tile))
 DEF_DISP_FUNC(V_SQRT_FP16, UNARY(pc, vsqrt, head, tile, half))
 DEF_DISP_FUNC(V_ABS_FP16, UNARY(pc, vabs, head, tile, half))
@@ -1677,7 +1704,6 @@ DEF_DISP_FUNC(V_NOT_INT8, LogicalNot(pc, head, tile))
 DEF_DISP_FUNC(V_OR_INT8, LogicalBinary<kBinOr>(pc, head, tile))
 DEF_DISP_FUNC(V_AND_INT8, LogicalBinary<kBinAnd>(pc, head, tile))
 
-DEF_DISP_FUNC(V_BROADCAST_X_INT32, BroadcastX<int32_t>(pc, head, tile))
 DEF_DISP_FUNC(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head, tile))
 
 DEF_DISP_FUNC(V_RESHAPE_B32, Reshape<uint32_t>(pc, head))

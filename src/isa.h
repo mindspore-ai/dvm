@@ -62,7 +62,6 @@ enum vStoreInsnID {
 
 enum vSimdInsnID {
   V_COPY = 0,
-  V_BROADCAST_X,
   V_BROADCAST_Y,
   V_BROADCAST_S,
   V_SQRT,
@@ -87,7 +86,7 @@ enum vSimdInsnID {
   V_POW,
   V_CLR_PAD,
   V_ELEMENT_ANY,
-  V_BROADCAST_X_FP16,
+  V_BROADCAST_X_B16,
   V_BROADCAST_S_FP16,
   V_SQRT_FP16,
   V_ABS_FP16,
@@ -113,7 +112,7 @@ enum vSimdInsnID {
   V_NOT_INT8,
   V_OR_INT8,
   V_AND_INT8,
-  V_BROADCAST_X_INT32,
+  V_BROADCAST_X_B32,
   V_BROADCAST_S_INT32,
   V_ADD_INT32,
   V_SUB_INT32,

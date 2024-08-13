@@ -1009,7 +1009,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_widt
   op.lead_num = end_dim + 1 < rank_size ? nd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 <  rank_size ? strides_.back() / strides_[end_dim + 1] : 1;
   op.lead_pad = lhs_->strides_[lhs_->lead_dim_] - lhs_->nd_[lhs_->lead_dim_];
-  const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_FP16, V_NONE, V_BROADCAST_X, V_BROADCAST_X_INT32};
+  const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_NONE, V_BROADCAST_X_B32, V_BROADCAST_X_B32};
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
 

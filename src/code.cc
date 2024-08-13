@@ -422,9 +422,8 @@ std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
   {V_COPY, {&DumpCopy, "Copy", "u8"}},
-  {V_BROADCAST_X, {&DumpBroadcastX, "BroadcastX", "fp32"}},
-  {V_BROADCAST_X_FP16, {&DumpBroadcastX, "BroadcastX", "fp16"}},
-  {V_BROADCAST_X_INT32, {&DumpBroadcastX, "BroadcastX", "int32"}},
+  {V_BROADCAST_X_B32, {&DumpBroadcastX, "BroadcastX", "b32"}},
+  {V_BROADCAST_X_B16, {&DumpBroadcastX, "BroadcastX", "b16"}},
   {V_BROADCAST_Y, {&DumpBroadcastY, "BroadcastY", "u8"}},
   {V_BROADCAST_S, {&DumpBroadcastS, "BroadcastS", "fp32"}},
   {V_BROADCAST_S_FP16, {&DumpBroadcastS, "BroadcastS", "fp16"}},

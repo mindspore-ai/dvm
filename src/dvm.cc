@@ -19,6 +19,7 @@
 #include "dvm.h"
 #include "kernel.h"
 #include "msprof.h"
+#include "tuning.h"
 
 namespace dvm {
 namespace {
@@ -332,7 +333,12 @@ NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
 }
 
 NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b) {
-  auto obj = new CubeOp(lhs, rhs, trans_a, trans_b, false, false);
+  NDObject *obj;
+  if (System::Instance().online_tuning) {
+    obj = new TunedMatMul(lhs, rhs, trans_a, trans_b);
+  } else {
+    obj = new CubeOp(lhs, rhs, trans_a, trans_b);
+  }
   kernel_->Append(obj);
   return obj;
 }

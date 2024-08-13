@@ -85,8 +85,8 @@ class System {
   rtError_t(*get_c2c_addr_func_)(uint64_t*, uint32_t*){nullptr};
 
   uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t*>(this) + target; }
-
   bool deterministic_{false};
+  bool online_tuning{false};
 
  private:
   System();

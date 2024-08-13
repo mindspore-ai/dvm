@@ -1359,11 +1359,8 @@ void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   std::reverse_copy(nd_.begin(), nd_.end(), shape_.begin());
 }
 
-CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, bool out_fp32, bool atomic_add)
-    : NDObject(lhs, rhs, out_fp32 ? kFloat32 : lhs->type_id_, kCubeOp),
-      trans_a_(trans_a),
-      trans_b_(trans_b),
-      atomic_add_(atomic_add) {}
+CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
+    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b){};
 
 CubeOp::~CubeOp() {
   if (lhs_->IsLoad()) {
@@ -1673,6 +1670,25 @@ void CubeOp::TileV2(vCubeOp *op) {
   }
 }
 
+void CubeOp::GenTiling(vCubeOp *op) {
+  static int tiling_ver = -1;
+  if (tiling_ver == -1) {
+    const char *ver = getenv("DVM_MATMUL_TILING");
+    tiling_ver = ver != nullptr ? std::stoi(ver) : 0;
+  }
+  if (tiling_ver == 2) {
+    TileV2(op);
+  } else {
+    Tile(op);
+    auto m_loop = CeilDiv(op->m_real, op->m0);
+    auto n_loop = CeilDiv(op->n_real, op->n0);
+    core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
+    auto core_num = System::Instance().CoreNum(CoreType::kCube);
+    block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+    GetSwizzleConfig(op);
+  }
+}
+
 void CubeOp::CodeGen(vCubeOp *op) {
   op->m_align = m_align_;
   op->n_align = n_align_;
@@ -1709,22 +1725,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   auto dtype = lhs_->type_id_;
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
-  static int tiling_ver = -1;
-  if (tiling_ver == -1) {
-    const char* ver = getenv("DVM_MATMUL_TILING");
-    tiling_ver = ver != nullptr ? std::stoi(ver) : 0;
-  }
-  if (tiling_ver == 2) {
-    TileV2(op);
-  } else {
-    Tile(op);
-    auto m_loop = CeilDiv(op->m_real, op->m0);
-    auto n_loop = CeilDiv(op->n_real, op->n0);
-    core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
-    auto core_num = System::Instance().CoreNum(CoreType::kCube);
-    block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
-    GetSwizzleConfig(op);
-  }
+  GenTiling(op);
   //std::cout << "result tiling: m0=" << op->m0 << ", n0=" << op->n0 << ", k0=" << op->k0 << ", swizzle=(" << (op->swizzle >> 16) << ", " << (op->swizzle & 0xfffful) << ")" << std::endl;
 }
 } // namespace dvm

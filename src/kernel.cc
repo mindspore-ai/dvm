@@ -1455,7 +1455,6 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
 uint64_t MixKernel::UnAlignCodeGen() {
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
-  auto real_kernel = static_cast<StagesKernel *>(stage_kernel_->GetImpl());
   ShapeRef pad_shape_ref[2] = {ShapeRef(cube_op_->pad_a_), ShapeRef(cube_op_->pad_b_)};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
@@ -1486,7 +1485,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
   auto workspace_size = stage_workspace_size;
-  code_ = std::move(real_kernel->code_);
+  code_ = std::move(stage_kernel_->GetImpl()->code_);
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
@@ -1505,7 +1504,6 @@ uint64_t MixKernel::SplitKCodeGen() {
 
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
-  auto real_kernel = static_cast<StagesKernel *>(stage_kernel_->GetImpl());
   std::vector<NDAccess *> split_lhs;
   std::vector<NDAccess *> split_rhs;
   std::vector<NDAccess *> split_out;
@@ -1519,10 +1517,10 @@ uint64_t MixKernel::SplitKCodeGen() {
     auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
     (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
     (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
-    auto output = new CubeOp(x, y, cube_op_->trans_a_, cube_op_->trans_b_, true, i != 0);
-    real_kernel->Append(output);
-    output->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, i + 1 == split_num ? k_tail : k_stride, offset_a,
+    auto output = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_);
+    static_cast<CubeOp*>(output)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, i + 1 == split_num ? k_tail : k_stride, offset_a,
                          offset_b);
+    static_cast<CubeOp *>(output)->SetAtomic(i != 0);
     (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, output)));
   }
   auto matmul_fp32 = split_out.back()->lhs_;
@@ -1536,7 +1534,7 @@ uint64_t MixKernel::SplitKCodeGen() {
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
   auto workspace_size = stage_workspace_size + split_out.back()->Size();
-  code_ = std::move(real_kernel->code_);
+  code_ = std::move(stage_kernel_->GetImpl()->code_);
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);

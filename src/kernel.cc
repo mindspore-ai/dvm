@@ -25,7 +25,7 @@
 
 namespace dvm {
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
-constexpr int64_t MAX_K = UINT16_MAX / 2;
+constexpr int64_t MAX_K = 1 << 15;
 
 class CodeGenHelper {
  public:
@@ -1476,6 +1476,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
     }
   }
   auto matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_);
+  static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
   }

@@ -1338,6 +1338,7 @@ void ReduceOp::GenClearKernel(NDAccess *store) {
 
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   int n = std::max(lhs->nd_.size(), rhs->nd_.size());
+  nd_.clear();
   nd_.reserve(n);
   nd_.emplace_back(n_real_);
   nd_.emplace_back(m_real_);
@@ -1394,24 +1395,10 @@ void CubeOp::NormalizeCube() {
   m_real_ = m_align_;
   k_real_ = k_align_;
   n_real_ = n_align_;
+  NormalizeOutput();
+}
 
-  auto lhs_load = static_cast<NDAccess*>(lhs_);
-  // if the original shape reference is not nullptr, then this matmul must be padded, we need to get its original shape
-  if (lhs_load->is_stage_ && lhs_load->GetStageStore()->obj_id_ == ObjectType::kPadStore) {
-    auto ori_shape_ref = lhs_load->GetStageStore()->lhs_->shape_ref_;
-    std::vector<int64_t> lhs_real_nd(ori_shape_ref->data, ori_shape_ref->data + ori_shape_ref->size);
-    std::reverse(lhs_real_nd.begin(), lhs_real_nd.end());
-    m_real_ = trans_a_ ? lhs_real_nd[0] : lhs_real_nd[1];
-    k_real_ = trans_a_ ? lhs_real_nd[1] : lhs_real_nd[0];
-  }
-  auto rhs_load = static_cast<NDAccess*>(rhs_);
-  if (rhs_load->is_stage_ && rhs_load->GetStageStore()->obj_id_ == ObjectType::kPadStore) {
-    auto ori_shape_ref = rhs_load->GetStageStore()->lhs_->shape_ref_;
-    std::vector<int64_t> rhs_real_nd(ori_shape_ref->data, ori_shape_ref->data + ori_shape_ref->size);
-    std::reverse(rhs_real_nd.begin(), rhs_real_nd.end());
-    k_real_ = trans_b_ ? rhs_real_nd[0] : rhs_real_nd[1];
-    n_real_ = trans_b_ ? rhs_real_nd[1] : rhs_real_nd[0];
-  }
+void CubeOp::NormalizeOutput() {
   if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
     nd_ = {n_real_, m_real_};
     shape_ = {m_real_, n_real_};

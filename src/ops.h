@@ -492,7 +492,10 @@ class CubeOp : public NDObject {
   int Emit(VectorKernel &k) override { return 0; }
   void CodeGen(vCubeOp *code);
   void NormalizeCube();
+  void NormalizeOutput();
+  void InitPadShape();
   virtual void GenTiling(vCubeOp *code);
+
   uint64_t PostFusionWorkSpace() const {
     uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];
     return core_loop_ < block_dim_ * 2 ? pingpong_size * core_loop_ : pingpong_size * block_dim_ * 2;
@@ -503,12 +506,12 @@ class CubeOp : public NDObject {
     k_real_ = k;
     offset_a_ = offset_a;
     offset_b_ = offset_b;
+    NormalizeOutput();
   }
   void SetAtomic(bool atomic_add){
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }
-  void InitPadShape();
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};

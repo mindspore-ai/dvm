@@ -28,22 +28,7 @@ class Code {
   Code() = default;
   Code(const Code &obj) = delete;
   Code &operator=(const Code &) = delete;
-  Code &operator=(Code &&other) {
-    if (this != &other) {
-      data_ = other.data_;
-      data_size_ = other.data_size_;
-      block_dim_ = other.block_dim_;
-      target_ = other.target_;
-      extern_code_ = other.extern_code_;
-      mem_size_ = other.mem_size_;
-      atomic_clean_ = std::move(other.atomic_clean_);
-      reloc_workspaces_ = std::move(other.reloc_workspaces_);
-      reloc_reuse_ = std::move(other.reloc_reuse_);
-
-      other.data_ = nullptr;
-    }
-    return *this;
-  }
+  Code &operator=(Code &&other);
   ~Code();
   void Clear() {
     atomic_clean_.clear();

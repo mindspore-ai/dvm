@@ -266,14 +266,13 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
 
 void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   auto size = lhs_->shape_ref_->size;
-  shape_.resize(size);
+  shape_.Resize(size);
   for (size_t i = 0; i < pad_shape_->size; i++) {
     shape_[size - 1 - i] = lhs_->shape_ref_->data[size - 1 - i] + pad_shape_->data[pad_shape_->size - 1 - i];
   }
   for (size_t i = pad_shape_->size; i < size; i++) {
     shape_[size - 1 - i] = lhs_->shape_ref_->data[size - 1 - i];
   }
-  *shape_ref_= shape_;
   nd_ = lhs_->nd_;
 }
 
@@ -461,13 +460,12 @@ int NDSliceLoad::Emit(VectorKernel &k) {
 
 void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(std::all_of(step_ref_->data, step_ref_->data + step_ref_->size, [](int64_t i) { return i == 1; }));
-  shape_.resize(src_ref_->size);
+  shape_.Resize(src_ref_->size);
   for (size_t i = 0; i < src_ref_->size; i++) {
     int64_t end = end_ref_->data[i] < 0 ? end_ref_->data[i] + src_ref_->data[i] : end_ref_->data[i];
     int64_t start = start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i];
     shape_[i] = end - start;
   }
-  *shape_ref_ = shape_;
   size_ref_ = shape_ref_;
   NDSliceLoad::Normalize(run_ops);
 }
@@ -589,7 +587,7 @@ void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
   // update nd_/shape_
   auto dims = dst_shape_ref_->size;
   nd_.resize(dims);
-  shape_.resize(dims);
+  shape_.Resize(dims);
   int64_t sz = 1;
   size_t update_axis = dims;
   for (size_t i = 0; i < dims; ++i) {
@@ -612,7 +610,6 @@ void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
     nd_[update_axis] = v;
     shape_[dims - 1 - update_axis] = v;
   }
-  *shape_ref_ = shape_;
 }
 
 int ReshapeOp::Emit(VectorKernel &k) {
@@ -769,7 +766,7 @@ BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rh
   ASSERT(id_ != V_NONE);
   // compare op in BinaryOpType must keep consistent order with vCompareType
   cmp_op_ = op_type < V_CMP_ALL ? op_type : -1;
-  shape_ref_ = new ShapeRef();
+  shape_ref_ = &shape_;
 }
 
 BinaryOp::~BinaryOp() {
@@ -779,7 +776,6 @@ BinaryOp::~BinaryOp() {
   for (auto op : rhs_stuff_ops_) {
     delete op;
   }
-  delete shape_ref_;
 }
 
 void BinaryOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -796,7 +792,7 @@ void BinaryOp::Normalize(std::vector<NDObject*> &run_ops) {
   auto lhs_sz = lhs_->shape_ref_->size;
   auto rhs_sz = rhs_->shape_ref_->size;
   if (lhs_sz > rhs_sz) {
-    shape_.resize(lhs_sz);
+    shape_.Resize(lhs_sz);
     auto diff = lhs_sz - rhs_sz;
     for (size_t i = 0; i < diff; ++i) {
       shape_[i] = lhs_data[i];
@@ -805,7 +801,7 @@ void BinaryOp::Normalize(std::vector<NDObject*> &run_ops) {
       shape_[i] = lhs_data[i] == 1 ? rhs_data[i - diff]: lhs_data[i];
     }
   } else {
-    shape_.resize(rhs_sz);
+    shape_.Resize(rhs_sz);
     auto diff = rhs_sz - lhs_sz;
     for (size_t i = 0; i < diff; ++i) {
       shape_[i] = rhs_data[i];
@@ -814,7 +810,6 @@ void BinaryOp::Normalize(std::vector<NDObject*> &run_ops) {
       shape_[i] = rhs_data[i] == 1 ? lhs_data[i - diff]: rhs_data[i];
     }
   }
-  *shape_ref_ = shape_;
   // update nd_
   const auto &lhs_nd = lhs_->nd_;
   const auto &rhs_nd = rhs_->nd_;
@@ -881,7 +876,7 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
     }
   }
   auto max_size = std::max({lhs_->shape_ref_->size, rhs_->shape_ref_->size, cond_->shape_ref_->size});
-  shape_.resize(max_size);
+  shape_.Resize(max_size);
   for (size_t i = 0; i < max_size; ++i) {
     int64_t len[3];
     for (size_t j = 0; j < 3; j++) {
@@ -890,7 +885,6 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
     }
     shape_[max_size - 1 - i] = std::max({len[0], len[1], len[2]});
   }
-  *shape_ref_ = shape_;
 
   // update nd_
   bool need_broadcast[3] = {false, false, false};
@@ -1033,7 +1027,6 @@ BroadcastOp::~BroadcastOp() {
   for (auto op : stuff_ops_) {
     delete op;
   }
-  delete shape_ref_;
 }
 
 void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -1044,7 +1037,7 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
   // update nd_ from shape_ref_
   auto dims = dst_shape_ref_->size;
   nd_.resize(dims);
-  shape_.resize(dims);
+  shape_.Resize(dims);
   auto offset = dims - lhs_->shape_ref_->size;  // dst_shape dims >= x_shape dims
   for (size_t i = 0; i < dims; ++i) {
     shape_[i] = dst_shape_ref_->data[i];
@@ -1054,7 +1047,6 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
     }
     nd_[dims - 1 - i] = shape_[i];
   }
-  *shape_ref_ = shape_;
   size_t stuff_idx = 0;
   lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, stuff_ops_, stuff_idx);
   for (size_t i = 0; i < stuff_idx; ++i) {
@@ -1176,7 +1168,6 @@ ReduceOp::~ReduceOp() {
   for (auto op : stuff_ops_) {
     delete op;
   }
-  delete shape_ref_;
   if (clear_kernel_ != nullptr) {
     delete clear_kernel_;
   }
@@ -1221,20 +1212,19 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
     }
   }
   // update shape_ref_
-  shape_.clear();
-  shape_.reserve(input_shape_ref->size);
+  int shape_size = 0;
   int dim_idx = 0;
   for (int i = 0; i < static_cast<int>(input_shape_ref->size); ++i) {
     if (i != shape_dims_[dim_idx]) {
-      shape_.push_back(input_shape_ref->data[i]);
+      shape_[shape_size++] = input_shape_ref->data[i];
     } else {
       dim_idx++;
       if (keepdims_) {
-        shape_.push_back(1);
+        shape_[shape_size++] = 1;
       }
     }
   }
-  *shape_ref_ = shape_;
+  shape_.Resize(shape_size);
   size_t stuff_idx = 0;
   int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
   nd_ = input->nd_;

@@ -69,6 +69,25 @@ struct PropRange {
   int64_t space;
 };
 
+struct ShapeWithRef : public ShapeRef {
+  enum { kMaxDimSize = 10 };
+  ShapeWithRef() {
+    data = shape;
+    size = 0;
+  }
+  ShapeWithRef &operator=(const ShapeRef &other) {
+    size = other.size;
+    for (size_t i = 0; i < size; ++i) {
+      shape[i] = other.data[i];
+    }
+    return *this;
+  }
+  int64_t &operator[](int i) { return shape[i]; }
+  void Resize(size_t s) { size = s; }
+
+  int64_t shape[kMaxDimSize];
+};
+
 class VectorKernel;
 
 #define OBJ_FLAG_FREE_LHS   1
@@ -200,14 +219,13 @@ class NDStridedSliceLoad : public NDSliceLoad {
   NDStridedSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
                      DType type_id = kFloat32)
       : NDSliceLoad(src, src_ref, start_ref, nullptr, type_id), end_ref_(end_ref), step_ref_(step_ref) {
-    shape_ref_ = new ShapeRef();
+    shape_ref_ = &shape_;
   }
-  ~NDStridedSliceLoad() { delete shape_ref_; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
 
  private:
-  std::vector<int64_t> shape_;
+  ShapeWithRef shape_;
   ShapeRef *end_ref_;
   ShapeRef *step_ref_;
 };
@@ -236,7 +254,7 @@ class NDStore : public NDAccess {
 class NDPadStore : public NDAccess {
  public:
   NDPadStore(NDObject *src, ShapeRef *pad_shape) : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_shape_(pad_shape) {
-    shape_ref_ = &shape_ref_data_;
+    shape_ref_ = &shape_;
   }
   NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) {
     gm_ = dst;
@@ -248,8 +266,7 @@ class NDPadStore : public NDAccess {
   void FoldProp(PropRange &range) override;
 
  private:
-  std::vector<int64_t> shape_;
-  ShapeRef shape_ref_data_;
+  ShapeWithRef shape_;
   ShapeRef *pad_shape_;
 };
 
@@ -268,16 +285,15 @@ class ReshapeOp : public CopyOp {
   ReshapeOp(NDObject *input, ShapeRef *shape_ref)
       : CopyOp(input) {
     dst_shape_ref_ = shape_ref;
-    shape_ref_ = new ShapeRef();
+    shape_ref_ = &shape_;
     obj_id_ = ObjectType::kReshape;
   }
-  ~ReshapeOp() { delete shape_ref_; }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(VectorKernel &k) override;
 
  private:
   ShapeRef *dst_shape_ref_;
-  std::vector<int64_t> shape_;
+  ShapeWithRef shape_;
 };
 
 class UnaryOp : public NDObject {
@@ -361,14 +377,14 @@ class BinaryOp : public NDObject {
   int cmp_op_;
   std::vector<NDObject*> lhs_stuff_ops_;
   std::vector<NDObject*> rhs_stuff_ops_;
-  std::vector<int64_t> shape_;
+  ShapeWithRef shape_;
 };
 
 class SelectOp : public NDObject {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs)
       : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kSelect), cond_(cond) {
-    shape_ref_ = &shape_ref_data_;
+    shape_ref_ = &shape_;
   }
   ~SelectOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
@@ -378,8 +394,7 @@ class SelectOp : public NDObject {
 
  private:
   std::vector<NDObject *> stuff_ops_[3];
-  std::vector<int64_t> shape_;
-  ShapeRef shape_ref_data_;
+  ShapeWithRef shape_;
 };
 
 class _BroadcastOp : public NDObject {
@@ -404,7 +419,7 @@ class BroadcastOp : public _BroadcastOp {
   BroadcastOp(NDObject *input, ShapeRef *shape_ref)
       : _BroadcastOp(input, std::vector<int64_t>{1}) {
     dst_shape_ref_ = shape_ref;
-    shape_ref_ = new ShapeRef();
+    shape_ref_ = &shape_;
   }
   ~BroadcastOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
@@ -412,7 +427,7 @@ class BroadcastOp : public _BroadcastOp {
  private:
   std::vector<NDObject*> stuff_ops_;
   ShapeRef *dst_shape_ref_;
-  std::vector<int64_t> shape_;
+  ShapeWithRef shape_;
 };
 
 template <typename T>
@@ -461,7 +476,7 @@ class ReduceOp : public _ReduceOp {
   ReduceOp(NDObject *input, int red_op, ShapeRef *dims_ref, bool keepdims)
       : _ReduceOp(input, red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
-    shape_ref_ = new ShapeRef();
+    shape_ref_ = &shape_;
   }
   ~ReduceOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
@@ -477,7 +492,7 @@ class ReduceOp : public _ReduceOp {
   std::vector<int64_t> dims_;
   std::vector<_ReduceOp*> stuff_ops_;
   std::vector<int64_t> shape_dims_;
-  std::vector<int64_t> shape_;
+  ShapeWithRef shape_;
   bool keepdims_;
   ShapeRef *dims_ref_;
 

@@ -285,3 +285,25 @@ def test_sync_out_limit():
     t.store_expect(y3, c + d, 1e-3)
     t.store_expect(y7, (c + d) ** 3 * mm + 10, 1e-3)
     assert (t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[512, 40960], [40960, 256]],      # split k
+    [[211, 211], [211, 230]],      # unalign
+    [[2, 4, 256, 256], [2, 4, 256, 256]],       # batchmatmul
+    [[256, 256], [256, 256]],    # same shape
+])
+def test_tuning_matmul(shape_a, shape_b):
+    np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    np_b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
+    t = Tester("mix")
+    t.set_online_tuning(True)
+    mat_a = t.load(np_a)
+    mat_b = t.load(np_b)
+    res = t.matmul(mat_a, mat_b, False, False)
+    t.store_expect(res, expect)
+    assert (t.run_check())
+    t.set_online_tuning(False)
+
+

@@ -115,6 +115,10 @@ class KernelPy {
     SetDeterministic(enable);
   }
 
+  static void SetTuning(bool enable) {
+    SetOnlineTuning(enable);
+  }
+
   static std::string Arch() {
     static const char* soc_names[] = {"AscendC220"};
     return soc_names[System::Instance().Arch()];

@@ -86,7 +86,7 @@ class System {
 
   uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t*>(this) + target; }
   bool deterministic_{false};
-  bool online_tuning{false};
+  bool online_tuning_{false};
 
  private:
   System();

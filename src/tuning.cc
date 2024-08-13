@@ -60,7 +60,7 @@ void ManualMatMul::SetTiling(const TuningInfo &info) {
 
 void TunedMatMul::GenTiling(vCubeOp *op) {
   auto &tuning_table = TunedMatMul::GetTuningTable();
-  uint64_t key = m_align_ << 44 | n_align_ << 24 | k_align_ << 2;
+  uint64_t key = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
   if (trans_a_) key |= 2ul;
   if (trans_b_) key |= 1ul;
   TuningInfo &best_tuning = tuning_table[key];

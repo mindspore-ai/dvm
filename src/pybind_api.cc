@@ -637,7 +637,8 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("perf", &KernelPy::Perf, "perf test")
       .def("measure", &KernelPy::Measure, "measure metrics")
       .def("run", &KernelPy::Run, "run kernel")
-      .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic");
+      .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
+      .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning");
 
   (void)py::class_<DevicePy, std::shared_ptr<DevicePy>>(m, "Device")
       .def_static("arch", &DevicePy::Arch, "Get system architecture")

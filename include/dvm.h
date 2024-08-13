@@ -162,5 +162,7 @@ class Kernel {
 
 void SetDeterministic(bool enable);
 
+void SetOnlineTuning(bool enable);
+
 }  // namespace dvm
 #endif  // _DVM_H_

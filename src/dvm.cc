@@ -334,7 +334,7 @@ NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
 
 NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b) {
   NDObject *obj;
-  if (System::Instance().online_tuning) {
+  if (System::Instance().online_tuning_) {
     obj = new TunedMatMul(lhs, rhs, trans_a, trans_b);
   } else {
     obj = new CubeOp(lhs, rhs, trans_a, trans_b);
@@ -470,5 +470,9 @@ const char* Kernel::Das() const {
 
 void SetDeterministic(bool enable) {
   System::Instance().deterministic_ = enable;
+}
+
+void SetOnlineTuning(bool enable) {
+  System::Instance().online_tuning_ = enable;
 }
 } // namespace dvm

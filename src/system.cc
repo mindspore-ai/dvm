@@ -78,15 +78,6 @@ void DvmException(const char* error_str) {
   throw std::runtime_error(oss.str());
 }
 
-static bool GetOnlineTuning() {
-  const char *ver = getenv("ONLINE_TUNING");
-  if (ver == nullptr) {
-    return false;
-  }
-  std::string value(ver);
-  return value == "true";
-}
-
 System::System() {
   auto soc_name = GetSocName();
   EXCEPTION_IF(soc_name.find("Ascend910B") == std::string::npos && soc_name.find("Ascend910C") == std::string::npos,
@@ -163,6 +154,5 @@ System::System() {
 #else
   get_c2c_addr_func_ = reinterpret_cast<rtError_t(*)(uint64_t*, uint32_t*)>(dlsym(handle, "rtGetC2cCtrlAddr"));
 #endif
-  online_tuning = GetOnlineTuning();
 }
 }  // namespace dvm

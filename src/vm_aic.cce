@@ -408,8 +408,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
       mat.LoadB(l1b, gm_b + offset_b, shuffle_k, nidx, k_actual, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
-    } else if ((mat.flags & V_CUBE_FLAG_GROUP_SET) && (tile > block_idx + block_num)) {
-      wait_flag_dev(1);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
       shuffle_k = (k + block_idx) % k_loop;
@@ -478,6 +476,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       pingpong = (pingpong + 1) & 1ul;
       Swap(l1a, n_l1a);
       Swap(l1b, n_l1b);
+    }
+    if ((mat.flags & V_CUBE_FLAG_GROUP_SET) && (tile > block_idx + block_num)) {
+      wait_flag_dev(1);
     }
     uint8_t unit_flag = 0b11;
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {

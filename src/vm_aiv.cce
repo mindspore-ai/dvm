@@ -1471,7 +1471,7 @@ STAGE_ENTRY:
   uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
   if (entry & V_ENTRY_FLAG_MIX) {
     // vCubeOp + vec_code
-    if (block_idx < tile_num) {
+    if ((entry & V_ENTRY_FLAG_PRE_WAIT) && block_idx < tile_num) {
       uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
       copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + sizeof(vCubeOp),
                       0, 1, (code_size - sizeof(vCubeOp)/sizeof(uint64_t) + 3) >> 2, 0, 0);
@@ -1589,11 +1589,13 @@ TILE_LOOP:
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
     tile += 1ul << V_TILE_CUR_IDX_OFFSET;
   }
-  if (entry & V_ENTRY_FLAG_MIX) {
+  if ((entry & V_ENTRY_FLAG_PRE_WAIT) && (entry & V_ENTRY_FLAG_MIX)) {
     tile_loops += block_num << 32;
     uint64_t group_idx = tile_loops >> 32;
     if (group_idx < vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS)) {
-      __gm__ vCubeOp * __restrict__ cube = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
+      // When the next tile does not require further processing,
+      // there is no need to send ffts_cross to the cube.
+      __gm__ vCubeOp *__restrict__ cube = reinterpret_cast<__gm__ vCubeOp *>(body_addr);
       vClrBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20 + 32); //TRICK: clear tile_idx and group_idx
       tile &= ~(1ul << V_TILE_N_BEGIN_FLAG_OFFSET | 1ul << V_TILE_END_FLAG_OFFSET);
       tile_loops &= ~(MASK_32);

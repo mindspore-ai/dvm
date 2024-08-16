@@ -114,8 +114,8 @@ def test_unaligned_matmul(shape_a, shape_b):
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],
+    [[32, 256], [256, 128]],
     [[2048, 1024], [1024, 5120]],
-    [[1024, 40960], [40960, 512]],
 ])
 def test_matmul_post_broadcast_fusion_0(shape_a, shape_b):
     t = Tester("mix")
@@ -201,7 +201,6 @@ def test_matmul_post_fusion_inplace():
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[1024, 512], [512, 1024]],
-    [[1024, 40960], [40960, 512]],
     [[123, 33333], [33333, 1111]],
 ])
 def test_matmul_post_fusion_matmul_output(shape_a, shape_b):

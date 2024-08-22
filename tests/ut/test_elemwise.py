@@ -245,3 +245,16 @@ def test_power_s(num, expect):
     t.store_expect(b, np.power(arg, num))
     assert (t.run_check())
     assert (t.das().count("Mul.fp32") == expect)
+
+@pytest.mark.parametrize('type', [np.float16, np.float32])
+@pytest.mark.parametrize('op, func', [("Round", np.round), ("Ceil", np.ceil), ("Floor", np.floor)])
+@pytest.mark.parametrize('shape', [[32, 32], [128*256*2*48]])
+def test_trunc(type, op, func, shape):
+    t = Tester()
+    a = np.random.normal(0, 10, shape).astype(type)
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.unary(op, x)
+    z = t.copy(z)
+    t.store_expect(z, func(a).astype(type))
+    assert (t.run_check())

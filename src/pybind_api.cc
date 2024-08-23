@@ -104,7 +104,8 @@ static std::unordered_map<std::string, UnaryOpType> unary_map = {{"Abs", UnaryOp
                                                                  {"Sqrt", UnaryOpType::kSqrt},
                                                                  {"Round", UnaryOpType::kRound},
                                                                  {"Floor", UnaryOpType::kFloor},
-                                                                 {"Ceil", UnaryOpType::kCeil}};
+                                                                 {"Ceil", UnaryOpType::kCeil},
+                                                                 {"Trunc", UnaryOpType::kTrunc}};
 
 static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", BinaryOpType::kAdd},
                                                                    {"Sub", BinaryOpType::kSub},

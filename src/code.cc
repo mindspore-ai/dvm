@@ -444,6 +444,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_FLOOR_FP16, {&DumpUnary, "Floor", "fp16"}},
   {V_CEIL, {&DumpUnary, "Ceil", "fp32"}},
   {V_CEIL_FP16, {&DumpUnary, "Ceil", "fp16"}},
+  {V_TRUNC, {&DumpUnary, "Trunc", "fp32"}},
+  {V_TRUNC_FP16, {&DumpUnary, "Trunc", "fp16"}},
   {V_NOT_INT8, {&DumpUnary, "LogicalNot", "u8"}},
   {V_ISFINITE, {&DumpUnary, "IsFinite", "fp32"}},
   {V_ISFINITE_FP16, {&DumpUnary, "IsFinite", "fp16"}},

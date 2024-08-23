@@ -41,6 +41,7 @@ enum UnaryOpType {
   kRound,
   kFloor,
   kCeil,
+  kTrunc,
   kUnaryOpEnd,
 };
 

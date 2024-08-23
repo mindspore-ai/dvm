@@ -19,6 +19,7 @@
 #include <vector>
 #include <numeric>
 #include <algorithm>
+#include <float.h>
 #include "ops.h"
 #include "kernel.h"
 
@@ -1410,7 +1411,7 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   auto m_loop = CeilDiv(op->m_real, m0);
   auto n_loop = CeilDiv(op->n_real, n0);
   if (m_loop == 0 || n_loop == 0) {
-    return 3.125f;
+    return FLT_MAX;
   }
   auto core_need = m_loop * n_loop;
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
@@ -1428,7 +1429,8 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
   // calibrate bandwidth
   a_coef = a_coef * block_dim / core_num;
   b_coef = b_coef * block_dim / core_num;
-  return 1.0f / (a_coef * static_cast<float>(n0)) + 1.0f / (b_coef * static_cast<float>(m0));
+  return static_cast<float>(m_real_) * static_cast<float>(n_loop) / a_coef +
+         static_cast<float>(n_real_) * static_cast<float>(m_loop) / b_coef;
 }
 
 void CubeOp::Tile(vCubeOp *op) {
@@ -1447,7 +1449,7 @@ void CubeOp::Tile(vCubeOp *op) {
   // cost function: 1.0f / (a_coef * n0) + 1.0f / (b_coef * m0)
   // a_coef and b_coef are not less than 1 / core_num, which is 0.04
   // m0 and n0 are not less than BLOCK_SIZE, which is 16
-  float min_cost = 3.125f;
+  float min_cost = FLT_MAX;
   // m0, n0
   for (uint32_t pri_axis0 = pri_axis0_init; pri_axis0 <= pri_axis0_max; pri_axis0 *= 2) {
     for (uint32_t axis0 = axis0_init; axis0 <= axis0_max; axis0 *= 2) {

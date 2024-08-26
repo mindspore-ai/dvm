@@ -523,7 +523,7 @@ class CubeOp : public NDObject {
     offset_b_ = offset_b;
     NormalizeOutput();
   }
-  void SetAtomic(bool atomic_add){
+  void SetOutFp32(bool atomic_add){
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }

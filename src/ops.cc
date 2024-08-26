@@ -1511,11 +1511,11 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   } else {
     if (op->m_real > op->n_real) {
       swizzle_dir = 0;
-      uint32_t m_loop = (op->m_real + op->m0 - 1) / op->m0;
+      uint32_t m_loop = CeilDiv(op->m_real, op->m0);
       swizzle_cnt = std::min(swizzle_cnt, m_loop);
     } else {
       swizzle_dir = 1;
-      uint32_t n_loop = (op->n_real + op->n0 - 1) / op->n0;
+      uint32_t n_loop = CeilDiv(op->n_real, op->n0);
       swizzle_cnt = std::min(swizzle_cnt, n_loop);
     }
   }

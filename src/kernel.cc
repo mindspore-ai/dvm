@@ -1521,7 +1521,7 @@ uint64_t MixKernel::SplitKCodeGen() {
     auto output = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_);
     static_cast<CubeOp*>(output)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, i + 1 == split_num ? k_tail : k_stride, offset_a,
                          offset_b);
-    static_cast<CubeOp *>(output)->SetAtomic(i != 0);
+    static_cast<CubeOp *>(output)->SetOutFp32(i != 0);
     (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, output)));
   }
   auto matmul_fp32 = split_out.back()->lhs_;

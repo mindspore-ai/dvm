@@ -61,6 +61,7 @@ void ManualMatMul::SetTiling(const TuningInfo &info) {
 void TunedMatMul::GenTiling(vCubeOp *op) {
   auto &tuning_table = TunedMatMul::GetTuningTable();
   uint64_t key = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
+  if (type_id_ == dvm::kFloat32) key |= 4ul;
   if (trans_a_) key |= 2ul;
   if (trans_b_) key |= 1ul;
   TuningInfo &best_tuning = tuning_table[key];
@@ -74,6 +75,7 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
     auto m_input = kernel_->Load(dev_M_, lhs_->shape_ref_, DType::kFloat16);
     auto n_input = kernel_->Load(dev_N_, rhs_->shape_ref_, DType::kFloat16);
     matmul_ = new ManualMatMul(m_input, n_input, trans_a_, trans_b_);
+    if (type_id_ == dvm::kFloat32) matmul_->SetOutFp32(false);
     kernel_->GetImpl()->Append(matmul_);
     matmul_->SetRealShape(m_real_, n_real_, k_real_, trans_a_, trans_b_);
     (void)kernel_->Store(dev_O_, matmul_);

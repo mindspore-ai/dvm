@@ -510,14 +510,10 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t 
     ffts_addr = *ext_addr;
     body_addr = ext_addr + 2;
   }
-  set_ffts_base_addr(ffts_addr);
-STAGE_ENTRY:
   if (entry & V_ENTRY_FLAG_MIX) {
+    set_ffts_base_addr(ffts_addr);
     __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
     uint64_t flags = op->flags;
-    if (flags & V_CUBE_FLAG_PRE_WAIT) {
-      wait_flag_dev(1);
-    }
     uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
     if (block_idx < tile_num) {
       switch (op->dtype) {
@@ -534,23 +530,6 @@ STAGE_ENTRY:
         ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
       }
     }
-    if ((entry & V_ENTRY_FLAG_NEXT_STAGE) && !(flags & V_CUBE_FLAG_GROUP_SET)) {
-      ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(0, 0));
-      wait_flag_dev(0);
-      __gm__ uint64_t *next_addr = body_addr + vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
-      entry = *next_addr;
-      if (!(entry & V_ENTRY_FLAG_MIX)) {
-        ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
-      }
-      body_addr = next_addr + 1;
-      goto STAGE_ENTRY;
-    }
-  }
-  if (entry & V_ENTRY_FLAG_NEXT_STAGE) {
-    __gm__ uint64_t *next_addr = body_addr + vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
-    entry = *next_addr;
-    body_addr = next_addr + 1;
-    goto STAGE_ENTRY;
   }
   pipe_barrier(PIPE_ALL);
 }

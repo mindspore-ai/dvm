@@ -31,11 +31,15 @@ class Code {
   Code &operator=(Code &&other);
   ~Code();
   void Clear() {
-    atomic_clean_.clear();
+    sub_codes_.clear();
     reloc_reuse_.clear();
     reloc_workspaces_.clear();
   }
   void Alloc(size_t size);
+  void RelocWorkspace(NDAccess* op, int64_t ws_offset);
+  void RelocReuse(NDAccess* op, NDAccess* reuse);
+  void MoveCode(Code &other);
+
   void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags) {
     uint64_t *head = reinterpret_cast<uint64_t*>(data_);
     head[0] = 0;
@@ -71,20 +75,13 @@ class Code {
         *dst = *src;
       }
     }
-    if (target_ == kTargetMix) {
-      uint32_t ffts_len;
-      auto ret = System::Instance().get_c2c_addr_func_(reinterpret_cast<uint64_t*>(data_), &ffts_len);
-      if (ret != RT_ERROR_NONE) return ret;
+    if (!sub_codes_.empty()) {
+      for (auto a : sub_codes_) {
+        auto ret = a->DoLaunch(workspace, stream);
+        if (ret != RT_ERROR_NONE) return ret;
+      }
     }
-    if (!atomic_clean_.empty()) {
-      auto ret = LaunchAtomicClean(stream);
-      if (ret != RT_ERROR_NONE) return ret;
-    }
-    if (extern_code_ >= 0) {
-      return LaunchEx(workspace, stream);
-    }
-    uint8_t* stub_func = System::Instance().StubFunc(target_);
-    return System::Instance().launch_func_(stub_func, block_dim_, data_, data_size_, nullptr, stream);
+    return DoLaunch(workspace, stream);
   }
 
   void LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess*> &ios, uint64_t ws_base);
@@ -95,28 +92,25 @@ class Code {
   uint32_t block_dim_{0};
   int target_{0};
   int extern_code_{-1};
-  std::vector<Code*> atomic_clean_;
+  std::vector<Code*> sub_codes_;
   std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
   std::vector<std::pair<uint64_t*, uint64_t*>> reloc_reuse_;
   size_t mem_size_{0};
 
  private:
-  int LaunchAtomicClean(void* stream);
+  int DoLaunch(void *workspace, void* stream) {
+    if (extern_code_ >= 0) {
+      return LaunchEx(workspace, stream);
+    }
+    if (target_ == kTargetMix) {
+      uint32_t ffts_len;
+      auto ret = System::Instance().get_c2c_addr_func_(reinterpret_cast<uint64_t*>(data_), &ffts_len);
+      if (ret != RT_ERROR_NONE) return ret;
+    }
+    uint8_t* stub_func = System::Instance().StubFunc(target_);
+    return System::Instance().launch_func_(stub_func, block_dim_, data_, data_size_, nullptr, stream);
+  }
   int LaunchEx(void *workspace, void* stream);
-};
-
-class StageLinker {
- public:
-  StageLinker(Code &code, int64_t stage_num, int64_t total_size);
-  ~StageLinker() = default;
-
-  int Add(const Code &code, int64_t ws_offset, const std::vector<NDAccess*> &ios);
-  void RelocWorkspace(NDAccess* op, int64_t ws_offset);
-  void RelocReuse(NDAccess* op, NDAccess* reuse);
-
- private:
-  Code& code_;
-  std::vector<int64_t> code_offsets_;
 };
 } // namespace dvm 
 #endif // _DVM_CODE_H_

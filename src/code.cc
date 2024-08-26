@@ -627,9 +627,9 @@ class DisAssembler {
     uint64_t entry = *reinterpret_cast<uint64_t*>(code->data_ + sizeof(uint64_t));
     uint8_t *bcode = code->data_ + code->HeadSize();
     uint64_t bcode_size = code->data_size_ - code->HeadSize();
-    if (!code->atomic_clean_.empty()) {
-      for (auto ac : code->atomic_clean_) {
-        Run(ac, "atomic_clean");
+    if (!code->sub_codes_.empty()) {
+      for (auto ac : code->sub_codes_) {
+        Run(ac, "_sub");
         oss << std::endl;
       }
     }
@@ -805,23 +805,25 @@ Code::~Code() {
 }
 
 Code& Code::operator=(Code &&other) {
-  if (this != &other) {
-    ASSERT(data_ == nullptr);
-    data_ = other.data_;
-    data_size_ = other.data_size_;
-    block_dim_ = other.block_dim_;
-    target_ = other.target_;
-    extern_code_ = other.extern_code_;
-    mem_size_ = other.mem_size_;
-    atomic_clean_ = std::move(other.atomic_clean_);
-    reloc_workspaces_ = std::move(other.reloc_workspaces_);
-    reloc_reuse_ = std::move(other.reloc_reuse_);
-
-    other.data_ = nullptr;
-    other.data_size_ = 0;
-    other.mem_size_ = 0;
-  }
+  MoveCode(other);
+  sub_codes_ = std::move(other.sub_codes_);
+  reloc_workspaces_ = std::move(other.reloc_workspaces_);
+  reloc_reuse_ = std::move(other.reloc_reuse_);
   return *this;
+}
+
+void Code::MoveCode(Code &other) {
+  ASSERT(data_ == nullptr);
+  data_ = other.data_;
+  data_size_ = other.data_size_;
+  block_dim_ = other.block_dim_;
+  target_ = other.target_;
+  extern_code_ = other.extern_code_;
+  mem_size_ = other.mem_size_;
+
+  other.data_ = nullptr;
+  other.data_size_ = 0;
+  other.mem_size_ = 0;
 }
 
 void Code::Alloc(size_t size) {
@@ -876,20 +878,26 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
       reloc_reuse_.emplace_back(dst, src);
     }
   }
-  if (!code.atomic_clean_.empty()) {
-    for (auto a : code.atomic_clean_) {
-      atomic_clean_.push_back(a);
+  if (!code.sub_codes_.empty()) {
+    for (auto a : code.sub_codes_) {
+      sub_codes_.push_back(a);
     }
   }
 }
 
-int Code::LaunchAtomicClean(void* stream) {
-  for (auto a : atomic_clean_) {
-    uint8_t* a_stub = System::Instance().StubFunc(a->target_);
-    auto ret = System::Instance().launch_func_(a_stub, a->block_dim_, a->data_, a->data_size_, nullptr, stream);
-    if (ret != RT_ERROR_NONE) return ret;
+void Code::RelocReuse(NDAccess* op, NDAccess* reuse) {
+  auto reloc_addr = op->reloc_addr_;
+  for (auto it = reloc_reuse_.begin(); it != reloc_reuse_.end(); ++it) {
+    if (it->second == reloc_addr) {
+      reloc_reuse_.emplace(it, reloc_addr, reuse->reloc_addr_);
+      return;
+    }
   }
-  return 0;
+  reloc_reuse_.emplace_back(reloc_addr, reuse->reloc_addr_);
+}
+
+void Code::RelocWorkspace(NDAccess* op, int64_t ws_offset) {
+  reloc_workspaces_.emplace_back(op->reloc_addr_, ws_offset);
 }
 
 int Code::LaunchEx(void *workspace, void* stream) {
@@ -903,66 +911,5 @@ int Code::LaunchEx(void *workspace, void* stream) {
   auto stub_func = System::Instance().StubFunc(target_);
   return System::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);
 #endif
-}
-
-StageLinker::StageLinker(Code &code, int64_t stage_num, int64_t total_size) : code_(code) {
-  constexpr int64_t ffts_size = sizeof(uint64_t);
-  code.Alloc(total_size + ffts_size - ffts_size * stage_num);
-  code.target_ = Code::kTargetMix;
-  code.block_dim_ = 0;
-  *reinterpret_cast<uint64_t*>(code.data_) = 0; //ffts
-  code.data_size_ = ffts_size;
-}
-
-int StageLinker::Add(const Code &code, int64_t ws_offset, const std::vector<NDAccess*> &ios) {
-  constexpr int64_t ffts_size = sizeof(uint64_t);
-  int64_t code_offset = code_.data_size_;
-  code_.data_size_ += code.data_size_ - ffts_size;
-  if (code.target_ == Code::kTargetVec) {
-    auto group_num = (code.block_dim_ + 1) / 2;
-    if (group_num > code_.block_dim_) code_.block_dim_ = group_num;
-  } else if (code.block_dim_ > code_.block_dim_) {
-    code_.block_dim_ = code.block_dim_;
-  }
-  code_.LinkBody(code_offset + sizeof(uint64_t), code, ios, ws_offset);
-  auto cur_entry = *reinterpret_cast<uint64_t*>(code.data_ + ffts_size);
-  if (!code_offsets_.empty()) { // add sync
-    uint64_t *pre_code = reinterpret_cast<uint64_t*>(code_.data_ + code_offsets_.back());
-    auto pre_entry = *pre_code;
-    while (pre_entry & V_ENTRY_FLAG_NEXT_STAGE) {
-      pre_code += vGetBitRange(pre_entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) + 1;
-      pre_entry = *pre_code;
-    }
-    pre_entry |= V_ENTRY_FLAG_NEXT_STAGE;
-    if ((pre_entry & V_ENTRY_FLAG_MIX) &&
-        !(reinterpret_cast<vCubeOp*>(pre_code + 1)->flags & V_CUBE_FLAG_GROUP_SET)) { // cube->vector/cube/mix
-      if (!(cur_entry & V_ENTRY_FLAG_MIX)) {
-        cur_entry |= V_ENTRY_FLAG_PRE_WAIT;
-      }
-    } else if (cur_entry & V_ENTRY_FLAG_MIX) { // vector/mix->cube/mix
-      auto cube = reinterpret_cast<vCubeOp*>(code_.data_ + code_offset + sizeof(uint64_t));
-      cube->flags |= V_CUBE_FLAG_PRE_WAIT;
-    }
-    *pre_code = pre_entry;
-  }
-  *reinterpret_cast<uint64_t*>(code_.data_ + code_offset) = cur_entry;
-  int index = code_offsets_.size();
-  code_offsets_.push_back(code_offset);
-  return index;
-}
-
-void StageLinker::RelocWorkspace(NDAccess* op, int64_t ws_offset) {
-  code_.reloc_workspaces_.emplace_back(op->reloc_addr_, ws_offset);
-}
-
-void StageLinker::RelocReuse(NDAccess* op, NDAccess* reuse) {
-  auto reloc_addr = op->reloc_addr_;
-  for (auto it = code_.reloc_reuse_.begin(); it != code_.reloc_reuse_.end(); ++it) {
-    if (it->second == reloc_addr) {
-      code_.reloc_reuse_.emplace(it, reloc_addr, reuse->reloc_addr_);
-      return;
-    }
-  }
-  code_.reloc_reuse_.emplace_back(reloc_addr, reuse->reloc_addr_);
 }
 }  // namespace dvm

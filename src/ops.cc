@@ -530,7 +530,7 @@ int NDStore::Emit(VectorKernel &k) {
         code_size = vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
       }
       red_op->GenClearKernel(this);
-      code.atomic_clean_.push_back(&(red_op->clear_kernel_->code_));
+      code.sub_codes_.push_back(&(red_op->clear_kernel_->code_));
       code.reloc_reuse_.emplace_back(red_op->clear_store_->reloc_addr_, reloc_addr_);
       return code_size;
     }

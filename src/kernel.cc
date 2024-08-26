@@ -1693,29 +1693,47 @@ void StagesKernel::Append(NDObject *obj) {
 #define STAGE_FLAG_REUSE      2
 
 uint64_t StagesKernel::CodeGen() {
-  uint64_t code_size = 0;
-  for (auto &s : stages_) {
-    auto kernel = s->kernel;
-    s->ws_size = kernel->CodeGen();
-    code_size += kernel->code_.data_size_;
+  for (auto s : stages_) {
+    auto k = s->kernel;
+    s->ws_size = k->code_.ReserveWorkspace(k->CodeGen());
   }
   uint64_t ws_size = AllocWorkspace();
-  StageLinker linker(code_, stages_.size(), code_size);
-  for (auto &s : stages_) {
-    linker.Add(s->kernel->code_, s->ws_offset, s->ios);
-  }
-  for (auto stage : stages_) {
-    for (auto op : stage->ios) {
+  for (auto s : stages_) {
+    auto &code = s->kernel->code_;
+    if (!code.reloc_workspaces_.empty()) {
+      for (auto &[dst, offset]: code.reloc_workspaces_) {
+        code_.reloc_workspaces_.emplace_back(dst, offset + s->ws_offset);
+      }
+      code.reloc_workspaces_.clear();
+    }
+    if (!code.reloc_reuse_.empty()) {
+      for (auto &r : code.reloc_reuse_) {
+        code_.reloc_reuse_.emplace_back(r);
+      }
+      code.reloc_reuse_.clear();
+    }
+    for (auto op : s->ios) {
       if (!op->is_stage_) continue;
       if (op->IsStore()) {
         if (op->flags_ == STAGE_FLAG_REUSE) {
-          linker.RelocReuse(op, op->GetOutputReuse());
+          code_.RelocReuse(op, op->GetOutputReuse());
         } else {
-          linker.RelocWorkspace(op, op->GetWorkspace());
+          code_.RelocWorkspace(op, op->GetWorkspace());
         }
       } else {
-        linker.RelocReuse(op, op->GetStageStore());
+        code_.RelocReuse(op, op->GetStageStore());
       }
+    }
+    if (!code.sub_codes_.empty()) {
+      for (auto a : code.sub_codes_) {
+        code_.sub_codes_.push_back(a);
+      }
+      code.sub_codes_.clear();
+    }
+    if (s != stages_.back()) {
+      code_.sub_codes_.push_back(&code);
+    } else {
+      code_.MoveCode(code);
     }
   }
   return ws_size;

@@ -43,6 +43,8 @@ enum ObjectType {
   kSelect,
   kElementAny,
   kRemovePad,
+  kPower,
+  kIsFinite16,
   kCubeOp,
   kObjectBulk
 };
@@ -95,6 +97,8 @@ class VectorKernel;
 #define OBJ_FLAG_REUSE_LHS  4
 #define OBJ_FLAG_REUSE_RHS  8
 
+#define OBJ_FLAG_WORKSPACE  (1u << 16)
+
 class NDObject {
  public:
   NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
@@ -125,22 +129,39 @@ class NDObject {
   bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
   bool IsSimd() const { return obj_id_ > kStore; }
 
+  void Clear(int index) {
+    index_ = index;
+    xbuf_ = IsStore() ? -1 : 0;
+    lead_dim_ = 0;
+    flags_ &= 0xffff0000u;
+  }
+
   std::vector<int64_t> nd_;
   std::vector<int64_t> strides_;
   NDObject *lhs_;
   NDObject *rhs_;
-  uint64_t xbuf_{0};
+  uint64_t xbuf_;
   ShapeRef *shape_ref_{nullptr};
   NDObject *pd_next_{nullptr};
-  int lead_dim_{0};
+  int lead_dim_;
   ObjectType obj_id_;
   DType type_id_;
 
   // op info
-  int index_{0};
+  int index_;
   uint32_t flags_{0};
-  uint64_t *insn_{nullptr};       // when in optimization passes, used to point to the next NDObject
-  uint64_t *tail_insn_{nullptr};  // when in optimization passes, used to point to the prev NDObject
+  uint64_t *insn_;       // when in optimization passes, used to point to the next NDObject
+  uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
+};
+
+class NDWsOp : public NDObject {
+ public:
+  enum { kWsMax = 2 };
+  NDWsOp(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
+    flags_ |= OBJ_FLAG_WORKSPACE;
+  }
+  int ws_num_{0};
+  uint64_t wss_[kWsMax];
 };
 
 class NDAccess : public NDObject {
@@ -306,6 +327,16 @@ class UnaryOp : public NDObject {
   vSimdInsnID id_;
 };
 
+class IsFinite16Op : public NDWsOp {
+ public:
+  IsFinite16Op(NDObject *input) : NDWsOp(input, nullptr, input->type_id_, ObjectType::kIsFinite16) {
+    shape_ref_ = input->shape_ref_;
+    ws_num_ = 1;
+  }
+  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  int Emit(VectorKernel &k) override;
+};
+
 class RemovePadOp : public CopyOp {
 public:
   RemovePadOp(NDObject *NDObject);
@@ -365,19 +396,39 @@ class BinaryScalarOp : public NDObject {
   T scalar_;
 };
 
+class _BinaryNormalizer {
+ public:
+  _BinaryNormalizer() = default;
+  ~_BinaryNormalizer();
+  void Normalize(NDObject *self, std::vector<NDObject*> &run_ops);
+  std::vector<NDObject*> lhs_stuff_ops_;
+  std::vector<NDObject*> rhs_stuff_ops_;
+  ShapeWithRef shape_;
+};
+
 class BinaryOp : public NDObject {
  public:
   BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
-  ~BinaryOp();
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
   vSimdInsnID id_;
 
  protected:
   int cmp_op_;
-  std::vector<NDObject*> lhs_stuff_ops_;
-  std::vector<NDObject*> rhs_stuff_ops_;
-  ShapeWithRef shape_;
+  _BinaryNormalizer norm_;
+};
+
+class PowerOp : public NDWsOp {
+ public:
+  PowerOp(NDObject *lhs, NDObject *rhs) : NDWsOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
+    ws_num_ = 1;
+    shape_ref_ = &norm_.shape_;
+  }
+  void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
+  int Emit(VectorKernel &k) override;
+
+ protected:
+  _BinaryNormalizer norm_;
 };
 
 class SelectOp : public NDObject {

@@ -261,6 +261,14 @@ void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
+void DumpUnaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vBinary op;
+  vBinary::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " // ";
+  DumpVal("ws", reinterpret_cast<void *>(op.xm), oss);
+}
+
 void DumpRemovePad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vRemovePad op;
   vRemovePad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -285,6 +293,15 @@ void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm);
+}
+
+void DumpBinaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vBinaryWS op;
+  vBinaryWS::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
+  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
 }
 
 void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -448,7 +465,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_TRUNC_FP16, {&DumpUnary, "Trunc", "fp16"}},
   {V_NOT_INT8, {&DumpUnary, "LogicalNot", "u8"}},
   {V_ISFINITE, {&DumpUnary, "IsFinite", "fp32"}},
-  {V_ISFINITE_FP16, {&DumpUnary, "IsFinite", "fp16"}},
+  {V_ISFINITE_FP16, {&DumpUnaryWS, "IsFinite", "fp16"}},
   {V_CAST_FP16_TO_FP32, {&DumpUnary, "CastFP16", "fp32"}},
   {V_CAST_INT8_TO_FP16, {&DumpUnary, "CastS8", "fp16"}},
   {V_CAST_FP16_TO_INT8, {&DumpUnary, "CastFP16", "u8"}},
@@ -489,8 +506,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_MIN, {&DumpBinary, "Minimum", "fp32"}},
   {V_MIN_FP16, {&DumpBinary, "Minimum", "fp16"}},
   {V_MIN_INT32, {&DumpBinary, "Minimum", "int32"}},
-  {V_POW, {&DumpBinary, "Pow", "fp32"}},
-  {V_POW_FP16, {&DumpBinary, "Pow", "fp16"}},
+  {V_POW, {&DumpBinaryWS, "Pow", "fp32"}},
+  {V_POW_FP16, {&DumpBinaryWS, "Pow", "fp16"}},
   {V_CMP, {&DumpCompare, "Cmp", "fp32"}},
   {V_CMP_FP16, {&DumpCompare, "Cmp", "fp16"}},
   {V_AND_INT8, {&DumpBinary, "LogicalAnd", "int8"}},

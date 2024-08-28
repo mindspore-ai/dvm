@@ -19,7 +19,7 @@
 #define _CCE_KERNEL_
 #include "isa.h"
 
-const uint64_t UB_WORKSPACE_SIZE = 1024;
+const uint64_t UB_WORKSPACE_SIZE = 512;
 #define PC_BASE UB_WORKSPACE_SIZE
 
 #define WORKSPACE (uint64_t)0
@@ -613,21 +613,22 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 }
 
 static inline[aicore] void IsFiniteFp16(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vUnary op;
-  vUnary::Decode(pc, head, op);
+  vBinary op;
+  vBinary::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, half);
   __ubuf__ uint16_t *xd = (__ubuf__ uint16_t *)(op.xd);
   __ubuf__ uint16_t *xn = (__ubuf__ uint16_t *)(op.xn);
+  __ubuf__ uint16_t *ws = (__ubuf__ uint16_t *)(op.xm);
   pipe_barrier(PIPE_V);
   vector_dup((__ubuf__ half *)WORKSPACE, (half)0.0, 1, 1, 1, rs, rs);
   vector_dup((__ubuf__ half *)(WORKSPACE + 256), (half)1.0, 1, 1, 1, rs, rs);
-  vector_dup((__ubuf__ uint16_t *)(WORKSPACE + 512), uint16_t(0x7c00), 1, 1, 1, rs, rs);
+  vector_dup(ws, uint16_t(0x7c00), 1, 1, 1, rs, rs);
   pipe_barrier(PIPE_V);
-  repeat_vand(xd, (__ubuf__ uint16_t *)(WORKSPACE + 512), xn, op.repeat, 1, 1, 1, rs, 0, rs);
+  repeat_vand(xd, ws, xn, op.repeat, 1, 1, 1, rs, 0, rs);
   uint64_t simd_width = rs << 4;
   pipe_barrier(PIPE_V);
   for (uint64_t i = 0; i < op.repeat; i++) {
-    vcmp_eq((__ubuf__ half *)xd, (__ubuf__ half *)(WORKSPACE + 512), 1, 1, 1, 1, rs, rs, rs);
+    vcmp_eq((__ubuf__ half *)xd, (__ubuf__ half *)ws, 1, 1, 1, 1, rs, rs, rs);
     vsel((__ubuf__ half *)xd, (__ubuf__ half *)(WORKSPACE), (__ubuf__ half *)(WORKSPACE + 256), 1, 1, 1, 1, rs, rs, rs);
     xd += simd_width;
   }
@@ -667,53 +668,55 @@ static inline[aicore] void IsFinite(bcodeptr_t pc, uint64_t head, uint64_t tile)
 }
 
 template <typename T>
+__aicore_inline__ void _PowerProc(__ubuf__ T *xd, __ubuf__ T *xm, __ubuf__ T *xn, __ubuf__ T *ws, uint8_t repeat, uint64_t rs) {
+  vAbs(xd, xn, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vLn(xd, xd, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vMul(xd, xd, xm, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vExp(xd, xd, repeat, rs);
+  vMuls(ws, xm, (T)0.5, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vFloor(ws, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vMuls(ws, ws, (T)2.0, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vSub(ws, xm, ws, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vMuls(ws, ws, (T)2.0, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vAdds(ws, ws, (T)1.0, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vMul(ws, ws, xd, repeat, rs);
+}
+
+template <typename T>
 __aicore_inline__ void Power(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vBinary op;
-  vBinary::Decode(pc, head, op);
+  vBinaryWS op;
+  vBinaryWS::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, T);
   __ubuf__ T*xm = (__ubuf__ T*)(op.xm);
   __ubuf__ T*xd = (__ubuf__ T*)(op.xd);
   __ubuf__ T*xn = (__ubuf__ T*)(op.xn);
-  if (op.repeat <= 255) {
-    vAbs(xd, xn, op.repeat, rs);
-    pipe_barrier(PIPE_V);
-    vLn(xd, xd, op.repeat, rs);
-    pipe_barrier(PIPE_V);
-    vMul(xd, xd, xm, op.repeat, rs);
-    pipe_barrier(PIPE_V);
-    vExp(xd, xd, op.repeat, rs);
-  } else {
-    repeat_vabs(xd, xn, op.repeat, 1, 1, rs, rs);
-    pipe_barrier(PIPE_V);
-    repeat_vln(xd, xd, op.repeat, 1, 1, rs, rs);
-    pipe_barrier(PIPE_V);
-    repeat_vmul(xd, xd, xm, op.repeat, 1, 1, 1, rs, rs, rs);
-    pipe_barrier(PIPE_V);
-    repeat_vexp(xd, xd, op.repeat, 1, 1, rs, rs);
-  }
-  vDup((__ubuf__ T*)(WORKSPACE + 256), (T)0.0, 1, rs);
+  __ubuf__ T*ws = (__ubuf__ T*)(op.ws);
   uint64_t simd_width = rs << SIMD_WIDTH_SHIFT(xn);
+  uint64_t repeat = op.repeat;
+  uint64_t stride = 0;
+  for (; repeat > 255; repeat -= 255) {
+    _PowerProc(xd + stride, xm + stride, xn + stride, ws + stride, 255, rs);
+    stride += 255 * simd_width;
+  }
+  _PowerProc(xd + stride, xm + stride, xn + stride, ws + stride, repeat, rs);
+  vDup((__ubuf__ T*)(WORKSPACE), (T)0.0, 1, rs);
+  pipe_barrier(PIPE_V);
   for (uint64_t i = 0; i < op.repeat; i++) {
-    pipe_barrier(PIPE_V);
-    vMuls((__ubuf__ T *)WORKSPACE, xm, (T)0.5, 1, rs);
-    pipe_barrier(PIPE_V);
-    vFloor((__ubuf__ T *)WORKSPACE, 1, rs);
-    pipe_barrier(PIPE_V);
-    vMuls((__ubuf__ T *)WORKSPACE, (__ubuf__ T *)WORKSPACE, (T)2.0, 1, rs);
-    pipe_barrier(PIPE_V);
-    vSub((__ubuf__ T *)WORKSPACE, xm, (__ubuf__ T *)WORKSPACE, 1, rs);
-    pipe_barrier(PIPE_V);
-    vMuls((__ubuf__ T *)WORKSPACE, (__ubuf__ T *)WORKSPACE, (T)2.0, 1, rs);
-    pipe_barrier(PIPE_V);
-    vAdds((__ubuf__ T *)WORKSPACE, (__ubuf__ T *)WORKSPACE, (T)1.0, 1, rs);
-    pipe_barrier(PIPE_V);
-    vMul((__ubuf__ T *)WORKSPACE, (__ubuf__ T *)WORKSPACE, xd, 1, rs);
-    pipe_barrier(PIPE_V);
-    vCmpLt(xn, (__ubuf__ T *)(WORKSPACE + 256), 1, rs);
-    vSel(xd, (__ubuf__ T *)WORKSPACE, (__ubuf__ T *)xd, 1, rs);
+    vCmpLt(xn, (__ubuf__ T *)(WORKSPACE), 1, rs);
+    vSel(xd, ws, xd, 1, rs);
     xn += simd_width;
     xm += simd_width;
     xd += simd_width;
+    ws += simd_width;
   }
 }
 

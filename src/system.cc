@@ -96,7 +96,7 @@ System::System() {
   l2_size_ = (soc_name == "Ascend910B4" || soc_name == "Ascend910C4") ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
   l1_size_ = 512 * 1024;
   l0c_size_ = 128 * 1024;
-  ub_workspace_size_ = 1024;
+  ub_workspace_size_ = 512;
   std::unordered_map<std::string, SocType> soc_name_map = {{"Ascend910B1", kAscend910B1},
                                                            {"Ascend910B2", kAscend910B2},
                                                            {"Ascend910B3", kAscend910B3},

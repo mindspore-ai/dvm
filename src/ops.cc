@@ -655,6 +655,15 @@ int UnaryOp::Emit(VectorKernel &k) {
   return vUnary::Encode(insn_, id_, op);
 }
 
+int IsFinite16Op::Emit(VectorKernel &k) {
+  vBinary op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xm = wss_[0];
+  op.repeat = strides_.back() / k.simd_width_;
+  return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
+}
+
 RemovePadOp::RemovePadOp(NDObject *input) : CopyOp(input) {
   ASSERT(ITEM_SIZE[type_id_] != 1);
   obj_id_ = ObjectType::kRemovePad;
@@ -749,32 +758,7 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
 template class BinaryScalarOp<float>;
 template class BinaryScalarOp<int32_t>;
 
-BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary) {
-  static const vSimdInsnID id_list[][kTypeEnd] = {
-    // must keep consistent order with BinaryOpType
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32},
-    {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32},
-    {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32},
-    {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE},
-    {V_NONE, V_POW_FP16, V_NONE, V_POW, V_NONE},
-    {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
-    {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
-  id_ = id_list[op_type][type_id_];
-  ASSERT(id_ != V_NONE);
-  // compare op in BinaryOpType must keep consistent order with vCompareType
-  cmp_op_ = op_type < V_CMP_ALL ? op_type : -1;
-  shape_ref_ = &shape_;
-}
-
-BinaryOp::~BinaryOp() {
+_BinaryNormalizer::~_BinaryNormalizer() {
   for (auto op : lhs_stuff_ops_) {
     delete op;
   }
@@ -783,19 +767,19 @@ BinaryOp::~BinaryOp() {
   }
 }
 
-void BinaryOp::Normalize(std::vector<NDObject*> &run_ops) {
+void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject*> &run_ops) {
   // recover original input
   if (!lhs_stuff_ops_.empty()) {
-    lhs_ = lhs_stuff_ops_[0]->lhs_;
+    self->lhs_ = lhs_stuff_ops_[0]->lhs_;
   }
   if (!rhs_stuff_ops_.empty()) {
-    rhs_ = rhs_stuff_ops_[0]->lhs_;
+    self->rhs_ = rhs_stuff_ops_[0]->lhs_;
   }
   // update shape_ref_
-  auto lhs_data = lhs_->shape_ref_->data;
-  auto rhs_data = rhs_->shape_ref_->data;
-  auto lhs_sz = lhs_->shape_ref_->size;
-  auto rhs_sz = rhs_->shape_ref_->size;
+  auto lhs_data = self->lhs_->shape_ref_->data;
+  auto rhs_data = self->rhs_->shape_ref_->data;
+  auto lhs_sz = self->lhs_->shape_ref_->size;
+  auto rhs_sz = self->rhs_->shape_ref_->size;
   if (lhs_sz > rhs_sz) {
     shape_.Resize(lhs_sz);
     auto diff = lhs_sz - rhs_sz;
@@ -816,41 +800,67 @@ void BinaryOp::Normalize(std::vector<NDObject*> &run_ops) {
     }
   }
   // update nd_
-  const auto &lhs_nd = lhs_->nd_;
-  const auto &rhs_nd = rhs_->nd_;
+  const auto &lhs_nd = self->lhs_->nd_;
+  const auto &rhs_nd = self->rhs_->nd_;
+  auto &nd = self->nd_;
   auto lhs_dim = lhs_nd.size();
   auto rhs_dim = rhs_nd.size();
   auto res_dim = lhs_dim > rhs_dim ? lhs_dim : rhs_dim;
-  nd_.resize(res_dim, 1);
+  nd.resize(res_dim, 1);
   bool lhs_need_broadcast = false;
   bool rhs_need_broadcast = false;
   for (size_t i = 0; i < res_dim; ++i) {
     auto lhs_axis = i < lhs_dim ? lhs_nd[i] : 1;
     auto rhs_axis = i < rhs_dim ? rhs_nd[i] : 1;
     if (lhs_axis > rhs_axis) {
-      nd_[i] = lhs_axis;
+      nd[i] = lhs_axis;
       rhs_need_broadcast = true;
     } else if (lhs_axis < rhs_axis) {
-      nd_[i] = rhs_axis;
+      nd[i] = rhs_axis;
       lhs_need_broadcast = true;
     } else {
-      nd_[i] = lhs_axis;
+      nd[i] = lhs_axis;
     }
   }
   if (lhs_need_broadcast) {
     size_t stuff_idx = 0;
-    lhs_ = InsertImplicitBroadcast(lhs_, nd_, lhs_stuff_ops_, stuff_idx);
+    self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, stuff_idx);
     for (size_t i = 0; i < stuff_idx; ++i) {
       run_ops.push_back(lhs_stuff_ops_[i]);
     }
   }
   if (rhs_need_broadcast) {
     size_t stuff_idx = 0;
-    rhs_ = InsertImplicitBroadcast(rhs_, nd_, rhs_stuff_ops_, stuff_idx);
+    self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, stuff_idx);
     for (size_t i = 0; i < stuff_idx; ++i) {
       run_ops.push_back(rhs_stuff_ops_[i]);
     }
   }
+}
+
+BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary) {
+  static const vSimdInsnID id_list[][kTypeEnd] = {
+    // must keep consistent order with BinaryOpType
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+    {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32},
+    {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32},
+    {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32},
+    {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE},
+    {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}, // power: individual implement
+    {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
+    {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+    {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+    {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
+  id_ = id_list[op_type][type_id_];
+  ASSERT(id_ != V_NONE);
+  // compare op in BinaryOpType must keep consistent order with vCompareType
+  cmp_op_ = op_type < V_CMP_ALL ? op_type : -1;
+  shape_ref_ = &norm_.shape_;
 }
 
 int BinaryOp::Emit(VectorKernel &k) {
@@ -870,6 +880,18 @@ int BinaryOp::Emit(VectorKernel &k) {
     op.repeat = strides_.back() / k.simd_width_;
     return vBinary::Encode(insn_, id_, op);
   }
+}
+
+int PowerOp::Emit(VectorKernel &k) {
+  ASSERT(type_id_ == dvm::kFloat32 || type_id_ == dvm::kFloat16);
+  vBinaryWS op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xm = rhs_->xbuf_;
+  op.repeat = strides_.back() / k.simd_width_;
+  op.ws = wss_[0];
+  uint64_t id = type_id_ == dvm::kFloat32 ? V_POW : V_POW_FP16;
+  return vBinaryWS::Encode(insn_, id, op);
 }
 
 void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {

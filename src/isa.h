@@ -330,6 +330,30 @@ struct vBinary {
   }
 };
 
+struct vBinaryWS {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t xm;
+  uint64_t ws;
+  uint64_t repeat;
+  // pc[0]: xn(18)
+  // pc[1]: repeat(15) << 49 | ws(13) << 36 | xd(18) << 18 | xm(18)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBinaryWS &op) {
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.xm = data & V_X_MASK;
+    op.xd = (data >> 18) & V_X_MASK;
+    op.ws = vDeCompactX(vGetBitRange(data, 36, 13));
+    op.repeat = data >> 49;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryWS &op) {
+    uint32_t size = 2;
+    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[1] = op.repeat << 49 | vCompactX(op.ws) << 36 | op.xd << 18 | op.xm;
+    return size;
+  }
+};
+
 enum vCompareType {
   V_CMP_EQ = 0,
   V_CMP_NE,

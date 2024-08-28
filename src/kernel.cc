@@ -34,6 +34,7 @@ class CodeGenHelper {
     kGenSimd1,
     kGenSimd2,
     kGenSimd3,
+    kGenWorkS,
     kGenLoad,
     kGenStore,
   };
@@ -63,6 +64,8 @@ class CodeGenHelper {
       kGenSimd3, // select
       kGenSimd1, // elementany
       kGenSimd1, // RemovePad
+      kGenWorkS, // Power
+      kGenWorkS, // isfinite16
     };
     auto &code = kernel_.code_;
     auto code_reserved = kernel_.ReserveCodeSize();
@@ -89,7 +92,7 @@ class CodeGenHelper {
         case kGenSimd1: {
           auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_, op);
+            free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
@@ -101,10 +104,10 @@ class CodeGenHelper {
         case kGenSimd2: {
           auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_, op);
+            free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
           if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-            free_xbuf_.emplace(op->rhs_, op);
+            free_xbuf_.emplace(op->rhs_->xbuf_, op);
           }
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
@@ -122,10 +125,10 @@ class CodeGenHelper {
         case kGenSimd3: {
           auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_, op);
+            free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
           if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-            free_xbuf_.emplace(op->rhs_, op);
+            free_xbuf_.emplace(op->rhs_->xbuf_, op);
           }
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
@@ -134,6 +137,46 @@ class CodeGenHelper {
           SelectOpPostProc(op);
           break;
         }
+        case kGenWorkS: {
+          auto ws_op = static_cast<NDWsOp*>(op);
+          NDObject* anti_ops[NDWsOp::kWsMax + 1];
+          int anti_num = 0;
+          if (op->xbuf_ == 0) {
+            auto anti = AllocDynXBuf(op);
+            if (anti) anti_ops[anti_num++] = anti;
+          }
+          for (int i = 0; i < ws_op->ws_num_; ++i) {
+            NDObject *anti = nullptr;
+            ws_op->wss_[i] = AllocDynXBuf(op, &anti);
+            if (anti) anti_ops[anti_num++] = anti;
+          }
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.emplace(op->lhs_->xbuf_, op);
+          }
+          if (op->flags_ & OBJ_FLAG_FREE_RHS) {
+            free_xbuf_.emplace(op->rhs_->xbuf_, op);
+          }
+          for (int i = 0; i < ws_op->ws_num_; ++i) {
+            free_xbuf_.emplace(ws_op->wss_[i], op);
+          }
+          code_ptr += op->Emit(kernel_);
+          for (int i = 0; i < anti_num; ++i) {
+            SimdBarrier(anti_ops[i], op);
+          }
+          if (op->rhs_ == nullptr) {
+            ASSERT(op->lhs_);
+            SimdSync(op->lhs_, op);
+          } else {
+            if (op->rhs_->index_ > op->lhs_->index_) {
+              SimdSync(op->rhs_, op);
+              SimdSync(op->lhs_, op);
+            } else {
+              SimdSync(op->lhs_, op);
+              SimdSync(op->rhs_, op);
+            }
+          }
+          break;
+        };
         case kGenLoad: {
           code_ptr += op->Emit(kernel_);
           break;
@@ -223,7 +266,7 @@ class CodeGenHelper {
   void SelectOpPostProc(NDObject *op) {
     SelectOp *select_op = reinterpret_cast<SelectOp*>(op);
     if (select_op->free_cond) {
-      free_xbuf_.emplace(select_op->cond_, select_op);
+      free_xbuf_.emplace(select_op->cond_->xbuf_, select_op);
     }
     NDObject *inputs[3] = {op->lhs_, op->rhs_, select_op->cond_};
     if(inputs[0]->index_ < inputs[1]->index_) {
@@ -240,32 +283,35 @@ class CodeGenHelper {
     }
   }
 
-  NDObject* AllocDynXBuf(NDObject *obj) {
+  uint64_t AllocDynXBuf(NDObject *obj,  NDObject **anti) {
     if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
-      obj->xbuf_ = obj->lhs_->xbuf_;
-      return nullptr;
+      return obj->lhs_->xbuf_;
     }
     if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
-      obj->xbuf_ = obj->rhs_->xbuf_;
-      return nullptr;
+      return obj->rhs_->xbuf_;
     }
+    uint64_t xbuf;
     if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
-      obj->xbuf_ = free_xbuf_.front().first->xbuf_;
+      xbuf = free_xbuf_.front().first;
       free_xbuf_.pop();
-      return nullptr;
-    }
-    if (static_xbuf_ + xbuf_size_ <= System::Instance().LocalMemSize()) {
-      obj->xbuf_ = static_xbuf_;
+    } else if (static_xbuf_ + xbuf_size_ <= System::Instance().LocalMemSize()) {
+      xbuf = static_xbuf_;
       static_xbuf_ += xbuf_size_;
-      return nullptr;
+    } else {
+      ASSERT(!free_xbuf_.empty());
+      auto &op = free_xbuf_.front();
+      xbuf = op.first;
+      *anti = op.second;
+      free_xbuf_.pop();
     }
-    ASSERT(!free_xbuf_.empty());
-    auto &op = free_xbuf_.front();
-    obj->xbuf_ = op.first->xbuf_;
-    auto anti_dep = op.second;
-    free_xbuf_.pop();
-    return  anti_dep;
+    return xbuf;
+  }
+
+  NDObject* AllocDynXBuf(NDObject *obj) {
+    NDObject *anti = nullptr;
+    obj->xbuf_ = AllocDynXBuf(obj, &anti);
+    return anti;
   }
 
   inline void SimdBarrier(NDObject *from, NDObject *to) {
@@ -327,7 +373,7 @@ class CodeGenHelper {
 
   uint32_t xbuf_size_{0};
   uint64_t static_xbuf_{0};
-  std::queue<std::pair<NDObject*, NDObject*>> free_xbuf_;
+  std::queue<std::pair<uint64_t, NDObject*>> free_xbuf_;
 
   int vector_vector_sync = 0;
   EventManager lv_event_;
@@ -867,7 +913,9 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     "Reduce",
     "Select",
     "ElemAny",
-    "RemovePad"
+    "RemovePad",
+    "Power",
+    "IsFinite16"
   };
   static const char* dtype_names[DType::kTypeEnd] = {
     "Bool",
@@ -957,10 +1005,7 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
 
 static inline bool BinaryInplaceCheck(NDObject *obj) {
   if (obj->obj_id_ == kBinary) {
-    auto id = static_cast<BinaryOp *>(obj)->id_;
-    if (id != V_POW && id != V_POW_FP16) {
-      return true;
-    }
+    return true;
   }
   return false;
 }
@@ -976,7 +1021,6 @@ static inline bool LhsInplaceCheck(NDObject *obj) {
 }
 
 int VectorKernel::Analyze() {
-  int op_index = objects_.size();
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
   auto LivenessEnd = [&cur_live](NDObject *op, NDObject *end) {
@@ -986,8 +1030,9 @@ int VectorKernel::Analyze() {
     }
     return false;
   };
+  int op_index = 0;
   for (auto op : objects_) {  // clear status
-    op->lead_dim_ = 0;
+    op->Clear(op_index++);
   }
   for (auto op : static_ops_) {
     if (op->IsSimd()) {
@@ -996,8 +1041,6 @@ int VectorKernel::Analyze() {
   }
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
-    op->index_ = --op_index;
-    op->flags_ = 0;
     if (op->IsSimd()) {
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
@@ -1024,14 +1067,14 @@ int VectorKernel::Analyze() {
           select_op->free_cond = true;
         }
       }
-      if (cur_live > live_peak) {
-        live_peak = cur_live;
+      int live_num = op->flags_ & OBJ_FLAG_WORKSPACE ? cur_live + static_cast<NDWsOp*>(op)->ws_num_ : cur_live;
+      if (live_num > live_peak) {
+        live_peak = live_num;
       }
       if (OP_LIVE_D(op) && !(op->flags_ & (OBJ_FLAG_REUSE_LHS | OBJ_FLAG_REUSE_RHS))) {
         cur_live--;
       }
       OP_KILL(op);
-      op->xbuf_ = 0;
     }
   }
   return live_peak;
@@ -1145,7 +1188,6 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
       static_ops_.push_back(op);
     } else if (op->IsStore()) {
       static_ops_.push_back(op->lhs_);
-      op->xbuf_ = -1;
     }
   }
   if (slow_build_path) {
@@ -1179,6 +1221,8 @@ NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
     true,  // select
     false, // elementany
     true,  // RemovePad
+    true,  // Power
+    true,  // IsFinite16
   };
   auto update_flag = [](int input_flag, bool elem_type, int &flag) {
     // undetermined -> elemwise -> no-elemwise
@@ -1390,7 +1434,7 @@ MixKernel::~MixKernel() {
 void MixKernel::Append(NDObject *obj) {
   const uint32_t LOAD_PENDING = 1;
   if (obj->IsLoad()) {
-    obj->flags_ = LOAD_PENDING;
+    obj->xbuf_ = LOAD_PENDING;
   } else if (obj->obj_id_ == kCubeOp) {
     EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
     std::vector<NDObject*> empty_run_ops;
@@ -1412,8 +1456,8 @@ void MixKernel::Append(NDObject *obj) {
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;
-      } else if (op->IsLoad() && op->flags_ == LOAD_PENDING) {
-        op->flags_ = 0;
+      } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
+        op->xbuf_ = 0;
         post_fusion_->build_ops_.emplace_back(op);
       }
     };
@@ -1715,7 +1759,7 @@ uint64_t StagesKernel::CodeGen() {
     for (auto op : s->ios) {
       if (!op->is_stage_) continue;
       if (op->IsStore()) {
-        if (op->flags_ == STAGE_FLAG_REUSE) {
+        if (op->xbuf_ == STAGE_FLAG_REUSE) {
           code_.RelocReuse(op, op->GetOutputReuse());
         } else {
           code_.RelocWorkspace(op, op->GetWorkspace());
@@ -1776,7 +1820,7 @@ uint64_t StagesKernel::AllocWorkspace() {
           NDAccess *inplace_stage = nullptr;
           auto inplace_out = static_cast<VectorKernel*>(stage->kernel)->FindInplaceStore(io,
             [&lives, &inplace_stage](NDAccess *op) -> bool {
-              if (!op->is_stage_ || op->flags_ == STAGE_FLAG_REUSE) {
+              if (!op->is_stage_ || op->xbuf_ == STAGE_FLAG_REUSE) {
                 return true;
               }
               if (inplace_stage == nullptr && lives[op] >= 0) {
@@ -1785,7 +1829,7 @@ uint64_t StagesKernel::AllocWorkspace() {
               return false;
           });
           if (inplace_out) {
-            store->flags_ = STAGE_FLAG_REUSE;
+            store->xbuf_ = STAGE_FLAG_REUSE;
             store->SetOutputReuse(inplace_out->is_stage_ ? inplace_out->GetOutputReuse() : inplace_out);
             lives[store] = -1;
             continue;
@@ -1830,7 +1874,7 @@ uint64_t StagesKernel::AllocWorkspace() {
   uint64_t workspace_size = 0;
   for (auto &g : groups) {
     for (auto op : g.ops) {
-      op->flags_ = STAGE_FLAG_WORKSPACE;
+      op->xbuf_ = STAGE_FLAG_WORKSPACE;
       op->SetWorkspace(workspace_size);
     }
     for (auto stage : g.wss) {

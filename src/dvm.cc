@@ -168,7 +168,12 @@ NDObject* Kernel::Unary(int op_type, NDObject* input) {
       return Binary(BinaryOpType::kSub, 1.0f, input);
     }
   }
-  auto obj = new UnaryOp(op_type, input);
+  NDObject *obj;
+  if (op_type == UnaryOpType::kIsFinite && input->type_id_ == kFloat16) {
+    obj = new IsFinite16Op(input);
+  } else {
+    obj = new UnaryOp(op_type, input);
+  }
   kernel_->Append(obj);
   return obj;
 }
@@ -198,7 +203,12 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
       return ret;
     }
   }
-  auto obj = new BinaryOp(op_type, lhs, rhs);
+  NDObject *obj;
+  if (op_type == BinaryOpType::kPow) {
+    obj = new PowerOp(lhs, rhs);
+  } else {
+    obj = new BinaryOp(op_type, lhs, rhs);
+  }
   kernel_->Append(obj);
   return obj;
 }

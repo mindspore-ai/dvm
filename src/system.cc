@@ -55,6 +55,10 @@ extern const unsigned char g_vkernel_c220_bin[];
 extern unsigned int g_vkernel_c220_bin_len;
 
 namespace dvm {
+
+const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
+const char* DTYPE_NAMES[dvm::kTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32"};
+
 static std::string GetSocName() {
   std::string res;
   const char *soc_name = getenv("DVM_SOC_NAME");

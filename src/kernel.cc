@@ -27,16 +27,45 @@ namespace dvm {
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
 constexpr int64_t MAX_K = 1 << 15;
 
+enum CodeGenTmpl {
+  kGenSimd0 = 0,
+  kGenSimd1,
+  kGenSimd2,
+  kGenFlex,
+  kGenLoad,
+  kGenStore,
+};
+
+struct NDObjectAttr {
+  const char* name;
+  CodeGenTmpl cg_tmpl;
+  bool inplace_prop;
+};
+
+static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
+  {"LoadDummy",   kGenLoad,  true },
+  {"Load",        kGenLoad,  true },
+  {"PadStore",    kGenStore, false},
+  {"Store",       kGenStore, true },
+  {"Reshape",     kGenSimd1, true },
+  {"Copy",        kGenSimd1, true },
+  {"Unary",       kGenSimd1, true },
+  {"Binary",      kGenSimd2, true },
+  {"Cast",        kGenSimd1, true },
+  {"BinaryS",     kGenSimd1, true },
+  {"BroadcastTo", kGenSimd1, false},
+  {"BroadcastS",  kGenSimd0, true },
+  {"Reduce",      kGenSimd1, false},
+  {"Select",      kGenFlex,  true },
+  {"ElemAny",     kGenSimd1, false},
+  {"RemovePad",   kGenFlex,  true },
+  {"Power",       kGenFlex,  true },
+  {"IsFinite16",  kGenFlex,  true }
+};
+
 class CodeGenHelper {
  public:
-  enum CodeGenType {
-    kGenSimd0 = 0,
-    kGenSimd1,
-    kGenSimd2,
-    kGenFlex,
-    kGenLoad,
-    kGenStore,
-  };
+
   struct EventManager {
     enum { MAX_EVENT_NUM = 8 };
     int hold_idx[MAX_EVENT_NUM]{0};
@@ -46,26 +75,6 @@ class CodeGenHelper {
 
   CodeGenHelper(VectorKernel &kernel): kernel_(kernel) {}
   bool Generate() {
-    static const CodeGenType codegen_types[ObjectType::kObjectBulk] = {
-      kGenLoad,  // loaddummy
-      kGenLoad,  // load
-      kGenStore, // padstore
-      kGenStore, // store
-      kGenSimd1, // reshape
-      kGenSimd1, // copy
-      kGenSimd1, // unary
-      kGenSimd2, // binary
-      kGenSimd1, // cast
-      kGenSimd1, // binarys
-      kGenSimd1, // broadcastto
-      kGenSimd0, // broadcasts
-      kGenSimd1, // reduce
-      kGenFlex,  // select
-      kGenSimd1, // elementany
-      kGenFlex,  // RemovePad
-      kGenFlex,  // Power
-      kGenFlex,  // isfinite16
-    };
     auto &code = kernel_.code_;
     auto code_reserved = kernel_.ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
@@ -79,7 +88,7 @@ class CodeGenHelper {
     for (auto op: kernel_.objects_) {
       op->UpdateStride(simd_width);
       op->tail_insn_ = op->insn_ = code_ptr;
-      switch (codegen_types[op->obj_id_]) {
+      switch (g_obj_attrs[op->obj_id_].cg_tmpl) {
         case kGenSimd0: {
           auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
           code_ptr += op->Emit(kernel_);
@@ -882,33 +891,6 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
 }
 
 void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
-  static const char* obj_names[ObjectType::kObjectBulk] = {
-    "LoadDummy",
-    "Load",
-    "PadStore",
-    "Store",
-    "Reshape",
-    "Copy",
-    "Unary",
-    "Binary",
-    "Cast",
-    "BinaryS",
-    "BroadcastTo",
-    "BroadcastS",
-    "Reduce",
-    "Select",
-    "ElemAny",
-    "RemovePad",
-    "Power",
-    "IsFinite16"
-  };
-  static const char* dtype_names[DType::kTypeEnd] = {
-    "Bool",
-    "Float16",
-    "BFloat16",
-    "Float32",
-    "Int32"
-  };
   if (code_.data_ == nullptr) {
     for (size_t i = 0; i < objects_.size(); ++i) {
       objects_[i]->index_ = i;
@@ -922,7 +904,7 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
       }
       oss << op->nd_.back();
     }
-    oss << "]<" << dtype_names[op->type_id_] << ">";
+    oss << "]<" << DTYPE_NAMES[op->type_id_] << ">";
   };
   oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width="<< simd_width_ << ") {" << std::endl;
   std::string body_indent = indent + "  ";
@@ -930,7 +912,7 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     auto op = objects_[i];
     oss << body_indent;
     dump_op(op);
-    oss << " = " << obj_names[op->GetObjectType()] << "(";
+    oss << " = " << g_obj_attrs[op->GetObjectType()].name << "(";
     if (op->flags_ & OBJ_FLAG_XHS) {
       dump_op(static_cast<FlexOp*>(op)->xhs_);
       oss << ", ";
@@ -1188,26 +1170,6 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
 }
 
 NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
-  const static bool elem_objects[ObjectType::kObjectBulk] = {
-    true,  // loaddummy
-    true,  // load
-    false, // padstore
-    true,  // store
-    true,  // reshape
-    true,  // copy
-    true,  // unary
-    true,  // binary
-    true,  // cast
-    true,  // binarys
-    false, // broadcastto
-    true,  // broadcasts
-    false, // reduce
-    true,  // select
-    false, // elementany
-    true,  // RemovePad
-    true,  // Power
-    true,  // IsFinite16
-  };
   auto update_flag = [](int input_flag, bool elem_type, int &flag) {
     // undetermined -> elemwise -> no-elemwise
     //          |___________________|
@@ -1225,7 +1187,7 @@ NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
     auto op = objects_[i];
     auto &flag = elem_flags[op->index_];
     if (op->lhs_) {
-      auto elem_type = elem_objects[op->obj_id_];
+      auto elem_type = g_obj_attrs[op->obj_id_].inplace_prop;
       update_flag(elem_flags[op->lhs_->index_], elem_type, flag);
       if (op->rhs_) {
         update_flag(elem_flags[op->rhs_->index_], elem_type, flag);

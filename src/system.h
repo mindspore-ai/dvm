@@ -102,12 +102,13 @@ class System {
   SocType soc_name_{kSocUnknow};
 };
 
-const uint64_t SIMD_BLOCK_SIZE  = 32;
-const uint64_t SIMD_REPEAT_SIZE = 256;
-const uint64_t PARAM_TABLE_LIMIT = 4096;
+constexpr uint64_t SIMD_BLOCK_SIZE  = 32;
+constexpr uint64_t SIMD_REPEAT_SIZE = 256;
+constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
-const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
+extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
+extern const char* DTYPE_NAMES[dvm::kTypeEnd];
 
 } // namespace dvm 
 #endif // _DVM_SYSTEM_H_

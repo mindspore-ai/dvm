@@ -42,17 +42,15 @@ static int64_t GetTimeX() {
 }
 
 DType StringToTypeID(const std::string &type) {
-  const static std::unordered_map<std::string, DType> map = {{"float32", DType::kFloat32},
-                                                             {"float16", DType::kFloat16},
-                                                             {"bfloat16", DType::kBFloat16},
-                                                             {"bool", DType::kInt8},
-                                                             {"int32", DType::kInt32}};
-  return map.at(type);
-}
-
-std::string TypeIDToString(DType type) {
-  const static std::string map[] = {"bool", "float16", "bfloat16", "float32", "int32"};
-  return map[type];
+  static std::unordered_map<std::string, DType> map;
+  if (map.empty()) {
+    for (int i = 0; i < DType::kTypeEnd; ++i) {
+      map[DTYPE_NAMES[i]] = DType(i);
+    }
+  }
+  auto it = map.find(type);
+  ASSERT(it != map.end());
+  return it->second;
 }
 
 std::string GetBufferFormat(const DType type) {
@@ -128,7 +126,7 @@ static std::unordered_map<std::string, KernelType> kernel_type_map = {
   {"", kStaticShape}, {"static", kStaticShape}, {"dyn", kDynShape}, {"mix", kStaticMix},
   {"parallel", kStaticParallel}, {"stages", kStaticStages}};
 
-std::string NDObjectPy::GetDType() const { return TypeIDToString(obj_->type_id_); }
+std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
 
 void ShapeRefPy::Update(const py::object &shape){
   shape_ = GetVector(shape);

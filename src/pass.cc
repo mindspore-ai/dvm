@@ -46,8 +46,8 @@ inline std::vector<NDObject *> GetPreds(NDObject *obj) {
     return res;
   }
   res.emplace_back(obj->rhs_);
-  if (obj->GetObjectType() == kSelect) {
-    res.emplace_back(reinterpret_cast<SelectOp *>(obj)->cond_);
+  if (obj->flags_ & OBJ_FLAG_XHS) {
+    res.emplace_back(static_cast<FlexOp*>(obj)->xhs_);
   }
   return res;
 }
@@ -61,8 +61,8 @@ inline void ItePreds(NDObject *obj, std::function<void(NDObject *)> fun) {
     return;
   }
   fun(obj->rhs_);
-  if (obj->GetObjectType() == kSelect) {
-    fun(reinterpret_cast<SelectOp *>(obj)->cond_);
+  if (obj->flags_ & OBJ_FLAG_XHS) {
+    fun(static_cast<FlexOp*>(obj)->xhs_);
   }
 }
 
@@ -87,8 +87,8 @@ NDObject *&GetInputRef(NDObject *obj, NDObject *input) {
     return obj->rhs_;
   }
   // Now only select have more than 2 inputs
-  ASSERT(obj->GetObjectType() == kSelect);
-  return reinterpret_cast<SelectOp *>(obj)->cond_;
+  ASSERT(obj->flags_ & OBJ_FLAG_XHS);
+  return static_cast<FlexOp*>(obj)->xhs_;
 }
 
 inline std::vector<NDObject *> GetSuccs(NDObject *obj, const BasicBlock &bb) { return bb.context().GetUsers(obj); }
@@ -154,9 +154,8 @@ size_t MaxLive(BasicBlock &bb) {
     }
     try_deallcate(obj.rhs_);
     // SelectOp has three inpus
-    if (obj.GetObjectType() != kSelect) {
-      SelectOp *select = reinterpret_cast<SelectOp *>(&obj);
-      try_deallcate(select->cond_);
+    if (obj.flags_ & OBJ_FLAG_XHS) {
+      try_deallcate(static_cast<FlexOp*>(&obj)->xhs_);
     }
   }
   return peak;
@@ -204,8 +203,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     if (!obj->rhs_->IsLoad()) {
       ++res;
     }
-    if (obj->GetObjectType() == ObjectType::kSelect &&
-        !reinterpret_cast<SelectOp *>(obj)->cond_->IsLoad()) {
+    if ((obj->flags_ & OBJ_FLAG_XHS) && !static_cast<FlexOp*>(obj)->xhs_->IsLoad()) {
       ++res;
     }
     return res;
@@ -601,10 +599,12 @@ void InsertRemovePad(BasicBlock &block) {
         iter_size *= iter->nd_[i];
       }
       if (iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE) {
-        auto remove_pad = new RemovePadOp(iter->lhs_);
-        remove_pad->nd_ = iter->lhs_->nd_;
+        auto inner = iter->lhs_;
+        auto remove_pad = new RemovePadOp(inner);
+        remove_pad->nd_ = inner->nd_;
         iter->lhs_ = remove_pad;
         block.Insert(iter, remove_pad);
+        block.Erase(NDObjectIterator<false>(inner));
       }
     }
   }

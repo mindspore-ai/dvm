@@ -98,6 +98,7 @@ class VectorKernel;
 #define OBJ_FLAG_REUSE_RHS  8
 
 #define OBJ_FLAG_WORKSPACE  (1u << 16)
+#define OBJ_FLAG_XHS        (2u << 16)
 
 class NDObject {
  public:
@@ -131,7 +132,7 @@ class NDObject {
 
   void Clear(int index) {
     index_ = index;
-    xbuf_ = IsStore() ? -1 : 0;
+    xbuf_ = 0;
     lead_dim_ = 0;
     flags_ &= 0xffff0000u;
   }
@@ -152,16 +153,6 @@ class NDObject {
   uint32_t flags_{0};
   uint64_t *insn_;       // when in optimization passes, used to point to the next NDObject
   uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
-};
-
-class NDWsOp : public NDObject {
- public:
-  enum { kWsMax = 2 };
-  NDWsOp(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
-    flags_ |= OBJ_FLAG_WORKSPACE;
-  }
-  int ws_num_{0};
-  uint64_t wss_[kWsMax];
 };
 
 class NDAccess : public NDObject {
@@ -291,6 +282,59 @@ class NDPadStore : public NDAccess {
   ShapeRef *pad_shape_;
 };
 
+class FlexOp : public NDObject {
+ public:
+  enum { kWsMax = 2 };
+  FlexOp(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
+    flags_ |= OBJ_FLAG_WORKSPACE;
+  }
+  void SetXhs(NDObject *xhs) {
+    xhs_ = xhs;
+    flags_ |= OBJ_FLAG_XHS;
+  }
+
+  NDObject *xhs_{nullptr};
+  bool free_xhs_{false};
+  int ws_num_{0};
+  uint64_t wss_[kWsMax];
+};
+
+class WrapOp : public FlexOp {
+ public:
+  WrapOp(NDObject *inner, ObjectType obj_id) : FlexOp(inner->lhs_, inner->rhs_, inner->type_id_, obj_id), inner_(inner) {
+    shape_ref_ = inner->shape_ref_;
+    if (inner->flags_ & OBJ_FLAG_XHS) {
+      SetXhs(static_cast<FlexOp*>(inner)->xhs_);
+    }
+  }
+  void Normalize(std::vector<NDObject*> &run_ops) override {
+    inner_->Normalize(run_ops);
+    nd_ = inner_->nd_;
+    lhs_ = inner_->lhs_;
+    rhs_ = inner_->rhs_;
+    if (inner_->flags_ & OBJ_FLAG_XHS) {
+      xhs_ = static_cast<FlexOp*>(inner_)->xhs_;
+    }
+  }
+  void Tile(const TileParam &tp) override {
+    inner_->Tile(tp);
+    nd_ = inner_->nd_;
+  }
+  void AlignProp(PropRange &range) override { inner_->AlignProp(range); }
+  void FoldProp(PropRange &range) override { inner_->FoldProp(range); }
+
+  int InnerEmit(VectorKernel &k, uint64_t *insn, uint64_t out_xbuf) {
+    inner_->strides_ = strides_;
+    inner_->lead_dim_ = lead_dim_;
+    inner_->tail_insn_ = inner_->insn_ = insn;
+    inner_->xbuf_ = out_xbuf;
+    return inner_->Emit(k);
+  }
+
+ protected:
+  NDObject *inner_;
+};
+
 class CopyOp : public NDObject {
  public:
   CopyOp(NDObject *input)
@@ -327,9 +371,9 @@ class UnaryOp : public NDObject {
   vSimdInsnID id_;
 };
 
-class IsFinite16Op : public NDWsOp {
+class IsFinite16Op : public FlexOp {
  public:
-  IsFinite16Op(NDObject *input) : NDWsOp(input, nullptr, input->type_id_, ObjectType::kIsFinite16) {
+  IsFinite16Op(NDObject *input) : FlexOp(input, nullptr, input->type_id_, ObjectType::kIsFinite16) {
     shape_ref_ = input->shape_ref_;
     ws_num_ = 1;
   }
@@ -337,9 +381,12 @@ class IsFinite16Op : public NDWsOp {
   int Emit(VectorKernel &k) override;
 };
 
-class RemovePadOp : public CopyOp {
+class RemovePadOp : public WrapOp {
 public:
-  RemovePadOp(NDObject *NDObject);
+  RemovePadOp(NDObject *inner) : WrapOp(inner, ObjectType::kRemovePad) {
+    ASSERT(ITEM_SIZE[type_id_] != 1);
+    ws_num_ = 1;
+  }
   int Emit(VectorKernel &k) override;
 };
 
@@ -418,9 +465,9 @@ class BinaryOp : public NDObject {
   _BinaryNormalizer norm_;
 };
 
-class PowerOp : public NDWsOp {
+class PowerOp : public FlexOp {
  public:
-  PowerOp(NDObject *lhs, NDObject *rhs) : NDWsOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
+  PowerOp(NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
     ws_num_ = 1;
     shape_ref_ = &norm_.shape_;
   }
@@ -431,17 +478,16 @@ class PowerOp : public NDWsOp {
   _BinaryNormalizer norm_;
 };
 
-class SelectOp : public NDObject {
+class SelectOp : public FlexOp {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs)
-      : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kSelect), cond_(cond) {
+      : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
     shape_ref_ = &shape_;
+    SetXhs(cond);
   }
   ~SelectOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(VectorKernel &k) override;
-  NDObject *cond_{nullptr};
-  bool free_cond{false};
 
  private:
   std::vector<NDObject *> stuff_ops_[3];

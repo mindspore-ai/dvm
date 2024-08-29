@@ -33,8 +33,7 @@ class CodeGenHelper {
     kGenSimd0 = 0,
     kGenSimd1,
     kGenSimd2,
-    kGenSimd3,
-    kGenWorkS,
+    kGenFlex,
     kGenLoad,
     kGenStore,
   };
@@ -61,11 +60,11 @@ class CodeGenHelper {
       kGenSimd1, // broadcastto
       kGenSimd0, // broadcasts
       kGenSimd1, // reduce
-      kGenSimd3, // select
+      kGenFlex,  // select
       kGenSimd1, // elementany
-      kGenSimd1, // RemovePad
-      kGenWorkS, // Power
-      kGenWorkS, // isfinite16
+      kGenFlex,  // RemovePad
+      kGenFlex,  // Power
+      kGenFlex,  // isfinite16
     };
     auto &code = kernel_.code_;
     auto code_reserved = kernel_.ReserveCodeSize();
@@ -122,59 +121,8 @@ class CodeGenHelper {
           }
           break;
         }
-        case kGenSimd3: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
-          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_->xbuf_, op);
-          }
-          if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-            free_xbuf_.emplace(op->rhs_->xbuf_, op);
-          }
-          code_ptr += op->Emit(kernel_);
-          if (anti_dep) {
-            SimdBarrier(anti_dep, op);
-          }
-          SelectOpPostProc(op);
-          break;
-        }
-        case kGenWorkS: {
-          auto ws_op = static_cast<NDWsOp*>(op);
-          NDObject* anti_ops[NDWsOp::kWsMax + 1];
-          int anti_num = 0;
-          if (op->xbuf_ == 0) {
-            auto anti = AllocDynXBuf(op);
-            if (anti) anti_ops[anti_num++] = anti;
-          }
-          for (int i = 0; i < ws_op->ws_num_; ++i) {
-            NDObject *anti = nullptr;
-            ws_op->wss_[i] = AllocDynXBuf(op, &anti);
-            if (anti) anti_ops[anti_num++] = anti;
-          }
-          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_->xbuf_, op);
-          }
-          if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-            free_xbuf_.emplace(op->rhs_->xbuf_, op);
-          }
-          for (int i = 0; i < ws_op->ws_num_; ++i) {
-            free_xbuf_.emplace(ws_op->wss_[i], op);
-          }
-          code_ptr += op->Emit(kernel_);
-          for (int i = 0; i < anti_num; ++i) {
-            SimdBarrier(anti_ops[i], op);
-          }
-          if (op->rhs_ == nullptr) {
-            ASSERT(op->lhs_);
-            SimdSync(op->lhs_, op);
-          } else {
-            if (op->rhs_->index_ > op->lhs_->index_) {
-              SimdSync(op->rhs_, op);
-              SimdSync(op->lhs_, op);
-            } else {
-              SimdSync(op->lhs_, op);
-              SimdSync(op->rhs_, op);
-            }
-          }
+        case kGenFlex: {
+          code_ptr += GenFlexOp(static_cast<FlexOp*>(op));
           break;
         };
         case kGenLoad: {
@@ -243,9 +191,9 @@ class CodeGenHelper {
         auto rhs = op->rhs_;
         if (rhs) {
           if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
-          if (op->obj_id_ == ObjectType::kSelect) {
-            NDObject *cond = reinterpret_cast<SelectOp*>(op)->cond_;
-            if (cond->IsLoad() && (load == nullptr || cond->index_ < load->index_)) load = cond;
+          if (op->flags_ & OBJ_FLAG_XHS) {
+            NDObject *xhs = reinterpret_cast<FlexOp*>(op)->xhs_;
+            if (xhs->IsLoad() && (load == nullptr || xhs->index_ < load->index_)) load = xhs;
           }
         }
         if (load != nullptr && load->index_ < vl_event.sync_idx) {
@@ -263,24 +211,61 @@ class CodeGenHelper {
     }
   }
 
-  void SelectOpPostProc(NDObject *op) {
-    SelectOp *select_op = reinterpret_cast<SelectOp*>(op);
-    if (select_op->free_cond) {
-      free_xbuf_.emplace(select_op->cond_->xbuf_, select_op);
+  int GenFlexOp(FlexOp *op) {
+    NDObject* anti_ops[FlexOp::kWsMax + 1];
+    int anti_num = 0;
+    if (op->xbuf_ == 0) {
+      auto anti = AllocDynXBuf(op);
+      if (anti) anti_ops[anti_num++] = anti;
     }
-    NDObject *inputs[3] = {op->lhs_, op->rhs_, select_op->cond_};
-    if(inputs[0]->index_ < inputs[1]->index_) {
-      std::swap(inputs[0],inputs[1]);
+    for (int i = 0; i < op->ws_num_; ++i) {
+      NDObject *anti = nullptr;
+      op->wss_[i] = AllocDynXBuf(op, &anti);
+      if (anti) anti_ops[anti_num++] = anti;
     }
-    if(inputs[0]->index_ < inputs[2]->index_) {
-      std::swap(inputs[0],inputs[2]);
+    if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+      free_xbuf_.emplace(op->lhs_->xbuf_, op);
     }
-    if(inputs[1]->index_ < inputs[2]->index_) {
-      std::swap(inputs[1],inputs[2]);
+    if (op->flags_ & OBJ_FLAG_FREE_RHS) {
+      free_xbuf_.emplace(op->rhs_->xbuf_, op);
     }
-    for (size_t i = 0; i < 3; i++) {
-      SimdSync(inputs[i], op);
+    if (op->free_xhs_) {
+      free_xbuf_.emplace(op->xhs_->xbuf_, op);
     }
+    for (int i = 0; i < op->ws_num_; ++i) {
+      free_xbuf_.emplace(op->wss_[i], op);
+    }
+    int code_size = op->Emit(kernel_);
+    for (int i = 0; i < anti_num; ++i) {
+      SimdBarrier(anti_ops[i], op);
+    }
+    if (op->rhs_ == nullptr) {
+      ASSERT(op->lhs_);
+      SimdSync(op->lhs_, op);
+    } else if (op->xhs_ == nullptr) {
+      if (op->rhs_->index_ > op->lhs_->index_) {
+        SimdSync(op->rhs_, op);
+        SimdSync(op->lhs_, op);
+      } else {
+        SimdSync(op->lhs_, op);
+        SimdSync(op->rhs_, op);
+      }
+    } else {
+      NDObject *inputs[3] = {op->lhs_, op->rhs_, op->xhs_};
+      if(inputs[0]->index_ < inputs[1]->index_) {
+        std::swap(inputs[0],inputs[1]);
+      }
+      if(inputs[0]->index_ < inputs[2]->index_) {
+        std::swap(inputs[0],inputs[2]);
+      }
+      if(inputs[1]->index_ < inputs[2]->index_) {
+        std::swap(inputs[1],inputs[2]);
+      }
+      for (size_t i = 0; i < 3; i++) {
+        SimdSync(inputs[i], op);
+      }
+    }
+    return code_size;
   }
 
   uint64_t AllocDynXBuf(NDObject *obj,  NDObject **anti) {
@@ -946,8 +931,8 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     oss << body_indent;
     dump_op(op);
     oss << " = " << obj_names[op->GetObjectType()] << "(";
-    if (op->GetObjectType() == kSelect) {
-      dump_op(static_cast<SelectOp*>(op)->cond_);
+    if (op->flags_ & OBJ_FLAG_XHS) {
+      dump_op(static_cast<FlexOp*>(op)->xhs_);
       oss << ", ";
     }
     if (op->lhs_) {
@@ -1060,14 +1045,14 @@ int VectorKernel::Analyze() {
           cur_live++;
         }
       }
-      if (op->GetObjectType() == kSelect) {
-        SelectOp *select_op = reinterpret_cast<SelectOp*>(op);
-        if (LivenessEnd(op, select_op->cond_)) {
+      if (op->flags_ & OBJ_FLAG_XHS) {
+        FlexOp *flex = static_cast<FlexOp*>(op);
+        if (LivenessEnd(op, flex->xhs_)) {
           cur_live++;
-          select_op->free_cond = true;
+          flex->free_xhs_ = true;
         }
       }
-      int live_num = op->flags_ & OBJ_FLAG_WORKSPACE ? cur_live + static_cast<NDWsOp*>(op)->ws_num_ : cur_live;
+      int live_num = op->flags_ & OBJ_FLAG_WORKSPACE ? cur_live + static_cast<FlexOp*>(op)->ws_num_ : cur_live;
       if (live_num > live_peak) {
         live_peak = live_num;
       }
@@ -1092,9 +1077,8 @@ class PropDomainBuilder {
         BuildOp(op, op->lhs_);
         if (op->rhs_) {
           BuildOp(op, op->rhs_);
-          if (op->GetObjectType() == kSelect) {
-            SelectOp *select = reinterpret_cast<SelectOp*>(op);
-            BuildOp(op, select->cond_);
+          if (op->flags_ & OBJ_FLAG_XHS) {
+            BuildOp(op, static_cast<FlexOp*>(op)->xhs_);
           }
         }
       }
@@ -1245,8 +1229,8 @@ NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
       update_flag(elem_flags[op->lhs_->index_], elem_type, flag);
       if (op->rhs_) {
         update_flag(elem_flags[op->rhs_->index_], elem_type, flag);
-        if (op->GetObjectType() == kSelect) {
-          update_flag(elem_flags[reinterpret_cast<SelectOp*>(op)->cond_->index_], elem_type, flag);
+        if (op->flags_ & OBJ_FLAG_XHS) {
+          update_flag(elem_flags[static_cast<FlexOp*>(op)->xhs_->index_], elem_type, flag);
         }
       }
     }
@@ -1287,18 +1271,19 @@ void VKernelD::RecordOpRelation() {
       // already recorded during the first iteration
       continue;
     }
+    NDObject *xhs = op->flags_ & OBJ_FLAG_XHS ? static_cast<FlexOp*>(op)->xhs_ : nullptr;
     auto is_select = op->obj_id_ == ObjectType::kSelect;
     bool has_reshape = op->obj_id_ == ObjectType::kReshape ||
                        (op->lhs_ != nullptr && op->lhs_->obj_id_ == ObjectType::kReshape) ||
                        (op->rhs_ != nullptr && op->rhs_->obj_id_ == ObjectType::kReshape) ||
-                       (is_select && reinterpret_cast<SelectOp *>(op)->cond_->obj_id_ == ObjectType::kReshape);
+                       (xhs != nullptr && xhs->obj_id_ == ObjectType::kReshape);
     if (has_reshape) {
       auto input_num = is_select ? 3 : 2;
       op_relations_[op].resize(input_num);
       op_relations_[op][0] = op->lhs_;
       op_relations_[op][1] = op->rhs_;
-      if (is_select) {
-        op_relations_[op][2] = reinterpret_cast<SelectOp *>(op)->cond_;
+      if (xhs) {
+        op_relations_[op][2] = xhs;
       }
     }
   }
@@ -1309,8 +1294,8 @@ void VKernelD::RecoverOpRelation() {
     auto op = item.first;
     op->lhs_ = item.second[0];
     op->rhs_ = item.second[1];
-    if (op->obj_id_ == ObjectType::kSelect) {
-      reinterpret_cast<SelectOp *>(op)->cond_ = item.second[2];
+    if (op->flags_ & OBJ_FLAG_XHS) {
+      static_cast<FlexOp*>(op)->xhs_ = item.second[2];
     }
   }
 }
@@ -1465,8 +1450,8 @@ void MixKernel::Append(NDObject *obj) {
       WorkLoad(obj->lhs_);
       if (obj->rhs_) {
         WorkLoad(obj->rhs_);
-        if (obj->obj_id_ == kSelect) {
-          WorkLoad(static_cast<SelectOp*>(obj)->cond_);
+        if (obj->flags_ & OBJ_FLAG_XHS) {
+          WorkLoad(static_cast<FlexOp*>(obj)->xhs_);
         }
       }
     }
@@ -1484,8 +1469,8 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
     if (op != replaced_node) {
       InplaceOp(op->lhs_);
       InplaceOp(op->rhs_);
-      if (op->GetObjectType() == ObjectType::kSelect) {
-        InplaceOp(static_cast<SelectOp *>(op)->cond_);
+      if (op->flags_ & OBJ_FLAG_XHS) {
+        InplaceOp(static_cast<FlexOp*>(op)->xhs_);
       }
       stage_kernel_->GetImpl()->Append(op);
     }

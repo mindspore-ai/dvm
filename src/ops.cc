@@ -664,23 +664,23 @@ int IsFinite16Op::Emit(VectorKernel &k) {
   return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
 }
 
-RemovePadOp::RemovePadOp(NDObject *input) : CopyOp(input) {
-  ASSERT(ITEM_SIZE[type_id_] != 1);
-  obj_id_ = ObjectType::kRemovePad;
-}
-
 int RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
   if (nd_[lead_dim_] == strides_[lead_dim_] || strides_.back() == strides_[lead_dim_]) {
-    return CopyOp::Emit(k);
+    int size = InnerEmit(k, insn_, xbuf_);
+    tail_insn_ = inner_->tail_insn_;
+    return size;
   }
+  int size = InnerEmit(k, insn_, wss_[0]);
   vRemovePad op;
   op.xd = xbuf_;
-  op.xn = lhs_->xbuf_;
+  op.xn = wss_[0];
   op.repeat = strides_.back() / strides_[lead_dim_];
   op.iter_num = nd_[lead_dim_];
   op.rs = GetBlocks(strides_[lead_dim_]);
-  return vRemovePad::Encode(insn_, id_list[type_id_], op);
+  tail_insn_ = insn_ + size;
+  size += vRemovePad::Encode(tail_insn_, id_list[type_id_], op);
+  return size;
 }
 
 void ElementAnyOp::Tile(const TileParam &tp) {
@@ -896,13 +896,13 @@ int PowerOp::Emit(VectorKernel &k) {
 
 void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   // recover original input
-  NDObject **input[] = {&lhs_, &rhs_, &cond_};
+  NDObject **input[] = {&lhs_, &rhs_, &xhs_};
   for (size_t i = 0; i < 3; i++) {
     if (!stuff_ops_[i].empty()) {
       *input[i] = stuff_ops_[i][0]->lhs_;
     }
   }
-  auto max_size = std::max({lhs_->shape_ref_->size, rhs_->shape_ref_->size, cond_->shape_ref_->size});
+  auto max_size = std::max({lhs_->shape_ref_->size, rhs_->shape_ref_->size, xhs_->shape_ref_->size});
   shape_.Resize(max_size);
   for (size_t i = 0; i < max_size; ++i) {
     int64_t len[3];
@@ -915,7 +915,7 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
 
   // update nd_
   bool need_broadcast[3] = {false, false, false};
-  std::vector<int64_t> nds[3] = {lhs_->nd_, rhs_->nd_, cond_->nd_};
+  std::vector<int64_t> nds[3] = {lhs_->nd_, rhs_->nd_, xhs_->nd_};
   auto max_dims = std::max({nds[0].size(), nds[1].size(), nds[2].size()});
   nd_.resize(max_dims, 1);
   for (size_t i = 0; i < 3; ++i) {
@@ -955,7 +955,7 @@ int SelectOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_SEL_FP16, V_NONE, V_SEL, V_SEL_INT32};
   op.repeat = strides_.back() / k.simd_width_;
   op.xm = rhs_->xbuf_;
-  op.cond =  cond_->xbuf_;
+  op.cond =  xhs_->xbuf_;
   return vSelect::Encode(insn_, id_list[type_id_], op);
 }
 

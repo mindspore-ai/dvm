@@ -99,6 +99,7 @@ class VectorKernel;
 
 #define OBJ_FLAG_WORKSPACE  (1u << 16)
 #define OBJ_FLAG_XHS        (2u << 16)
+#define OBJ_FLAG_WRAP       (4u << 16)
 
 class NDObject {
  public:
@@ -129,6 +130,10 @@ class NDObject {
   bool IsLoad() const { return obj_id_ <= kLoad; }
   bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
   bool IsSimd() const { return obj_id_ > kStore; }
+
+  template <typename T>
+  inline T Cast();
+  inline ObjectType RealObjType() const;
 
   void Clear(int index) {
     index_ = index;
@@ -301,11 +306,14 @@ class FlexOp : public NDObject {
 
 class WrapOp : public FlexOp {
  public:
-  WrapOp(NDObject *inner, ObjectType obj_id) : FlexOp(inner->lhs_, inner->rhs_, inner->type_id_, obj_id), inner_(inner) {
+  WrapOp(NDObject *inner, ObjectType wrap_id)
+   : FlexOp(inner->lhs_, inner->rhs_, inner->type_id_, inner->obj_id_), inner_(inner), wrap_id_(wrap_id) {
     shape_ref_ = inner->shape_ref_;
     if (inner->flags_ & OBJ_FLAG_XHS) {
       SetXhs(static_cast<FlexOp*>(inner)->xhs_);
     }
+    ASSERT(!(flags_ & OBJ_FLAG_WRAP));
+    flags_ |= OBJ_FLAG_WRAP;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override {
     inner_->Normalize(run_ops);
@@ -331,9 +339,13 @@ class WrapOp : public FlexOp {
     return inner_->Emit(k);
   }
 
- protected:
   NDObject *inner_;
+  ObjectType wrap_id_;
 };
+
+template <typename T>
+inline T NDObject::Cast() { return static_cast<T>(flags_ & OBJ_FLAG_WRAP ? static_cast<WrapOp*>(this)->inner_ : this); }
+inline ObjectType NDObject::RealObjType() const { return flags_ & OBJ_FLAG_WRAP ? static_cast<const WrapOp*>(this)->wrap_id_ : obj_id_; }
 
 class CopyOp : public NDObject {
  public:

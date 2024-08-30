@@ -88,7 +88,7 @@ class CodeGenHelper {
     for (auto op: kernel_.objects_) {
       op->UpdateStride(simd_width);
       op->tail_insn_ = op->insn_ = code_ptr;
-      switch (g_obj_attrs[op->obj_id_].cg_tmpl) {
+      switch (g_obj_attrs[op->RealObjType()].cg_tmpl) {
         case kGenSimd0: {
           auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
           code_ptr += op->Emit(kernel_);
@@ -912,7 +912,11 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     auto op = objects_[i];
     oss << body_indent;
     dump_op(op);
-    oss << " = " << g_obj_attrs[op->GetObjectType()].name << "(";
+    oss << " = ";
+    if (op->flags_ & OBJ_FLAG_WRAP) {
+      oss << g_obj_attrs[op->RealObjType()].name << ".";
+    }
+    oss << g_obj_attrs[op->GetObjectType()].name << "(";
     if (op->flags_ & OBJ_FLAG_XHS) {
       dump_op(static_cast<FlexOp*>(op)->xhs_);
       oss << ", ";

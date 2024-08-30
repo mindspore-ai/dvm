@@ -490,8 +490,8 @@ int NDStore::Emit(VectorKernel &k) {
     op.to = reinterpret_cast<uint64_t>(gm_);
     reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
     return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);;
-  } else if (lhs_->obj_id_ == kReduce || (lhs_->obj_id_ == kRemovePad && lhs_->lhs_->obj_id_ == kReduce)) {
-    auto red_op = static_cast<ReduceOp *>(lhs_->obj_id_ == kRemovePad ? lhs_->lhs_ : lhs_);
+  } else if (lhs_->obj_id_ == kReduce) {
+    auto red_op = lhs_->Cast<ReduceOp*>();
     if (!red_op->round_tile_.empty()) {
       uint64_t rounds[2];
       BuildDimRounds(red_op->round_tile_, rounds);
@@ -509,7 +509,7 @@ int NDStore::Emit(VectorKernel &k) {
         }
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
         op.round_rank = red_op->round_tile_.size();
-        if (lhs_->obj_id_ == kRemovePad) {
+        if (lhs_->RealObjType() == kRemovePad) {
           op.pad_size = 0;
         }
       };
@@ -554,7 +554,7 @@ int NDStore::Emit(VectorKernel &k) {
     uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
     uint64_t body_iter = strides_.back() / lead_align;
     uint64_t lead_tiling, tail_iter;
-    if (lhs_->obj_id_ == ObjectType::kRemovePad) {
+    if (lhs_->RealObjType() == ObjectType::kRemovePad) {
       if (tail_dim_ < 0) {
         iter_size *= body_iter;
         tail_iter = iter_size;
@@ -680,6 +680,7 @@ int RemovePadOp::Emit(VectorKernel &k) {
   op.rs = GetBlocks(strides_[lead_dim_]);
   tail_insn_ = insn_ + size;
   size += vRemovePad::Encode(tail_insn_, id_list[type_id_], op);
+  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
   return size;
 }
 

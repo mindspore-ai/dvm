@@ -168,7 +168,7 @@ def test_stage_vec_reduce():
     e6 = a0 * e5
     e7 = e6 * a1
 
-    t = Tester("stages")
+    t = Tester("stages", use_pass_opt=True)
     t.stage_switch("static")
     x0 = t.load(a0, "bfloat16")
     y0 = t.cast(x0, "float32")
@@ -192,5 +192,4 @@ def test_stage_vec_reduce():
     y7 = t.binary("Mul", y6, x1)
     y8 = t.cast(y7, "bfloat16")
     t.store_expect(y8, e7, 1e-2)
-    t.set_passes("CompactPeakLiveness", "ReorderLoad", "ReorderStore", "InsertRemovePad")
     assert(t.run_check())

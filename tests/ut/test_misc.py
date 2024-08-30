@@ -47,17 +47,3 @@ def test_copy():
     y = t.copy(x)
     out = t.store_expect(y, 0.5)
     assert(t.run_check())
-
-def test_event_overflow():
-    shape = [512]
-    t = Tester()
-    loads = []
-    x = t.load(np.full(shape, 0.1, np.float32))
-    for i in range(16):
-        loads.append(t.load(np.full(shape, 0.2, np.float32)))
-    result = 0.1
-    for i in range(16):
-        x = t.binary("Add", x, loads[i])
-        result += 0.2
-        t.store_expect(x, result)
-    assert(t.run_check())

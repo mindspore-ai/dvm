@@ -155,3 +155,12 @@ def test_atomic_determ(in_shape, dims):
     t.set_determ(False)
     assert(np.allclose(output, res, rtol=1e-4, atol=1e-4, equal_nan=True))
     assert(np.allclose(output, expect, rtol=1e-8, atol=1e-8, equal_nan=True))
+
+def test_elemwise_reduce():
+    t = Tester()
+    a = np.full([32, 2048], 0.01, np.float32)
+    x = t.load(a)
+    x = t.binary("Add", x, x)
+    y = t.reduce("sum", x, [1], True)
+    t.store_expect(y, 0.02*2048)
+    assert(t.run_check())

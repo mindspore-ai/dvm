@@ -46,6 +46,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"LoadDummy",   kGenLoad,  true },
   {"Load",        kGenLoad,  true },
   {"PadStore",    kGenStore, false},
+  {"SStore",      kGenStore, false},
   {"Store",       kGenStore, true },
   {"Reshape",     kGenSimd1, true },
   {"Copy",        kGenSimd1, true },
@@ -974,15 +975,8 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
 
-static inline bool BinaryInplaceCheck(NDObject *obj) {
-  if (obj->obj_id_ == kBinary) {
-    return true;
-  }
-  return false;
-}
-
 static inline bool LhsInplaceCheck(NDObject *obj) {
-  if (obj->obj_id_ == kUnary || obj->obj_id_ == kBinaryS || BinaryInplaceCheck(obj)) {
+  if (obj->obj_id_ == kUnary || obj->obj_id_ == kBinaryS || obj->obj_id_ == kBinary || obj->obj_id_ == kCopy) {
     return true;
   }
   if (obj->obj_id_ == kCast && obj->type_id_ <= obj->lhs_->type_id_) {
@@ -1024,7 +1018,7 @@ int VectorKernel::Analyze() {
       }
       kill = op->rhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && BinaryInplaceCheck(op)) {
+        if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && op->obj_id_ == kBinary) {
           op->flags_ |= OBJ_FLAG_REUSE_RHS;
         } else {
           op->flags_ |=  OBJ_FLAG_FREE_RHS;

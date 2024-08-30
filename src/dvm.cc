@@ -61,9 +61,6 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
 
 template <typename T>
 NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
-  if (rhs->type_id_ == kInt32 && System::Instance().Arch() != kAiCore_C220) {
-    return nullptr;
-  }
   auto vkernel = kernel->GetImpl();
   switch (op_type) {
     case BinaryOpType::kAdd: {
@@ -76,18 +73,16 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
       vkernel->Append(obj);
       return obj;
     }
-    case BinaryOpType::kMaximum:
-      if (System::Instance().Arch() == kAiCore_C220) {
-        auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
-        vkernel->Append(obj);
-        return obj;
-      }
-    case BinaryOpType::kMinimum:
-      if (System::Instance().Arch() == kAiCore_C220) {
-        auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
-        vkernel->Append(obj);
-        return obj;
-      }
+    case BinaryOpType::kMaximum: {
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
+      vkernel->Append(obj);
+      return obj;
+    }
+    case BinaryOpType::kMinimum: {
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
+      vkernel->Append(obj);
+      return obj;
+    }
     case BinaryOpType::kPow:
       if (isInteger(val)) {
         return PowS(kernel, rhs, val);

@@ -38,13 +38,13 @@ class PerformanceResult:
 
 class Tester(Kernel):
     __test__ = False
-    def __init__(self, ker_type=""):
+    def __init__(self, ker_type="", use_pass_opt=False):
         dev_id = int(os.getenv("DEVICE_ID"))
         Kernel.__init__(self, dev_id, ker_type)
         self.is_dyn = ker_type == "dyn"
         self.is_codegen = False
         self.expects = [] # [(op, expect, eps)]
-        self.passes = None
+        self.passes = None if use_pass_opt else []
 
     def load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):

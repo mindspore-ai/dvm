@@ -396,19 +396,25 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     {"CompactPeakLiveness", pass::CompactPeakLiveness},
     {"EliminateReshape", pass::EliminateReshape},
     {"InsertRemovePad", pass::InsertRemovePad}};
-  std::vector<pass::Pass> old_passes;
-  std::swap(old_passes, pass::passes);
+  uint64_t workspace_size;
+  int64_t begin, end;
   if (py::isinstance<py::list>(pass_names)) {
+    std::vector<pass::Pass> old_passes;
+    std::swap(old_passes, pass::passes);
     auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
     for (auto name : names) {
       pass::passes.push_back(pass_map.at(name));
     }
+    begin = GetTimeX();
+    workspace_size = kernel_.CodeGen();
+    end = GetTimeX();
+    std::swap(old_passes, pass::passes);
+  } else {
+    begin = GetTimeX();
+    workspace_size = kernel_.CodeGen();
+    end = GetTimeX();
   }
-  auto begin = GetTimeX();
-  auto workspace_size = kernel_.CodeGen();
-  auto end = GetTimeX();
   std::cout << "codegen time(us): " << end - begin << std::endl;
-  std::swap(old_passes, pass::passes);
   if (workspace_) {
     ASCEND_CALL(aclrtFree(workspace_));
     workspace_ = nullptr;

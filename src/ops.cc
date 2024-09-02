@@ -671,10 +671,10 @@ int RemovePadOp::Emit(VectorKernel &k) {
     tail_insn_ = inner_->tail_insn_;
     return size;
   }
-  int size = InnerEmit(k, insn_, wss_[0]);
+  int size = InnerEmit(k, insn_, inner_xbuf_);
   vRemovePad op;
   op.xd = xbuf_;
-  op.xn = wss_[0];
+  op.xn = inner_xbuf_;
   op.repeat = strides_.back() / strides_[lead_dim_];
   op.iter_num = nd_[lead_dim_];
   op.rs = GetBlocks(strides_[lead_dim_]);

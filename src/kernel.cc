@@ -32,6 +32,7 @@ enum CodeGenTmpl {
   kGenSimd1,
   kGenSimd2,
   kGenFlex,
+  kGenWrap,
   kGenLoad,
   kGenStore,
 };
@@ -59,7 +60,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"Reduce",      kGenSimd1, false},
   {"Select",      kGenFlex,  true },
   {"ElemAny",     kGenSimd1, false},
-  {"RemovePad",   kGenFlex,  true },
+  {"RemovePad",   kGenWrap,  true },
   {"Power",       kGenFlex,  true },
   {"IsFinite16",  kGenFlex,  true }
 };
@@ -133,6 +134,10 @@ class CodeGenHelper {
         }
         case kGenFlex: {
           code_ptr += GenFlexOp(static_cast<FlexOp*>(op));
+          break;
+        };
+        case kGenWrap: {
+          code_ptr += GenWrapOp(static_cast<WrapOp*>(op));
           break;
         };
         case kGenLoad: {
@@ -221,16 +226,9 @@ class CodeGenHelper {
     }
   }
 
-  int GenFlexOp(FlexOp *op) {
-    NDObject* anti_ops[FlexOp::kWsMax + 1];
-    int anti_num = 0;
+  int GenFlexOpCommon(FlexOp *op, NDObject* anti_ops[], int anti_num) {
     if (op->xbuf_ == 0) {
       auto anti = AllocDynXBuf(op);
-      if (anti) anti_ops[anti_num++] = anti;
-    }
-    for (int i = 0; i < op->ws_num_; ++i) {
-      NDObject *anti = nullptr;
-      op->wss_[i] = AllocDynXBuf(op, &anti);
       if (anti) anti_ops[anti_num++] = anti;
     }
     if (op->flags_ & OBJ_FLAG_FREE_LHS) {
@@ -241,9 +239,6 @@ class CodeGenHelper {
     }
     if (op->free_xhs_) {
       free_xbuf_.emplace(op->xhs_->xbuf_, op);
-    }
-    for (int i = 0; i < op->ws_num_; ++i) {
-      free_xbuf_.emplace(op->wss_[i], op);
     }
     int code_size = op->Emit(kernel_);
     for (int i = 0; i < anti_num; ++i) {
@@ -276,6 +271,53 @@ class CodeGenHelper {
       }
     }
     return code_size;
+  }
+
+  int GenFlexOp(FlexOp *op) {
+    int anti_num = 0;
+    NDObject* anti_ops[FlexOp::kWsMax + 1];
+    ASSERT(op->ws_num_ <= FlexOp::kWsMax);
+    for (int i = 0; i < op->ws_num_; ++i) {
+      NDObject *anti = nullptr;
+      op->wss_[i] = AllocDynXBuf(op, &anti);
+      if (anti) anti_ops[anti_num++] = anti;
+    }
+    int size = GenFlexOpCommon(op, anti_ops, anti_num);
+    for (int i = 0; i < op->ws_num_; ++i) {
+      free_xbuf_.emplace(op->wss_[i], op);
+    }
+    return size;
+  }
+
+  int GenWrapOp(WrapOp *op) {
+    int anti_num = 0;
+    NDObject* anti_ops[FlexOp::kWsMax + 2];
+    int free_wss_num = 0;
+    int free_wss[FlexOp::kWsMax + 1];
+    if (op->flags_ & OBJ_FLAG_REUSE_LHS) {
+      op->inner_xbuf_ = op->lhs_->xbuf_;
+    } else if (op->flags_ & OBJ_FLAG_REUSE_LHS) {
+      op->inner_xbuf_ = op->rhs_->xbuf_;
+    } else {
+      NDObject *anti = nullptr;
+      free_wss[free_wss_num++] = op->inner_xbuf_ = AllocDynXBuf(op, &anti);
+      if (anti) anti_ops[anti_num++] = anti;
+    }
+    if (op->inner_->flags_ & OBJ_FLAG_WORKSPACE) {
+      FlexOp *inner = static_cast<FlexOp*>(op->inner_);
+      ASSERT(inner->ws_num_ <= FlexOp::kWsMax);
+      ASSERT(!(inner->flags_ & OBJ_FLAG_WRAP));
+      for (int i = 0; i < inner->ws_num_; ++i) {
+        NDObject *anti = nullptr;
+        free_wss[free_wss_num++] = inner->wss_[i] = AllocDynXBuf(op, &anti);
+        if (anti) anti_ops[anti_num++] = anti;
+      }
+    }
+    int size = GenFlexOpCommon(op, anti_ops, anti_num);
+    for (int i = 0; i < free_wss_num; ++i) {
+      free_xbuf_.emplace(free_wss[i], op);
+    }
+    return size;
   }
 
   uint64_t AllocDynXBuf(NDObject *obj,  NDObject **anti) {
@@ -986,6 +1028,9 @@ static inline bool LhsInplaceCheck(NDObject *obj) {
 }
 
 int VectorKernel::Analyze() {
+  constexpr int REUSE_REJECT = -1;
+  constexpr int REUSE_READY = 0;
+  constexpr int REUSE_SUCC = 1;
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
   auto LivenessEnd = [&cur_live](NDObject *op, NDObject *end) {
@@ -1007,10 +1052,12 @@ int VectorKernel::Analyze() {
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
     if (op->IsSimd()) {
+     int reuse_flag = OP_LIVE_D(op) || (op->flags_ & OBJ_FLAG_WRAP) ? REUSE_READY : REUSE_REJECT;
      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (OP_LIVE_D(op) && LhsInplaceCheck(op)) {
+        if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_LHS;
+          reuse_flag = REUSE_SUCC;
         } else {
           op->flags_ |= OBJ_FLAG_FREE_LHS;
           cur_live++;
@@ -1018,25 +1065,34 @@ int VectorKernel::Analyze() {
       }
       kill = op->rhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && op->obj_id_ == kBinary) {
+        if (reuse_flag == REUSE_READY && op->obj_id_ == kBinary) {
           op->flags_ |= OBJ_FLAG_REUSE_RHS;
+          reuse_flag = REUSE_SUCC;
         } else {
           op->flags_ |=  OBJ_FLAG_FREE_RHS;
           cur_live++;
         }
       }
-      if (op->flags_ & OBJ_FLAG_XHS) {
-        FlexOp *flex = static_cast<FlexOp*>(op);
-        if (LivenessEnd(op, flex->xhs_)) {
+      int ws_num = 0;
+      if (op->flags_ & OBJ_FLAG_WORKSPACE) {
+        if (op->flags_ & OBJ_FLAG_XHS) {
+          FlexOp *flex = static_cast<FlexOp*>(op);
+          if (LivenessEnd(op, flex->xhs_)) {
+            cur_live++;
+            flex->free_xhs_ = true;
+          }
+        }
+        ws_num = static_cast<FlexOp*>(op)->ws_num_;
+        if ((op->flags_ & OBJ_FLAG_WRAP) && reuse_flag == REUSE_SUCC) {
           cur_live++;
-          flex->free_xhs_ = true;
+          ws_num--;
+          reuse_flag = REUSE_READY; // kill cur op if LIVE_D
         }
       }
-      int live_num = op->flags_ & OBJ_FLAG_WORKSPACE ? cur_live + static_cast<FlexOp*>(op)->ws_num_ : cur_live;
-      if (live_num > live_peak) {
-        live_peak = live_num;
+      if (cur_live + ws_num > live_peak) {
+        live_peak = cur_live + ws_num;
       }
-      if (OP_LIVE_D(op) && !(op->flags_ & (OBJ_FLAG_REUSE_LHS | OBJ_FLAG_REUSE_RHS))) {
+      if (OP_LIVE_D(op) && reuse_flag != REUSE_SUCC) {
         cur_live--;
       }
       OP_KILL(op);

@@ -313,6 +313,10 @@ class WrapOp : public FlexOp {
     if (inner->flags_ & OBJ_FLAG_XHS) {
       SetXhs(static_cast<FlexOp*>(inner)->xhs_);
     }
+    ws_num_ = 1; // for inner_xbuf_
+    if (inner->flags_ & OBJ_FLAG_WORKSPACE) {
+      ws_num_ += static_cast<FlexOp*>(inner)->ws_num_;
+    }
     ASSERT(!(flags_ & OBJ_FLAG_WRAP));
     flags_ |= OBJ_FLAG_WRAP;
   }
@@ -341,6 +345,7 @@ class WrapOp : public FlexOp {
   }
 
   NDObject *inner_;
+  uint64_t inner_xbuf_;
   ObjectType wrap_id_;
 };
 
@@ -398,7 +403,6 @@ class RemovePadOp : public WrapOp {
 public:
   RemovePadOp(NDObject *inner) : WrapOp(inner, ObjectType::kRemovePad) {
     ASSERT(ITEM_SIZE[type_id_] != 1);
-    ws_num_ = 1;
   }
   int Emit(VectorKernel &k) override;
 };

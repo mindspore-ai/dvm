@@ -59,33 +59,33 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   return res;
 }
 
-template <typename T>
-NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *rhs) {
+template <typename T , bool rhs_val>
+NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
   auto vkernel = kernel->GetImpl();
   switch (op_type) {
     case BinaryOpType::kAdd: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kAdds, rhs, val);
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kAdds, input, val);
       vkernel->Append(obj);
       return obj;
     }
     case BinaryOpType::kMul: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMuls, rhs, val);
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMuls, input, val);
       vkernel->Append(obj);
       return obj;
     }
     case BinaryOpType::kMaximum: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, rhs, val);
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, input, val);
       vkernel->Append(obj);
       return obj;
     }
     case BinaryOpType::kMinimum: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, rhs, val);
+      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, input, val);
       vkernel->Append(obj);
       return obj;
     }
     case BinaryOpType::kPow:
-      if (isInteger(val)) {
-        return PowS(kernel, rhs, val);
+      if (rhs_val && isInteger(val)) {
+        return PowS(kernel, input, val);
       }
     default:
       return nullptr;
@@ -210,7 +210,7 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
 
 template<typename T>
 NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
-  NDObject *obj = GetBinaryS(this, op_type, val, rhs);
+  NDObject *obj = GetBinaryS<T, false>(this, op_type, val, rhs);
   if (obj == nullptr) {
     NDObject *broadcast = new BroadcastScalarOp<T>(val, rhs->shape_ref_, rhs->type_id_, nullptr);
     kernel_->Append(broadcast);
@@ -221,7 +221,7 @@ NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
 
 template<typename T>
 NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
-  NDObject *obj = GetBinaryS(this, op_type, val, lhs);
+  NDObject *obj = GetBinaryS<T, true>(this, op_type, val, lhs);
   if (obj == nullptr) {
     NDObject *broadcast = new BroadcastScalarOp<T>(val, lhs->shape_ref_, lhs->type_id_, nullptr);
     kernel_->Append(broadcast);

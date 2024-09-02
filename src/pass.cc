@@ -408,8 +408,8 @@ void BasicBlockContext::Erase(NDObject *object) {
         }
         break;
       }
-      idx = edges_[idx].next;
       last = idx;
+      idx = edges_[idx].next;
     }
     ASSERT(idx != -1);
   }

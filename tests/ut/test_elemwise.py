@@ -245,3 +245,11 @@ def test_power_s(num, expect):
     t.store_expect(b, np.power(arg, num))
     assert (t.run_check())
     assert (t.das().count("Mul.fp32") == expect)
+
+def test_pow_s_left():
+    t = Tester()
+    a = np.random.normal(0, 1, [3, 3]).astype(np.float32)
+    x = t.load(a)
+    y = t.binary("Pow", 2, x)
+    t.store_expect(y, np.power(2, a))
+    assert(t.run_check())

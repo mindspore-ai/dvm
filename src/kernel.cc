@@ -92,7 +92,7 @@ class CodeGenHelper {
       op->tail_insn_ = op->insn_ = code_ptr;
       switch (g_obj_attrs[op->RealObjType()].cg_tmpl) {
         case kGenSimd0: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
             SimdBarrier(anti_dep, op);
@@ -100,7 +100,7 @@ class CodeGenHelper {
           break;
         }
         case kGenSimd1: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
@@ -112,7 +112,7 @@ class CodeGenHelper {
           break;
         }
         case kGenSimd2: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocDynXBuf(op) : nullptr;
+          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
@@ -227,10 +227,6 @@ class CodeGenHelper {
   }
 
   int GenFlexOpCommon(FlexOp *op, NDObject* anti_ops[], int anti_num) {
-    if (op->xbuf_ == 0) {
-      auto anti = AllocDynXBuf(op);
-      if (anti) anti_ops[anti_num++] = anti;
-    }
     if (op->flags_ & OBJ_FLAG_FREE_LHS) {
       free_xbuf_.emplace(op->lhs_->xbuf_, op);
     }
@@ -276,6 +272,10 @@ class CodeGenHelper {
   int GenFlexOp(FlexOp *op) {
     int anti_num = 0;
     NDObject* anti_ops[FlexOp::kWsMax + 1];
+    if (op->xbuf_ == 0) {
+      auto anti = AllocOutXBuf(op);
+      if (anti) anti_ops[anti_num++] = anti;
+    }
     ASSERT(op->ws_num_ <= FlexOp::kWsMax);
     for (int i = 0; i < op->ws_num_; ++i) {
       NDObject *anti = nullptr;
@@ -294,6 +294,11 @@ class CodeGenHelper {
     NDObject* anti_ops[FlexOp::kWsMax + 2];
     int free_wss_num = 0;
     int free_wss[FlexOp::kWsMax + 1];
+    if (op->xbuf_ == 0) {
+      NDObject *anti = nullptr;
+      op->xbuf_ = AllocDynXBuf(op, &anti);
+      if (anti) anti_ops[anti_num++] = anti;
+    }
     if (op->flags_ & OBJ_FLAG_REUSE_LHS) {
       op->inner_xbuf_ = op->lhs_->xbuf_;
     } else if (op->flags_ & OBJ_FLAG_REUSE_LHS) {
@@ -321,12 +326,6 @@ class CodeGenHelper {
   }
 
   uint64_t AllocDynXBuf(NDObject *obj,  NDObject **anti) {
-    if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
-      return obj->lhs_->xbuf_;
-    }
-    if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
-      return obj->rhs_->xbuf_;
-    }
     uint64_t xbuf;
     if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
@@ -345,7 +344,15 @@ class CodeGenHelper {
     return xbuf;
   }
 
-  NDObject* AllocDynXBuf(NDObject *obj) {
+  NDObject* AllocOutXBuf(NDObject *obj) {
+    if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
+      obj->xbuf_ = obj->lhs_->xbuf_;
+      return nullptr;
+    }
+    if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
+      obj->xbuf_ = obj->rhs_->xbuf_;
+      return nullptr;
+    }
     NDObject *anti = nullptr;
     obj->xbuf_ = AllocDynXBuf(obj, &anti);
     return anti;

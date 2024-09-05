@@ -77,7 +77,7 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
     matmul_ = new ManualMatMul(m_input, n_input, trans_a_, trans_b_);
     if (type_id_ == dvm::kFloat32) matmul_->SetOutFp32(false);
     kernel_->GetImpl()->Append(matmul_);
-    matmul_->SetRealShape(m_real_, n_real_, k_real_, trans_a_, trans_b_);
+    matmul_->SetRealShape(m_real_, n_real_, k_real_, 0, 0);
     (void)kernel_->Store(dev_O_, matmul_);
     TileV3(op);
     best_tuning = best_tuning_;

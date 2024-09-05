@@ -752,17 +752,13 @@ __aicore_inline__ void LogicalBinary(bcodeptr_t pc, uint64_t head, uint64_t tile
   } else {
     uint64_t odd = repeat & 1;
     repeat = repeat / 2;
-    if (repeat <= 255) {
-      vBinLogic(xd, xn, xm, repeat, rs, type);
-    } else {
-      for (; repeat > 255; repeat -= 255) {
-        vBinLogic(xd, xn, xm, 255, rs, type);
-        xd += 255 * simd_width;
-        xn += 255 * simd_width;
-        xm += 255 * simd_width;
-      }
-      vBinLogic(xd, xn, xm, repeat, rs, type);
+    for (; repeat > 255; repeat -= 255) {
+      vBinLogic(xd, xn, xm, 255, rs, type);
+      xd += 255 * simd_width;
+      xn += 255 * simd_width;
+      xm += 255 * simd_width;
     }
+    vBinLogic(xd, xn, xm, repeat, rs, type);
     if (odd) {
       xd += repeat * simd_width - simd_width / 2;
       xn += repeat * simd_width - simd_width / 2;
@@ -1061,14 +1057,16 @@ __aicore_inline__ void Reshape(bcodeptr_t pc, uint64_t head) {
   wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
 }
 
-enum RoundCacheMode { kRoundCacheLoad, kRoundCacheNone };
+enum RoundCacheMode { kRoundCacheLoad, kRoundCacheStore, kRoundCacheNone };
 template <RoundCacheMode mode>
 __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint64_t round_rank, bcodeptr_t rounds) {
   if (round_rank == 1) {
     uint64_t r1 = rounds[0];
     uint64_t r_tile_idx = tile_idx / r1;
     if (mode == kRoundCacheLoad) {
-      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile)? r_tile_idx : -1;
+      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile) ? r_tile_idx : -1;
+    } else if (mode == kRoundCacheStore) {
+      return r_tile_idx * r1 + r1 - 1 == tile_idx || IsEndTile(tile) ? r_tile_idx : -1;
     } else {
       return r_tile_idx;
     }
@@ -1083,10 +1081,12 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t r2 = r2_r1 >> 32;
     uint64_t r3 = rounds[1];
     uint64_t p1 = tile_idx / r1 * r2;
-    uint64_t p2 = tile_idx % (r2*r3);
+    uint64_t p2 = tile_idx % (r2 * r3);
     uint64_t p3 = p2 / r3;
     if (mode == kRoundCacheLoad) {
-      return p3 * r3 == p2 || IsBeginTile(tile) ? p1 + p3: -1;
+      return p3 * r3 == p2 || IsBeginTile(tile) ? p1 + p3 : -1;
+    } else if (mode == kRoundCacheStore) {
+      return p3 * r3 + r3 - 1 == tile_idx || IsEndTile(tile) ? p1 + p3 : -1;
     } else {
       return p1 + p3;
     }
@@ -1097,8 +1097,25 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t r4_r3 = rounds[1];
     uint64_t r3 = r4_r3 & MASK_32;
     uint64_t r4 = r4_r3 >> 32;
-    return (tile_idx / r1 * r2 + tile_idx % (r2*r3) / r3) * r4 + tile_idx % r4;
+    return (tile_idx / r1 * r2 + tile_idx % (r2 * r3) / r3) * r4 + tile_idx % r4;
   }
+}
+
+__aicore_inline__ void AtmoicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vAtmoicCum op;
+  vAtmoicCum::Decode(pc, head, op);
+  uint64_t rs = GetRepeatStride(tile, float);
+  __ubuf__ float *xd = (__ubuf__ float *)(op.xd);
+  __ubuf__ float *xn = (__ubuf__ float *)(op.xn);
+  uint64_t tile_idx = TileIdx(tile);
+  if (op.round_rank) {
+    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vAtmoicCum::ROUND_OFFSET);
+    if (tile_idx == -1) {
+      repeat_vadd(xd, xd, xn, op.repeat, 1, 1, 1, rs, rs, rs);
+      return;
+    }
+  }
+  copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, op.repeat * rs, 0, 0);
 }
 
 static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1395,13 +1412,20 @@ static inline [aicore] void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreA
 static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreAtomic op;
   vStoreAtomic::Decode(pc, head, op);
-  set_atomic_f32();
   uint64_t tile_idx = TileIdx(tile);
-  tile_idx = RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET);
+  if (op.cum_flag) {
+    tile_idx = RoundUpTileIdx<kRoundCacheStore>(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET);
+    if (tile_idx == -1) {
+      return;
+    }
+  } else {
+    tile_idx = RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET);
+  }
   if (IsLastTile(tile)) {
     op.iter_num = op.iter_tail;
   }
   __gm__ uint8_t* gm = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
+  set_atomic_f32();
   CopyUbufToGmAtomic(gm, op);
   set_atomic_none();
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
@@ -1412,11 +1436,13 @@ static inline [aicore] void StoreAtomicDeterm(bcodeptr_t pc, uint64_t head, uint
   vStoreAtomicDeterm::Decode(pc, head, op);
   set_atomic_f32();
   uint64_t tile_idx = TileIdx(tile);
-  uint64_t tile_offset = RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.base.round_rank, pc + vStoreAtomicDeterm::ROUND_OFFSET);
+  uint64_t tile_offset =
+    op.base.cum_flag
+      ? RoundUpTileIdx<kRoundCacheStore>(tile, tile_idx, op.base.round_rank, pc + vStoreAtomicDeterm::ROUND_OFFSET)
+      : RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.base.round_rank, pc + vStoreAtomicDeterm::ROUND_OFFSET);
   if (IsLastTile(tile)) {
     op.base.iter_num = op.base.iter_tail;
   }
-  __gm__ uint8_t* gm_data = (__gm__ uint8_t*)op.base.to + op.base.tile_stride * tile_offset;
   __gm__ volatile float *gm_step = (__gm__ float*)(op.base.to + op.stride_num * op.base.tile_stride + 28);
   if (tile_idx > 0) {
     uint64_t core_idx = tile_idx / op.core_tile_num;
@@ -1447,8 +1473,11 @@ static inline [aicore] void StoreAtomicDeterm(bcodeptr_t pc, uint64_t head, uint
       }
     }
   }
-  CopyUbufToGmAtomic(gm_data, op.base);
-  pipe_barrier(PIPE_MTE3);
+  if (tile_offset != -1) {
+    __gm__ uint8_t *gm_data = (__gm__ uint8_t *)op.base.to + op.base.tile_stride * tile_offset;
+    CopyUbufToGmAtomic(gm_data, op.base);
+    pipe_barrier(PIPE_MTE3);
+  }
   uint64_t step_addr = (uint64_t)op.step_addr & 0x1fffful;
   uint64_t align_step_addr = (step_addr >> 5) << 5;
   uint64_t align_size = step_addr - align_step_addr;
@@ -1752,6 +1781,8 @@ DEF_DISP_FUNC(V_MAXS_INT32, BINARYS(pc, vmaxs, head, int32_t, int32_t))
 DEF_DISP_FUNC(V_MINS_INT32, BINARYS(pc, vmins, head, int32_t, int32_t))
 DEF_DISP_FUNC(V_REMOVEPAD_U16, RemovePad<uint16_t>(pc, head, tile))
 DEF_DISP_FUNC(V_REMOVEPAD, RemovePad<uint32_t>(pc, head, tile))
+DEF_DISP_FUNC(V_ATOMICCUM, AtmoicCum(pc, head, tile))
+
 DEF_DISP_FUNC(V_CAST_BF16_TO_FP32, CAST(pc, vconv_bf162f32, head, tile, bfloat16_t, float))
 DEF_DISP_FUNC(V_CAST_BF16_TO_INT32, CAST(pc, vconv_bf162s32z, head, tile, bfloat16_t, int32_t))
 DEF_DISP_FUNC(V_CAST_FP32_TO_BF16, CAST(pc, vconv_f322bf16r, head, tile, float, bfloat16_t))

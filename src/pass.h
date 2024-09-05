@@ -278,6 +278,9 @@ void EliminateReshape(BasicBlock &bb);
 /// up the data transfer process to the GM.
 void InsertRemovePad(BasicBlock &block);
 
+/// @brief Optimize reduceSum operation to minimize data movement and reduce the number of atomic additions
+void InsertAtmoicCum(BasicBlock &block);
+
 using Pass = void (*)(BasicBlock &);
 extern std::vector<Pass> passes;
 }  // namespace dvm::pass

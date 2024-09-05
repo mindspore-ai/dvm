@@ -62,7 +62,8 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"ElemAny",     kGenSimd1, false},
   {"RemovePad",   kGenWrap,  true },
   {"Power",       kGenFlex,  true },
-  {"IsFinite16",  kGenFlex,  true }
+  {"IsFinite16",  kGenFlex,  true },
+  {"kAtmoicCum",  kGenWrap,  true }
 };
 
 class CodeGenHelper {
@@ -1025,7 +1026,8 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
 
 static inline bool LhsInplaceCheck(NDObject *obj) {
-  if (obj->obj_id_ == kUnary || obj->obj_id_ == kBinaryS || obj->obj_id_ == kBinary || obj->obj_id_ == kCopy) {
+  if (obj->obj_id_ == kUnary || obj->obj_id_ == kBinaryS || obj->obj_id_ == kBinary || obj->obj_id_ == kCopy ||
+      obj->obj_id_ == kReduce) {
     return true;
   }
   if (obj->obj_id_ == kCast && obj->type_id_ <= obj->lhs_->type_id_) {

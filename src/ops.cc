@@ -489,7 +489,7 @@ int NDStore::Emit(VectorKernel &k) {
     op.xn = lhs_->xbuf_;
     op.to = reinterpret_cast<uint64_t>(gm_);
     reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
-    return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);;
+    return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);
   } else if (lhs_->obj_id_ == kReduce) {
     auto red_op = lhs_->Cast<ReduceOp*>();
     if (!red_op->round_tile_.empty()) {
@@ -498,6 +498,7 @@ int NDStore::Emit(VectorKernel &k) {
       auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
         op.to = reinterpret_cast<uint64_t>(gm_);
         op.xn = lhs_->xbuf_;
+        op.cum_flag = (lhs_->RealObjType() == kAtmoicCum && (red_op->round_tile_.size() & 1));
         op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
         op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = strides_.back() / lead_align;
@@ -509,9 +510,6 @@ int NDStore::Emit(VectorKernel &k) {
         }
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
         op.round_rank = red_op->round_tile_.size();
-        if (lhs_->RealObjType() == kRemovePad) {
-          op.pad_size = 0;
-        }
       };
       int code_size;
       Code &code = k.code_;
@@ -662,6 +660,29 @@ int IsFinite16Op::Emit(VectorKernel &k) {
   op.xm = wss_[0];
   op.repeat = strides_.back() / k.simd_width_;
   return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
+}
+
+int AtmoicCumOp::Emit(VectorKernel &k) {
+  auto round_tile = inner_->Cast<ReduceOp *>()->round_tile_;
+  if (!(round_tile.size() & 1)) {
+    int size = InnerEmit(k, insn_, xbuf_);
+    tail_insn_ = inner_->tail_insn_;
+    return size;
+  }
+  int size = InnerEmit(k, insn_, inner_xbuf_);
+  vAtmoicCum op;
+  uint64_t rounds[2];
+  if (!round_tile.empty()) {
+    BuildDimRounds(round_tile, rounds);
+  }
+  op.xd = xbuf_;
+  op.xn = inner_xbuf_;
+  op.repeat = strides_.back() / k.simd_width_;
+  op.round_rank = round_tile.size();
+  tail_insn_ = insn_ + size;
+  size += vAtmoicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
+  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+  return size;
 }
 
 int RemovePadOp::Emit(VectorKernel &k) {

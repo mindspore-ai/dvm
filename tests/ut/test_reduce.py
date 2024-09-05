@@ -140,9 +140,12 @@ def test_reduce_fake_atomic():
     [[400, 4096], (0,)], # reduce y
     [[40000], (0,)], # reduce x
     ])
-def test_atomic_determ(in_shape, dims):
+@pytest.mark.parametrize('cum_flag', [True, False])
+def test_atomic_determ(in_shape, dims, cum_flag):
     t = Tester()
     t.set_determ(True)
+    if cum_flag:
+        t.set_passes("InsertAtmoicCum")
     a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
     x = t.load(a)
     y = t.reduce("sum", x, dims, True)
@@ -164,3 +167,17 @@ def test_elemwise_reduce():
     y = t.reduce("sum", x, [1], True)
     t.store_expect(y, 0.02*2048)
     assert(t.run_check())
+
+@pytest.mark.parametrize('in_shape, dims', [[[1024, 1000], (0, 1)],
+                                            [[3, 4, 120, 136], (0, 2, 3)],
+                                            [[3, 1280, 2, 2], (0, 2, 3)]])
+def test_reduce_insert_accumulate(in_shape, dims):
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
+    x = t.load(a)
+    x = t.copy(x)
+    y = t.reduce("sum", x, dims, True)
+    res = np.sum(a, dims, keepdims=True)
+    t.store_expect(y, res, 1e-4)
+    t.set_passes("InsertAtmoicCum")
+    assert (t.run_check())

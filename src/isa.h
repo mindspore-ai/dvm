@@ -132,7 +132,6 @@ enum vSimdInsnID {
   V_CAST_INT32_TO_FP32,
   V_RESHAPE_B32,
   V_RESHAPE_B16,
-  // ASCEND 910B
   V_ISFINITE,
   V_MAXS,
   V_MINS,
@@ -144,6 +143,7 @@ enum vSimdInsnID {
   V_MINS_INT32,
   V_REMOVEPAD_U16,
   V_REMOVEPAD,
+  V_ATOMICCUM,
   V_CAST_FP32_TO_BF16,
   V_CAST_BF16_TO_FP32,
   V_CAST_BF16_TO_INT32,
@@ -257,6 +257,34 @@ struct vUnary {
     uint32_t size = 2;
     pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
     pc[1] = op.xn << 32 | op.repeat;
+    return size;
+  }
+};
+
+struct vAtmoicCum {
+  enum { ROUND_OFFSET = 2 };
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t repeat;
+  uint64_t round_rank;
+  // pc[0]: xd
+  // pc[1]: xn(18) << 32 | repeat(16) | round_rank
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vAtmoicCum &op) {
+    op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.repeat = (data >> 16) & 0xfffful;
+    op.xn = data >> 32;
+    op.round_rank = data & 0xful;
+  }
+
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vAtmoicCum &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vAtmoicCum::ROUND_OFFSET + round_size;
+    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+    pc[1] = op.xn << 32 | op.repeat << 16 | op.round_rank;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vAtmoicCum::ROUND_OFFSET + i] = rounds[i];
+    }
     return size;
   }
 };
@@ -924,14 +952,16 @@ struct vStoreAtomic {
   uint64_t iter_tail;
   uint64_t tile_stride;
   uint64_t round_rank;
+  uint64_t cum_flag;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
-  // pc[1]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
+  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
   // pc[2]: to
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomic &op) {
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
     op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
     uint64_t data = pc[1];
     op.round_rank = data >> 60;
+    op.cum_flag = (data >> 58) & 0x3ul;
     op.pad_size = (data >> 50) & 0xfful;
     op.iter_size = (data >> 32) & 0x3fffful;
     op.iter_tail = (data >> 16) & 0xfffful;
@@ -943,7 +973,7 @@ struct vStoreAtomic {
     uint64_t size = vStoreAtomic::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | vCompactX(op.xn);
     pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
-    pc[1] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 | op.iter_num;
+    pc[1] = op.round_rank << 60 | op.cum_flag << 58 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 | op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vStoreAtomic::ROUND_OFFSET + i] = rounds[i];
@@ -963,7 +993,7 @@ struct vStoreAtomicDeterm {
   uint64_t core_tile_num;
   uint64_t tail_tile_num;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
-  // pc[1]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
+  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
   // pc[2]: to
   // pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | stride_num(20)
   // pc[4]: step_end(32) << 32 | step(32)
@@ -972,6 +1002,7 @@ struct vStoreAtomicDeterm {
     op.base.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
     uint64_t data = pc[1];
     op.base.round_rank = data >> 60;
+    op.base.cum_flag = (data >> 58) & 0x3ul;
     op.base.pad_size = (data >> 50) & 0xfful;
     op.base.iter_size = (data >> 32) & 0x3fffful;
     op.base.iter_tail = (data >> 16) & 0xfffful;
@@ -990,7 +1021,8 @@ struct vStoreAtomicDeterm {
     uint64_t size = vStoreAtomicDeterm::ROUND_OFFSET + round_size;
     uint64_t ext = op.base.tile_stride << 13 | vCompactX(op.base.xn);
     pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
-    pc[1] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.iter_tail << 16 | op.base.iter_num;
+    pc[1] = op.base.round_rank << 60 | op.base.cum_flag << 58 | op.base.pad_size << 50 | op.base.iter_size << 32 |
+            op.base.iter_tail << 16 | op.base.iter_num;
     pc[2] = op.base.to;
     pc[3] = op.tail_tile_num << 40 | op.core_tile_num << 20 | op.stride_num;
     __bcode__ float* fp_data = reinterpret_cast<__bcode__ float*>(pc + 4);

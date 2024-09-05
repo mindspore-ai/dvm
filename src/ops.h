@@ -46,6 +46,7 @@ enum ObjectType {
   kRemovePad,
   kPower,
   kIsFinite16,
+  kAtmoicCum,
   kCubeOp,
   kObjectBulk
 };
@@ -379,6 +380,14 @@ class ReshapeOp : public CopyOp {
   ShapeWithRef shape_;
 };
 
+class AtmoicCumOp : public WrapOp {
+ public:
+  AtmoicCumOp(NDObject *inner) : WrapOp(inner, ObjectType::kAtmoicCum) {
+    ws_num_ = 1;
+  }
+  int Emit(VectorKernel &k) override;
+};
+
 class UnaryOp : public NDObject {
  public:
   UnaryOp(int op_type, NDObject *input);
@@ -400,10 +409,8 @@ class IsFinite16Op : public FlexOp {
 };
 
 class RemovePadOp : public WrapOp {
-public:
-  RemovePadOp(NDObject *inner) : WrapOp(inner, ObjectType::kRemovePad) {
-    ASSERT(ITEM_SIZE[type_id_] != 1);
-  }
+ public:
+  RemovePadOp(NDObject *inner) : WrapOp(inner, ObjectType::kRemovePad) {}
   int Emit(VectorKernel &k) override;
 };
 

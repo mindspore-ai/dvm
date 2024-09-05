@@ -110,6 +110,17 @@ void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("cube_n", op.slice_n, oss);
 }
 
+void DumpAtmoicCum(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vAtmoicCum op;
+  vAtmoicCum::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vAtmoicCum::ROUND_OFFSET, oss);
+  }
+}
+
 void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSliceSL op;
   vSliceSL::Decode(dump_info.insn, *dump_info.insn, op);
@@ -521,6 +532,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_ELEMENT_ANY, {&DumpElementAny, "ElementAny", "fp32"}},
   {V_REMOVEPAD, {&DumpRemovePad, "RemovePad", "u32"}},
   {V_REMOVEPAD_U16, {&DumpRemovePad, "RemovePad", "u16"}},
+  {V_ATOMICCUM, {&DumpAtmoicCum, "AtmoicCum", "fp32"}},
   {V_RESHAPE_B32, {&DumpReshape, "Reshape", "u32"}},
   {V_RESHAPE_B16, {&DumpReshape, "Reshape", "u16"}},
 };

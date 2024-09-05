@@ -35,6 +35,24 @@ constexpr int64_t ALIGN_256 = 256;
 constexpr int64_t ALIGN_128 = 128;
 constexpr int64_t ALIGN_32 = 32;
 
+static const vSimdInsnID binary_id_list[][kTypeEnd] = {
+  // must keep consistent order with BinaryOpType
+  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
+  {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32},
+  {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32},
+  {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32},
+  {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE},
+  {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE},  // power: individual implement
+  {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
+  {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+  {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+  {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
+
 inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
   if (rnd == 0) {
       return 0;
@@ -861,59 +879,49 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject*> &run_op
 }
 
 BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary) {
-  static const vSimdInsnID id_list[][kTypeEnd] = {
-    // must keep consistent order with BinaryOpType
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-    {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32},
-    {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32},
-    {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32},
-    {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE},
-    {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}, // power: individual implement
-    {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
-    {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
-  id_ = id_list[op_type][type_id_];
+  id_ = binary_id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
-  // compare op in BinaryOpType must keep consistent order with vCompareType
-  cmp_op_ = op_type < V_CMP_ALL ? op_type : -1;
+  shape_ref_ = &norm_.shape_;
+}
+
+CmpOp::CmpOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCmp) {
+  ws_num_ = 1;
+  cmp_id_ = binary_id_list[op_type][type_id_];
+  ASSERT(id_ != V_NONE);
+  cmp_op_ = op_type;
   shape_ref_ = &norm_.shape_;
 }
 
 int BinaryOp::Emit(VectorKernel &k) {
-  if (id_ == V_CMP || id_ == V_CMP_FP16) { // TODO: use child class of BinaryOp
-    vCompare op;
-    op.xd = xbuf_;
-    op.xn = lhs_->xbuf_;
-    op.xm = rhs_->xbuf_;
-    op.type = cmp_op_;
-    op.repeat = strides_.back() / k.simd_width_;
-    return vCompare::Encode(insn_, id_, op);
-  } else {
-    vBinary op;
-    op.xd = xbuf_;
-    op.xn = lhs_->xbuf_;
-    op.xm = rhs_->xbuf_;
-    op.repeat = strides_.back() / k.simd_width_;
-    return vBinary::Encode(insn_, id_, op);
-  }
+  vBinary op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xm = rhs_->xbuf_;
+  op.repeat = strides_.back() / k.simd_width_;
+  return vBinary::Encode(insn_, id_, op);
+}
+
+int CmpOp::Emit(VectorKernel &k) {
+  vCompare op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xm = rhs_->xbuf_;
+  op.type = cmp_op_;
+  op.ws = wss_[0];
+  op.repeat = strides_.back() / k.simd_width_;
+  return vCompare::Encode(insn_, cmp_id_, op);
 }
 
 int PowerOp::Emit(VectorKernel &k) {
-  ASSERT(type_id_ == dvm::kFloat32 || type_id_ == dvm::kFloat16);
+  ASSERT(type_id_ == dvm::kFloat32);
   vBinaryWS op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.xm = rhs_->xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  op.ws = wss_[0];
-  uint64_t id = type_id_ == dvm::kFloat32 ? V_POW : V_POW_FP16;
-  return vBinaryWS::Encode(insn_, id, op);
+  op.ws0 = wss_[0];
+  op.ws1 = wss_[1];
+  return vBinaryWS::Encode(insn_, V_POW, op);
 }
 
 void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -978,6 +986,7 @@ int SelectOp::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / k.simd_width_;
   op.xm = rhs_->xbuf_;
   op.cond =  xhs_->xbuf_;
+  op.ws = wss_[0];
   return vSelect::Encode(insn_, id_list[type_id_], op);
 }
 

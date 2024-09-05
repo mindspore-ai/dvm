@@ -152,17 +152,17 @@ def test_mul1(data_type):
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_pow_1(type):
     t = Tester()
-    a = np.array([-2, -3, -4]).astype(type)
-    b = np.array([1, 2, 3]).astype(type)
+    a = np.array([-2, -3, -4, 0]).astype(type)
+    b = np.array([1, 2, 3, 0]).astype(type)
     x = t.load(a)
     y = t.load(b)
     z = t.binary("Pow", x, y)
-    t.store_expect(z, np.array([-2, 9, -64]))
+    t.store_expect(z, np.array([-2, 9, -64, 1]))
     assert(t.run_check())
 
-@pytest.mark.parametrize('type, eps', [(np.float16, 5e-3), (np.float32, 1e-5)]) # Accuracy of Pow is 5e-3 in float16.
+@pytest.mark.parametrize('type', [np.float16, np.float32])
 @pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])
-def test_pow_2(type, eps, shape):
+def test_pow_2(type, shape):
     t = Tester()
     a = 10 * np.random.rand(*shape).astype(type) - 5
     b = np.random.randint(6, size = shape).astype(type)
@@ -172,7 +172,7 @@ def test_pow_2(type, eps, shape):
     y = t.copy(y)
     z = t.binary("Pow", x, y)
     z = t.copy(z)
-    t.store_expect(z, np.power(a, b), eps)
+    t.store_expect(z, np.power(a, b))
     assert(t.run_check())
 
 @pytest.mark.parametrize("shape",[(1024, 32), (13, 131)])

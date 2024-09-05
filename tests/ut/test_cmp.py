@@ -33,3 +33,14 @@ def test_cmp(shape, type, op, func):
     z = t.copy(z)
     t.store_expect(z, func(a, b).astype(type))
     assert(t.run_check())
+
+@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("NotEqual", np.not_equal)])
+def test_cmp_over_repeat(op, func):
+    t = Tester()
+    a = np.random.randint(1024, size=(100000, 1)).astype(np.float16)
+    b = np.random.randint(1024, size=(100000, 7)).astype(np.float16)
+    x = t.load(a)
+    y = t.load(b)
+    z = t.binary(op,x, y)
+    t.store_expect(z, func(a, b).astype(np.float16))
+    assert(t.run_check())

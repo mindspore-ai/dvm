@@ -114,7 +114,6 @@ enum vSimdInsnID {
   V_CAST_FP16_TO_INT32,
   V_CMP_FP16,
   V_SEL_FP16,
-  V_POW_FP16,
   V_ISFINITE_FP16,
   V_CAST_INT8_TO_FP16,
   V_NOT_INT8,
@@ -362,22 +361,27 @@ struct vBinaryWS {
   uint64_t xd;
   uint64_t xn;
   uint64_t xm;
-  uint64_t ws;
+  uint64_t ws0;
+  uint64_t ws1;
   uint64_t repeat;
   // pc[0]: xn(18)
-  // pc[1]: repeat(15) << 49 | ws(13) << 36 | xd(18) << 18 | xm(18)
+  // pc[1]: repeat(16) << 48 | xd(18) << 18 | xm(18)
+  // pc[2]: ws1(18) << 18 | ws0(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBinaryWS &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.xm = data & V_X_MASK;
     op.xd = (data >> 18) & V_X_MASK;
-    op.ws = vDeCompactX(vGetBitRange(data, 36, 13));
-    op.repeat = data >> 49;
+    op.repeat = data >> 48;
+    data = pc[2];
+    op.ws0 = data & V_X_MASK;
+    op.ws1 = (data >> 18) & V_X_MASK;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryWS &op) {
-    uint32_t size = 2;
+    uint32_t size = 3;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
-    pc[1] = op.repeat << 49 | vCompactX(op.ws) << 36 | op.xd << 18 | op.xm;
+    pc[1] = op.repeat << 48 | op.xd << 18 | op.xm;
+    pc[2] = op.ws1 << 18 | op.ws0;
     return size;
   }
 };
@@ -398,20 +402,22 @@ struct vCompare {
   uint64_t xm;
   uint64_t type;
   uint64_t repeat;
-  // pc[0]: xn
-  // pc[1]: xd(18) << 46 | xm(18) << 28 | op(8) << 16 | repeat(16)
+  uint64_t ws;
+  // pc[0]: op(4) << 18 | xn(18)
+  // pc[1]: repeat(15) << 49 | ws(13) << 36 | xd(18) << 18 | xm(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCompare &op) {
-    uint64_t data1 = pc[1];
-    op.repeat = data1 & 0xfffful;
-    op.type = (data1 >> 16) & 0xfful;
-    op.xm = (data1 >> 28) & V_X_MASK;
-    op.xd = data1 >> 46;
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.type = (head >> (V_HEAD_EXT_OFFSET + 18)) & 0xful;
+    uint64_t data = pc[1];
+    op.xm = data & V_X_MASK;
+    op.xd = (data >> 18) & V_X_MASK;
+    op.ws = vDeCompactX(vGetBitRange(data, 36, 13));
+    op.repeat = data >> 49;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCompare &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
-    pc[1] = op.xd << 46 | op.xm << 28 | op.type << 16 | op.repeat;
+    pc[0] = vMakeHead(id, op.type << 18 | op.xn, size, V_PIPE_SIMD);
+    pc[1] = op.repeat << 49 | vCompactX(op.ws) << 36 | op.xd << 18 | op.xm;
     return size;
   }
 };
@@ -442,20 +448,25 @@ struct vSelect { //24B
   uint64_t repeat;
   uint64_t xm; 
   uint64_t cond;
+  uint64_t ws;
   // pc[0]: xn
-  // pc[1]: repeat(15) << 49 | c_xd(13) << 36 | xm(18) << 18 | cond(18)
+  // pc[1]: repeat(16) << 48 | xm(18) << 18 | cond(18)
+  // pc[2]: xd(18) << 32 | ws(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSelect &op) {
-    uint64_t data1 = pc[1];
-    op.repeat = data1 >> 49;
-    op.xm = (data1 >> 18) & V_X_MASK;
-    op.cond = data1 & V_X_MASK;
-    op.xd = vDeCompactX(vGetBitRange(data1, 36, 13));
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.repeat = data >> 48;
+    op.xm = (data >> 18) & V_X_MASK;
+    op.cond = data & V_X_MASK;
+    data = pc[2];
+    op.xd = (data >> 32) & V_X_MASK;
+    op.ws = data & V_X_MASK;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSelect &op) {
-    uint64_t size = 2;
+    uint64_t size = 3;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
-    pc[1] = op.repeat << 49 | vCompactX(op.xd) << 36 | op.xm << 18 | op.cond;
+    pc[1] = op.repeat << 48 | op.xm << 18 | op.cond;
+    pc[2] = op.xd << 32 | op.ws;
     return size;
   }
 };

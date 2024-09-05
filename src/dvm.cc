@@ -200,7 +200,14 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
   }
   NDObject *obj;
   if (op_type == BinaryOpType::kPow) {
+    if (lhs->type_id_ == kFloat16) {
+      obj = new PowerOp(Cast(lhs, kFloat32), Cast(rhs, kFloat32));
+      kernel_->Append(obj);
+      return Cast(obj, kFloat16);
+    }
     obj = new PowerOp(lhs, rhs);
+  } else if (op_type < V_CMP_ALL) {
+    obj = new CmpOp(op_type, lhs, rhs);
   } else {
     obj = new BinaryOp(op_type, lhs, rhs);
   }

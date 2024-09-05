@@ -45,6 +45,7 @@ enum ObjectType {
   kElementAny,
   kRemovePad,
   kPower,
+  kCmp,
   kIsFinite16,
   kAtmoicCum,
   kCubeOp,
@@ -380,14 +381,6 @@ class ReshapeOp : public CopyOp {
   ShapeWithRef shape_;
 };
 
-class AtmoicCumOp : public WrapOp {
- public:
-  AtmoicCumOp(NDObject *inner) : WrapOp(inner, ObjectType::kAtmoicCum) {
-    ws_num_ = 1;
-  }
-  int Emit(VectorKernel &k) override;
-};
-
 class UnaryOp : public NDObject {
  public:
   UnaryOp(int op_type, NDObject *input);
@@ -485,14 +478,13 @@ class BinaryOp : public NDObject {
   vSimdInsnID id_;
 
  protected:
-  int cmp_op_;
   _BinaryNormalizer norm_;
 };
 
 class PowerOp : public FlexOp {
  public:
   PowerOp(NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
-    ws_num_ = 1;
+    ws_num_ = 2;
     shape_ref_ = &norm_.shape_;
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
@@ -502,11 +494,24 @@ class PowerOp : public FlexOp {
   _BinaryNormalizer norm_;
 };
 
+class CmpOp : public FlexOp {
+ public:
+  CmpOp(int op_type, NDObject *lhs, NDObject *rhs);
+  void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
+  int Emit(VectorKernel &k) override;
+
+ protected:
+  int cmp_id_;
+  int cmp_op_;
+  _BinaryNormalizer norm_;
+};
+
 class SelectOp : public FlexOp {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs)
       : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
     shape_ref_ = &shape_;
+    ws_num_ = 1;
     SetXhs(cond);
   }
   ~SelectOp();
@@ -618,6 +623,14 @@ class ReduceOp : public _ReduceOp {
 
   ShapeRef clear_shape_;
   int64_t clear_shape_data_;
+};
+
+class AtmoicCumOp : public WrapOp {
+ public:
+  AtmoicCumOp(NDObject *inner) : WrapOp(inner, ObjectType::kAtmoicCum) {
+    ws_num_ = 1;
+  }
+  int Emit(VectorKernel &k) override;
 };
 
 class CubeOp : public NDObject {

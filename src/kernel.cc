@@ -62,8 +62,9 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"ElemAny",     kGenSimd1, false},
   {"RemovePad",   kGenWrap,  true },
   {"Power",       kGenFlex,  true },
+  {"Cmp",         kGenFlex,  true },
   {"IsFinite16",  kGenFlex,  true },
-  {"kAtmoicCum",  kGenWrap,  true }
+  {"kAtmoicCum",  kGenWrap,  true },
 };
 
 class CodeGenHelper {
@@ -1025,15 +1026,32 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
 
+static inline bool RhsInplaceCheck(NDObject *obj) {
+  switch (obj->obj_id_) {
+    case kBinary:
+    case kSelect:
+    case kCmp:
+      return true;
+    default:
+      return false;
+  }
+}
+
 static inline bool LhsInplaceCheck(NDObject *obj) {
-  if (obj->obj_id_ == kUnary || obj->obj_id_ == kBinaryS || obj->obj_id_ == kBinary || obj->obj_id_ == kCopy ||
-      obj->obj_id_ == kReduce) {
-    return true;
+  switch (obj->obj_id_) {
+    case kUnary:
+    case kBinaryS:
+    case kBinary:
+    case kCopy:
+    case kSelect:
+    case kReduce:
+    case kCmp:
+      return true;
+    case kCast:
+      return (obj->type_id_ <= obj->lhs_->type_id_);
+    default:
+      return false;
   }
-  if (obj->obj_id_ == kCast && obj->type_id_ <= obj->lhs_->type_id_) {
-    return true;
-  }
-  return false;
 }
 
 int VectorKernel::Analyze() {
@@ -1074,7 +1092,7 @@ int VectorKernel::Analyze() {
       }
       kill = op->rhs_;
       if (kill && LivenessEnd(op, kill)) {
-        if (reuse_flag == REUSE_READY && op->obj_id_ == kBinary) {
+        if (reuse_flag == REUSE_READY && RhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_RHS;
           reuse_flag = REUSE_SUCC;
         } else {

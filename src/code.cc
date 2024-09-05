@@ -312,7 +312,9 @@ void DumpBinaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
-  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
+  DumpVal("ws0", reinterpret_cast<void *>(op.ws0), oss);
+  oss << ", ";
+  DumpVal("ws1", reinterpret_cast<void *>(op.ws1), oss);
 }
 
 void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -328,6 +330,8 @@ void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
   DumpVal("cmp_type", cmp_op, oss);
+  oss << ", ";
+  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
 }
 
 template <typename T = float>
@@ -342,9 +346,11 @@ void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSelect op;
   vSelect::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
-  oss << " " << reinterpret_cast<void *>(op.cond) << ", " << reinterpret_cast<void *>(op.xd) << ", "
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.cond) << ", "
       << reinterpret_cast<void *>(op.xn);
-  oss << ", " << reinterpret_cast<void *>(op.xm);
+  oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
+  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
+
 }
 
 void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -518,7 +524,6 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_MIN_FP16, {&DumpBinary, "Minimum", "fp16"}},
   {V_MIN_INT32, {&DumpBinary, "Minimum", "int32"}},
   {V_POW, {&DumpBinaryWS, "Pow", "fp32"}},
-  {V_POW_FP16, {&DumpBinaryWS, "Pow", "fp16"}},
   {V_CMP, {&DumpCompare, "Cmp", "fp32"}},
   {V_CMP_FP16, {&DumpCompare, "Cmp", "fp16"}},
   {V_AND_INT8, {&DumpBinary, "LogicalAnd", "int8"}},

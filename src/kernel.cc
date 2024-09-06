@@ -62,7 +62,8 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"ElemAny",     kGenSimd1, false},
   {"RemovePad",   kGenWrap,  true },
   {"Power",       kGenFlex,  true },
-  {"Cmp",         kGenFlex,  true },
+  {"Compare",     kGenFlex,  true },
+  {"CompareS",    kGenFlex,  true },
   {"IsFinite16",  kGenFlex,  true },
   {"kAtmoicCum",  kGenWrap,  true },
 };
@@ -1030,7 +1031,7 @@ static inline bool RhsInplaceCheck(NDObject *obj) {
   switch (obj->obj_id_) {
     case kBinary:
     case kSelect:
-    case kCmp:
+    case kCompare:
       return true;
     default:
       return false;
@@ -1041,11 +1042,12 @@ static inline bool LhsInplaceCheck(NDObject *obj) {
   switch (obj->obj_id_) {
     case kUnary:
     case kBinaryS:
+    case kCompareS:
     case kBinary:
     case kCopy:
     case kSelect:
     case kReduce:
-    case kCmp:
+    case kCompare:
       return true;
     case kCast:
       return (obj->type_id_ <= obj->lhs_->type_id_);

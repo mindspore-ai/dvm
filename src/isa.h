@@ -75,6 +75,7 @@ enum vSimdInsnID {
   V_TRUNC,
   V_ADDS,
   V_MULS,
+  V_CMPS,
   V_ADD,
   V_SUB,
   V_MUL,
@@ -103,6 +104,7 @@ enum vSimdInsnID {
   V_TRUNC_FP16,
   V_ADDS_FP16,
   V_MULS_FP16,
+  V_CMPS_FP16,
   V_ADD_FP16,
   V_SUB_FP16,
   V_MUL_FP16,
@@ -418,6 +420,34 @@ struct vCompare {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, op.type << 18 | op.xn, size, V_PIPE_SIMD);
     pc[1] = op.repeat << 49 | vCompactX(op.ws) << 36 | op.xd << 18 | op.xm;
+    return size;
+  }
+};
+
+struct vCompareS {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t ws;
+  uint64_t type;
+  uint64_t repeat;
+  float scalar;
+  // pc[0]: op(4) << 18 | xn(18)
+  // pc[1]: repeat(16) << 48 | ws(18) << 18 | xd(18)
+  // pc[2]: scalar
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCompareS &op) {
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.type = (head >> (V_HEAD_EXT_OFFSET + 18)) & 0xful;
+    uint64_t data = pc[1];
+    op.xd = data & V_X_MASK;
+    op.ws = (data >> 18) & V_X_MASK;
+    op.repeat = data >> 48;
+    op.scalar = DecodeScalar<float>((__bcode__ uint32_t *)pc + 4);
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCompareS &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeHead(id, op.type << 18 | op.xn, size, V_PIPE_SIMD);
+    pc[1] = op.repeat << 48 | op.ws << 18 | op.xd;
+    pc[2] = EncodeScalar(op.scalar);
     return size;
   }
 };

@@ -53,6 +53,22 @@ static const vSimdInsnID binary_id_list[][kTypeEnd] = {
   {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
   {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
 
+static const vSimdInsnID binarys_id_list[][kTypeEnd] = {
+  // must keep consistent order with BinarySOpType
+  {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},
+  {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},
+  {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},
+  {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32}, {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32},
+  {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32}, {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}};
+
+static const vSimdInsnID cast_id_list[][kTypeEnd] = {
+  {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_INT8
+  {V_CAST_FP16_TO_INT8, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
+  {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32},               // V_BFLOAT16
+  {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
+  {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
+};
+
 inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
   if (rnd == 0) {
       return 0;
@@ -758,29 +774,17 @@ int ElementAnyOp::Emit(VectorKernel &k) {
 }
 
 int CastOp::Emit(VectorKernel &k) {
-  static const vSimdInsnID id_list[][kTypeEnd] = {
-    {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_INT8
-    {V_CAST_FP16_TO_INT8, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
-    {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32},               // V_BFLOAT16
-    {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
-    {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
-  };
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  return vUnary::Encode(insn_, id_list[lhs_->type_id_][type_id_], op);
+  return vUnary::Encode(insn_, cast_id_list[lhs_->type_id_][type_id_], op);
 }
 
 template <typename T>
 BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
     : NDObject(input, nullptr, input->type_id_, ObjectType::kBinaryS), scalar_(scalar) {
-  static const vSimdInsnID id_list[][kTypeEnd] = {  // must keep consistent order with BinarySOpType
-    {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32},
-    {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32},
-    {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32},
-    {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}};
-  id_ = id_list[op_type][type_id_];
+  id_ = binarys_id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   shape_ref_ = input->shape_ref_;
 }
@@ -797,6 +801,24 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
 
 template class BinaryScalarOp<float>;
 template class BinaryScalarOp<int32_t>;
+
+CompareScalarOp::CompareScalarOp(int op_type, NDObject *input, float scalar)
+    : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
+  ws_num_ = 1;
+  cmp_op_ = op_type;
+  shape_ref_ = input->shape_ref_;
+}
+
+int CompareScalarOp::Emit(VectorKernel &k) {
+  vCompareS op;
+  op.xn = lhs_->xbuf_;
+  op.xd = xbuf_;
+  op.repeat = strides_.back() / k.simd_width_;
+  op.scalar = scalar_;
+  op.ws = wss_[0];
+  op.type = cmp_op_;
+  return vCompareS::Encode(insn_, type_id_ == kFloat32 ? V_CMPS : V_CMPS_FP16, op);
+}
 
 _BinaryNormalizer::~_BinaryNormalizer() {
   for (auto op : lhs_stuff_ops_) {
@@ -884,10 +906,8 @@ BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rh
   shape_ref_ = &norm_.shape_;
 }
 
-CmpOp::CmpOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCmp) {
+CompareOp::CompareOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
   ws_num_ = 1;
-  cmp_id_ = binary_id_list[op_type][type_id_];
-  ASSERT(id_ != V_NONE);
   cmp_op_ = op_type;
   shape_ref_ = &norm_.shape_;
 }
@@ -901,7 +921,7 @@ int BinaryOp::Emit(VectorKernel &k) {
   return vBinary::Encode(insn_, id_, op);
 }
 
-int CmpOp::Emit(VectorKernel &k) {
+int CompareOp::Emit(VectorKernel &k) {
   vCompare op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -909,7 +929,7 @@ int CmpOp::Emit(VectorKernel &k) {
   op.type = cmp_op_;
   op.ws = wss_[0];
   op.repeat = strides_.back() / k.simd_width_;
-  return vCompare::Encode(insn_, cmp_id_, op);
+  return vCompare::Encode(insn_, type_id_ == kFloat32 ? V_CMP : V_CMP_FP16, op);
 }
 
 int PowerOp::Emit(VectorKernel &k) {

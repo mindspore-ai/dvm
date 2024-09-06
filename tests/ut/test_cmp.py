@@ -34,6 +34,34 @@ def test_cmp(shape, type, op, func):
     t.store_expect(z, func(a, b).astype(type))
     assert(t.run_check())
 
+@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16])
+@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
+                                      ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
+def test_cmp_s_r(type, op, func):
+    t = Tester()
+    a = np.random.randint(1024, size=(1024, 32)).astype(type)
+    b = 30
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.binary(op, x, b)
+    z = t.copy(z)
+    t.store_expect(z, func(a, b).astype(type))
+    assert(t.run_check())
+
+@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16])
+@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
+                                      ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
+def test_cmp_s_l(type, op, func):
+    t = Tester()
+    a = np.random.randint(1024, size=(1024, 32)).astype(type)
+    b = 30
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.binary(op, b, x)
+    z = t.copy(z)
+    t.store_expect(z, func(b, a).astype(type))
+    assert(t.run_check())
+
 @pytest.mark.parametrize('op, func', [("Equal", np.equal), ("NotEqual", np.not_equal)])
 def test_cmp_over_repeat(op, func):
     t = Tester()

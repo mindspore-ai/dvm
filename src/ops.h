@@ -45,7 +45,8 @@ enum ObjectType {
   kElementAny,
   kRemovePad,
   kPower,
-  kCmp,
+  kCompare,
+  kCompareS,
   kIsFinite16,
   kAtmoicCum,
   kCubeOp,
@@ -441,7 +442,13 @@ class CastOp : public NDObject {
 };
 
 enum BinarySOpType {
-  kAdds = 0,
+  kEquals = 0,
+  kNotEquals,
+  kGreaters,
+  kGreaterEquals,
+  kLesss,
+  kLessEquals,
+  kAdds,
   kMuls,
   kMaximums,
   kMinimums,
@@ -458,6 +465,17 @@ class BinaryScalarOp : public NDObject {
  private:
   vSimdInsnID id_;
   T scalar_;
+};
+
+class CompareScalarOp : public FlexOp {
+ public:
+  CompareScalarOp(int op_type, NDObject *input, float scalar);
+  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  int Emit(VectorKernel &k) override;
+
+ private:
+  int cmp_op_;
+  float scalar_;
 };
 
 class _BinaryNormalizer {
@@ -494,14 +512,13 @@ class PowerOp : public FlexOp {
   _BinaryNormalizer norm_;
 };
 
-class CmpOp : public FlexOp {
+class CompareOp : public FlexOp {
  public:
-  CmpOp(int op_type, NDObject *lhs, NDObject *rhs);
+  CompareOp(int op_type, NDObject *lhs, NDObject *rhs);
   void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
 
  protected:
-  int cmp_id_;
   int cmp_op_;
   _BinaryNormalizer norm_;
 };

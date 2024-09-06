@@ -23,6 +23,42 @@
 
 namespace dvm {
 namespace {
+static const BinarySOpType binary_map[kBinaryOpEnd] = {
+  kEquals,
+  kNotEquals,
+  kGreaters,
+  kGreaterEquals,
+  kLesss,
+  kLessEquals,
+  kAdds,
+  kBinarySOpEnd,
+  kMuls,
+  kBinarySOpEnd,
+  kBinarySOpEnd,
+  kMaximums,
+  kMinimums,
+  kBinarySOpEnd,
+  kBinarySOpEnd,
+};
+
+static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
+  kEquals,
+  kNotEquals,
+  kLesss,
+  kLessEquals,
+  kGreaters,
+  kGreaterEquals,
+  kAdds,
+  kBinarySOpEnd,
+  kMuls,
+  kBinarySOpEnd,
+  kBinarySOpEnd,
+  kMaximums,
+  kMinimums,
+  kBinarySOpEnd,
+  kBinarySOpEnd,
+};
+
 template <typename T>
 bool isInteger(const T &value) {
   if constexpr (std::is_integral<T>::value) {
@@ -59,29 +95,30 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   return res;
 }
 
-template <typename T , bool rhs_val>
+template <typename T, bool rhs_val>
 NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
   auto vkernel = kernel->GetImpl();
   switch (op_type) {
-    case BinaryOpType::kAdd: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kAdds, input, val);
-      vkernel->Append(obj);
-      return obj;
-    }
-    case BinaryOpType::kMul: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMuls, input, val);
-      vkernel->Append(obj);
-      return obj;
-    }
-    case BinaryOpType::kMaximum: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMaximums, input, val);
-      vkernel->Append(obj);
-      return obj;
-    }
+    case BinaryOpType::kAdd:
+    case BinaryOpType::kMul:
+    case BinaryOpType::kMaximum:
     case BinaryOpType::kMinimum: {
-      auto obj = new BinaryScalarOp<T>(BinarySOpType::kMinimums, input, val);
+      auto obj = new BinaryScalarOp<T>(binary_map[op_type], input, val);
       vkernel->Append(obj);
       return obj;
+    }
+    case BinaryOpType::kEqual:
+    case BinaryOpType::kNotEqual:
+    case BinaryOpType::kGreater:
+    case BinaryOpType::kLessEqual:
+    case BinaryOpType::kGreaterEqual:
+    case BinaryOpType::kLess: {
+      if constexpr (std::is_same<T, float>::value) {
+        auto obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+        vkernel->Append(obj);
+        return obj;
+      }
+      return nullptr;
     }
     case BinaryOpType::kPow:
       if (rhs_val && isInteger(val)) {
@@ -207,7 +244,7 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
     }
     obj = new PowerOp(lhs, rhs);
   } else if (op_type < V_CMP_ALL) {
-    obj = new CmpOp(op_type, lhs, rhs);
+    obj = new CompareOp(op_type, lhs, rhs);
   } else {
     obj = new BinaryOp(op_type, lhs, rhs);
   }
@@ -487,4 +524,4 @@ void SetDeterministic(bool enable) {
 void SetOnlineTuning(bool enable) {
   System::Instance().online_tuning_ = enable;
 }
-} // namespace dvm
+}  // namespace dvm

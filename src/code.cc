@@ -334,6 +334,23 @@ void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
 }
 
+void DumpCompareS(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vCompareS op;
+  vCompareS::Decode(dump_info.insn, *dump_info.insn, op);
+  std::string cmp_op("Unknown");
+  for (auto it = cmp_insn_id.begin(); it != cmp_insn_id.end(); ++it) {
+    if (it->second == op.type) {
+      cmp_op = it->first;
+    }
+  }
+  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << ", " << op.scalar << " //";
+  DumpVal("cmp_type", cmp_op, oss);
+  oss << ", ";
+  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
+}
+
 template <typename T = float>
 void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastS<T> op;
@@ -524,8 +541,10 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_MIN_FP16, {&DumpBinary, "Minimum", "fp16"}},
   {V_MIN_INT32, {&DumpBinary, "Minimum", "int32"}},
   {V_POW, {&DumpBinaryWS, "Pow", "fp32"}},
-  {V_CMP, {&DumpCompare, "Cmp", "fp32"}},
-  {V_CMP_FP16, {&DumpCompare, "Cmp", "fp16"}},
+  {V_CMP, {&DumpCompare, "Compare", "fp32"}},
+  {V_CMP_FP16, {&DumpCompare, "Compare", "fp16"}},
+  {V_CMPS, {&DumpCompareS, "CompareS", "fp32"}},
+  {V_CMPS_FP16, {&DumpCompareS, "CompareS", "fp16"}},
   {V_AND_INT8, {&DumpBinary, "LogicalAnd", "int8"}},
   {V_OR_INT8, {&DumpBinary, "LogicalOr", "int8"}},
   {V_SEL, {&DumpSelect, "Select", "fp32"}},

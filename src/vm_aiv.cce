@@ -472,8 +472,16 @@ DELCARE_BINARYS(vadds, int16_t)
 
 DELCARE_CMPS(vcmpvs_ne, float)
 DELCARE_CMPS(vcmpvs_ne, half)
+DELCARE_CMPS(vcmpvs_eq, float)
+DELCARE_CMPS(vcmpvs_eq, half)
+DELCARE_CMPS(vcmpvs_le, float)
+DELCARE_CMPS(vcmpvs_le, half)
 DELCARE_CMPS(vcmpvs_lt, float)
 DELCARE_CMPS(vcmpvs_lt, half)
+DELCARE_CMPS(vcmpvs_ge, float)
+DELCARE_CMPS(vcmpvs_ge, half)
+DELCARE_CMPS(vcmpvs_gt, float)
+DELCARE_CMPS(vcmpvs_gt, half)
 
 DELCARE_CMP(vcmpv_ne, float)
 DELCARE_CMP(vcmpv_ne, half)
@@ -691,6 +699,44 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     CMP_DISPATCH(V_CMP_LT, vcmpv_lt);
     CMP_DISPATCH(V_CMP_LE, vcmpv_le);
     default: break;
+  }
+}
+
+template <typename T>
+__aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+#define CMPS_DISPATCH(op_type, builtin)                                                 \
+  case op_type:                                                                        \
+    do {                                                                               \
+      repeat_##builtin(ws, xn, (T)op.scalar, op.repeat, 1, 1, rs, rs);                 \
+      pipe_barrier(PIPE_V);                                                            \
+      vDup((__ubuf__ T *)WORKSPACE, (T)0.0, 1, rs);                                    \
+      vDup((__ubuf__ T *)(WORKSPACE + 256), (T)1.0, 1, rs);                            \
+      pipe_barrier(PIPE_V);                                                            \
+      set_cmpmask((__ubuf__ void *)(WORKSPACE));                                       \
+      for (; op.repeat > 255; op.repeat -= 255) {                                      \
+        vsel(xd, (__ubuf__ T *)(WORKSPACE + 256), ws, 255, 1, 1, 1, rs, 0, rs, 1);     \
+        xd += 255 * simd_width;                                                        \
+        ws += 255 * 32 * rs;                                                           \
+      }                                                                                \
+      vsel(xd, (__ubuf__ T *)(WORKSPACE + 256), ws, op.repeat, 1, 1, 1, rs, 0, rs, 1); \
+    } while (0);                                                                       \
+    break
+  vCompareS op;
+  vCompareS::Decode(pc, head, op);
+  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
+  __ubuf__ uint8_t *ws = (__ubuf__ uint8_t *)(op.ws);
+  uint64_t simd_width = TileSimdWidth(tile);
+  uint64_t rs = simd_width >> SIMD_WIDTH_SHIFT(xd);
+  switch (op.type) {
+    CMPS_DISPATCH(V_CMP_EQ, vcmpvs_eq);
+    CMPS_DISPATCH(V_CMP_NE, vcmpvs_ne);
+    CMPS_DISPATCH(V_CMP_GT, vcmpvs_gt);
+    CMPS_DISPATCH(V_CMP_GE, vcmpvs_ge);
+    CMPS_DISPATCH(V_CMP_LT, vcmpvs_lt);
+    CMPS_DISPATCH(V_CMP_LE, vcmpvs_le);
+    default:
+      break;
   }
 }
 
@@ -1778,6 +1824,7 @@ DEF_DISP_FUNC(V_MIN, BINARY(pc, vmin, head, tile, float))
 DEF_DISP_FUNC(V_MAX, BINARY(pc, vmax, head, tile, float))
 
 DEF_DISP_FUNC(V_CMP, BinCompare<float>(pc, head, tile))
+DEF_DISP_FUNC(V_CMPS, BinCompareS<float>(pc, head, tile))
 DEF_DISP_FUNC(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, half))
 DEF_DISP_FUNC(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t))
 DEF_DISP_FUNC(V_RSUM_X, ReduceSumX(pc, head, tile))
@@ -1812,6 +1859,7 @@ DEF_DISP_FUNC(V_CAST_FP16_TO_INT8, CAST(pc, vconv_f162s8, head, tile, half, int8
 DEF_DISP_FUNC(V_CAST_FP16_TO_FP32, CAST(pc, vconv_f162f32, head, tile, half, float))
 DEF_DISP_FUNC(V_CAST_FP16_TO_INT32, CAST(pc, vconv_f162s32z, head, tile, half, int32_t))
 DEF_DISP_FUNC(V_CMP_FP16, BinCompare<half>(pc, head, tile))
+DEF_DISP_FUNC(V_CMPS_FP16, BinCompareS<half>(pc, head, tile))
 DEF_DISP_FUNC(V_SEL_FP16, Select<half>(pc, head, tile))
 DEF_DISP_FUNC(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile))
 

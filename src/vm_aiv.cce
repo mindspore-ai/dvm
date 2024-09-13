@@ -427,16 +427,22 @@ __aicore_inline__ void Reciprocal(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+// First, treat fp16 as int16, then convert to fp16 to ensure all non-zero floats are greater than 1 and are integers
+// Normalize using abs and min to only have 0 and 1, ensuring the correctness of converting fp16 to bool
 __aicore_inline__ void CastToBool(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vUnary op;
   vUnary::Decode(pc, head, op);
   uint16_t dst_rs = GetRepeatStride(tile, int8_t);
   uint16_t src_rs = GetRepeatStride(tile, half);
-  __ubuf__ int8_t *xd = (__ubuf__ int8_t *)(op.xd);
+  __ubuf__ half *xd = (__ubuf__ half *)(op.xd);
   __ubuf__ int16_t *xn = (__ubuf__ int16_t *)(op.xn);
-  repeat_vconv_s162f16((__ubuf__ half *)xd, xn, op.repeat, 1, 1, src_rs, src_rs);
+  repeat_vconv_s162f16(xd, xn, op.repeat, 1, 1, src_rs, src_rs);
   pipe_barrier(PIPE_V);
-  repeat_vconv_f162s8(xd, (__ubuf__ half *)xd, op.repeat, 1, 1, dst_rs, src_rs);
+  repeat_vabs(xd, xd, op.repeat, 1, 1, src_rs, src_rs);
+  pipe_barrier(PIPE_V);
+  repeat_vmins(xd, xd, (half)1.0, op.repeat, 1, 1, src_rs, src_rs);
+  pipe_barrier(PIPE_V);
+  repeat_vconv_f162s8((__ubuf__ int8_t *)xd, xd, op.repeat, 1, 1, dst_rs, src_rs);
 }
 
 template <typename T>

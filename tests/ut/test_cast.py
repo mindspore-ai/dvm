@@ -122,3 +122,13 @@ def test_cast_bool_select():
     z = t.select(y, x2, x3)
     t.store_expect(z, np.where(a, b, c).astype(np.float16))
     assert(t.run_check())
+
+@pytest.mark.parametrize('type', [(np.float32), (np.float16)])
+def test_cast_fp_to_bool_fp(type):
+    t = Tester()
+    a = np.random.normal(0, 1, [1024, 32]).astype(type)
+    x = t.load(a)
+    y = t.cast(x, "bool")
+    y = t.cast(y, type.__name__)
+    t.store_expect(y, a.astype(np.bool_).astype(type), 0)
+    assert(t.run_check())

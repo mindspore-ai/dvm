@@ -45,7 +45,7 @@ DType StringToTypeID(const std::string &type) {
   const static std::unordered_map<std::string, DType> map = {{"float32", DType::kFloat32},
                                                              {"float16", DType::kFloat16},
                                                              {"bfloat16", DType::kBFloat16},
-                                                             {"bool", DType::kInt8},
+                                                             {"bool", DType::kBool},
                                                              {"int32", DType::kInt32}};
   return map.at(type);
 }
@@ -68,7 +68,7 @@ DType GetTypeID(py::buffer_info &info) {
   } else if (info.format == py::format_descriptor<int32_t>::format()) {
     return DType::kInt32;
   } else if (info.format == py::format_descriptor<bool>::format()) {
-    return DType::kInt8;
+    return DType::kBool;
   } else if (info.itemsize == 2) {
     return DType::kFloat16;
   }

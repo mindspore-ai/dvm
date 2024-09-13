@@ -637,7 +637,7 @@ UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input-
     {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE},
     {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE},
     {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE},
-    {V_NOT_INT8, V_NONE, V_NONE, V_NONE, V_NONE}};
+    {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   shape_ref_ = input->shape_ref_;
@@ -706,8 +706,8 @@ int ElementAnyOp::Emit(VectorKernel &k) {
 
 int CastOp::Emit(VectorKernel &k) {
   static const vSimdInsnID id_list[][kTypeEnd] = {
-    {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_INT8
-    {V_CAST_FP16_TO_INT8, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
+    {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_BOOL
+    {V_CAST_FP16_TO_BOOL, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
     {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32},               // V_BFLOAT16
     {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
     {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
@@ -761,8 +761,8 @@ BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rh
     {V_NONE, V_POW_FP16, V_NONE, V_POW, V_NONE},
     {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
     {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
+    {V_AND_BOOL, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+    {V_OR_BOOL, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   // compare op in BinaryOpType must keep consistent order with vCompareType

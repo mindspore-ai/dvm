@@ -22,7 +22,7 @@
 
 namespace dvm {
 enum DType {
-  kInt8 = 0,
+  kBool = 0,
   kFloat16,
   kBFloat16,
   kFloat32,

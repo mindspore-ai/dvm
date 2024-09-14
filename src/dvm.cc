@@ -193,7 +193,7 @@ NDObject* Kernel::Unary(int op_type, NDObject* input) {
       return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));
     }
   }
-  if (op_type == UnaryOpType::kLogicalNot && input->type_id_ != kInt8) {
+  if (op_type == UnaryOpType::kLogicalNot && input->type_id_ != kBool) {
     if (input->type_id_ == kInt32) {
       return Binary(BinaryOpType::kSub, 1, input);
     } else {
@@ -290,7 +290,7 @@ NDObject* Kernel::Select(NDObject* cond, NDObject* lhs, NDObject* rhs) {
 
 NDObject* Kernel::Cast(NDObject* input, DType type) {
   static const int g_cast_staff_type[kTypeEnd][kTypeEnd] = {
-    {-1, -1, kFloat16, kFloat16, kFloat16},  // V_INT8
+    {-1, -1, kFloat16, kFloat16, kFloat16},  // V_BOOL
     {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
     {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
     {kFloat16, -1, -1, -1, -1},              // V_FLOAT32

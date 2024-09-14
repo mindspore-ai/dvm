@@ -66,7 +66,7 @@ DType GetTypeID(py::buffer_info &info) {
   } else if (info.format == py::format_descriptor<int32_t>::format()) {
     return DType::kInt32;
   } else if (info.format == py::format_descriptor<bool>::format()) {
-    return DType::kInt8;
+    return DType::kBool;
   } else if (info.itemsize == 2) {
     return DType::kFloat16;
   }

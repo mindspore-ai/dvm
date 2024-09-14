@@ -453,6 +453,7 @@ DELCARE_CAST(vconv_f162s16r, int16_t, half)
 DELCARE_CAST(vconv_f162s16c, int16_t, half)
 DELCARE_CAST(vconv_f162s16f, int16_t, half)
 DELCARE_CAST(vconv_f162s16z, int16_t, half)
+DELCARE_CAST(vconv_f162s8, int8_t, half)
 DELCARE_BINARYS(vshl, uint32_t)
 DELCARE_BINARYS_WITH_MODE(vshr, uint32_t, false)
 
@@ -511,6 +512,24 @@ __aicore_inline__ void Reciprocal(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   } else {
     repeat_vdiv(xd, (__ubuf__ T *)WORKSPACE, xn, op.repeat, 1, 1, 1, rs, 0, rs);
   }
+}
+
+// First, treat fp16 as int16, then convert to fp16 to ensure all non-zero floats are greater than 1 and are integers
+// Normalize using abs and min to only have 0 and 1, ensuring the correctness of converting fp16 to bool
+__aicore_inline__ void CastToBool(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vUnary op;
+  vUnary::Decode(pc, head, op);
+  uint16_t dst_rs = GetRepeatStride(tile, int8_t);
+  uint16_t src_rs = GetRepeatStride(tile, half);
+  __ubuf__ half *xd = (__ubuf__ half *)(op.xd);
+  __ubuf__ int16_t *xn = (__ubuf__ int16_t *)(op.xn);
+  repeat_vconv_s162f16(xd, xn, op.repeat, 1, 1, src_rs, src_rs);
+  pipe_barrier(PIPE_V);
+  repeat_vabs(xd, xd, op.repeat, 1, 1, src_rs, src_rs);
+  pipe_barrier(PIPE_V);
+  repeat_vmins(xd, xd, (half)1.0, op.repeat, 1, 1, src_rs, src_rs);
+  pipe_barrier(PIPE_V);
+  repeat_vconv_f162s8((__ubuf__ int8_t *)xd, xd, op.repeat, 1, 1, dst_rs, src_rs);
 }
 
 template <typename T>
@@ -1855,7 +1874,7 @@ DEF_DISP_FUNC(V_DIV_FP16, BINARY(pc, vdiv, head, tile, half))
 DEF_DISP_FUNC(V_MIN_FP16, BINARY(pc, vmin, head, tile, half))
 DEF_DISP_FUNC(V_MAX_FP16, BINARY(pc, vmax, head, tile, half))
 
-DEF_DISP_FUNC(V_CAST_FP16_TO_INT8, CAST(pc, vconv_f162s8, head, tile, half, int8_t))
+DEF_DISP_FUNC(V_CAST_FP16_TO_BOOL, CastToBool(pc, head, tile))
 DEF_DISP_FUNC(V_CAST_FP16_TO_FP32, CAST(pc, vconv_f162f32, head, tile, half, float))
 DEF_DISP_FUNC(V_CAST_FP16_TO_INT32, CAST(pc, vconv_f162s32z, head, tile, half, int32_t))
 DEF_DISP_FUNC(V_CMP_FP16, BinCompare<half>(pc, head, tile))
@@ -1863,10 +1882,10 @@ DEF_DISP_FUNC(V_CMPS_FP16, BinCompareS<half>(pc, head, tile))
 DEF_DISP_FUNC(V_SEL_FP16, Select<half>(pc, head, tile))
 DEF_DISP_FUNC(V_ISFINITE_FP16, IsFiniteFp16(pc, head, tile))
 
-DEF_DISP_FUNC(V_CAST_INT8_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half))
-DEF_DISP_FUNC(V_NOT_INT8, LogicalNot(pc, head, tile))
-DEF_DISP_FUNC(V_OR_INT8, LogicalBinary<kBinOr>(pc, head, tile))
-DEF_DISP_FUNC(V_AND_INT8, LogicalBinary<kBinAnd>(pc, head, tile))
+DEF_DISP_FUNC(V_CAST_BOOL_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half))
+DEF_DISP_FUNC(V_NOT_BOOL, LogicalNot(pc, head, tile))
+DEF_DISP_FUNC(V_OR_BOOL, LogicalBinary<kBinOr>(pc, head, tile))
+DEF_DISP_FUNC(V_AND_BOOL, LogicalBinary<kBinAnd>(pc, head, tile))
 
 DEF_DISP_FUNC(V_BROADCAST_S_INT32, BroadcastS_Int<int32_t>(pc, head, tile))
 

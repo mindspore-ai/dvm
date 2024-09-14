@@ -84,7 +84,7 @@ def test_cast_bool_to_fp(type):
 @pytest.mark.parametrize('type', [(np.float32), (np.float16)])
 def test_cast_fp_to_bool(type):
     t = Tester()
-    a = np.random.choice([1.0, 0.0], (1024,32)).astype(type)
+    a = np.random.normal(0, 1, [1024, 32]).astype(type)
     x = t.load(a)
     y = t.cast(x, "bool")
     t.store_expect(y, a.astype(np.bool_), 0)
@@ -108,4 +108,27 @@ def test_cast_block1_align():
     y0 = t.cast(x0, "float16")
     expect = a0.astype(np.float16)
     t.store_expect(y0, expect, eps=1e-3)
+    assert(t.run_check())
+
+def test_cast_bool_select():
+    t = Tester()
+    a = np.array([0.23, -0.5, 0.6, -1.2]).astype(np.float32)
+    b = np.full([4], 1.0).astype(np.float16)
+    c = np.full([4], 2.0).astype(np.float16)
+    x1 = t.load(a)
+    x2 = t.load(b)
+    x3 = t.load(c)
+    y = t.cast(x1, "bool")
+    z = t.select(y, x2, x3)
+    t.store_expect(z, np.where(a, b, c).astype(np.float16))
+    assert(t.run_check())
+
+@pytest.mark.parametrize('type', [(np.float32), (np.float16)])
+def test_cast_fp_to_bool_fp(type):
+    t = Tester()
+    a = np.random.normal(0, 1, [1024, 32]).astype(type)
+    x = t.load(a)
+    y = t.cast(x, "bool")
+    y = t.cast(y, type.__name__)
+    t.store_expect(y, a.astype(np.bool_).astype(type), 0)
     assert(t.run_check())

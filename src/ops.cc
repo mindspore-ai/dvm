@@ -50,8 +50,8 @@ static const vSimdInsnID binary_id_list[][kTypeEnd] = {
   {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE},  // power: individual implement
   {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
   {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-  {V_AND_INT8, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-  {V_OR_INT8, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
+  {V_AND_BOOL, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+  {V_OR_BOOL, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
 
 static const vSimdInsnID binarys_id_list[][kTypeEnd] = {
   // must keep consistent order with BinarySOpType
@@ -62,8 +62,8 @@ static const vSimdInsnID binarys_id_list[][kTypeEnd] = {
   {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32}, {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}};
 
 static const vSimdInsnID cast_id_list[][kTypeEnd] = {
-  {V_NONE, V_CAST_INT8_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_INT8
-  {V_CAST_FP16_TO_INT8, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
+  {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_BOOL
+  {V_CAST_FP16_TO_BOOL, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
   {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32},               // V_BFLOAT16
   {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
   {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
@@ -669,7 +669,7 @@ UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input-
     {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE},
     {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE},
     {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE},
-    {V_NOT_INT8, V_NONE, V_NONE, V_NONE, V_NONE},
+    {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE},
     {V_NONE, V_ROUND_FP16, V_NONE, V_ROUND, V_NONE},
     {V_NONE, V_FLOOR_FP16, V_NONE, V_FLOOR, V_NONE},
     {V_NONE, V_CEIL_FP16, V_NONE, V_CEIL, V_NONE},

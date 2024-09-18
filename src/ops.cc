@@ -506,10 +506,34 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 void NDStore::Tile(const TileParam &tp) {
-  if (tp.tail > 0) {
-    ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
-    tail_dim_ = tp.start;
-    tail_size_ = tp.tail;
+  if (tp.num > 1) {
+    bool is_broadcast = true;
+    for (int i = tp.start; i <= tp.end; ++i) {
+      if (nd_[i] != 1) {
+        is_broadcast = false;
+        break;
+      }
+    }
+    if (is_broadcast) {
+      if (round_tile_.size() % 2 == 0) {
+        round_tile_.push_back(tp.num);
+      } else {
+        round_tile_.back() *= tp.num;
+      }
+    } else {
+      if (!round_tile_.empty()) {
+        if (round_tile_.size() % 2 == 0) {
+          round_tile_.back() *= tp.num;
+        } else {
+          round_tile_.push_back(tp.num);
+        }
+      }
+      if (tp.tail > 0) {
+        ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
+        tail_dim_ = tp.start;
+        tail_size_ = tp.tail;
+      }
+    }
   }
   NDObject::Tile(tp);
 }
@@ -567,6 +591,10 @@ int NDStore::Emit(VectorKernel &k) {
       return code_size;
     }
   }
+  uint64_t rounds[2];
+  if (!round_tile_.empty()) {
+    BuildDimRounds(round_tile_, rounds);
+  }
   if (lead_align == static_cast<uint64_t>(lhs_->nd_[lhs_->lead_dim_])) {
     vDMA op;
     op.gm = gm_;
@@ -574,14 +602,11 @@ int NDStore::Emit(VectorKernel &k) {
     op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
     op.lenburst = GetBlocks(dst_tile_stride_);
     op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(dst_tile_stride_/ nd_[tail_dim_] * tail_size_);
-    op.round_rank = 0;
+    op.round_rank = round_tile_.size();
     reloc_addr_ = insn_ + vDMA::RELOC_OFFSET;
-    return vDMA::Encode(insn_, vStoreInsnID::V_STORE, vPipe::V_PIPE_STORE, op, nullptr);
+    return vDMA::Encode(insn_, vStoreInsnID::V_STORE, vPipe::V_PIPE_STORE, op, rounds);
   } else {
-    vStore *op = reinterpret_cast<vStore*>(insn_);
-    uint64_t ext = (dst_tile_stride_ * ITEM_SIZE[type_id_]) << V_C_X_BITS | vCompactX(lhs_->xbuf_);
-    op->head = vMakeHead(vStoreInsnID::V_STORE_2, ext, sizeof(vStore) / sizeof(uint64_t), V_PIPE_STORE);
-    op->to = gm_;
+    vStore op;
     uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
     uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
     uint64_t body_iter = strides_.back() / lead_align;
@@ -606,9 +631,17 @@ int NDStore::Emit(VectorKernel &k) {
       lead_tiling = 0;
       tail_iter = tail_dim_ < 0 ? body_iter : body_iter / nd_[tail_dim_] * tail_size_;
     }
-    op->config = lead_tiling << 62 | pad_size << 54 | iter_size << 36 | tail_iter << 18 | body_iter;
+    op.xn = lhs_->xbuf_;
+    op.to = reinterpret_cast<uint64_t>(gm_);
+    op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
+    op.iter_num = body_iter;
+    op.iter_tail = tail_iter;
+    op.iter_size = iter_size;
+    op.pad_size = pad_size;
+    op.round_rank = round_tile_.size();
+    op.lead_tiling = lead_tiling;
     reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
-    return sizeof(vStore) / sizeof(uint64_t);
+    return vStore::Encode(insn_, vStoreInsnID::V_STORE_2, op, rounds);
   }
 }
 

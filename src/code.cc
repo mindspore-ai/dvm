@@ -154,6 +154,10 @@ void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tile_stride", op.tile_stride, oss);
   oss << ", ";
   DumpVal("tail_lenburst", op.tail_lenburst, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vDMA::ROUND_OFFSET, oss);
+  }
 }
 
 void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -193,24 +197,22 @@ void DumpPingPongLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
 }
 
 void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vStore *op = reinterpret_cast<vStore *>(dump_info.insn);
-  auto tile_stride = dump_info.ext >> V_C_X_BITS;
-  auto xn = vDeCompactX(vGetBitRange(dump_info.ext, 0, V_C_X_BITS));
-  auto lead_tiling = op->config >> 62;
-  auto pad_size = (op->config >> 54) & 0xfful;
-  auto iter_size = (op->config >> 36) & V_X_MASK;
-  auto iter_tail = (op->config >> 18) & V_X_MASK;
-  auto iter_body = op->config & V_X_MASK;
-  oss << "store2.u8." << iter_size << "x" << iter_body;
-  oss << " " << reinterpret_cast<void *>(op->to) << ", " << reinterpret_cast<void *>(xn);
+  vStore op;
+  vStore::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "store2.u8." << op.iter_size << "x" << op.iter_num;
+  oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
   oss << " //";
-  DumpVal("tile_stride", tile_stride, oss);
+  DumpVal("tile_stride", op.tile_stride, oss);
   oss << ", ";
-  DumpVal("iter_tail", iter_tail, oss);
+  DumpVal("iter_tail", op.iter_tail, oss);
   oss << ", ";
-  DumpVal("pad_size", pad_size, oss);
+  DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
-  DumpVal("lead_tiling", lead_tiling, oss);
+  DumpVal("lead_tiling", op.lead_tiling, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vStore::ROUND_OFFSET, oss);
+  }
 }
 
 void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {

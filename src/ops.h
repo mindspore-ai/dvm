@@ -259,19 +259,15 @@ class NDStore : public NDAccess {
   NDStore(uint8_t *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override {
-    nd_ = lhs_->nd_;
-    tail_dim_ = -1;
-    tail_size_ = 0;
-    round_tile_.clear();
-  }
+  void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
+
+  std::vector<int64_t> round_tile_;
 
  private:
   int tail_dim_{-1};
   int tail_size_{0};
-  std::vector<int64_t> round_tile_;
 };
 
 class NDPadStore : public NDAccess {
@@ -625,12 +621,10 @@ class ReduceOp : public _ReduceOp {
   }
   ~ReduceOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
-  void Tile(const TileParam &tp) override;
 
   void GenClearKernel(NDAccess *store);
   NDStore *clear_store_{nullptr};
   VectorKernel *clear_kernel_{nullptr};
-  std::vector<int64_t> round_tile_;
 
  private:
   std::vector<int64_t> dims_;
@@ -646,10 +640,13 @@ class ReduceOp : public _ReduceOp {
 
 class AtmoicCumOp : public WrapOp {
  public:
-  AtmoicCumOp(NDObject *inner) : WrapOp(inner, ObjectType::kAtmoicCum) {
+  AtmoicCumOp(NDObject *inner, std::vector<int64_t> *round_tile)
+   : WrapOp(inner, ObjectType::kAtmoicCum), round_tile_(round_tile) {
     ws_num_ = 1;
   }
   int Emit(VectorKernel &k) override;
+ protected:
+  std::vector<int64_t> *round_tile_;
 };
 
 class CubeOp : public NDObject {

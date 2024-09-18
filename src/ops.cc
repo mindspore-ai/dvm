@@ -505,6 +505,13 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   NDSliceLoad::Normalize(run_ops);
 }
 
+void NDStore::Normalize(std::vector<NDObject*> &run_ops) {
+  nd_ = lhs_->nd_;
+  tail_dim_ = -1;
+  tail_size_ = 0;
+  round_tile_.clear();
+}
+
 void NDStore::Tile(const TileParam &tp) {
   if (tp.num > 1) {
     bool is_broadcast = true;
@@ -548,15 +555,16 @@ int NDStore::Emit(VectorKernel &k) {
     op.to = reinterpret_cast<uint64_t>(gm_);
     reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
     return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);
-  } else if (lhs_->obj_id_ == kReduce) {
-    auto red_op = lhs_->Cast<ReduceOp*>();
-    if (!red_op->round_tile_.empty()) {
-      uint64_t rounds[2];
-      BuildDimRounds(red_op->round_tile_, rounds);
+  }
+  uint64_t rounds[2];
+  if (!round_tile_.empty()) {
+    BuildDimRounds(round_tile_, rounds);
+    if (lhs_->obj_id_ == kReduce) {
+      auto red_op = lhs_->Cast<ReduceOp*>();
       auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
         op.to = reinterpret_cast<uint64_t>(gm_);
         op.xn = lhs_->xbuf_;
-        op.cum_flag = (lhs_->RealObjType() == kAtmoicCum && (red_op->round_tile_.size() & 1));
+        op.cum_flag = (lhs_->RealObjType() == kAtmoicCum && (round_tile_.size() & 1));
         op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
         op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = strides_.back() / lead_align;
@@ -567,7 +575,7 @@ int NDStore::Emit(VectorKernel &k) {
           op.iter_tail = op.iter_num / nd_[tail_dim_] * tail_size_;
         }
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
-        op.round_rank = red_op->round_tile_.size();
+        op.round_rank = round_tile_.size();
       };
       int code_size;
       Code &code = k.code_;
@@ -590,10 +598,6 @@ int NDStore::Emit(VectorKernel &k) {
       code.reloc_reuse_.emplace_back(red_op->clear_store_->reloc_addr_, reloc_addr_);
       return code_size;
     }
-  }
-  uint64_t rounds[2];
-  if (!round_tile_.empty()) {
-    BuildDimRounds(round_tile_, rounds);
   }
   if (lead_align == static_cast<uint64_t>(lhs_->nd_[lhs_->lead_dim_])) {
     vDMA op;
@@ -730,8 +734,7 @@ int IsFinite16Op::Emit(VectorKernel &k) {
 }
 
 int AtmoicCumOp::Emit(VectorKernel &k) {
-  auto round_tile = inner_->Cast<ReduceOp *>()->round_tile_;
-  if (!(round_tile.size() & 1)) {
+  if (!(round_tile_->size() & 1)) {
     int size = InnerEmit(k, insn_, xbuf_);
     tail_insn_ = inner_->tail_insn_;
     return size;
@@ -739,13 +742,11 @@ int AtmoicCumOp::Emit(VectorKernel &k) {
   int size = InnerEmit(k, insn_, inner_xbuf_);
   vAtmoicCum op;
   uint64_t rounds[2];
-  if (!round_tile.empty()) {
-    BuildDimRounds(round_tile, rounds);
-  }
+  BuildDimRounds(*round_tile_, rounds);
   op.xd = xbuf_;
   op.xn = inner_xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  op.round_rank = round_tile.size();
+  op.round_rank = round_tile_->size();
   tail_insn_ = insn_ + size;
   size += vAtmoicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
   *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -1286,7 +1287,6 @@ ReduceOp::~ReduceOp() {
 
 void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   ASSERT(dims_ref_ != nullptr);
-  round_tile_.clear();
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
   auto input_shape_ref = input->shape_ref_;
   //update dims
@@ -1374,36 +1374,6 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   } else {
     start_dim_ = end_dim_ = -1;
   }
-}
-
-void ReduceOp::Tile(const TileParam &tp) {
-  if (tp.num > 1 && tp.start <= end_dim_) {
-    NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
-    for (NDObject *p = this; p != input; p = p->lhs_) {
-      _ReduceOp *op = static_cast<_ReduceOp*>(p);
-      if (tp.start > op->end_dim_) {
-        goto ELEMWISE_ROUND;
-      }
-      if (tp.start >= op->start_dim_ || tp.end >= op->start_dim_ ) { // reduce
-        if (round_tile_.size() % 2 == 0) {
-          round_tile_.push_back(tp.num);
-        } else {
-          round_tile_.back() *= tp.num;
-        }
-        goto REDUCE_TILE;
-      }
-    }
-ELEMWISE_ROUND:
-    if (!round_tile_.empty()) {
-      if (round_tile_.size() % 2 == 0) {
-        round_tile_.back() *= tp.num;
-      } else {
-        round_tile_.push_back(tp.num);
-      }
-    }
-  }
-REDUCE_TILE:
-  _ReduceOp::Tile(tp);
 }
 
 void ReduceOp::GenClearKernel(NDAccess *store) {

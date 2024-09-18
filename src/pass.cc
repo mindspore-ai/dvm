@@ -613,7 +613,7 @@ void InsertAtmoicCum(BasicBlock &block) {
     if (iter->IsStore()) {
       if (iter->lhs_->obj_id_ == kReduce) {
         auto inner = iter->lhs_;
-        auto remove_pad = new AtmoicCumOp(inner);
+        auto remove_pad = new AtmoicCumOp(inner, &(static_cast<NDStore*>(iter.get())->round_tile_));
         remove_pad->nd_ = inner->nd_;
         iter->lhs_ = remove_pad;
         block.Insert(iter, remove_pad);

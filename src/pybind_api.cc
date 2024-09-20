@@ -124,7 +124,15 @@ static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", Binar
 
 static std::unordered_map<std::string, KernelType> kernel_type_map = {
   {"", kStaticShape}, {"static", kStaticShape}, {"dyn", kDynShape}, {"mix", kStaticMix},
-  {"parallel", kStaticParallel}, {"stages", kStaticStages}};
+  {"parallel", kStaticParallel}, {"stages", kStaticStages},  {"eager", kEager}};
+
+static void* WsAllocCallback(uint64_t size, void *user_data) {
+  void *dev_addr = nullptr;
+  ASCEND_CALL(aclrtMalloc(&dev_addr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+  ASSERT(user_data);
+  static_cast<std::vector<void*>*>(user_data)->push_back(dev_addr);
+  return dev_addr;
+}
 
 std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
 
@@ -141,7 +149,11 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
   ASCEND_CALL(aclrtSetDevice(dev_id));
   dev_id_ = dev_id_;
-  kernel_.Reset(type);
+  if (type == kEager) {
+    kernel_.ResetEager(WsAllocCallback, &eager_wss_);
+  } else {
+    kernel_.Reset(type);
+  }
   (void)System::Instance(); // early construct System
 }
 
@@ -161,6 +173,11 @@ KernelPy::~KernelPy() {
   }
   if (workspace_) {
     ASCEND_CALL(aclrtFree(workspace_));
+  }
+  if (!eager_wss_.empty()) {
+    for (auto addr : eager_wss_) {
+      ASCEND_CALL(aclrtFree(addr));
+    }
   }
 #ifdef VK_SIM_MODEL
   aclrtResetDevice(dev_id_);
@@ -399,7 +416,28 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     {"InsertAtomicCum", pass::InsertAtomicCum}};
   uint64_t workspace_size;
   int64_t begin, end;
-  if (py::isinstance<py::list>(pass_names)) {
+  if (kernel_.GetImpl()->KType() == kEager) {
+    for (auto &it : stores_) {
+      auto op = it.first;
+      auto &info = it.second;
+      info.size = ITEM_SIZE[op->type_id_];
+      for (size_t i = 0; i < op->shape_ref_->size; i++) {
+        info.size *= op->shape_ref_->data[i];
+      }
+      info.host = std::malloc(info.size);
+      const uint64_t reserve_mem = 512;
+      ASCEND_CALL(aclrtMalloc(&info.dev, info.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+      if (info.clear_mem) {
+        std::memset(info.host, 0, info.size);
+        ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
+      }
+      static_cast<NDAccess*>(op)->gm_ = static_cast<uint8_t*>(info.dev);
+    }
+    begin = GetTimeX();
+    workspace_size = kernel_.CodeGen();
+    end = GetTimeX();
+    ASSERT(workspace_size == 0);
+  } else if ( py::isinstance<py::list>(pass_names)) {
     std::vector<pass::Pass> old_passes;
     std::swap(old_passes, pass::passes);
     auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
@@ -436,8 +474,13 @@ py::object KernelPy::DumpGraph() {
 }
 
 void KernelPy::Run() {
-  PrepareIO();
-  ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
+  if (kernel_.GetImpl()->KType() == kEager) {
+    auto kernel = static_cast<VKernelE*>(kernel_.GetImpl());
+    kernel->Launch(nullptr);
+  } else {
+    PrepareIO();
+    ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
+  }
   auto ret = aclrtSynchronizeStream(nullptr);
   if (ret != 0) {
     std::cerr << kernel_.GetImpl()->DumpGraph() << std::endl;
@@ -585,6 +628,34 @@ void KernelPy::PrepareIO() {
   }
 }
 
+void KernelPy::ResetEager() {
+  static_cast<VKernelE*>(kernel_.GetImpl())->Clear();
+  for (auto &it : loads_) {
+    if (it.second.dev) {
+      ASCEND_CALL(aclrtFree(it.second.dev));
+    }
+  }
+  loads_.clear();
+  for (auto &it : stores_) {
+    if (it.second.dev) {
+      ASCEND_CALL(aclrtFree(it.second.dev));
+    }
+    if (it.second.host) {
+      std::free(it.second.host);
+    }
+  }
+  stores_.clear();
+  for (auto addr : eager_wss_) {
+    ASCEND_CALL(aclrtFree(addr));
+  }
+  eager_wss_.clear();
+  for (auto ref : shape_) {
+    delete ref;
+  }
+  shape_.clear();
+  shape_vec_.clear();
+}
+
 class DevicePy {
  public:
   static std::string Arch() {
@@ -636,6 +707,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("stage_load", &KernelPy::StageLoad, "stage load")
       .def("stage_store", &KernelPy::StageStore, "stage store")
       .def("stage_pad_store", &KernelPy::StagePadStore, "stage store")
+      .def("reset_eager", &KernelPy::ResetEager, "reset eager")
       .def("input", &KernelPy::Input, "get ouput array")
       .def("output", &KernelPy::Output, "get ouput array")
       .def("clear_store_memory", &KernelPy::ClearStoreMemory, "clear store memory")

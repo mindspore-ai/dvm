@@ -921,6 +921,17 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject*> &run_op
       nd[i] = lhs_axis;
     }
   }
+  if (self->flags_ & OBJ_FLAG_EAGER) {
+    if (lhs_need_broadcast) {
+      size_t stuff_idx = run_ops.size();
+      self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, run_ops, stuff_idx);
+    }
+    if (rhs_need_broadcast) {
+      size_t stuff_idx = run_ops.size();
+      self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, run_ops, stuff_idx);
+    }
+    return;
+  }
   if (lhs_need_broadcast) {
     size_t stuff_idx = 0;
     self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, stuff_idx);
@@ -1164,10 +1175,15 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
     }
     nd_[dims - 1 - i] = shape_[i];
   }
-  size_t stuff_idx = 0;
-  lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, stuff_ops_, stuff_idx);
-  for (size_t i = 0; i < stuff_idx; ++i) {
-    run_ops.push_back(stuff_ops_[i]);
+  if (flags_ & OBJ_FLAG_EAGER) {
+    size_t stuff_idx = run_ops.size();
+    lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, run_ops, stuff_idx);
+  } else {
+    size_t stuff_idx = 0;
+    lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, stuff_ops_, stuff_idx);
+    for (size_t i = 0; i < stuff_idx; ++i) {
+      run_ops.push_back(stuff_ops_[i]);
+    }
   }
 }
 

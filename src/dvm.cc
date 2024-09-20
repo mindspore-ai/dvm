@@ -371,7 +371,12 @@ NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keep
 
 NDObject* Kernel::Store(void *addr, NDObject* input) {
   auto ktype = kernel_->KType();
-  if (ktype == kStaticStages) {
+  if (ktype == kEager) {
+    if (auto store = VKernelE::GetStore(input)) {
+      store->gm_ = static_cast<uint8_t *>(addr);
+      return store;
+    }
+  } else if (ktype == kStaticStages) {
     ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
   }
   NDObject *obj;
@@ -517,8 +522,22 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
   return code.Launch(workspace, stream);
 }
 
-int Kernel::Launch(NDObject **op, int size, void* stream) {
-  return 0;
+void Kernel::ResetEager(WsAllocFunc ws_alloc, void *user_data) {
+  if (kernel_) {
+    delete kernel_;
+  }
+  kernel_ = new VKernelE(ws_alloc, user_data);
+}
+
+void Kernel::FlushEager(const RelocEntry *reloc_table, size_t reloc_size, void *stream) {
+  ASSERT(kernel_->KType() == KernelType::kEager);
+  for (auto reloc = reloc_table; reloc < reloc_table + reloc_size; ++reloc) {
+    static_cast<NDAccess*>(reloc->io)->gm_ = static_cast<uint8_t*>(reloc->addr);
+  }
+  auto kernel = static_cast<VKernelE*>(kernel_);
+  kernel->VKernelE::CodeGen();
+  kernel->Launch(stream);
+  kernel->Clear();
 }
 
 const char* Kernel::Dump() const {

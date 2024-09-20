@@ -99,6 +99,8 @@ class KernelPy {
   py::object StageStore(const py::object &input);
   py::object StagePadStore(const py::object &input, const py::object &pad_shape);
 
+  void ResetEager();
+
   void Input(const py::object &load, const py::object &array);
   py::object Output(const py::object &store);
   void ClearStoreMemory(const py::object &store);
@@ -154,6 +156,7 @@ class KernelPy {
   std::unordered_map<NDObject*, StoreInfo> stores_;
   std::vector<std::vector<float>> f32s_; // store f32 converted from bf16
   std::vector<std::vector<uint16_t>> bf16s_; // store bf16 converted from f32
+  std::vector<void*> eager_wss_;
 
   int dev_id_{0};
   void *workspace_{nullptr};

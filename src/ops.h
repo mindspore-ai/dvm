@@ -104,6 +104,7 @@ class VectorKernel;
 #define OBJ_FLAG_WORKSPACE  (1u << 16)
 #define OBJ_FLAG_XHS        (2u << 16)
 #define OBJ_FLAG_WRAP       (4u << 16)
+#define OBJ_FLAG_EAGER      (8u << 16)
 
 class NDObject {
  public:

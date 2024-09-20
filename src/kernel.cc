@@ -1938,4 +1938,311 @@ void StagesKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
   oss << indent << "}";
 }
 
+class EagerVector : public VectorKernel {
+ public:
+  enum { kFuseNone = 0, kFuseDeflate, kFuseInflate, kFuseElemwise };
+  EagerVector() : VectorKernel(KernelType::kStaticShape) {}
+
+  void Append(NDObject *obj) override {
+    obj->index_ = objects_.size();
+    objects_.push_back(obj);
+    obj->pd_next_ = next_;
+    next_ = obj;
+    if (obj->obj_id_ == kCast || obj->IsLoad()) {
+      int type = obj->type_id_;
+      if (type > max_type_) {
+        max_type_ = type;
+      } else if (type < min_type_) {
+        min_type_ = type;
+      }
+    }
+    if (obj->IsLoad()) {
+      static_ops_.push_back(obj);
+    } else if (obj->IsStore()) {
+      static_ops_.push_back(obj->lhs_);
+    }
+  }
+
+  void AppendStuff(const std::vector<NDObject*> &stuff_ops) {
+    for (auto op : stuff_ops) {
+      op->index_ = objects_.size();
+      op->pd_next_ = next_;
+      next_ = op;
+      objects_.push_back(op);
+    }
+  }
+
+  uint64_t CodeGen() override {
+    root_dom_.SetHead(next_);
+    NormalizeDomain();
+    DoCodeGen(System::Instance().CoreNum());
+    return 0;
+  }
+
+  int AffineCheck(NDObject *op) {
+    ASSERT(dom_ != nullptr);
+    const auto &dom_nd = dom_->nd_;
+    const auto &op_nd = op->nd_;
+    int fuse_type;
+    size_t min_dims;
+    if (dom_nd.size() > op_nd.size()) {
+      min_dims = op_nd.size();
+      fuse_type = kFuseDeflate;
+    } else {
+      min_dims = dom_nd.size();
+      if (dom_nd.size() < op_nd.size()) {
+        if (fix_dom_) return kFuseNone;
+        fuse_type = kFuseInflate;
+      } else {
+        fuse_type = kFuseElemwise;
+      }
+    }
+    for (size_t i = 0; i < min_dims; ++i) {
+      auto dom_i = dom_nd[i];
+      auto op_i = op_nd[i];
+      if (dom_i != op_i) {
+        if (fuse_type == kFuseElemwise) {
+          if (dom_i == 1) {
+            fuse_type = kFuseInflate;
+            if (fix_dom_) return kFuseNone;
+          } else if (op_i == 1) {
+            fuse_type = kFuseDeflate;
+          } else {
+            return kFuseNone;
+          }
+        } else if (fuse_type == kFuseDeflate) {
+          if (dom_i == 1) return kFuseNone;
+        } else if (op_i == 1) {
+          return kFuseNone;
+        }
+      }
+    }
+    return fuse_type;
+  }
+
+  void Reset(NDObject *init_dom) {
+    max_type_ = init_dom->type_id_;
+    min_type_ = init_dom->type_id_;
+    dom_ = init_dom;
+    next_ = nullptr;
+    fix_dom_ = false;
+    ws_ios_.clear();
+    objects_.clear();
+    code_.Clear();
+    static_ops_.clear();
+  }
+
+  NDObject *dom_;
+  NDObject *next_;
+  bool fix_dom_{false};
+  std::vector<NDAccess*> ws_ios_;  // ws-load, all-store
+};
+
+VKernelE::VKernelE(WsAllocFunc func, void *user_data)
+  : VKernel(KernelType::kEager), kernel_used_(0), ws_alloc_(func), user_data_(user_data) {
+  kernels_.push_back(new EagerVector());
+}
+
+VKernelE::~VKernelE() {
+  Clear();
+  for (auto k : kernels_) {
+    delete k;
+  }
+}
+
+NDObject* VKernelE::Exchange(EagerVector *kernel, NDObject *input, int input_k) {
+  auto input_kernel = kernels_[input_k];
+  if (input->IsLoad()) {
+    auto ac = static_cast<NDAccess*>(input);
+    auto load = new NDLoad(ac->gm_, ac->shape_ref_, ac->type_id_);
+    SetStore(load, GetStore(input));
+    load->Normalize(kernel->objects_);
+    kernel->EagerVector::Append(load);
+    if (ac->gm_ == nullptr) {
+      kernel->ws_ios_.push_back(load);
+    }
+    return load;
+  } else {
+    NDAccess *store = GetStore(input);
+    if (store == nullptr) {
+      store = new NDStore(nullptr, input);
+      store->Normalize(input_kernel->objects_);
+      input_kernel->EagerVector::Append(store);
+      input_kernel->ws_ios_.push_back(store);
+      SetStore(input, store);
+      SetStoreSize(store, store->Size());
+      SetStoreInplace(store, 0);
+      SetKernel(store, input_k);
+    }
+    auto load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+    SetStore(load, store);
+    load->Normalize(kernel->objects_);
+    kernel->EagerVector::Append(load);
+    kernel->ws_ios_.push_back(load);
+    return load;
+  }
+}
+
+void VKernelE::AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op) {
+  if (!op->IsLoad() && kernel->objects_.empty()) {
+    auto dummy_load = new NDLoadDummy(op->type_id_);
+    dummy_load->Normalize(norm_ops_);
+    kernel->EagerVector::Append(dummy_load);
+  }
+  kernel->EagerVector::Append(op);
+  SetKernel(op, fuse_idx);
+}
+
+void VKernelE::Append(NDObject *obj) {
+  obj->flags_ |= OBJ_FLAG_EAGER; //TODO: add eager param for Normalize
+  auto lhs = obj->lhs_;
+  auto rhs = obj->rhs_;
+  // TODO: xhs
+  obj->Normalize(norm_ops_);
+  if (lhs == nullptr) { // load and broadcasts
+    SetKernel(obj, -1);
+    SetStore(obj, nullptr);
+    return;
+  }
+  if (obj->IsStore()) {
+    auto prod_idx = GetKernel(lhs);
+    EagerVector *prod_k;
+    if (prod_idx >= 0) {
+      prod_k = kernels_[prod_idx];
+    } else {
+      if (kernel_used_ == static_cast<int>(kernels_.size())) {
+        kernels_.push_back(new EagerVector());
+      }
+      prod_idx = kernel_used_;
+      prod_k = kernels_[kernel_used_++];
+      prod_k->Reset(lhs);
+      AppendPending(prod_k, prod_idx, lhs);
+    }
+    prod_k->EagerVector::Append(obj);
+    SetStore(lhs, obj);
+    SetStoreInplace(obj, 0);
+    SetKernel(obj, prod_idx);
+    return;
+  }
+  int fuse_idx = GetKernel(lhs);
+  if (rhs) {
+    if (int r_idx = GetKernel(rhs); r_idx > fuse_idx) {
+      fuse_idx = r_idx;
+    }
+  }
+  EagerVector *kernel;
+  int ftype = EagerVector::kFuseNone;
+  auto fuse_check = [](NDObject *op) -> bool { return op->obj_id_ != ObjectType::kReduce; };
+  if ((fuse_idx >= 0) && (GetKernel(lhs) != fuse_idx || fuse_check(lhs)) &&
+      (rhs == nullptr || GetKernel(rhs) != fuse_idx || fuse_check(rhs))) {
+    kernel = kernels_[fuse_idx];
+    ftype = kernel->AffineCheck(obj);
+  }
+  if (ftype == EagerVector::kFuseNone && fuse_idx < kernel_used_ - 1) {
+    fuse_idx = kernel_used_ - 1;
+    kernel = kernels_[fuse_idx];
+    ftype = kernel->AffineCheck(obj);
+  }
+  if (ftype == EagerVector::kFuseNone) {
+    if (kernel_used_ == static_cast<int>(kernels_.size())) {
+      kernels_.push_back(new EagerVector());
+    }
+    fuse_idx = kernel_used_;
+    kernel = kernels_[kernel_used_++];
+    kernel->Reset(obj);
+  } else if (ftype == EagerVector::kFuseInflate) {
+    kernel->dom_ = obj;
+  }
+  SetKernel(obj, fuse_idx);
+  SetStore(obj, nullptr);
+  auto prepare_input = [this, kernel, fuse_idx](NDObject* input, NDObject* &cur_input) {
+    auto input_k = GetKernel(input);
+    if (input_k != fuse_idx) {
+      if (input_k == -1) {
+        AppendPending(kernel, fuse_idx, input);
+      } else {
+        auto new_input = Exchange(kernel, input, input_k);
+        if (input == cur_input) {
+          cur_input = new_input;
+        } else {
+          for (auto op : norm_ops_) {
+            if (op->lhs_ == input) { // stuff op is only one input
+              op->lhs_ = new_input;
+              break;
+            }
+          }
+        }
+        SetKernel(input, fuse_idx);
+      }
+    }
+  };
+  prepare_input(lhs, obj->lhs_);
+  if (rhs) {
+    prepare_input(rhs, obj->rhs_);
+  }
+  if (!norm_ops_.empty()) {
+    kernel->AppendStuff(norm_ops_);
+    norm_ops_.clear();
+  }
+  kernel->EagerVector::Append(obj);
+}
+
+uint64_t VKernelE::CodeGen() {
+  for (int i = kernel_used_ - 1; i >= 0; --i) {
+    auto kernel = kernels_[i];
+    for (auto io : kernel->ws_ios_) {
+      if (io->IsLoad()) {
+        ASSERT(io->gm_ == nullptr);
+        auto store = GetStore(io);
+        if (store->gm_ == nullptr) {
+          if (auto is = kernel->FindInplaceStore(io,
+             [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
+            store->gm_ = is->gm_;
+            SetStoreInplace(is, 1);
+          } else {
+            auto size = GetStoreSize(store);
+            if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
+              store->gm_ = static_cast<uint8_t*>(it->second);
+              wss_.erase(it);
+              SetStoreSize(store, it->first);
+            } else {
+              store->gm_ = static_cast<uint8_t*>(ws_alloc_(size, user_data_));
+            }
+          }
+        }
+        io->gm_ = store->gm_;
+      } else if (!GetStoreInplace(io)) {
+        wss_.insert({GetStoreSize(io), io->gm_});
+      }
+    }
+    (void)kernel->EagerVector::CodeGen();
+#if 0
+    std::cout << "******** kenrel " << i << " ************" << std::endl;
+    std::cout<< kernel->DumpGraph() << std::endl;
+    std::cout << kernel->DisAssemble() << std::endl;
+#endif
+  }
+  wss_.clear();
+  return 0;
+}
+
+void VKernelE::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+  for (int i = 0; i < kernel_used_; ++i) {
+    oss << "// eager " << i << std::endl;
+    kernels_[i]->DumpKernel(oss, indent);
+    oss << std::endl;
+  }
+}
+
+std::string& VKernelE::DisAssemble() {
+  std::ostringstream oss;
+  for (int i = 0; i < kernel_used_; ++i) {
+    oss << "// eager " << i << std::endl;
+    kernels_[i]->code_.DisAssemble(oss);
+    oss << std::endl;
+  }
+  dump_str_ = oss.str();
+  return dump_str_;
+}
+
 } // namespace dvm

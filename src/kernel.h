@@ -19,6 +19,7 @@
 
 #include <string>
 #include <vector>
+#include <map>
 #include <functional>
 #include "code.h"
 #include "ops.h"
@@ -89,7 +90,7 @@ class VKernel {
     dump_str_ = oss.str();
     return dump_str_;
   }
-  std::string& DisAssemble();
+  virtual std::string& DisAssemble();
   KernelType KType() const { return ktype_; }
 
   Code code_;
@@ -294,6 +295,54 @@ class StagesKernel : public VKernel {
     std::vector<NDAccess*> ios;
   };
   std::vector<Stage*> stages_;
+};
+
+class EagerVector;
+class VKernelE : public VKernel {
+ public:
+  VKernelE(WsAllocFunc func, void *user_data);
+  ~VKernelE() override;
+
+  void Append(NDObject *obj) override;
+  uint64_t CodeGen() override;
+  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
+  std::string& DisAssemble() override;
+
+  void Launch(void *stream) {
+    for (int i = 0; i < kernel_used_; ++i) {
+      reinterpret_cast<VKernel*>(kernels_[i])->code_.Launch(nullptr, stream);
+    }
+  }
+
+  void Clear() {
+    for (int i = 0; i < kernel_used_; ++i) {
+      for (auto op : reinterpret_cast<VectorKernel*>(kernels_[i])->objects_) {
+        delete op;
+      }
+    }
+    kernel_used_ = 0;
+  }
+
+  static NDAccess* GetStore(NDObject *obj) { return reinterpret_cast<NDAccess*>(obj->insn_); }
+
+ protected:
+  static int GetKernel(NDObject* obj) { return obj->lead_dim_; }
+  static void SetKernel(NDObject* obj, int kernel) { obj->lead_dim_ = kernel; }
+  static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t*>(store); }
+  static void SetStoreInplace(NDObject *store, int flag) { store->index_ = flag; }
+  static int GetStoreInplace(NDObject *store) { return store->index_; }
+  static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
+  static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
+
+  NDObject* Exchange(EagerVector *kernel, NDObject *input, int input_k);
+  void AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op);
+
+  std::vector<EagerVector*> kernels_;
+  std::multimap<uint64_t, void*> wss_;
+  std::vector<NDObject*> norm_ops_;
+  int kernel_used_;
+  WsAllocFunc ws_alloc_;
+  void *user_data_;
 };
 } // namespace dvm
 #endif // _DVM_KERNEL_H_

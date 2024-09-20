@@ -171,3 +171,8 @@ class Tester(Kernel):
         self.passes = []
         for pass_name in pass_names:
             self.passes.append(pass_name)
+
+    def reset_eager(self):
+        Kernel.reset_eager(self)
+        self.is_codegen = False
+        self.expects = []

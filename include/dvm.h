@@ -102,6 +102,15 @@ struct RelocTable {
   size_t outputs_size;
 };
 
+struct RelocEntry {
+  RelocEntry() {}
+  RelocEntry(NDObject *p, void *a) : io(p), addr(a) {}
+  NDObject *io;
+  void *addr;
+};
+
+typedef void*(*WsAllocFunc)(uint64_t size, void *user_data);
+
 class Kernel {
  public:
   Kernel();
@@ -147,9 +156,11 @@ class Kernel {
   uint64_t CodeGen();
   int Launch(void *workspace, void *stream);
   int Launch(const RelocTable &reloc_table, void **inputs, void **outputs, void *workspace, void *stream);
-  int Launch(NDObject **op, int size, void *stream);
   int MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                    void **outputs, void *workspace, void *stream);
+
+  void ResetEager(WsAllocFunc ws_alloc, void *user_data);
+  void FlushEager(const RelocEntry *reloc_table, size_t reloc_size, void *stream);
 
   ShapeRef *GetShape(NDObject *op) const;
   DType GetDType(NDObject *op) const;

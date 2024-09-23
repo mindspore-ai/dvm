@@ -98,7 +98,7 @@ if __name__ == '__main__':
     total_insn_num = len(insn_names[0]) + len(insn_names[1]) + len(insn_names[2])
     if len(function_address_map) != total_insn_num:
         raise ValueError("Mismatch between function addresses and instructions: {} : {}".format(
-            len(function_address_map), len(total_insn_num)))
+            len(function_address_map), total_insn_num))
 
     for i in range(3):
         # Output function addresses

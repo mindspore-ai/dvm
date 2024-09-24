@@ -564,7 +564,7 @@ int NDStore::Emit(VectorKernel &k) {
       auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
         op.to = reinterpret_cast<uint64_t>(gm_);
         op.xn = lhs_->xbuf_;
-        op.cum_flag = (lhs_->RealObjType() == kAtmoicCum && (round_tile_.size() & 1));
+        op.cum_flag = (lhs_->RealObjType() == kAtomicCum && (round_tile_.size() & 1));
         op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
         op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = strides_.back() / lead_align;
@@ -733,14 +733,14 @@ int IsFinite16Op::Emit(VectorKernel &k) {
   return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
 }
 
-int AtmoicCumOp::Emit(VectorKernel &k) {
+int AtomicCumOp::Emit(VectorKernel &k) {
   if (!(round_tile_->size() & 1)) {
     int size = InnerEmit(k, insn_, xbuf_);
     tail_insn_ = inner_->tail_insn_;
     return size;
   }
   int size = InnerEmit(k, insn_, inner_xbuf_);
-  vAtmoicCum op;
+  vAtomicCum op;
   uint64_t rounds[2];
   BuildDimRounds(*round_tile_, rounds);
   op.xd = xbuf_;
@@ -748,7 +748,7 @@ int AtmoicCumOp::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / k.simd_width_;
   op.round_rank = round_tile_->size();
   tail_insn_ = insn_ + size;
-  size += vAtmoicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
+  size += vAtomicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
   *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
   return size;
 }

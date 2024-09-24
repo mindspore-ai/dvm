@@ -1247,15 +1247,15 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
   }
 }
 
-__aicore_inline__ void AtmoicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vAtmoicCum op;
-  vAtmoicCum::Decode(pc, head, op);
+__aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vAtomicCum op;
+  vAtomicCum::Decode(pc, head, op);
   uint64_t rs = GetRepeatStride(tile, float);
   __ubuf__ float *xd = (__ubuf__ float *)(op.xd);
   __ubuf__ float *xn = (__ubuf__ float *)(op.xn);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank) {
-    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vAtmoicCum::ROUND_OFFSET);
+    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vAtomicCum::ROUND_OFFSET);
     if (tile_idx == -1) {
       repeat_vadd(xd, xd, xn, op.repeat, 1, 1, 1, rs, rs, rs);
       return;
@@ -1935,7 +1935,7 @@ DEF_DISP_FUNC(V_MAXS_INT32, BINARYS(pc, vmaxs, head, int32_t, int32_t))
 DEF_DISP_FUNC(V_MINS_INT32, BINARYS(pc, vmins, head, int32_t, int32_t))
 DEF_DISP_FUNC(V_REMOVEPAD_U16, RemovePad<uint16_t>(pc, head, tile))
 DEF_DISP_FUNC(V_REMOVEPAD, RemovePad<uint32_t>(pc, head, tile))
-DEF_DISP_FUNC(V_ATOMICCUM, AtmoicCum(pc, head, tile))
+DEF_DISP_FUNC(V_ATOMICCUM, AtomicCum(pc, head, tile))
 
 DEF_DISP_FUNC(V_CAST_BF16_TO_FP32, CAST(pc, vconv_bf162f32, head, tile, bfloat16_t, float))
 DEF_DISP_FUNC(V_CAST_BF16_TO_INT32, CAST(pc, vconv_bf162s32z, head, tile, bfloat16_t, int32_t))

@@ -65,7 +65,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"Compare",     kGenFlex,  true },
   {"CompareS",    kGenFlex,  true },
   {"IsFinite16",  kGenFlex,  true },
-  {"kAtmoicCum",  kGenWrap,  true },
+  {"kAtomicCum",  kGenWrap,  true },
 };
 
 class CodeGenHelper {

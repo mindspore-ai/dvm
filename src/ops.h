@@ -48,7 +48,7 @@ enum ObjectType {
   kCompare,
   kCompareS,
   kIsFinite16,
-  kAtmoicCum,
+  kAtomicCum,
   kCubeOp,
   kObjectBulk
 };
@@ -638,10 +638,10 @@ class ReduceOp : public _ReduceOp {
   int64_t clear_shape_data_;
 };
 
-class AtmoicCumOp : public WrapOp {
+class AtomicCumOp : public WrapOp {
  public:
-  AtmoicCumOp(NDObject *inner, std::vector<int64_t> *round_tile)
-   : WrapOp(inner, ObjectType::kAtmoicCum), round_tile_(round_tile) {
+  AtomicCumOp(NDObject *inner, std::vector<int64_t> *round_tile)
+   : WrapOp(inner, ObjectType::kAtomicCum), round_tile_(round_tile) {
     ws_num_ = 1;
   }
   int Emit(VectorKernel &k) override;

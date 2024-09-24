@@ -262,7 +262,7 @@ struct vUnary {
   }
 };
 
-struct vAtmoicCum {
+struct vAtomicCum {
   enum { ROUND_OFFSET = 2 };
   uint64_t xd;
   uint64_t xn;
@@ -270,7 +270,7 @@ struct vAtmoicCum {
   uint64_t round_rank;
   // pc[0]: xd
   // pc[1]: xn(18) << 32 | repeat(16) | round_rank
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vAtmoicCum &op) {
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vAtomicCum &op) {
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
     op.repeat = (data >> 16) & 0xfffful;
@@ -278,13 +278,13 @@ struct vAtmoicCum {
     op.round_rank = data & 0xful;
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vAtmoicCum &op, const uint64_t *rounds) {
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vAtomicCum &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
-    uint64_t size = vAtmoicCum::ROUND_OFFSET + round_size;
+    uint64_t size = vAtomicCum::ROUND_OFFSET + round_size;
     pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
     pc[1] = op.xn << 32 | op.repeat << 16 | op.round_rank;
     for (uint64_t i = 0; i < round_size; ++i) {
-      pc[vAtmoicCum::ROUND_OFFSET + i] = rounds[i];
+      pc[vAtomicCum::ROUND_OFFSET + i] = rounds[i];
     }
     return size;
   }

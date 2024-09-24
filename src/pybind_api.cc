@@ -396,7 +396,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     {"CompactPeakLiveness", pass::CompactPeakLiveness},
     {"EliminateReshape", pass::EliminateReshape},
     {"InsertRemovePad", pass::InsertRemovePad},
-    {"InsertAtmoicCum", pass::InsertAtmoicCum}};
+    {"InsertAtomicCum", pass::InsertAtomicCum}};
   uint64_t workspace_size;
   int64_t begin, end;
   if (py::isinstance<py::list>(pass_names)) {

@@ -608,15 +608,15 @@ void InsertRemovePad(BasicBlock &block) {
   }
 }
 
-void InsertAtmoicCum(BasicBlock &block) {
+void InsertAtomicCum(BasicBlock &block) {
   for (auto iter = block.begin(); iter != block.end(); iter++) {
     if (iter->IsStore()) {
       if (iter->lhs_->obj_id_ == kReduce) {
         auto inner = iter->lhs_;
-        auto remove_pad = new AtmoicCumOp(inner, &(static_cast<NDStore*>(iter.get())->round_tile_));
-        remove_pad->nd_ = inner->nd_;
-        iter->lhs_ = remove_pad;
-        block.Insert(iter, remove_pad);
+        auto atomic_cum = new AtomicCumOp(inner, &(static_cast<NDStore*>(iter.get())->round_tile_));
+        atomic_cum->nd_ = inner->nd_;
+        iter->lhs_ = atomic_cum;
+        block.Insert(iter, atomic_cum);
         block.Erase(NDObjectIterator<false>(inner));
       }
     }
@@ -960,5 +960,5 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad, &InsertAtmoicCum};
+std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad, &InsertAtomicCum};
 }  // namespace dvm::pass

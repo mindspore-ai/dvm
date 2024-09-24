@@ -145,7 +145,7 @@ def test_atomic_determ(in_shape, dims, cum_flag):
     t = Tester()
     t.set_determ(True)
     if cum_flag:
-        t.set_passes("InsertAtmoicCum")
+        t.set_passes("InsertAtomicCum")
     a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
     x = t.load(a)
     y = t.reduce("sum", x, dims, True)
@@ -179,5 +179,5 @@ def test_reduce_insert_accumulate(in_shape, dims):
     y = t.reduce("sum", x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     t.store_expect(y, res, 1e-4)
-    t.set_passes("InsertAtmoicCum")
+    t.set_passes("InsertAtomicCum")
     assert (t.run_check())

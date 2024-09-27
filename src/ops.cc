@@ -187,6 +187,8 @@ void BuildDimRounds(const DimArray &round_tile, uint64_t rounds[]) {
 }
 }  // namespace
 
+MemPool<512, 8192> NDObject::mem_pool_;
+
 int64_t NDObject::Size() {
   return std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{}) * ITEM_SIZE[type_id_];
 }

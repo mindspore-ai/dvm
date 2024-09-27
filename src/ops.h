@@ -19,6 +19,7 @@
 
 #include <cstdint>
 #include <vector>
+#include <mutex>
 #include "isa.h"
 #include "code.h"
 
@@ -166,6 +167,45 @@ struct ShapeWithRef : public ShapeRef {
   int64_t shape[DimArray::kMaxDimSize];
 };
 
+template <size_t BLOCK_SIZE, size_t POOL_SIZE>
+class MemPool {
+ public:
+  MemPool() = default;
+  ~MemPool() {
+    for (size_t i = 0; i < top_; ++i) {
+      std::free(pool_[i]);
+    }
+  }
+  void *Get(size_t size) {
+    if (top_ > 0 && size <= BLOCK_SIZE) {
+      std::lock_guard<std::mutex> guard(mutex_);
+      auto top = top_;
+      if (top > 0) {
+        top_ = top - 1;
+        return pool_[top - 1];
+      }
+    }
+    return std::malloc(size <= BLOCK_SIZE ? BLOCK_SIZE : size);
+  }
+  void Put(void *mem) {
+    if (top_ < POOL_SIZE) {
+      std::lock_guard<std::mutex> guard(mutex_);
+      auto top = top_;
+      if (top < POOL_SIZE ) {
+        top_ = top + 1;
+        pool_[top] = mem;
+        return;
+      }
+    }
+    std::free(mem);
+  }
+
+ private:
+  void *pool_[POOL_SIZE];
+  volatile size_t top_{0};
+  std::mutex mutex_;
+};
+
 class VectorKernel;
 
 #define OBJ_FLAG_FREE_LHS   1
@@ -196,6 +236,10 @@ class NDObject {
   // tile nd range
   virtual void Tile(const TileParam &tp);
   virtual int Emit(VectorKernel &k) = 0;
+
+  void* operator new(size_t size) {
+    return mem_pool_.Get(size);
+  }
 
   void UpdateStride(uint64_t simd_width);
 
@@ -235,6 +279,8 @@ class NDObject {
   uint32_t flags_{0};
   uint64_t *insn_;       // when in optimization passes, used to point to the next NDObject
   uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
+
+  static MemPool<512, 8192> mem_pool_;
 };
 
 class NDAccess : public NDObject {

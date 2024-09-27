@@ -19,6 +19,7 @@
 #include <vector>
 #include <numeric>
 #include <algorithm>
+#include <mutex>
 #include <float.h>
 #include "ops.h"
 #include "kernel.h"
@@ -96,24 +97,24 @@ int EmitCopy(bcodeptr_t insn, uint64_t xd, uint64_t xn, uint64_t bytes) {
   return vCopy::Encode(insn, V_COPY, op);
 }
 
-NDObject* GetBroadcastOp(NDObject *obj, const std::vector<int64_t> &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
+NDObject* GetBroadcastOp(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
   dvm::_BroadcastOp *broadcast_op = nullptr;
   if (stuff_idx < stuff_ops.size()) {
     broadcast_op = static_cast<dvm::_BroadcastOp *>(stuff_ops[stuff_idx]);
     broadcast_op->lhs_ = obj;
-    broadcast_op->nd_ = dst_shape;
   } else {
-    broadcast_op = new dvm::_BroadcastOp(obj, dst_shape);
+    broadcast_op = new dvm::_BroadcastOp(obj);
     stuff_ops.push_back(broadcast_op);
   }
+  broadcast_op->nd_ = dst_shape;
   stuff_idx++;
   return broadcast_op;
 }
 
-NDObject* InsertBroadcastOpsInBetween(NDObject *obj, const std::vector<int64_t> &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
+NDObject* InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
   // output shape is not dst_shape, but the last inbetween shape, which just need only one broadcast op to reach the dst_shape
   bool broadcast_flag = false;
-  auto temp_shape = obj->nd_;
+  auto temp_shape = obj->nd_; // TODO: inplace optimize
   const auto &src_shape = obj->nd_;
   dvm::NDObject *output_obj = obj;
   for (size_t i = 0; i < src_shape.size(); i++) {
@@ -131,7 +132,7 @@ NDObject* InsertBroadcastOpsInBetween(NDObject *obj, const std::vector<int64_t> 
   return output_obj;
 }
 
-NDObject* InsertImplicitBroadcast(NDObject *obj, const std::vector<int64_t> &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
+NDObject* InsertImplicitBroadcast(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject*> &stuff_ops, size_t &stuff_idx) {
   // output shape is dst_shape
   auto new_input = InsertBroadcastOpsInBetween(obj, dst_shape, stuff_ops, stuff_idx);
   auto last_broadcast_op = GetBroadcastOp(new_input, dst_shape, stuff_ops, stuff_idx);
@@ -149,7 +150,7 @@ uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t simd_width) {
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
 
-void BuildDimRounds(const std::vector<int64_t> &round_tile, uint64_t rounds[]) {
+void BuildDimRounds(const DimArray &round_tile, uint64_t rounds[]) {
   switch (round_tile.size()) {
     case 1: {
       auto r1 = round_tile[0];
@@ -296,7 +297,7 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   }
   tail_dim_ = -1;
   tail_size_ = 0;
-  round_tile_.clear();
+  round_tile_.resize(0);
 }
 
 void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
@@ -509,7 +510,7 @@ void NDStore::Normalize(std::vector<NDObject*> &run_ops) {
   nd_ = lhs_->nd_;
   tail_dim_ = -1;
   tail_size_ = 0;
-  round_tile_.clear();
+  round_tile_.resize(0);
 }
 
 void NDStore::Tile(const TileParam &tp) {
@@ -673,8 +674,9 @@ void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
   }
   if (update_axis != dims) {
     int64_t input_sz = 1;
-    for (auto sh : lhs_->nd_) {
-      input_sz *= sh;
+    auto &nd = lhs_->nd_;
+    for (size_t i = 0; i < nd.size(); ++i) {
+      input_sz *= nd[i];
     }
     auto v = input_sz / sz;
     nd_[update_axis] = v;
@@ -1012,30 +1014,33 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
 
   // update nd_
-  bool need_broadcast[3] = {false, false, false};
-  std::vector<int64_t> nds[3] = {lhs_->nd_, rhs_->nd_, xhs_->nd_};
-  auto max_dims = std::max({nds[0].size(), nds[1].size(), nds[2].size()});
-  nd_.resize(max_dims, 1);
-  for (size_t i = 0; i < 3; ++i) {
-    nds[i].resize(max_dims, 1);
-  }
+  auto &lhs_nd = lhs_->nd_;
+  auto &rhs_nd = rhs_->nd_;
+  auto &xhs_nd = xhs_->nd_;
+  bool lhs_bc = false;
+  bool rhs_bc = false;
+  bool xhs_bc = false;
+  auto max_dims = std::max({lhs_nd.size(), rhs_nd.size(), xhs_nd.size()});
+  nd_.resize(max_dims);
   for (size_t i = 0; i < max_dims; ++i) {
-    nd_[i] = std::max({nds[0][i], nds[1][i], nds[2][i]});
-    for (size_t j = 0; j < 3; ++j) {
-      if (nds[j][i] != nd_[i]) {
-        need_broadcast[j] = true;
-      }
-    }
+    auto lhs_dim = i < lhs_nd.size() ? lhs_nd[i] : 1;
+    auto rhs_dim = i < rhs_nd.size() ? rhs_nd[i] : 1;
+    auto xhs_dim = i < xhs_nd.size() ? xhs_nd[i] : 1;
+    nd_[i] = std::max({lhs_dim, rhs_dim, xhs_dim});
+    if (nd_[i] != lhs_dim) lhs_bc = true;
+    if (nd_[i] != rhs_dim) rhs_bc = true;
+    if (nd_[i] != xhs_dim) xhs_bc = true;
   }
-  for (size_t j = 0; j < 3; ++j) {
-    if (need_broadcast[j]) {
-      size_t stuff_idx = 0;
-      *input[j] = InsertImplicitBroadcast(*input[j], nd_, stuff_ops_[j], stuff_idx);
-      for (size_t i = 0; i < stuff_idx; ++i) {
-        run_ops.push_back(stuff_ops_[j][i]);
-      }
+  auto insert_broadcast = [&input, &run_ops, this](size_t idx) {
+    size_t stuff_idx = 0;
+    *input[idx] = InsertImplicitBroadcast(*input[idx], nd_, stuff_ops_[idx], stuff_idx);
+    for (size_t i = 0; i < stuff_idx; ++i) {
+      run_ops.push_back(stuff_ops_[idx][i]);
     }
-  }
+  };
+  if (lhs_bc) insert_broadcast(0);
+  if (rhs_bc) insert_broadcast(1);
+  if (xhs_bc) insert_broadcast(2);
 }
 
 SelectOp::~SelectOp() {
@@ -1308,47 +1313,49 @@ ReduceOp::~ReduceOp() {
 }
 
 void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
+  DimArray dims;
+  DimArray shape_dims;
   ASSERT(dims_ref_ != nullptr);
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
   auto input_shape_ref = input->shape_ref_;
   //update dims
-  shape_dims_.resize(dims_ref_->size);
-  for (size_t i = 0; i < dims_ref_->size; i++) {
-    shape_dims_[i] = dims_ref_->data[i];
-  }
   auto lhs_dim = input_shape_ref->size;
-  if (shape_dims_.empty()) {
-    shape_dims_.resize(lhs_dim);
-    dims_.resize(lhs_dim);
+  if (dims_ref_->size == 0) {
+    shape_dims.resize(lhs_dim);
+    dims.resize(lhs_dim);
     for (int64_t i = 0; i < static_cast<int64_t>(lhs_dim); ++i) {
-      shape_dims_[i] = i;
-      dims_[i] = i;
+      shape_dims[i] = i;
+      dims[i] = i;
     }
   } else {
     std::set<int64_t> dims_set;
-    std::for_each(shape_dims_.begin(), shape_dims_.end(), [&dims_set, lhs_dim](int64_t &n) {
-      if (n < 0) {
-        n += lhs_dim;
+    for (size_t i = 0; i < dims_ref_->size; i++) {
+      auto dim = dims_ref_->data[i];
+      if (dim < 0) {
+        dim += lhs_dim;
       }
-      dims_set.insert(n);
-    });
-    shape_dims_.assign(dims_set.begin(), dims_set.end());
-    int back_idx = shape_dims_.back() + 1;
+      dims_set.insert(dim);
+    }
+    size_t dim_size = 0;
+    for (auto it = dims_set.begin(); it != dims_set.end(); ++it) {
+      shape_dims[dim_size++] = *it;
+    }
+    int back_idx = shape_dims.back() + 1;
     int back_end = input->nd_.size() - 1;
     while (back_idx <= back_end && input->nd_[back_end - back_idx] == 1) { // align fold may flip dims
-      shape_dims_.push_back(back_idx++);
+      shape_dims[dim_size++] = back_idx++;
     }
-    auto size = shape_dims_.size();
-    dims_.resize(size);
-    for (size_t i = 0; i < size; ++i) {
-      dims_[i] = lhs_dim - shape_dims_[size - i - 1] - 1;
+    shape_dims.resize(dim_size);
+    dims.resize(dim_size);
+    for (size_t i = 0; i < dim_size; ++i) {
+      dims[i] = lhs_dim - shape_dims[dim_size - i - 1] - 1;
     }
   }
   // update shape_ref_
   int shape_size = 0;
   int dim_idx = 0;
   for (int i = 0; i < static_cast<int>(input_shape_ref->size); ++i) {
-    if (i != shape_dims_[dim_idx]) {
+    if (i != shape_dims[dim_idx]) {
       shape_[shape_size++] = input_shape_ref->data[i];
     } else {
       dim_idx++;
@@ -1361,7 +1368,8 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   size_t stuff_idx = 0;
   int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
   nd_ = input->nd_;
-  for (auto d : dims_) {
+  for (size_t i = 0; i < dims.size(); ++i) {
+    auto d = dims[i];
     if (nd_[d] == 1) continue;
     if (d != red_ext) {
       if (lead_dim  == -1) {
@@ -1419,26 +1427,28 @@ void ReduceOp::GenClearKernel(NDAccess *store) {
 
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   int n = std::max(lhs->nd_.size(), rhs->nd_.size());
-  nd_.clear();
-  nd_.reserve(n);
-  nd_.emplace_back(n_real_);
-  nd_.emplace_back(m_real_);
+  nd_.resize(n);
+  nd_[0] = n_real_;
+  nd_[1] = m_real_;
   for (int i = 2; i < n; ++i) {
     auto dim1 = i < static_cast<int>(lhs->nd_.size()) ? lhs_->nd_[i] : 1;
     auto dim2 = i < static_cast<int>(rhs->nd_.size()) ? rhs_->nd_[i] : 1;
+    // TODO: nd_[2] = dim1 >= dim2 ? dim1 : dim2;
     if (dim1 == dim2) {
-      nd_.emplace_back(dim1);
+      nd_[i] = dim1;
     } else if (dim1 == 1) {
-      nd_.emplace_back(dim2);
+      nd_[i] = dim2;
     } else if (dim2 == 1) {
-      nd_.emplace_back(dim1);
+      nd_[i] = dim1;
     } else {
       // should not reach here, because this case can not be broadcasted.
       ASSERT(0);
     }
   }
   shape_.resize(n);
-  std::reverse_copy(nd_.begin(), nd_.end(), shape_.begin());
+  for (size_t i = 0; i < nd_.size(); ++i) {
+    shape_[i] = nd_[nd_.size() - 1 - i];
+  }
 }
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
@@ -1481,7 +1491,9 @@ void CubeOp::NormalizeCube() {
 
 void CubeOp::NormalizeOutput() {
   if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
-    nd_ = {n_real_, m_real_};
+    nd_.resize(2);
+    nd_[0] = n_real_;
+    nd_[1] = m_real_;
     shape_ = {m_real_, n_real_};
   } else {
     ComputeBroadcastShape(lhs_, rhs_);

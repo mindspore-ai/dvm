@@ -75,23 +75,95 @@ struct PropRange {
   int64_t space;
 };
 
-struct ShapeWithRef : public ShapeRef {
+static inline void _DimCopy(int64_t *dst, const int64_t *src, size_t size) {
+  switch (size) {
+    case 10:
+      dst[9] = src[9];
+    case 9:
+      dst[8] = src[8];
+    case 8:
+      dst[7] = src[7];
+    case 7:
+      dst[6] = src[6];
+    case 6:
+      dst[5] = src[5];
+    case 5:
+      dst[4] = src[4];
+    case 4:
+      dst[3] = src[3];
+    case 3:
+      dst[2] = src[2];
+    case 2:
+      dst[1] = src[1];
+    case 1:
+      dst[0] = src[0];
+      break;
+    default:
+      break;
+  }
+}
+
+class DimArray {
+ public:
   enum { kMaxDimSize = 10 };
+  DimArray() : size_(0) {}
+  DimArray &operator=(const DimArray &other) {
+    size_ = other.size();
+    if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    return *this;
+  }
+  DimArray &operator=(const std::vector<int64_t> &other) {
+    size_ = other.size();
+    if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    return *this;
+  }
+  bool operator==(const DimArray &other) {
+    if (size_ != other.size()) return false;
+    for (size_t i = 0; i < size_; ++i) {
+      if (data_[i] != other[i]) return false;
+    }
+    return true;
+  }
+  void resize(size_t size) {
+    ASSERT(size <= kMaxDimSize);
+    size_ = size;
+  }
+  void resize(size_t size, int64_t val) {
+    if (size_ < size) {
+      for (size_t i = size_; i < size; ++i) data_[i] = val;
+    }
+    size_ = size;
+  }
+  size_t size() const { return size_; }
+  int64_t &operator[](size_t i) { return data_[i]; }
+  const int64_t operator[](size_t i) const { return data_[i]; }
+  int64_t &back() { return data_[size_ - 1]; }
+  const int64_t back() const { return data_[size_ - 1]; }
+  const int64_t *data() const { return data_; }
+  bool empty() const { return size_ == 0; }
+  void push_back(int64_t val) {
+    ASSERT(size_ < kMaxDimSize);
+    data_[size_++] = val;
+  }
+ private:
+  int64_t data_[DimArray::kMaxDimSize];
+  size_t size_;
+};
+
+struct ShapeWithRef : public ShapeRef {
   ShapeWithRef() {
     data = shape;
     size = 0;
   }
   ShapeWithRef &operator=(const ShapeRef &other) {
     size = other.size;
-    for (size_t i = 0; i < size; ++i) {
-      shape[i] = other.data[i];
-    }
+    _DimCopy(shape, other.data, size);
     return *this;
   }
   int64_t &operator[](int i) { return shape[i]; }
   void Resize(size_t s) { size = s; }
 
-  int64_t shape[kMaxDimSize];
+  int64_t shape[DimArray::kMaxDimSize];
 };
 
 class VectorKernel;
@@ -148,8 +220,8 @@ class NDObject {
     flags_ &= 0xffff0000u;
   }
 
-  std::vector<int64_t> nd_;
-  std::vector<int64_t> strides_;
+  DimArray nd_;
+  DimArray strides_;
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_;
@@ -189,16 +261,16 @@ class NDAccess : public NDObject {
 class NDLoadDummy : public NDAccess {
  public:
   NDLoadDummy(DType type_id) : NDAccess (nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
-    nd_ = shape_;
-    shape_ref_data_ = shape_;
-    shape_ref_ = &shape_ref_data_;
+    nd_.resize(1, 1);
+    shape_.Resize(1);
+    shape_[0] = 1;
+    shape_ref_ = &shape_;
   }
   void Tile(const TileParam &tp) override { }
   int Emit(VectorKernel &k) override;
 
  private:
-  std::vector<int64_t> shape_{1};
-  ShapeRef shape_ref_data_;
+  ShapeWithRef shape_;
 };
 
 class NDLoad : public NDAccess {
@@ -213,7 +285,7 @@ class NDLoad : public NDAccess {
 
   int tail_dim_{-1};
   int tail_size_{0};
-  std::vector<int64_t> round_tile_;
+  DimArray round_tile_;
 };
 
 class NDSliceLoad : public NDLoad {
@@ -264,7 +336,7 @@ class NDStore : public NDAccess {
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
 
-  std::vector<int64_t> round_tile_;
+  DimArray round_tile_;
 
  private:
   int tail_dim_{-1};
@@ -411,7 +483,8 @@ class ElementAnyOp: public NDObject {
  public:
   ElementAnyOp(NDObject *input): NDObject(input, nullptr, input->type_id_, ObjectType::kElementAny) {
     ASSERT(type_id_ == kFloat32);
-    shape_ref_data_ = shape_;
+    shape_ref_data_.data = &shape_;
+    shape_ref_data_.size = 1;
     shape_ref_ = &shape_ref_data_;
   }
   int Emit(VectorKernel &k) override;
@@ -423,7 +496,7 @@ class ElementAnyOp: public NDObject {
   }
 
  private:
-  std::vector<int64_t> shape_{1};
+  int64_t shape_{1};
   ShapeRef shape_ref_data_;
   int tail_dim_{-1};
   int tail_size_{0};
@@ -541,10 +614,8 @@ class SelectOp : public FlexOp {
 
 class _BroadcastOp : public NDObject {
  public:
-  _BroadcastOp(NDObject *input, const std::vector<int64_t> &nd)
-      : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
-    nd_ = nd;
-  }
+  _BroadcastOp(NDObject *input)
+      : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {}
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   int Emit(VectorKernel &k) override;
@@ -559,7 +630,7 @@ class _BroadcastOp : public NDObject {
 class BroadcastOp : public _BroadcastOp {
  public:
   BroadcastOp(NDObject *input, ShapeRef *shape_ref)
-      : _BroadcastOp(input, std::vector<int64_t>{1}) {
+      : _BroadcastOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
   }
@@ -590,7 +661,6 @@ class BroadcastScalarOp : public NDObject {
   int Emit(VectorKernel &k) override;
  private:
   T scalar_;
-  std::vector<int64_t> shape_;
 };
 
 class _ReduceOp : public NDObject {
@@ -628,9 +698,7 @@ class ReduceOp : public _ReduceOp {
   VectorKernel *clear_kernel_{nullptr};
 
  private:
-  std::vector<int64_t> dims_;
   std::vector<_ReduceOp*> stuff_ops_;
-  std::vector<int64_t> shape_dims_;
   ShapeWithRef shape_;
   bool keepdims_;
   ShapeRef *dims_ref_;
@@ -641,13 +709,13 @@ class ReduceOp : public _ReduceOp {
 
 class AtomicCumOp : public WrapOp {
  public:
-  AtomicCumOp(NDObject *inner, std::vector<int64_t> *round_tile)
+  AtomicCumOp(NDObject *inner, const DimArray *round_tile)
    : WrapOp(inner, ObjectType::kAtomicCum), round_tile_(round_tile) {
     ws_num_ = 1;
   }
   int Emit(VectorKernel &k) override;
  protected:
-  std::vector<int64_t> *round_tile_;
+  const DimArray *round_tile_;
 };
 
 class CubeOp : public NDObject {

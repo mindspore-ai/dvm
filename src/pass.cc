@@ -645,13 +645,21 @@ struct PropagateArgs {
   bool is_forward;
   NDObject *obj;
   NDObject *last;
-  std::vector<int64_t> new_shape;
+  DimArray new_shape;
 };
 struct AnalysisIntermediate {
   std::vector<std::optional<std::vector<int64_t>>> need_reshape;  // idx corresbond to NDObject's index_
   std::vector<NDObject *> visited;
   std::vector<PropagateArgs> todos;
 
+  inline void RegisterNewShape(NDObject *obj, const DimArray &new_shape) {
+    std::vector<int64_t> shape;
+    shape.reserve(new_shape.size());
+    for (size_t i = 0; i < new_shape.size(); ++i) {
+      shape.push_back(new_shape[i]);
+    }
+    RegisterNewShape(obj, shape);
+  }
   inline void RegisterNewShape(NDObject *obj, const std::vector<int64_t> &new_shape) {
     need_reshape[obj->index_] = new_shape;
     visited.push_back(obj);
@@ -662,8 +670,8 @@ struct ShapePacket {
   size_t end;
   bool is_broadcast_axis;
 };
-std::vector<ShapePacket> GetShapePackets(const std::vector<int64_t> &shape_ori,
-                                         const std::vector<int64_t> &shape_to_change) {
+std::vector<ShapePacket> GetShapePackets(const DimArray &shape_ori,
+                                         const DimArray &shape_to_change) {
   std::vector<ShapePacket> shape_packets;
   shape_packets.reserve(3);
   ASSERT(shape_ori.size() >= 1);
@@ -683,8 +691,7 @@ std::vector<ShapePacket> GetShapePackets(const std::vector<int64_t> &shape_ori,
   return shape_packets;
 }
 
-std::vector<int64_t> TryReshape(std::vector<int64_t> &shape_to_change, std::vector<int64_t> &shape_ori,
-                                const std::vector<int64_t> &shape_new) {
+std::vector<int64_t> TryReshape(DimArray &shape_to_change, DimArray &shape_ori, const DimArray &shape_new) {
   if (shape_to_change.size() < shape_ori.size()) {
     shape_to_change.resize(shape_ori.size(), 1);
   } else if (shape_to_change.size() > shape_ori.size()) {
@@ -729,8 +736,9 @@ std::vector<int64_t> TryReshape(std::vector<int64_t> &shape_to_change, std::vect
       }
       auto old_len = shape_packet.end - shape_packet.start;
       if (old_len <= new_len) {
-        res.insert(res.end(), shape_to_change.begin() + shape_packet.start,
-                   shape_to_change.begin() + (shape_packet.start + old_len));
+        for (size_t ii = shape_packet.start; ii < shape_packet.start + old_len; ++ii) {
+          res.push_back(shape_to_change[ii]);
+        }
         for (size_t ii = old_len; ii < new_len; ++ii) {
           res.push_back(1);
         }
@@ -740,12 +748,15 @@ std::vector<int64_t> TryReshape(std::vector<int64_t> &shape_to_change, std::vect
           first *= shape_to_change[shape_packet.start + ii];
         }
         res.push_back(first);
-        res.insert(res.end(), shape_to_change.begin() + (shape_packet.start + old_len - new_len + 1),
-                   shape_to_change.begin() + old_len);
+        for (size_t ii = shape_packet.start + old_len - new_len + 1; ii < old_len; ++ii) {
+          res.push_back(shape_to_change[ii]);
+        }
       }
     } else {
       // Case of not broadcast packet
-      res.insert(res.end(), shape_new.begin() + j_start, shape_new.begin() + j);
+      for (size_t ii = j_start; ii < j; ++ii) {
+        res.push_back(shape_new[ii]);
+      }
     }
   }
   // Case when shape_new has trailing 1, e.g. (32, 4) -> (16, 2, 4, 1, 1)
@@ -758,7 +769,7 @@ std::vector<int64_t> TryReshape(std::vector<int64_t> &shape_to_change, std::vect
   return res;
 }
 
-bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *last, bool is_forward,
+bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is_forward,
                const BasicBlock &bb, AnalysisIntermediate &intermediate) {
   auto &need_reshape = intermediate.need_reshape;
   auto &todos = intermediate.todos;
@@ -768,8 +779,8 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
   if (obj->nd_ == new_shape) {
     return true;
   }
-  std::vector<int64_t> forward_shape;
-  std::vector<int64_t> backward_shape;
+  DimArray forward_shape;
+  DimArray backward_shape;
   auto type = obj->GetObjectType();
   switch (type) {
     case kUnary:
@@ -816,10 +827,11 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
       if (shape_change.empty()) {
         return false;
       }
-      intermediate.RegisterNewShape(obj, is_forward ? shape_change : new_shape);
       if (is_forward) {
+        intermediate.RegisterNewShape(obj, shape_change);
         forward_shape = shape_change;
       } else {
+        intermediate.RegisterNewShape(obj, new_shape);
         backward_shape = shape_change;
         forward_shape = new_shape;
       }
@@ -830,7 +842,7 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
         return true;
       }
       if (is_forward) {
-        forward_shape = std::vector<int64_t>(new_shape.size(), 1);
+        forward_shape.resize(new_shape.size(), 1);
         intermediate.RegisterNewShape(obj, forward_shape);
       } else {
         auto new_size = new_shape.size();
@@ -905,7 +917,7 @@ void EliminateReshape(BasicBlock &bb) {
       AnalysisIntermediate inter;
       inter.need_reshape.resize(bb.capacity());
       inter.visited.reserve(bb.capacity());
-      std::vector<int64_t> &new_shape = is_forward ? reshape.lhs_->nd_ : reshape.nd_;
+      DimArray &new_shape = is_forward ? reshape.lhs_->nd_ : reshape.nd_;
       inter.RegisterNewShape(&reshape, new_shape);
       bool can_eliminate = true;
       if (is_forward) {

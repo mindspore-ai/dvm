@@ -581,7 +581,7 @@ void RootDomain::Align(int depth, int64_t space) {
 
 class ReshapeDomain : public PropDomain {
  public:
-  ReshapeDomain(NDObject *head, const std::vector<int64_t> &src, const std::vector<int64_t> &dst)
+  ReshapeDomain(NDObject *head, const DimArray &src, const DimArray &dst)
    : PropDomain(head), src_(src), dst_(dst) {}
   void FoldProp(PropRange &range) override {
     PropRange dst_range;
@@ -668,8 +668,8 @@ class ReshapeDomain : public PropDomain {
   }
 
  private:
-  const std::vector<int64_t> &src_;
-  const std::vector<int64_t> &dst_;
+  const DimArray &src_;
+  const DimArray &dst_;
   int prop_base = -1;
 };
 
@@ -918,7 +918,7 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
   auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
   code_.block_dim_ = (tile_num_ + tile_per_block - 1) / tile_per_block;
   // simd_width
-  int64_t lead_dim = root_dom_.DimSpace().front();
+  int64_t lead_dim = root_dom_.DimSpace()[0];
   int64_t block_sw = BlockAlign();
   int64_t align_lead_dim = CeilDiv(lead_dim, block_sw) *  block_sw;
   int64_t tile_outer = root_dom_.TileSize() / align_lead_dim;
@@ -1014,8 +1014,8 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
   uint64_t tile_per_block = CeilDiv(tile_num_, static_cast<uint64_t>(code_.block_dim_));
   metrics.core_usage = float(tile_num_) / float(tile_per_block  * System::Instance().CoreNum());
   uint64_t tiled_shape_size = 1;
-  for (auto d : dom->nd_) {
-    tiled_shape_size *= d;
+  for (size_t i = 0; i < dom->nd_.size(); ++i) {
+    tiled_shape_size *= dom->nd_[i];
   }
   metrics.simd_usage = float(tiled_shape_size) / float(dom->strides_.back() / simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
 }
@@ -1731,7 +1731,7 @@ uint64_t MixKernel::CodeGen() {
 }
 
 void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
-  auto dump_nd = [&oss](const std::vector<int64_t> &nd) {
+  auto dump_nd = [&oss](const DimArray &nd) {
     oss << "[";
     if (!nd.empty()) {
       for (size_t i = 0; i < nd.size() - 1; ++i) {

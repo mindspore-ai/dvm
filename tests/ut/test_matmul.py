@@ -133,6 +133,7 @@ def test_matmul_post_broadcast_fusion_0(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
+    assert (t.das().count("PingPongLoad") > 0)
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
@@ -197,6 +198,7 @@ def test_matmul_post_fusion_inplace():
     d = t.binary("Sub", d, z)
     t.store_expect(d, np_c + 0.1)
     assert (t.run_check())
+    assert (t.das().count("PingPongLoad") == 0)
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [

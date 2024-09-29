@@ -47,7 +47,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"LoadDummy",   kGenLoad,  true },
   {"Load",        kGenLoad,  true },
   {"PadStore",    kGenStore, false},
-  {"SStore",      kGenStore, false},
+  {"SStore",      kGenStore, true},
   {"Store",       kGenStore, true },
   {"Reshape",     kGenSimd1, true },
   {"Copy",        kGenSimd1, true },

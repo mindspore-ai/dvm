@@ -58,6 +58,12 @@ enum SocType {
   kAscend910B2,
   kAscend910B3,
   kAscend910B4,
+  kAscend910_9391,
+  kAscend910_9392,
+  kAscend910_9381,
+  kAscend910_9382,
+  kAscend910_9372,
+  kAscend910_9361,
   kSocUnknow,
 };
 

@@ -522,21 +522,30 @@ int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs,
   return code.Launch(workspace, stream);
 }
 
-void Kernel::ResetEager(WsAllocFunc ws_alloc, void *user_data) {
+void Kernel::EagerReset(WsAllocFunc ws_alloc, void *user_data) {
   if (kernel_) {
     delete kernel_;
   }
   kernel_ = new VKernelE(ws_alloc, user_data);
 }
 
-void Kernel::FlushEager(const RelocEntry *reloc_table, size_t reloc_size, void *stream) {
+void Kernel::EagerCodeGen(const RelocEntry *reloc_table, size_t reloc_size) {
   ASSERT(kernel_->KType() == KernelType::kEager);
   for (auto reloc = reloc_table; reloc < reloc_table + reloc_size; ++reloc) {
     static_cast<NDAccess*>(reloc->io)->gm_ = static_cast<uint8_t*>(reloc->addr);
   }
   auto kernel = static_cast<VKernelE*>(kernel_);
   kernel->VKernelE::CodeGen();
+}
+
+int Kernel::EagerLaunch(void *stream) {
+  auto kernel = static_cast<VKernelE*>(kernel_);
   kernel->Launch(stream);
+  return 0;
+}
+
+void Kernel::EagerClear() {
+  auto kernel = static_cast<VKernelE*>(kernel_);
   kernel->Clear();
 }
 

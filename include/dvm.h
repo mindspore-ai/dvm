@@ -159,8 +159,10 @@ class Kernel {
   int MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                    void **outputs, void *workspace, void *stream);
 
-  void ResetEager(WsAllocFunc ws_alloc, void *user_data);
-  void FlushEager(const RelocEntry *reloc_table, size_t reloc_size, void *stream);
+  void EagerReset(WsAllocFunc ws_alloc, void *user_data);
+  void EagerCodeGen(const RelocEntry *reloc_table, size_t reloc_size);
+  int EagerLaunch(void *stream);
+  void EagerClear();
 
   ShapeRef *GetShape(NDObject *op) const;
   DType GetDType(NDObject *op) const;

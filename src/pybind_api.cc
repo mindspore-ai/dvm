@@ -150,7 +150,7 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
   ASCEND_CALL(aclrtSetDevice(dev_id));
   dev_id_ = dev_id_;
   if (type == kEager) {
-    kernel_.ResetEager(WsAllocCallback, &eager_wss_);
+    kernel_.EagerReset(WsAllocCallback, &eager_wss_);
   } else {
     kernel_.Reset(type);
   }
@@ -414,9 +414,10 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     {"EliminateReshape", pass::EliminateReshape},
     {"InsertRemovePad", pass::InsertRemovePad},
     {"InsertAtomicCum", pass::InsertAtomicCum}};
-  uint64_t workspace_size;
   int64_t begin, end;
   if (kernel_.GetImpl()->KType() == kEager) {
+    std::vector<RelocEntry> relocs;
+    relocs.reserve(stores_.size());
     for (auto &it : stores_) {
       auto op = it.first;
       auto &info = it.second;
@@ -431,13 +432,16 @@ void KernelPy::CodeGen(const py::object &pass_names) {
         std::memset(info.host, 0, info.size);
         ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
       }
-      static_cast<NDAccess*>(op)->gm_ = static_cast<uint8_t*>(info.dev);
+      relocs.emplace_back(op, info.dev);
     }
     begin = GetTimeX();
-    workspace_size = kernel_.CodeGen();
+    kernel_.EagerCodeGen(relocs.data(), relocs.size());
     end = GetTimeX();
-    ASSERT(workspace_size == 0);
-  } else if ( py::isinstance<py::list>(pass_names)) {
+    std::cout << "codegen time(us): " << end - begin << std::endl;
+    return;
+  }
+  uint64_t workspace_size;
+  if ( py::isinstance<py::list>(pass_names)) {
     std::vector<pass::Pass> old_passes;
     std::swap(old_passes, pass::passes);
     auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
@@ -475,8 +479,7 @@ py::object KernelPy::DumpGraph() {
 
 void KernelPy::Run() {
   if (kernel_.GetImpl()->KType() == kEager) {
-    auto kernel = static_cast<VKernelE*>(kernel_.GetImpl());
-    kernel->Launch(nullptr);
+    kernel_.EagerLaunch(nullptr);
   } else {
     PrepareIO();
     ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
@@ -629,7 +632,7 @@ void KernelPy::PrepareIO() {
 }
 
 void KernelPy::ResetEager() {
-  static_cast<VKernelE*>(kernel_.GetImpl())->Clear();
+  kernel_.EagerClear();
   for (auto &it : loads_) {
     if (it.second.dev) {
       ASCEND_CALL(aclrtFree(it.second.dev));

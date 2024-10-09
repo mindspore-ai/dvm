@@ -1048,27 +1048,31 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ float *xd = (__ubuf__ float*)(op.xd);
   uint64_t red_size = op.red_size;
   uint64_t simd_width = TileSimdWidth(tile);
-  while (true) {
-    uint64_t mod = red_size % simd_width;
-    if (mod) {
-      red_size -= mod;
-      uint64_t simd_mask = 0xffffffffffffffffllu >> (64 - simd_width);
-      set_vector_mask(0, simd_mask & (0xffffffffffffffffllu << mod));
-      repeat_vector_dup(xn + red_size, 0.0f, op.dup_size, 1, 1, op.red_size >> 3, op.red_size >> 3);
-      set_vector_mask(0, simd_mask);
-      red_size += simd_width;
-      pipe_barrier(PIPE_V);
+  uint64_t rs = GetRepeatStride(tile, float);
+  uint64_t mod = red_size % simd_width;
+  if (mod) {
+    red_size -= mod;
+    uint64_t simd_mask = 0xffffffffffffffffllu >> (64 - simd_width);
+    set_vector_mask(0, simd_mask & (0xffffffffffffffffllu << mod));
+    repeat_vector_dup(xn + red_size, 0.0f, op.dup_size, 1, 1, op.red_size >> 3, op.red_size >> 3);
+    set_vector_mask(0, simd_mask);
+    red_size += simd_width;
+    pipe_barrier(PIPE_V);
+  }
+  red_size = red_size / simd_width;
+  while (red_size > 1) {
+    uint64_t iter_tail = red_size & 1ul;
+    red_size >>= 1;
+    for (uint64_t i = 0; i < op.dup_size; i++) {
+      repeat_vadd(xd, xn, xn + red_size * simd_width, red_size, 1, 1, 1, rs, rs, rs);
+      if (iter_tail) {
+        pipe_barrier(PIPE_V);
+        repeat_vadd(xd, xd, xn + red_size * 2 * simd_width, 1, 1, 1, 1, rs, rs, rs);
+      }
+      xd += op.red_size;
+      xn += op.red_size;
     }
-    red_size = red_size / simd_width;
-    if (red_size == 1) {
-      break;
-    }
-    for (uint64_t i = 0;i < red_size ; i++) {
-      repeat_vcadd(xd, xn, op.dup_size, op.red_size, op.red_size >> 3);
-      xd++;
-      xn += simd_width;
-    }
-    xn = xd = (__ubuf__ float*)(vReduceX::GetXd(pc, head));
+    xn = xd = (__ubuf__ float*)(op.xd);
     pipe_barrier(PIPE_V);
   }
   vReduceX::DecodeBlock(pc, op);

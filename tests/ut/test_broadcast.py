@@ -196,4 +196,11 @@ def test_broadcast_store_rank_4(lead_dim):
     t.tile(2, 2, 4)
     t.tile(1, 1, 5)
     t.tile(0, 1, 2)
+
+def test_broadcast_bool():
+    t = Tester()
+    a0 = np.array([[True]]).astype(bool)
+    x0 = t.load(a0)
+    x1 = t.broadcast(x0, [2,3])
+    t.store_expect(x1, True)
     assert(t.run_check())

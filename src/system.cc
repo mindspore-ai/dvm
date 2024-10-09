@@ -79,32 +79,38 @@ void DvmException(const char* error_str) {
 }
 
 System::System() {
+  const static std::unordered_map<std::string, SocType> soc_name_map = {
+    {"Ascend910B1", kAscend910B1},       {"Ascend910B2", kAscend910B2},       {"Ascend910B3", kAscend910B3},
+    {"Ascend910B4", kAscend910B4},       {"Ascend910_9391", kAscend910_9391}, {"Ascend910_9392", kAscend910_9392},
+    {"Ascend910_9381", kAscend910_9381}, {"Ascend910_9382", kAscend910_9382}, {"Ascend910_9372", kAscend910_9372},
+    {"Ascend910_9361", kAscend910_9361},
+  };
+  const static uint64_t cube_core_nums[kSocUnknow] = {
+    25,  // Ascend910B1
+    24,  // Ascend910B2
+    20,  // Ascend910B3
+    20,  // Ascend910B4
+    25,  // Ascend910_9391
+    25,  // Ascend910_9392
+    24,  // Ascend910_9381
+    24,  // Ascend910_9382
+    20,  // Ascend910_9372
+    20,  // Ascend910_9361
+  };
   auto soc_name = GetSocName();
-  EXCEPTION_IF(soc_name.find("Ascend910B") == std::string::npos && soc_name.find("Ascend910C") == std::string::npos,
-              "Only Ascend910B and Ascend910C is supported");
+  auto iter = soc_name_map.find(soc_name);
+  EXCEPTION_IF(iter == soc_name_map.end(), "Only Ascend910B and Ascend910_93 is supported");
+  soc_name_ = iter->second;
+
   arch_ = kAiCore_C220;
   local_mem_size_ = 192 * 1024;
   event_num_ = 8;
-  if (soc_name == "Ascend910B1" || soc_name == "Ascend910B2" || soc_name == "Ascend910C1" ||
-      soc_name == "Ascend910C2") {
-    vector_core_num_ = 48;
-    cube_core_num_ = 24;
-  } else {
-    vector_core_num_ = 40;
-    cube_core_num_ = 20;
-  }
-  l2_size_ = (soc_name == "Ascend910B4" || soc_name == "Ascend910C4") ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
+  cube_core_num_ = cube_core_nums[soc_name_];
+  vector_core_num_ = cube_core_num_ * 2;
+  l2_size_ = (soc_name_ == kAscend910B4 || soc_name_ == kAscend910_9361) ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
   l1_size_ = 512 * 1024;
   l0c_size_ = 128 * 1024;
   ub_workspace_size_ = 1024;
-  std::unordered_map<std::string, SocType> soc_name_map = {{"Ascend910B1", kAscend910B1},
-                                                           {"Ascend910B2", kAscend910B2},
-                                                           {"Ascend910B3", kAscend910B3},
-                                                           {"Ascend910B4", kAscend910B4}};
-  if (const auto &iter = soc_name_map.find(soc_name); iter != soc_name_map.end()) {
-    soc_name_ = iter->second;
-  }
-
 #ifdef VK_SIM_MODEL
   auto rt_binary_register = rtDevBinaryRegister;
   auto rt_function_register = rtFunctionRegister;

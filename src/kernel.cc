@@ -350,11 +350,11 @@ class CodeGenHelper {
   NDObject* AllocOutXBuf(NDObject *obj) {
     if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
       obj->xbuf_ = obj->lhs_->xbuf_;
-      return nullptr;
+      return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
     }
     if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
       obj->xbuf_ = obj->rhs_->xbuf_;
-      return nullptr;
+      return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
     }
     NDObject *anti = nullptr;
     obj->xbuf_ = AllocDynXBuf(obj, &anti);
@@ -1062,10 +1062,16 @@ int VectorKernel::Analyze() {
   constexpr int REUSE_SUCC = 1;
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
-  auto LivenessEnd = [&cur_live](NDObject *op, NDObject *end) {
-    if (end->IsSimd() && !OP_LIVE(end)) {
-      OP_GEN_D(end);
-      return true;
+  auto LivenessEnd = [this, &cur_live](NDObject *op, NDObject *end) {
+    if (end->IsSimd()) {
+      if (!OP_LIVE(end)) {
+        OP_GEN_D(end);
+        return true;
+      }
+      if (end->reuse_dep_) {
+        objects_[end->reuse_dep_]->reuse_dep_ = op->index_;
+        end->reuse_dep_ = 0;
+      }
     }
     return false;
   };
@@ -1087,6 +1093,8 @@ int VectorKernel::Analyze() {
         if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_LHS;
           reuse_flag = REUSE_SUCC;
+          op->reuse_dep_ = 0;
+          kill->reuse_dep_ = op->index_;
         } else {
           op->flags_ |= OBJ_FLAG_FREE_LHS;
           cur_live++;
@@ -1097,6 +1105,8 @@ int VectorKernel::Analyze() {
         if (reuse_flag == REUSE_READY && RhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_RHS;
           reuse_flag = REUSE_SUCC;
+          op->reuse_dep_ = 0;
+          kill->reuse_dep_ = op->index_;
         } else {
           op->flags_ |=  OBJ_FLAG_FREE_RHS;
           cur_live++;

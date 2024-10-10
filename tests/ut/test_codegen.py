@@ -93,3 +93,15 @@ def test_wrap_flex_op():
     out = t.store_expect(y, np.isfinite(np.broadcast_to(a, [1024, 23])))
     t.set_passes("InsertRemovePad")
     assert(t.run_check())
+
+def test_inplace_anti_dep():
+    t = Tester()
+    x = t.load([32, 1024], "float16")
+    x2 = t.unary("Sqrt", x)
+    x3 = t.unary("Abs", x)
+    x4 = t.binary("Add", x2, x3)
+    x5 = t.unary("Reciprocal", x3)
+    x6 = t.binary("Add", x4, x5)
+    t.store(x6)
+    t.codegen()
+    assert(t.das().count("bar") == 3)

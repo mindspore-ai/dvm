@@ -1618,9 +1618,10 @@ static inline [aicore] void StoreAtomicDeterm(bcodeptr_t pc, uint64_t head, uint
         *op.step_addr = 1.0f - expect;
       }
     }
+    __gm__ void *dcci_align = (__gm__ void*)((uint64_t)gm_step & ~0x1ful);
     while (1) {
       __asm__ __volatile__("");
-      dcci(gm_step, 0);
+      dcci(dcci_align, 0);
       __asm__ __volatile__("");
       float delta = expect - *gm_step;
       if (delta > -0.1f && delta < 0.1f) break;

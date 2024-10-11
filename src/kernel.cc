@@ -243,11 +243,11 @@ class CodeGenHelper {
   NDObject* AllocDynXBuf(NDObject *obj) {
     if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
       obj->xbuf_ = obj->lhs_->xbuf_;
-      return nullptr;
+      return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
     }
     if (obj->flags_ & OBJ_FLAG_REUSE_RHS) {
       obj->xbuf_ = obj->rhs_->xbuf_;
-      return nullptr;
+      return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
     }
     if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
@@ -979,15 +979,22 @@ int VectorKernel::Analyze() {
   int op_index = objects_.size();
   int cur_live = static_ops_.size();
   int live_peak = cur_live;
-  auto LivenessEnd = [&cur_live](NDObject *op, NDObject *end) {
-    if (end->IsSimd() && !OP_LIVE(end)) {
-      OP_GEN_D(end);
-      return true;
+  auto LivenessEnd = [this, &cur_live](NDObject *op, NDObject *end) {
+    if (end->IsSimd()) {
+      if (!OP_LIVE(end)) {
+        OP_GEN_D(end);
+        return true;
+      }
+      if (end->reuse_dep_) {
+         objects_[end->reuse_dep_]->reuse_dep_ = op->index_;
+         end->reuse_dep_ = 0;
+      }
     }
     return false;
   };
   for (auto op : objects_) {  // clear status
     op->lead_dim_ = 0;
+    op->reuse_dep_ = 0;
   }
   for (auto op : static_ops_) {
     if (op->IsSimd()) {
@@ -1003,6 +1010,8 @@ int VectorKernel::Analyze() {
       if (kill && LivenessEnd(op, kill)) {
         if (OP_LIVE_D(op) && LhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_LHS;
+          op->reuse_dep_ = 0;
+          kill->reuse_dep_ = op->index_;
         } else {
           op->flags_ |= OBJ_FLAG_FREE_LHS;
           cur_live++;
@@ -1012,6 +1021,8 @@ int VectorKernel::Analyze() {
       if (kill && LivenessEnd(op, kill)) {
         if (OP_LIVE_D(op) && !(op->flags_ & OBJ_FLAG_REUSE_LHS) && BinaryInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_RHS;
+          op->reuse_dep_ = 0;
+          kill->reuse_dep_ = op->index_;
         } else {
           op->flags_ |=  OBJ_FLAG_FREE_RHS;
           cur_live++;

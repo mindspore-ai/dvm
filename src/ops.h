@@ -132,12 +132,11 @@ class NDObject {
   uint64_t xbuf_{0};
   ShapeRef *shape_ref_{nullptr};
   NDObject *pd_next_{nullptr};
-  int lead_dim_{0};
   ObjectType obj_id_;
   DType type_id_;
-
-  // op info
+  int lead_dim_{0};
   int index_{0};
+  int reuse_dep_;
   uint32_t flags_{0};
   uint64_t *insn_{nullptr};       // when in optimization passes, used to point to the next NDObject
   uint64_t *tail_insn_{nullptr};  // when in optimization passes, used to point to the prev NDObject

@@ -79,3 +79,21 @@ def test_eager_split_join():
         s = t.store_expect(s, es)
         t.run_check()
         t.reset_eager()
+
+@pytest.mark.parametrize('shape1, shape2', [
+    {(1, 1280, 28, 36), (1, 1280, 1, 1)}, # broadcast
+    {(1, 8, 28, 512), (1, 8, 1, 1)}, # broadcast store
+    {(1, 1000, 28, 128), (1, 1000)}, # not affine
+    ])
+def test_eager_disconnect(shape1, shape2):
+    x0 = np.random.normal(0, 1, shape1).astype(np.float16)
+    x1 = np.random.normal(0, 1, shape1).astype(np.float16)
+    x2 = np.random.normal(0, 1, shape2).astype(np.float16)
+    x3 = np.random.normal(0, 1, shape2).astype(np.float16)
+    t = Tester("eager")
+    a = t.binary("Add", t.load(x0), t.load(x1))
+    b = t.binary("Add", t.load(x2), t.load(x3))
+    t.store_expect(a, x0 + x1)
+    t.store_expect(b, x2 + x3)
+    t.run_check()
+    t.reset_eager()

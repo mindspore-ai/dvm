@@ -35,6 +35,7 @@ enum CodeGenTmpl {
   kGenWrap,
   kGenLoad,
   kGenStore,
+  kGenNone,
 };
 
 struct NDObjectAttr {
@@ -65,7 +66,8 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {"Compare",     kGenFlex,  true },
   {"CompareS",    kGenFlex,  true },
   {"IsFinite16",  kGenFlex,  true },
-  {"kAtomicCum",  kGenWrap,  true },
+  {"AtomicCum",   kGenWrap,  true },
+  {"AffineProp",  kGenNone,  false},
 };
 
 class CodeGenHelper {
@@ -160,6 +162,8 @@ class CodeGenHelper {
 #endif
           break;
         }
+        case kGenNone:
+          break;
         default:
           ASSERT(0);
           break;
@@ -2003,16 +2007,16 @@ class EagerVector : public VectorKernel {
       if (dom_i != op_i) {
         if (fuse_type == kFuseElemwise) {
           if (dom_i == 1) {
-            fuse_type = kFuseInflate;
             if (fix_dom_) return kFuseNone;
+            fuse_type = kFuseInflate;
           } else if (op_i == 1) {
             fuse_type = kFuseDeflate;
           } else {
             return kFuseNone;
           }
         } else if (fuse_type == kFuseDeflate) {
-          if (dom_i == 1) return kFuseNone;
-        } else if (op_i == 1) {
+          if (op_i != 1) return kFuseNone;
+        } else if (dom_i != 1) {
           return kFuseNone;
         }
       }
@@ -2142,6 +2146,9 @@ void VKernelE::Append(NDObject *obj) {
     fuse_idx = kernel_used_ - 1;
     kernel = kernels_[fuse_idx];
     ftype = kernel->AffineCheck(obj);
+    if (ftype == EagerVector::kFuseInflate || ftype == EagerVector::kFuseDeflate) {
+      kernel->EagerVector::Append(new AffinePropOp(obj, kernel->dom_));
+    }
   }
   if (ftype == EagerVector::kFuseNone) {
     if (kernel_used_ == static_cast<int>(kernels_.size())) {

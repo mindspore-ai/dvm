@@ -50,6 +50,7 @@ enum ObjectType {
   kCompareS,
   kIsFinite16,
   kAtomicCum,
+  kAffineProp,
   kCubeOp,
   kObjectBulk
 };
@@ -762,6 +763,22 @@ class AtomicCumOp : public WrapOp {
   int Emit(VectorKernel &k) override;
  protected:
   const DimArray *round_tile_;
+};
+
+class AffinePropOp : public NDObject {
+ public:
+  AffinePropOp(NDObject *x, NDObject *y) : NDObject(nullptr, nullptr, x->type_id_, kAffineProp), x_(x), y_(y) {
+    shape_ref_ = x->shape_ref_;
+  }
+  void FoldProp(PropRange &range) override;
+  void AlignProp(PropRange &range) override;
+  int Emit(VectorKernel &k) override {
+    ASSERT(0);
+    return 0;
+  }
+ private:
+  NDObject *x_;
+  NDObject *y_;
 };
 
 class CubeOp : public NDObject {

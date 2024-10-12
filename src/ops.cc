@@ -1427,6 +1427,62 @@ void ReduceOp::GenClearKernel(NDAccess *store) {
   clear_kernel_->CodeGen();
 }
 
+void AffinePropOp::FoldProp(PropRange &range) {
+  enum _State { kStateUndeterm = 0, kStateElemwise, kStateBroadcast };
+  _State state = kStateUndeterm;
+  int new_depth = 0;
+  for (int i = range.base; i != range.base - range.depth; --i) {
+    auto d1 = x_->nd_[i];
+    auto d2 = y_->nd_[i];
+    if (state == kStateUndeterm) {
+      if (d1 != d2) {
+        state = kStateBroadcast;
+      } else if (d1 != 1) {
+        state = kStateElemwise;
+      }
+    } else if (state == kStateElemwise) {
+      if (d1 != d2) {
+        break;
+      }
+    } else if (d1 == d2 && d1 > 1) {
+      break;
+    }
+    new_depth++;
+  }
+  if (state == kStateBroadcast && range.affine < PropRange::BROADCAST) {
+    range.affine = PropRange::BROADCAST;
+  }
+  range.depth = new_depth;
+}
+
+void AffinePropOp::AlignProp(PropRange &range) {
+  enum _State { kStateUndeterm = 0, kStateElemwise, kStateBroadcast };
+  _State state = kStateUndeterm;
+  int new_depth = 0;
+  for (int i = 0; i < range.depth; ++i) {
+    auto d1 = x_->nd_[i];
+    auto d2 = y_->nd_[i];
+    if (state == kStateUndeterm) {
+      if (d1 != d2) {
+        state = kStateBroadcast;
+      } else if (d1 != 1) {
+        state = kStateElemwise;
+      }
+    } else if (state == kStateElemwise) {
+      if (d1 != d2) {
+        break;
+      }
+    } else if (d1 == d2 && d1 > 1) {
+      break;
+    }
+    new_depth++;
+  }
+  if (state == kStateBroadcast && range.affine < PropRange::BROADCAST) {
+    range.affine = PropRange::BROADCAST;
+  }
+  range.depth = new_depth;
+}
+
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   int n = std::max(lhs->nd_.size(), rhs->nd_.size());
   nd_.resize(n);

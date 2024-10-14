@@ -138,9 +138,9 @@ class DimArray {
   }
   size_t size() const { return size_; }
   int64_t &operator[](size_t i) { return data_[i]; }
-  const int64_t operator[](size_t i) const { return data_[i]; }
+  const int64_t &operator[](size_t i) const { return data_[i]; }
   int64_t &back() { return *(data_ + size_ - 1); }
-  const int64_t back() const { return *(data_ + size_ - 1); }
+  const int64_t &back() const { return *(data_ + size_ - 1); }
   const int64_t *data() const { return data_; }
   bool empty() const { return size_ == 0; }
   void push_back(int64_t val) {

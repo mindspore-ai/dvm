@@ -1369,41 +1369,47 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   shape_.Resize(shape_size);
   size_t stuff_idx = 0;
   int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
-  nd_ = input->nd_;
   for (size_t i = 0; i < dims.size(); ++i) {
     auto d = dims[i];
-    if (nd_[d] == 1) continue;
+    if (input->nd_[d] == 1) continue;
     if (d != red_ext) {
       if (lead_dim  == -1) {
-        for (lead_dim = 0; lead_dim < d && nd_[lead_dim] == 1; lead_dim++);
+        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++);
       }
       if (red_start >= 0) {
-        if (stuff_idx == stuff_ops_.size()) {
-          stuff_ops_.push_back(new _ReduceOp(input, red_op_));
+        _ReduceOp *obj;
+        if (flags_ & OBJ_FLAG_EAGER) {
+          obj = new _ReduceOp(input, red_op_);
+        } else {
+          if (stuff_idx == stuff_ops_.size()) {
+            stuff_ops_.push_back(new _ReduceOp(input, red_op_));
+          }
+          obj = stuff_ops_[stuff_idx];
         }
-        auto obj = stuff_ops_[stuff_idx++];
-        input = obj;
-        std::swap(obj->nd_, nd_);
-        nd_ = obj->nd_;
+        stuff_idx++;
+        obj->nd_ = input->nd_;
+        for (int j = red_start; j <= red_end; ++j) {
+          obj->nd_[j] = 1;
+        }
         // align tile may revert to 0. let lead reduce to 0
         obj->SetRange(red_start == lead_dim ? 0 : red_start, red_end);
         run_ops.push_back(obj);
+        input = obj;
       }
       red_start = d;
     }
-    nd_[d] = 1;
     red_end = d;
-    for (red_ext = d + 1; red_ext < static_cast<int>(nd_.size()) && nd_[red_ext] == 1; red_ext++);
+    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
   }
+  nd_ = input->nd_;
   if (red_start != -1) {
     lhs_ = input;
+    for (int j = red_start; j <= red_end; ++j) {
+      nd_[j] = 1;
+    }
     SetRange(red_start == lead_dim ? 0 : red_start, red_end);
-  } else if (stuff_idx > 0) {
-    _ReduceOp *last = stuff_ops_.back();
-    lhs_ = last->lhs_;
-    SetRange(last->start_dim_, last->end_dim_);
-    run_ops.pop_back();
   } else {
+    ASSERT(stuff_idx == 0);
     start_dim_ = end_dim_ = -1;
   }
 }

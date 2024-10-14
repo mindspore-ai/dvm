@@ -2195,7 +2195,7 @@ void VKernelE::Append(NDObject *obj) {
 }
 
 uint64_t VKernelE::CodeGen() {
-  for (int i = kernel_used_ - 1; i >= 0; --i) {
+  for (int i = kernel_used_ - 1; i > 0; --i) {
     auto kernel = kernels_[i];
     for (auto io : kernel->ws_ios_) {
       if (io->IsLoad()) {
@@ -2218,17 +2218,13 @@ uint64_t VKernelE::CodeGen() {
           }
         }
         io->gm_ = store->gm_;
-      } else if (!GetStoreInplace(io)) {
+      } else if (!GetStoreInplace(io) && i > 1) {
         wss_.insert({GetStoreSize(io), io->gm_});
       }
     }
     (void)kernel->EagerVector::CodeGen();
-#if 0
-    std::cout << "******** kenrel " << i << " ************" << std::endl;
-    std::cout<< kernel->DumpGraph() << std::endl;
-    std::cout << kernel->DisAssemble() << std::endl;
-#endif
   }
+  (void)kernels_.front()->EagerVector::CodeGen();
   wss_.clear();
   return 0;
 }

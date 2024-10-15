@@ -237,6 +237,7 @@ class NDObject {
   // tile nd range
   virtual void Tile(const TileParam &tp);
   virtual int Emit(VectorKernel &k) = 0;
+  virtual void Dump(std::ostringstream &oss);
 
   void* operator new(size_t size) {
     return mem_pool_.Get(size);
@@ -315,6 +316,7 @@ class NDLoadDummy : public NDAccess {
   }
   void Tile(const TileParam &tp) override { }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   ShapeWithRef shape_;
@@ -329,6 +331,7 @@ class NDLoad : public NDAccess {
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
   int tail_dim_{-1};
   int tail_size_{0};
@@ -339,14 +342,11 @@ class NDSliceLoad : public NDLoad {
  public:
   NDSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
       : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {}
-  void Normalize(std::vector<NDObject *> &run_ops) override {
-    ASSERT(src_ref_->size <= 3);
-    NDLoad::Normalize(run_ops);
-  }
-
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
+  void Dump(std::ostringstream &oss) override;
 
  protected:
   int64_t CalcOffset();
@@ -364,6 +364,7 @@ class NDStridedSliceLoad : public NDSliceLoad {
   }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   ShapeWithRef shape_;
@@ -382,6 +383,7 @@ class NDStore : public NDAccess {
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
   DimArray round_tile_;
 
@@ -403,6 +405,7 @@ class NDPadStore : public NDAccess {
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   ShapeWithRef shape_;
@@ -428,34 +431,11 @@ class FlexOp : public NDObject {
 
 class WrapOp : public FlexOp {
  public:
-  WrapOp(NDObject *inner, ObjectType wrap_id)
-   : FlexOp(inner->lhs_, inner->rhs_, inner->type_id_, inner->obj_id_), inner_(inner), wrap_id_(wrap_id) {
-    shape_ref_ = inner->shape_ref_;
-    if (inner->flags_ & OBJ_FLAG_XHS) {
-      SetXhs(static_cast<FlexOp*>(inner)->xhs_);
-    }
-    ws_num_ = 1; // for inner_xbuf_
-    if (inner->flags_ & OBJ_FLAG_WORKSPACE) {
-      ws_num_ += static_cast<FlexOp*>(inner)->ws_num_;
-    }
-    ASSERT(!(flags_ & OBJ_FLAG_WRAP));
-    flags_ |= OBJ_FLAG_WRAP;
-  }
-  void Normalize(std::vector<NDObject*> &run_ops) override {
-    inner_->Normalize(run_ops);
-    nd_ = inner_->nd_;
-    lhs_ = inner_->lhs_;
-    rhs_ = inner_->rhs_;
-    if (inner_->flags_ & OBJ_FLAG_XHS) {
-      xhs_ = static_cast<FlexOp*>(inner_)->xhs_;
-    }
-  }
-  void Tile(const TileParam &tp) override {
-    inner_->Tile(tp);
-    nd_ = inner_->nd_;
-  }
-  void AlignProp(PropRange &range) override { inner_->AlignProp(range); }
-  void FoldProp(PropRange &range) override { inner_->FoldProp(range); }
+  WrapOp(NDObject *inner, ObjectType wrap_id);
+  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Tile(const TileParam &tp) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
 
   int InnerEmit(VectorKernel &k, uint64_t *insn, uint64_t out_xbuf) {
     inner_->strides_ = strides_;
@@ -482,6 +462,7 @@ class CopyOp : public NDObject {
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 };
 
 class ReshapeOp : public CopyOp {
@@ -494,6 +475,7 @@ class ReshapeOp : public CopyOp {
   }
   void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   ShapeRef *dst_shape_ref_;
@@ -505,9 +487,12 @@ class UnaryOp : public NDObject {
   UnaryOp(int op_type, NDObject *input);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
+
+  static int QueryId(const std::string &op_name);
 
  protected:
-  vSimdInsnID id_;
+  int op_type_;
 };
 
 class IsFinite16Op : public FlexOp {
@@ -518,12 +503,14 @@ class IsFinite16Op : public FlexOp {
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 };
 
 class RemovePadOp : public WrapOp {
  public:
   RemovePadOp(NDObject *inner) : WrapOp(inner, ObjectType::kRemovePad) {}
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 };
 
 class ElementAnyOp: public NDObject {
@@ -536,11 +523,8 @@ class ElementAnyOp: public NDObject {
   }
   int Emit(VectorKernel &k) override;
   void Tile(const TileParam &tp) override;
-  void Normalize(std::vector<NDObject *> &run_ops) override {
-    tail_dim_ = -1;
-    tail_size_ = 0;
-    nd_.resize(lhs_->nd_.size(), 1);
-  }
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   int64_t shape_{1};
@@ -558,6 +542,7 @@ class CastOp : public NDObject {
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 };
 
 enum BinarySOpType {
@@ -580,9 +565,10 @@ class BinaryScalarOp : public NDObject {
   BinaryScalarOp(int op_type, NDObject *input, T scalar);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
-  vSimdInsnID id_;
+  int op_type_;
   T scalar_;
 };
 
@@ -591,6 +577,7 @@ class CompareScalarOp : public FlexOp {
   CompareScalarOp(int op_type, NDObject *input, float scalar);
   void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   int cmp_op_;
@@ -612,9 +599,12 @@ class BinaryOp : public NDObject {
   BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
   void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
-  vSimdInsnID id_;
+  void Dump(std::ostringstream &oss) override;
+
+  static int QueryId(const std::string &op_name);
 
  protected:
+  int op_type_;
   _BinaryNormalizer norm_;
 };
 
@@ -626,6 +616,7 @@ class PowerOp : public FlexOp {
   }
   void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  protected:
   _BinaryNormalizer norm_;
@@ -636,6 +627,7 @@ class CompareOp : public FlexOp {
   CompareOp(int op_type, NDObject *lhs, NDObject *rhs);
   void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  protected:
   int cmp_op_;
@@ -653,6 +645,7 @@ class SelectOp : public FlexOp {
   ~SelectOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   std::vector<NDObject *> stuff_ops_[3];
@@ -666,6 +659,7 @@ class _BroadcastOp : public NDObject {
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
 
  private:
   int64_t EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_width);
@@ -697,15 +691,10 @@ class BroadcastScalarOp : public NDObject {
   : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override {
-    // update nd_ from shape_ref_
-    auto dims = shape_ref_->size;
-    nd_.resize(dims);
-    for (size_t i = 0; i < dims; ++i) {
-      nd_[i] = shape_ref_->data[dims - i - 1];
-    }
-  }
+  void Normalize(std::vector<NDObject*> &run_ops) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
+
  private:
   T scalar_;
 };
@@ -720,6 +709,8 @@ class _ReduceOp : public NDObject {
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
+
   void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; tail_dim_ = -1; }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
@@ -761,6 +752,8 @@ class AtomicCumOp : public WrapOp {
     ws_num_ = 1;
   }
   int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
+
  protected:
   const DimArray *round_tile_;
 };
@@ -772,10 +765,9 @@ class AffinePropOp : public NDObject {
   }
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
-  int Emit(VectorKernel &k) override {
-    ASSERT(0);
-    return 0;
-  }
+  int Emit(VectorKernel &k) override;
+  void Dump(std::ostringstream &oss) override;
+
  private:
   NDObject *x_;
   NDObject *y_;
@@ -786,6 +778,7 @@ class CubeOp : public NDObject {
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   ~CubeOp() override;
   int Emit(VectorKernel &k) override { return 0; }
+  void Dump(std::ostringstream &oss) override;
   void CodeGen(vCubeOp *code);
   void NormalizeCube();
   void NormalizeOutput();
@@ -850,6 +843,7 @@ class NDSStore : public NDStore {
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
+  void Dump(std::ostringstream &oss) override;
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
  private:
@@ -863,6 +857,7 @@ class NDSLoad : public NDLoad {
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
+  void Dump(std::ostringstream &oss) override;
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
  private:

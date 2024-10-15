@@ -39,35 +39,34 @@ enum CodeGenTmpl {
 };
 
 struct NDObjectAttr {
-  const char* name;
   CodeGenTmpl cg_tmpl;
   bool inplace_prop;
 };
 
 static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
-  {"LoadDummy",   kGenLoad,  true },
-  {"Load",        kGenLoad,  true },
-  {"PadStore",    kGenStore, false},
-  {"SStore",      kGenStore, true},
-  {"Store",       kGenStore, true },
-  {"Reshape",     kGenSimd1, true },
-  {"Copy",        kGenSimd1, true },
-  {"Unary",       kGenSimd1, true },
-  {"Binary",      kGenSimd2, true },
-  {"Cast",        kGenSimd1, true },
-  {"BinaryS",     kGenSimd1, true },
-  {"BroadcastTo", kGenSimd1, false},
-  {"BroadcastS",  kGenSimd0, true },
-  {"Reduce",      kGenSimd1, false},
-  {"Select",      kGenFlex,  true },
-  {"ElemAny",     kGenSimd1, false},
-  {"RemovePad",   kGenWrap,  true },
-  {"Power",       kGenFlex,  true },
-  {"Compare",     kGenFlex,  true },
-  {"CompareS",    kGenFlex,  true },
-  {"IsFinite16",  kGenFlex,  true },
-  {"AtomicCum",   kGenWrap,  true },
-  {"AffineProp",  kGenNone,  false},
+  {kGenLoad,  true }, // LoadDummy
+  {kGenLoad,  true }, // Load
+  {kGenStore, false}, // PadStore
+  {kGenStore, true }, // SStore
+  {kGenStore, true }, // Store
+  {kGenSimd1, true }, // Reshape
+  {kGenSimd1, true }, // Copy
+  {kGenSimd1, true }, // Unary
+  {kGenSimd2, true }, // Binary
+  {kGenSimd1, true }, // Cast
+  {kGenSimd1, true }, // BinaryS
+  {kGenSimd1, false}, // BroadcastTo
+  {kGenSimd0, true }, // BroadcastS
+  {kGenSimd1, false}, // Reduce
+  {kGenFlex,  true }, // Select
+  {kGenSimd1, false}, // ElemAny
+  {kGenWrap,  true }, // RemovePad
+  {kGenFlex,  true }, // Power
+  {kGenFlex,  true }, // Compare
+  {kGenFlex,  true }, // CompareS
+  {kGenFlex,  true }, // IsFinite16
+  {kGenWrap,  true }, // AtomicCum
+  {kGenNone,  false}, // AffineProp
 };
 
 class CodeGenHelper {
@@ -970,10 +969,8 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     oss << body_indent;
     dump_op(op);
     oss << " = ";
-    if (op->flags_ & OBJ_FLAG_WRAP) {
-      oss << g_obj_attrs[op->RealObjType()].name << ".";
-    }
-    oss << g_obj_attrs[op->GetObjectType()].name << "(";
+    op->Dump(oss);
+    oss << "(";
     if (op->flags_ & OBJ_FLAG_XHS) {
       dump_op(static_cast<FlexOp*>(op)->xhs_);
       oss << ", ";
@@ -1323,6 +1320,12 @@ uint64_t VKernelS::CodeGen() {
   return 0;
 }
 
+void VKernelD::Append(NDObject *obj) {
+  build_ops_.push_back(obj);
+  if (obj->obj_id_ == ObjectType::kReshape) {
+    elim_reshape_ = true;
+  }
+}
 
 void VKernelD::RecordOpRelation() {
   for (auto op : objects_) {
@@ -1400,6 +1403,14 @@ uint64_t VKernelD::CodeGen() {
   DoCodeGen(System::Instance().CoreNum());
   return 0;
 }
+
+VKernelP::~VKernelP() {
+  for (auto k : children_) {
+    delete k;
+  }
+}
+
+void VKernelP::Append(NDObject *obj) { children_.back()->Append(obj); }
 
 uint64_t VKernelP::CodeGen() {
   auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };

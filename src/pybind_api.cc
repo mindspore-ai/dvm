@@ -93,35 +93,6 @@ std::pair<bool, T> GetScalar(const py::object &obj) {
   return {false, (T)0};
 }
 
-static std::unordered_map<std::string, UnaryOpType> unary_map = {{"Abs", UnaryOpType::kAbs},
-                                                                 {"Exp", UnaryOpType::kExp},
-                                                                 {"IsFinite", UnaryOpType::kIsFinite},
-                                                                 {"Log", UnaryOpType::kLog},
-                                                                 {"LogicalNot", UnaryOpType::kLogicalNot},
-                                                                 {"Reciprocal", UnaryOpType::kReciprocal},
-                                                                 {"Sqrt", UnaryOpType::kSqrt},
-                                                                 {"Round", UnaryOpType::kRound},
-                                                                 {"Floor", UnaryOpType::kFloor},
-                                                                 {"Ceil", UnaryOpType::kCeil},
-                                                                 {"Trunc", UnaryOpType::kTrunc}};
-
-static std::unordered_map<std::string, BinaryOpType> binary_map = {{"Add", BinaryOpType::kAdd},
-                                                                   {"Sub", BinaryOpType::kSub},
-                                                                   {"Mul", BinaryOpType::kMul},
-                                                                   {"Div", BinaryOpType::kDiv},
-                                                                   {"Pow", BinaryOpType::kPow},
-                                                                   {"RealDiv", BinaryOpType::kDiv},
-                                                                   {"Maximum", BinaryOpType::kMaximum},
-                                                                   {"Minimum", BinaryOpType::kMinimum},
-                                                                   {"Equal", BinaryOpType::kEqual},
-                                                                   {"Greater", BinaryOpType::kGreater},
-                                                                   {"GreaterEqual", BinaryOpType::kGreaterEqual},
-                                                                   {"Less", BinaryOpType::kLess},
-                                                                   {"LessEqual", BinaryOpType::kLessEqual},
-                                                                   {"NotEqual", BinaryOpType::kNotEqual},
-                                                                   {"LogicalAnd", BinaryOpType::kLogicalAnd},
-                                                                   {"LogicalOr", BinaryOpType::kLogicalOr}};
-
 static std::unordered_map<std::string, KernelType> kernel_type_map = {
   {"", kStaticShape}, {"static", kStaticShape}, {"dyn", kDynShape}, {"mix", kStaticMix},
   {"parallel", kStaticParallel}, {"stages", kStaticStages},  {"eager", kEager}};
@@ -197,12 +168,13 @@ ShapeRef* KernelPy::GetShapeRef(const py::object &shape) {
 }
 
 py::object KernelPy::Unary(const std::string &op_name, const py::object &input) {
-  if (unary_map.count(op_name) == 0) {
+  int op_type = UnaryOp::QueryId(op_name);
+  if (op_type < 0) {
     std::string err_msg = "Could not find op: " + op_name;
     throw std::invalid_argument(err_msg);
   }
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.Unary(unary_map[op_name], in_obj);
+  auto op = kernel_.Unary(op_type, in_obj);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -229,7 +201,8 @@ py::object KernelPy::Reduce(const std::string &type, const py::object &input, co
 }
 
 py::object KernelPy::Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs) {
-  if (binary_map.count(op_name) == 0) {
+  int op_type = BinaryOp::QueryId(op_name);
+  if (op_type < 0) {
     std::string err_msg = "Could not find op: " + op_name;
     throw std::invalid_argument(err_msg);
   }
@@ -239,21 +212,21 @@ py::object KernelPy::Binary(const std::string &op_name, const py::object &lhs, c
   if (lhs_is_scalar) {
     auto input2 = rhs.cast<NDOpPyPtr>()->Get();
     if (kernel_.GetDType(input2) == dvm::kInt32) {
-      op = kernel_.Binary(binary_map[op_name], GetScalar<int>(lhs).second, input2);
+      op = kernel_.Binary(op_type, GetScalar<int>(lhs).second, input2);
     } else {
-      op = kernel_.Binary(binary_map[op_name], lhs_scalar, input2);
+      op = kernel_.Binary(op_type, lhs_scalar, input2);
     }
   } else if (rhs_is_scalar) {
     auto input1 = lhs.cast<NDOpPyPtr>()->Get();
     if (kernel_.GetDType(input1) == dvm::kInt32) {
-      op = kernel_.Binary(binary_map[op_name], input1, GetScalar<int>(rhs).second);
+      op = kernel_.Binary(op_type, input1, GetScalar<int>(rhs).second);
     } else {
-      op = kernel_.Binary(binary_map[op_name], input1, rhs_scalar);
+      op = kernel_.Binary(op_type, input1, rhs_scalar);
     }
   } else {
     auto input1 = lhs.cast<NDOpPyPtr>()->Get();
     auto input2 = rhs.cast<NDOpPyPtr>()->Get();
-    op = kernel_.Binary(binary_map[op_name], input1, input2);
+    op = kernel_.Binary(op_type, input1, input2);
   }
   return py::cast(std::make_shared<NDObjectPy>(op));
 }

@@ -36,31 +36,58 @@ constexpr int64_t ALIGN_256 = 256;
 constexpr int64_t ALIGN_128 = 128;
 constexpr int64_t ALIGN_32 = 32;
 
-static const vSimdInsnID binary_id_list[][kTypeEnd] = {
-  // must keep consistent order with BinaryOpType
-  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE},
-  {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32},
-  {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32},
-  {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32},
-  {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE},
-  {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE},  // power: individual implement
-  {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
-  {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-  {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-  {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
+struct InsnIdTable {
+  const char *name;
+  vSimdInsnID ids[kTypeEnd];
+};
 
-static const vSimdInsnID binarys_id_list[][kTypeEnd] = {
+static const InsnIdTable unary_id_list[kUnaryOpEnd] = {
+  // must keep consistent order with UnaryOpType
+  {"Sqrt",       {V_NONE, V_SQRT_FP16, V_NONE, V_SQRT, V_NONE}},
+  {"Abs",        {V_NONE, V_ABS_FP16, V_NONE, V_ABS, V_NONE}},
+  {"Log",        {V_NONE, V_LOG_FP16, V_NONE, V_LOG, V_NONE}},
+  {"Exp",        {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE}},
+  {"Reciprocal", {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE}},
+  {"IsFinite",   {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE}},
+  {"LogicalNot", {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE}},
+  {"Round",      {V_NONE, V_ROUND_FP16, V_NONE, V_ROUND, V_NONE}},
+  {"Floor",      {V_NONE, V_FLOOR_FP16, V_NONE, V_FLOOR, V_NONE}},
+  {"Ceil",       {V_NONE, V_CEIL_FP16, V_NONE, V_CEIL, V_NONE}},
+  {"Trunc",      {V_NONE, V_TRUNC_FP16, V_NONE, V_TRUNC, V_NONE}}
+};
+
+static const InsnIdTable binary_id_list[] = {
+  // must keep consistent order with BinaryOpType
+  {"Equal",      {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"NotEqual",   {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"Greater",    {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"GreaterEqual",{V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"Less",       {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"LessEqual",  {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"Add",        {V_NONE, V_ADD_FP16, V_NONE, V_ADD, V_ADD_INT32}},
+  {"Sub",        {V_NONE, V_SUB_FP16, V_NONE, V_SUB, V_SUB_INT32}},
+  {"Mul",        {V_NONE, V_MUL_FP16, V_NONE, V_MUL, V_MUL_INT32}},
+  {"Div",        {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE}},
+  {"Pow",        {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},  // power: individual implement
+  {"Maximum",    {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}},
+  {"Minimum",    {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32}},
+  {"LogicalAnd", {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32}},
+  {"LogicalOr",  {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}}
+};
+
+static const InsnIdTable binarys_id_list[] = {
   // must keep consistent order with BinarySOpType
-  {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},
-  {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},
-  {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE},
-  {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32}, {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32},
-  {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32}, {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}};
+  {"Equal",       {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
+  {"NotEqual",    {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
+  {"Greater",     {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
+  {"GreaterEqual",{V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
+  {"Less",        {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
+  {"LessEqual",   {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
+  {"Add",         {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32}},
+  {"Mul",         {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32}},
+  {"Maximum",     {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32}},
+  {"Minimum",     {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}}
+};
 
 static const vSimdInsnID cast_id_list[][kTypeEnd] = {
   {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_BOOL
@@ -221,9 +248,17 @@ void NDObject::UpdateStride(uint64_t simd_width) {
   }
 }
 
+void NDObject::Dump(std::ostringstream &oss) {
+  oss << "NDObject";
+}
+
 int NDLoadDummy::Emit(VectorKernel &k) {
   *insn_ = vMakeHead(V_LOAD_DUMMY, 0, 1, V_PIPE_LOAD);
   return 1;
+}
+
+void NDLoadDummy::Dump(std::ostringstream &oss) {
+  oss << "LoadDummy";
 }
 
 void NDLoad::Tile(const TileParam &tp) {
@@ -302,6 +337,10 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   round_tile_.resize(0);
 }
 
+void NDLoad::Dump(std::ostringstream &oss) {
+  oss << "Load";
+}
+
 void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   auto size = lhs_->shape_ref_->size;
   shape_.Resize(size);
@@ -349,6 +388,10 @@ int NDPadStore::Emit(VectorKernel &k) {
   }
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
   return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
+}
+
+void NDPadStore::Dump(std::ostringstream &oss) {
+  oss << "PadLoad";
 }
 
 void NDSLoad::AlignProp(PropRange &range) {
@@ -439,6 +482,19 @@ int NDSLoad::Emit(VectorKernel &k) {
   }
 }
 
+void NDSLoad::Dump(std::ostringstream &oss) {
+  oss << "SLoad";
+}
+
+void NDSStore::Dump(std::ostringstream &oss) {
+  oss << "SStore";
+}
+
+void NDSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
+  ASSERT(src_ref_->size <= 3);
+  NDLoad::Normalize(run_ops);
+}
+
 void NDSliceLoad::AlignProp(PropRange &range) {
   range.depth = 1;
 }
@@ -496,6 +552,10 @@ int NDSliceLoad::Emit(VectorKernel &k) {
   return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op);
 }
 
+void NDSliceLoad::Dump(std::ostringstream &oss) {
+  oss << "SliceLoad";
+}
+
 void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(std::all_of(step_ref_->data, step_ref_->data + step_ref_->size, [](int64_t i) { return i == 1; }));
   shape_.Resize(src_ref_->size);
@@ -506,6 +566,10 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   }
   size_ref_ = shape_ref_;
   NDSliceLoad::Normalize(run_ops);
+}
+
+void NDStridedSliceLoad::Dump(std::ostringstream &oss) {
+  oss << "StridedSliceLoad";
 }
 
 void NDStore::Normalize(std::vector<NDObject*> &run_ops) {
@@ -652,8 +716,46 @@ int NDStore::Emit(VectorKernel &k) {
   }
 }
 
+void NDStore::Dump(std::ostringstream &oss) {
+  oss << "Store";
+}
+
+WrapOp::WrapOp(NDObject *inner, ObjectType wrap_id)
+  : FlexOp(inner->lhs_, inner->rhs_, inner->type_id_, inner->obj_id_), inner_(inner), wrap_id_(wrap_id) {
+  shape_ref_ = inner->shape_ref_;
+  if (inner->flags_ & OBJ_FLAG_XHS) {
+    SetXhs(static_cast<FlexOp*>(inner)->xhs_);
+  }
+  ws_num_ = 1; // for inner_xbuf_
+  if (inner->flags_ & OBJ_FLAG_WORKSPACE) {
+    ws_num_ += static_cast<FlexOp*>(inner)->ws_num_;
+  }
+  ASSERT(!(flags_ & OBJ_FLAG_WRAP));
+  flags_ |= OBJ_FLAG_WRAP;
+}
+
+void WrapOp::Normalize(std::vector<NDObject*> &run_ops) {
+  inner_->Normalize(run_ops);
+  nd_ = inner_->nd_;
+  lhs_ = inner_->lhs_;
+  rhs_ = inner_->rhs_;
+  if (inner_->flags_ & OBJ_FLAG_XHS) {
+    xhs_ = static_cast<FlexOp*>(inner_)->xhs_;
+  }
+}
+void WrapOp::Tile(const TileParam &tp) {
+  inner_->Tile(tp);
+  nd_ = inner_->nd_;
+}
+void WrapOp::AlignProp(PropRange &range) { inner_->AlignProp(range); }
+void WrapOp::FoldProp(PropRange &range) { inner_->FoldProp(range); }
+
 int CopyOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
+}
+
+void CopyOp::Dump(std::ostringstream &oss) {
+  oss << "Copy";
 }
 
 void ReshapeOp::Normalize(std::vector<NDObject*> &run_ops) {
@@ -701,23 +803,12 @@ int ReshapeOp::Emit(VectorKernel &k) {
   return vReshape::Encode(insn_, (type_id_ == kFloat32 || type_id_ == kInt32) ? V_RESHAPE_B32 : V_RESHAPE_B32, op);
 }
 
-UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kUnary) {
-  static const vSimdInsnID id_list[][kTypeEnd] = {
-    // must keep consistent order with UnaryOpType
-    {V_NONE, V_SQRT_FP16, V_NONE, V_SQRT, V_NONE},
-    {V_NONE, V_ABS_FP16, V_NONE, V_ABS, V_NONE},
-    {V_NONE, V_LOG_FP16, V_NONE, V_LOG, V_NONE},
-    {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE},
-    {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE},
-    {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE},
-    {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE},
-    {V_NONE, V_ROUND_FP16, V_NONE, V_ROUND, V_NONE},
-    {V_NONE, V_FLOOR_FP16, V_NONE, V_FLOOR, V_NONE},
-    {V_NONE, V_CEIL_FP16, V_NONE, V_CEIL, V_NONE},
-    {V_NONE, V_TRUNC_FP16, V_NONE, V_TRUNC, V_NONE}};
-  id_ = id_list[op_type][type_id_];
-  ASSERT(id_ != V_NONE);
-  shape_ref_ = input->shape_ref_;
+void ReshapeOp::Dump(std::ostringstream &oss) {
+  oss << "Reshape";
+}
+
+UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kUnary), op_type_(op_type) {
+ shape_ref_ = input->shape_ref_;
 }
 
 int UnaryOp::Emit(VectorKernel &k) {
@@ -725,7 +816,20 @@ int UnaryOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  return vUnary::Encode(insn_, id_, op);
+  ASSERT(size_t(op_type_) < sizeof(unary_id_list) / sizeof(InsnIdTable));
+  auto id = unary_id_list[op_type_].ids[type_id_];
+  return vUnary::Encode(insn_, id, op);
+}
+
+void UnaryOp::Dump(std::ostringstream &oss) {
+  oss << unary_id_list[op_type_].name;
+}
+
+int UnaryOp::QueryId(const std::string &op_name) {
+  for (int i = 0; i < static_cast<int>(sizeof(unary_id_list) / sizeof(InsnIdTable)); ++i) {
+    if (op_name == unary_id_list[i].name) return i;
+  }
+  return -1;
 }
 
 int IsFinite16Op::Emit(VectorKernel &k) {
@@ -735,6 +839,10 @@ int IsFinite16Op::Emit(VectorKernel &k) {
   op.xm = wss_[0];
   op.repeat = strides_.back() / k.simd_width_;
   return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
+}
+
+void IsFinite16Op::Dump(std::ostringstream &oss) {
+  oss << "IsFinite";
 }
 
 int AtomicCumOp::Emit(VectorKernel &k) {
@@ -757,6 +865,11 @@ int AtomicCumOp::Emit(VectorKernel &k) {
   return size;
 }
 
+void AtomicCumOp::Dump(std::ostringstream &oss) {
+  oss << "AtomicCum.";
+  inner_->Dump(oss);
+}
+
 int RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
   if (nd_[lead_dim_] == strides_[lead_dim_] || strides_.back() == strides_[lead_dim_]) {
@@ -776,6 +889,17 @@ int RemovePadOp::Emit(VectorKernel &k) {
   size += vRemovePad::Encode(tail_insn_, id_list[type_id_], op);
   *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
   return size;
+}
+
+void RemovePadOp::Dump(std::ostringstream &oss) {
+  oss << "RemovePad.";
+  inner_->Dump(oss);
+}
+
+void ElementAnyOp::Normalize(std::vector<NDObject *> &run_ops) {
+  tail_dim_ = -1;
+  tail_size_ = 0;
+  nd_.resize(lhs_->nd_.size(), 1);
 }
 
 void ElementAnyOp::Tile(const TileParam &tp) {
@@ -812,6 +936,10 @@ int ElementAnyOp::Emit(VectorKernel &k) {
   return size;
 }
 
+void ElementAnyOp::Dump(std::ostringstream &oss) {
+  oss << "ElementAny";
+}
+
 int CastOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
@@ -822,11 +950,13 @@ int CastOp::Emit(VectorKernel &k) {
   return vUnary::Encode(insn_, id, op);
 }
 
+void CastOp::Dump(std::ostringstream &oss) {
+  oss << "Cast";
+}
+
 template <typename T>
 BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
-    : NDObject(input, nullptr, input->type_id_, ObjectType::kBinaryS), scalar_(scalar) {
-  id_ = binarys_id_list[op_type][type_id_];
-  ASSERT(id_ != V_NONE);
+    : NDObject(input, nullptr, input->type_id_, ObjectType::kBinaryS), op_type_(op_type), scalar_(scalar) {
   shape_ref_ = input->shape_ref_;
 }
 
@@ -837,7 +967,14 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
   op.scalar = scalar_;
-  return vBinaryS<T>::Encode(insn_, id_, op);
+  ASSERT(size_t(op_type_) < sizeof(binarys_id_list) / sizeof(InsnIdTable));
+  auto id = binarys_id_list[op_type_].ids[type_id_];
+  return vBinaryS<T>::Encode(insn_, id, op);
+}
+
+template <typename T>
+void BinaryScalarOp<T>::Dump(std::ostringstream &oss) {
+  oss << binarys_id_list[op_type_].name;
 }
 
 template class BinaryScalarOp<float>;
@@ -859,6 +996,10 @@ int CompareScalarOp::Emit(VectorKernel &k) {
   op.ws = wss_[0];
   op.type = cmp_op_;
   return vCompareS::Encode(insn_, type_id_ == kFloat32 ? V_CMPS : V_CMPS_FP16, op);
+}
+
+void CompareScalarOp::Dump(std::ostringstream &oss) {
+  oss << "CompareS";
 }
 
 _BinaryNormalizer::~_BinaryNormalizer() {
@@ -952,15 +1093,7 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject*> &run_op
   }
 }
 
-BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary) {
-  id_ = binary_id_list[op_type][type_id_];
-  ASSERT(id_ != V_NONE);
-  shape_ref_ = &norm_.shape_;
-}
-
-CompareOp::CompareOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
-  ws_num_ = 1;
-  cmp_op_ = op_type;
+BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary), op_type_(op_type) {
   shape_ref_ = &norm_.shape_;
 }
 
@@ -970,7 +1103,26 @@ int BinaryOp::Emit(VectorKernel &k) {
   op.xn = lhs_->xbuf_;
   op.xm = rhs_->xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  return vBinary::Encode(insn_, id_, op);
+  ASSERT(size_t(op_type_) < sizeof(binary_id_list) / sizeof(InsnIdTable));
+  auto id = binary_id_list[op_type_].ids[type_id_];
+  return vBinary::Encode(insn_, id, op);
+}
+
+void BinaryOp::Dump(std::ostringstream &oss) {
+  oss << binary_id_list[op_type_].name;
+}
+
+int BinaryOp::QueryId(const std::string &op_name) {
+  for (int i = 0; i < static_cast<int>(sizeof(binary_id_list) / sizeof(InsnIdTable)); ++i) {
+    if (op_name == binary_id_list[i].name) return i;
+  }
+  return -1;
+}
+
+CompareOp::CompareOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
+  ws_num_ = 1;
+  cmp_op_ = op_type;
+  shape_ref_ = &norm_.shape_;
 }
 
 int CompareOp::Emit(VectorKernel &k) {
@@ -984,6 +1136,10 @@ int CompareOp::Emit(VectorKernel &k) {
   return vCompare::Encode(insn_, type_id_ == kFloat32 ? V_CMP : V_CMP_FP16, op);
 }
 
+void CompareOp::Dump(std::ostringstream &oss) {
+  oss << "Compare";
+}
+
 int PowerOp::Emit(VectorKernel &k) {
   ASSERT(type_id_ == dvm::kFloat32);
   vBinaryWS op;
@@ -994,6 +1150,10 @@ int PowerOp::Emit(VectorKernel &k) {
   op.ws0 = wss_[0];
   op.ws1 = wss_[1];
   return vBinaryWS::Encode(insn_, V_POW, op);
+}
+
+void PowerOp::Dump(std::ostringstream &oss) {
+  oss << "Power";
 }
 
 void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -1064,6 +1224,10 @@ int SelectOp::Emit(VectorKernel &k) {
   op.ws = wss_[0];
   ASSERT(id_list[type_id_] != V_NONE);
   return vSelect::Encode(insn_, id_list[type_id_], op);
+}
+
+void SelectOp::Dump(std::ostringstream &oss) {
+  oss << "Select";
 }
 
 void _BroadcastOp::FoldProp(PropRange &range) {
@@ -1158,6 +1322,10 @@ int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim, in
   return vBroadcastY::Encode(p, V_BROADCAST_Y, op);
 }
 
+void _BroadcastOp::Dump(std::ostringstream &oss) {
+  oss << "Broadcast";
+}
+
 BroadcastOp::~BroadcastOp() {
   for (auto op : stuff_ops_) {
     delete op;
@@ -1195,6 +1363,16 @@ void BroadcastOp::Normalize(std::vector<NDObject*> &run_ops) {
 }
 
 template <typename T>
+void BroadcastScalarOp<T>::Normalize(std::vector<NDObject*> &run_ops) {
+  // update nd_ from shape_ref_
+  auto dims = shape_ref_->size;
+  nd_.resize(dims);
+  for (size_t i = 0; i < dims; ++i) {
+    nd_[i] = shape_ref_->data[dims - i - 1];
+  }
+}
+
+template <typename T>
 int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
   vBroadcastS<T> op;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_S_FP16, V_NONE, V_BROADCAST_S, V_BROADCAST_S_INT32};
@@ -1203,6 +1381,11 @@ int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / k.simd_width_;
   ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastS<T>::Encode(insn_, id_list[type_id_], op);
+}
+
+template <typename T>
+void BroadcastScalarOp<T>::Dump(std::ostringstream &oss) {
+  oss << "BroadcastS";
 }
 
 template class BroadcastScalarOp<float>;
@@ -1303,6 +1486,10 @@ int _ReduceOp::Emit(VectorKernel &k) {
     op.dup_num = strides_.back() / strides_[end_dim_];
     return vReduceY::Encode(insn_, V_RSUM_Y, op);
   }
+}
+
+void _ReduceOp::Dump(std::ostringstream &oss) {
+  oss << "Reduce";
 }
 
 ReduceOp::~ReduceOp() {
@@ -1489,6 +1676,15 @@ void AffinePropOp::AlignProp(PropRange &range) {
   range.depth = new_depth;
 }
 
+int AffinePropOp::Emit(VectorKernel &k) {
+  ASSERT(0);
+  return 0;
+}
+
+void AffinePropOp::Dump(std::ostringstream &oss) {
+  oss << "AffineProp";
+}
+
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
   int n = std::max(lhs->nd_.size(), rhs->nd_.size());
   nd_.resize(n);
@@ -1646,6 +1842,10 @@ void CubeOp::Tile(vCubeOp *op) {
   m0_ = op->m0;
   n0_ = op->n0;
   k0_ = op->k0;
+}
+
+void CubeOp::Dump(std::ostringstream &oss) {
+  oss << "MatMul";
 }
 
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {

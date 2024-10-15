@@ -177,12 +177,7 @@ class VKernelS : public VectorKernel {
 class VKernelD : public VectorKernel {
  public:
   VKernelD() : VectorKernel(KernelType::kDynShape) {}
-  void Append(NDObject *obj) override {
-    build_ops_.push_back(obj);
-    if (obj->obj_id_ == ObjectType::kReshape) {
-      elim_reshape_ = true;
-    }
-  }
+  void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
 
  private:
@@ -199,16 +194,12 @@ class VKernelP : public VKernel {
   VKernelP() : VKernel(KernelType::kStaticParallel) {
     children_.push_back(new VKernelS());
   }
-  ~VKernelP() {
-    for (auto k : children_) {
-      delete k;
-    }
-  }
+  ~VKernelP() override;
   void AppendNext() {
     children_.push_back(new VKernelS());
     EXCEPTION_IF(children_.size() > 8, "total sub-kernels of parallel kernel exceed limit(8)");
   }
-  void Append(NDObject *obj) override { children_.back()->Append(obj); }
+  void Append(NDObject *obj) override;
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 
   uint64_t CodeGen() override;

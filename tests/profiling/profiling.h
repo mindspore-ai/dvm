@@ -62,7 +62,7 @@ struct Tensor {
   Tensor(const std::vector<int64_t> shape) : shape_(shape) {
     int64_t size = this->size() + 512;
     host_ = malloc(size);
-    std::memset(host, 0, size);
+    std::memset(host_, 0, size);
     shape_ref_ = std::make_shared<dvm::ShapeRef>(shape_);
     ASCEND_CALL(rtMalloc(&dev_, size, RT_MEMORY_HBM, 0));
     ASCEND_CALL(rtMemcpy(dev_, size, host_, size, RT_MEMCPY_HOST_TO_DEVICE));

@@ -135,9 +135,7 @@ Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr} {
 
 Kernel::~Kernel() {
   delete kernel_;
-  if (msprof_helper_) {
-    delete msprof_helper_;
-  }
+  delete msprof_helper_;
 }
 
 void Kernel::Reset(KernelType type) {
@@ -304,6 +302,9 @@ NDObject* Kernel::Cast(NDObject* input, DType type) {
     {kFloat16, -1, -1, -1, -1},              // V_FLOAT32
     {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
   };
+  if (input->type_id_ == type) {
+    return input->IsLoad() ? Copy(input) : input;
+  }
   auto stuff_type = g_cast_staff_type[input->type_id_][type];
   while (stuff_type != -1) {
     input = new CastOp(input, static_cast<DType>(stuff_type));

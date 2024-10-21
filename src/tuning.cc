@@ -17,7 +17,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <cstring>
+#ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
+#endif
 #include "tuning.h"
 #include "kernel.h"
 #include "ops.h"
@@ -59,6 +61,7 @@ void ManualMatMul::SetTiling(const TuningInfo &info) {
 }
 
 void TunedMatMul::GenTiling(vCubeOp *op) {
+#ifndef VK_SIM_MODEL
   auto &tuning_table = TunedMatMul::GetTuningTable();
   uint64_t key = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
   if (type_id_ == dvm::kFloat32) key |= 4ul;
@@ -95,6 +98,7 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
   core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+#endif
 }
 
 void TunedMatMul::TileV3(vCubeOp *op) {
@@ -163,6 +167,7 @@ void TunedMatMul::TileV3(vCubeOp *op) {
 }
 
 void TunedMatMul::Tuning(const TuningInfo &parameter) {
+#ifndef VK_SIM_MODEL
   matmul_->SetTiling(parameter);
   kernel_->CodeGen();
   float min_us = 1e6;
@@ -195,5 +200,6 @@ void TunedMatMul::Tuning(const TuningInfo &parameter) {
     best_time_ = mean_time;
     best_tuning_ = parameter;
   }
+#endif
 }
 }  // namespace dvm

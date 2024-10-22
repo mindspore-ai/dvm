@@ -92,6 +92,9 @@ class CodeGenHelper {
     }
     auto simd_width = kernel_.simd_width_;
     for (auto op: kernel_.objects_) {
+      if (op->flags_ & OBJ_FLAG_DEAD) {
+        continue;
+      }
       op->UpdateStride(simd_width);
       op->tail_insn_ = op->insn_ = code_ptr;
       switch (g_obj_attrs[op->RealObjType()].cg_tmpl) {
@@ -192,6 +195,9 @@ class CodeGenHelper {
     vl_event.sync_idx = sv_event.sync_idx = static_cast<int>(objects.size());
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
       auto op = *it;
+      if (op->flags_ & OBJ_FLAG_DEAD) {
+        continue;
+      }
       auto pipe = op->Pipe();
       if (pipe == V_PIPE_STORE) {  // STORE -> SIMD
         auto simd = op->lhs_;
@@ -307,8 +313,10 @@ class CodeGenHelper {
     }
     if (op->flags_ & OBJ_FLAG_REUSE_LHS) {
       op->inner_xbuf_ = op->lhs_->xbuf_;
-    } else if (op->flags_ & OBJ_FLAG_REUSE_LHS) {
+      if (op->reuse_dep_) anti_ops[anti_num++] = kernel_.objects_[op->reuse_dep_];
+    } else if (op->flags_ & OBJ_FLAG_REUSE_RHS) {
       op->inner_xbuf_ = op->rhs_->xbuf_;
+      if (op->reuse_dep_) anti_ops[anti_num++] = kernel_.objects_[op->reuse_dep_];
     } else {
       NDObject *anti = nullptr;
       free_wss[free_wss_num++] = op->inner_xbuf_ = AllocDynXBuf(op, &anti);
@@ -1073,6 +1081,9 @@ int VectorKernel::Analyze() {
         objects_[end->reuse_dep_]->reuse_dep_ = op->index_;
         end->reuse_dep_ = 0;
       }
+    } else if (!OP_LIVE(end)) {
+      ASSERT(end->IsLoad());
+      OP_GEN_S(end);
     }
     return false;
   };
@@ -1088,8 +1099,12 @@ int VectorKernel::Analyze() {
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
     if (op->IsSimd()) {
-     int reuse_flag = OP_LIVE_D(op) || (op->flags_ & OBJ_FLAG_WRAP) ? REUSE_READY : REUSE_REJECT;
-     auto kill = op->lhs_;
+      if (!OP_LIVE(op)) {
+        op->flags_ |= OBJ_FLAG_DEAD;
+        continue;
+      }
+      int reuse_flag = OP_LIVE_D(op) || (op->flags_ & OBJ_FLAG_WRAP) ? REUSE_READY : REUSE_REJECT;
+      auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
         if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
           op->flags_ |= OBJ_FLAG_REUSE_LHS;
@@ -1136,6 +1151,10 @@ int VectorKernel::Analyze() {
         cur_live--;
       }
       OP_KILL(op);
+    } else if (op->IsLoad()) {
+      if (!OP_LIVE(op)) {
+        op->flags_ |= OBJ_FLAG_DEAD;
+      }
     }
   }
   return live_peak;

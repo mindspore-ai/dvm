@@ -97,3 +97,19 @@ def test_eager_disconnect(shape1, shape2):
     t.store_expect(b, x2 + x3)
     t.run_check()
     t.reset_eager()
+
+def test_eager_dead_node():
+    t = Tester("eager")
+    g0 = np.full([32, 512], 0.1, np.float32)
+    g1 = np.full([32, 512], 0.2, np.float32)
+    g2 = np.full([32, 512], 0.3, np.float32)
+    x0 = t.load(g0)
+    x1 = t.load(g1)
+    x2 = t.binary('Sub', x0, x1) #dead
+    x3 = t.load(g2)
+    x4 = t.binary("Add", x3, 0.1)
+    x5 = t.binary("Mul", x4, 2.0)
+    t.store_expect(x5, (0.3 + 0.1) * 2.0)
+    t.run_check()
+    assert(t.das().count("load.") == 1)
+    t.reset_eager()

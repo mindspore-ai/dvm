@@ -213,6 +213,7 @@ class VectorKernel;
 #define OBJ_FLAG_FREE_RHS   2
 #define OBJ_FLAG_REUSE_LHS  4
 #define OBJ_FLAG_REUSE_RHS  8
+#define OBJ_FLAG_DEAD       16
 
 #define OBJ_FLAG_WORKSPACE  (1u << 16)
 #define OBJ_FLAG_XHS        (2u << 16)
@@ -289,7 +290,9 @@ class NDAccess : public NDObject {
  public:
   NDAccess(uint8_t *gm, NDObject *lhs, DType type_id, ObjectType obj_id) : NDObject(lhs, nullptr, type_id, obj_id), gm_(gm) {}
   void Reloc(void *dst) {
-    *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
+    if (reloc_addr_) {
+      *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
+    }
   }
 
   // stage store

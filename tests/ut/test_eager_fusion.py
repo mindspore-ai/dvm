@@ -31,7 +31,7 @@ def test_eager_split_end():
         x = t.binary("Sub", x, t.load(g2))
         x = t.unary("Sqrt", x)
         t.store_expect(x, expect)
-        t.run_check()
+        assert(t.run_check())
         t.reset_eager()
 
 def test_eager_split_middle():
@@ -53,7 +53,7 @@ def test_eager_split_middle():
         t.store_expect(z, ez)
         y = t.binary("Mul", y, 0.1)
         t.store_expect(y, ey)
-        t.run_check()
+        assert(t.run_check())
         t.reset_eager()
 
 def test_eager_split_join():
@@ -77,7 +77,7 @@ def test_eager_split_join():
         s = t.binary("Add", z, y)
         s = t.binary("Mul", s, 0.1)
         s = t.store_expect(s, es)
-        t.run_check()
+        assert(t.run_check())
         t.reset_eager()
 
 @pytest.mark.parametrize('shape1, shape2', [
@@ -95,7 +95,7 @@ def test_eager_disconnect(shape1, shape2):
     b = t.binary("Add", t.load(x2), t.load(x3))
     t.store_expect(a, x0 + x1)
     t.store_expect(b, x2 + x3)
-    t.run_check()
+    assert(t.run_check())
     t.reset_eager()
 
 def test_eager_dead_node():
@@ -110,6 +110,20 @@ def test_eager_dead_node():
     x4 = t.binary("Add", x3, 0.1)
     x5 = t.binary("Mul", x4, 2.0)
     t.store_expect(x5, (0.3 + 0.1) * 2.0)
-    t.run_check()
+    assert(t.run_check())
     assert(t.das().count("load.") == 1)
     t.reset_eager()
+
+def test_eager_split_load():
+    t = Tester("eager")
+    g0 = np.random.normal(0, 1, (4, 32)).astype(np.float32)
+    g1 = np.random.normal(0, 1, [10, 4, 32]).astype(np.float32)
+    g2 = np.random.normal(0, 1, [12, 4, 32]).astype(np.float32)
+    x0 = t.load(g0)
+    x1 = t.load(g1)
+    x2 = t.load(g2)
+    x3 = t.binary("Add", x0, x1)
+    x4 = t.binary("Add", x0, x2)
+    t.store_expect(x3, g0 + g1)
+    t.store_expect(x4, g0 + g2)
+    assert(t.run_check())

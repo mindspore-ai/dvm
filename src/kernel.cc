@@ -1098,11 +1098,11 @@ int VectorKernel::Analyze() {
   }
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
+    if (!OP_LIVE(op)) {
+      op->flags_ |= OBJ_FLAG_DEAD;
+      continue;
+    }
     if (op->IsSimd()) {
-      if (!OP_LIVE(op)) {
-        op->flags_ |= OBJ_FLAG_DEAD;
-        continue;
-      }
       int reuse_flag = OP_LIVE_D(op) || (op->flags_ & OBJ_FLAG_WRAP) ? REUSE_READY : REUSE_REJECT;
       auto kill = op->lhs_;
       if (kill && LivenessEnd(op, kill)) {
@@ -1151,10 +1151,6 @@ int VectorKernel::Analyze() {
         cur_live--;
       }
       OP_KILL(op);
-    } else if (op->IsLoad()) {
-      if (!OP_LIVE(op)) {
-        op->flags_ |= OBJ_FLAG_DEAD;
-      }
     }
   }
   return live_peak;
@@ -2089,7 +2085,7 @@ NDObject* VKernelE::Exchange(EagerVector *kernel, NDObject *input, int input_k) 
   if (input->IsLoad()) {
     auto ac = static_cast<NDAccess*>(input);
     auto load = new NDLoad(ac->gm_, ac->shape_ref_, ac->type_id_);
-    SetStore(load, GetStore(input));
+    SetStore(load, input);
     load->Normalize(kernel->objects_);
     kernel->EagerVector::Append(load);
     if (ac->gm_ == nullptr) {
@@ -2209,7 +2205,7 @@ void VKernelE::Append(NDObject *obj) {
             }
           }
         }
-        SetKernel(input, fuse_idx);
+        SetKernel(new_input, fuse_idx);
       }
     }
   };

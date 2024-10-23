@@ -390,7 +390,10 @@ void KernelPy::CodeGen(const py::object &pass_names) {
   int64_t begin, end;
   if (kernel_.GetImpl()->KType() == kEager) {
     std::vector<RelocEntry> relocs;
-    relocs.reserve(stores_.size());
+    relocs.reserve(loads_.size() + stores_.size());
+    for (auto &it : loads_) {
+      relocs.emplace_back(it.first, it.second.dev);
+    }
     for (auto &it : stores_) {
       auto op = it.first;
       auto &info = it.second;
@@ -534,7 +537,6 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   size_t size = buf.itemsize  * buf.size;
   ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
   ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
-  op->gm_ = reinterpret_cast<uint8_t*>(info.dev);
   if (kernel_.GetImpl()->KType() == kDynShape) {
     info.shape.resize(buf.ndim);
     for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {

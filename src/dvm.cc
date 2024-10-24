@@ -303,7 +303,7 @@ NDObject* Kernel::Cast(NDObject* input, DType type) {
     {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
   };
   if (input->type_id_ == type) {
-    return input->IsLoad() ? Copy(input) : input;
+    return input;
   }
   auto stuff_type = g_cast_staff_type[input->type_id_][type];
   while (stuff_type != -1) {
@@ -371,6 +371,9 @@ NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keep
 }
 
 NDObject* Kernel::Store(void *addr, NDObject* input) {
+  if (input->IsLoad()) {
+    input = Copy(input);
+  }
   auto ktype = kernel_->KType();
   if (ktype == kEager) {
     if (auto store = VKernelE::GetStore(input)) {

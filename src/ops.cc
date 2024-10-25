@@ -974,7 +974,7 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
 
 template <typename T>
 void BinaryScalarOp<T>::Dump(std::ostringstream &oss) {
-  oss << binarys_id_list[op_type_].name;
+  oss << binarys_id_list[op_type_].name << "<" << scalar_ << ">";
 }
 
 template class BinaryScalarOp<float>;
@@ -999,7 +999,7 @@ int CompareScalarOp::Emit(VectorKernel &k) {
 }
 
 void CompareScalarOp::Dump(std::ostringstream &oss) {
-  oss << "CompareS";
+  oss << "CompareS<" << cmp_op_ << ", " << scalar_ << ">";
 }
 
 _BinaryNormalizer::~_BinaryNormalizer() {
@@ -1137,7 +1137,7 @@ int CompareOp::Emit(VectorKernel &k) {
 }
 
 void CompareOp::Dump(std::ostringstream &oss) {
-  oss << "Compare";
+  oss << "Compare<" << cmp_op_ << ">";
 }
 
 int PowerOp::Emit(VectorKernel &k) {
@@ -1385,7 +1385,7 @@ int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
 
 template <typename T>
 void BroadcastScalarOp<T>::Dump(std::ostringstream &oss) {
-  oss << "BroadcastS";
+  oss << "BroadcastS<" << scalar_ << ">";
 }
 
 template class BroadcastScalarOp<float>;

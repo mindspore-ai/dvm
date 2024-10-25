@@ -894,6 +894,58 @@ class ShapeTiling {
   int64_t core_limit_;
 };
 
+class DumpRefHelper {
+ public:
+  DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}
+  void Dump(NDObject *op) {
+    int idx = idx_++;
+    idx_map_[op] = idx;
+    auto dump_var = [this](NDObject *obj) {
+      if (obj == nullptr) {
+        oss_ << "%?[]";
+	return;
+      }
+      oss_ << "%" << idx_map_[obj] << "[";
+      if (obj->shape_ref_) {
+        auto shape = obj->shape_ref_;
+        if (shape->size > 0) {
+          for (size_t i = 0; i < shape->size - 1; ++i) {
+            oss_ << shape->data[i] << ",";
+          }
+          oss_ << shape->data[shape->size - 1];
+        }
+      }
+      oss_ << "]<" << DTYPE_NAMES[obj->type_id_] << ">";
+    };
+    dump_var(op);
+    oss_ << " = ";
+    op->Dump(oss_);
+    oss_ << "(";
+    if (op->lhs_) {
+      dump_var(GetInput(op->lhs_));
+      if (op->rhs_) {
+        oss_ << ", ";
+        dump_var(GetInput(op->rhs_));
+        if (op->flags_ & OBJ_FLAG_XHS) {
+          oss_ << ", ";
+          dump_var(GetInput(static_cast<FlexOp*>(op)->xhs_));
+        }
+      }
+    }
+    oss_ << ")";
+  }
+  virtual NDObject *GetInput(NDObject *input) {
+    while (input && idx_map_.count(input) == 0) {
+      input = input->lhs_;
+    }
+    return input;
+  }
+ protected:
+  std::ostringstream &oss_;
+  int idx_{0};
+  std::unordered_map<NDObject *, int> idx_map_;
+};
+
 std::string& VKernel::DisAssemble() {
   std::ostringstream oss;
   code_.DisAssemble(oss);
@@ -954,11 +1006,18 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
   helper.Generate();
 }
 
-void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   if (code_.data_ == nullptr) {
-    for (size_t i = 0; i < objects_.size(); ++i) {
-      objects_[i]->index_ = i;
+    DumpRefHelper helper(oss);
+    oss << indent << "rgraph.vec() {" << std::endl;
+    std::string body_indent = indent + "  ";
+    for (auto op : build_ops_) {
+      oss << body_indent;
+      helper.Dump(op);
+      oss << std::endl;
     }
+    oss << indent << "}";
+    return;
   }
   auto dump_op = [&oss](NDObject *op) {
     oss << "%" << op->index_<< "[";
@@ -979,15 +1038,15 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     oss << " = ";
     op->Dump(oss);
     oss << "(";
-    if (op->flags_ & OBJ_FLAG_XHS) {
-      dump_op(static_cast<FlexOp*>(op)->xhs_);
-      oss << ", ";
-    }
     if (op->lhs_) {
       dump_op(op->lhs_);
       if (op->rhs_) {
         oss << ", ";
         dump_op(op->rhs_);
+        if (op->flags_ & OBJ_FLAG_XHS) {
+          dump_op(static_cast<FlexOp*>(op)->xhs_);
+          oss << ", ";
+        }
       }
     }
     oss << ") // stride=[";
@@ -996,14 +1055,6 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
         oss << op->strides_[i] << ",";
       }
       oss << op->strides_.back();
-    }
-    if (op->shape_ref_ != nullptr && op->shape_ref_->size > 0) {
-      oss << "], shape_ref=[";
-      auto last_idx = op->shape_ref_->size - 1;
-      for (size_t i = 0; i < last_idx; ++i) {
-        oss << op->shape_ref_->data[i] << ",";
-      }
-      oss << op->shape_ref_->data[last_idx];
     }
     oss << "]" << std::endl;
   }
@@ -1489,11 +1540,11 @@ uint64_t VKernelP::CodeGen() {
   return 0;
 }
 
-void VKernelP::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+void VKernelP::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "vgraph.parallel() {" << std::endl;
   std::string body_indent = indent + "  ";
   for (auto k : children_) {
-    k->DumpKernel(oss, body_indent);
+    k->Dump(oss, body_indent);
     oss << std::endl;
   }
   oss << indent << "}";
@@ -1764,7 +1815,7 @@ uint64_t MixKernel::CodeGen() {
   return AlignCodeGen();
 }
 
-void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   auto dump_nd = [&oss](const DimArray &nd) {
     oss << "[";
     if (!nd.empty()) {
@@ -1787,7 +1838,7 @@ void MixKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   oss << ")\n";
   if (post_fusion_) {
     oss << body_indent << "// post_fusion" << std::endl;
-    post_fusion_->DumpKernel(oss, body_indent);
+    post_fusion_->Dump(oss, body_indent);
     oss << std::endl;
   }
   oss << indent << "}";
@@ -1959,14 +2010,14 @@ uint64_t StagesKernel::AllocWorkspace() {
   return workspace_size;
 }
 
-void StagesKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
+void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "vgraph.stages() {\n";
   int stage_idx = 0;
   std::string body_indent = indent + "  ";
   for (auto &s : stages_) {
     oss << body_indent << "// stage " << stage_idx << std::endl;
     stage_idx++;
-    s->kernel->DumpKernel(oss, body_indent);
+    s->kernel->Dump(oss, body_indent);
     oss << std::endl;
   }
   oss << indent << "}";
@@ -2259,11 +2310,56 @@ uint64_t VKernelE::CodeGen() {
   return 0;
 }
 
-void VKernelE::DumpKernel(std::ostringstream &oss, const std::string &indent) {
-  for (int i = 0; i < kernel_used_; ++i) {
-    oss << "// eager " << i << std::endl;
-    kernels_[i]->DumpKernel(oss, indent);
-    oss << std::endl;
+class EagerDumpRef : public DumpRefHelper {
+ public:
+   EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
+   virtual NDObject *GetInput(NDObject *input) {
+    while (input && idx_map_.count(input) == 0) {
+      if (input->IsLoad()) {
+        auto acc = VKernelE::GetStore(input);
+        if (acc) {
+          if (idx_map_.count(acc)) return acc;
+          input = acc->lhs_;
+          continue;
+        }
+      }
+      input = input->lhs_;
+    }
+    return input;
+  }
+};
+
+void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (kernel_used_ == 0)  return;
+  bool codegen = true;
+  for (auto op : kernels_.front()->objects_) {
+    if (op->IsLoad() && !(op->flags_ & OBJ_FLAG_DEAD) && GetStore(op) == nullptr) {
+      codegen = false;
+    }
+  }
+  if (codegen) {
+    oss << "vgraph.eager() {" << std::endl;
+    std::string body_indent = indent + "  ";
+    for (int i = 0; i < kernel_used_; ++i) {
+      oss << body_indent << "// eager " << i << std::endl;
+      kernels_[i]->Dump(oss, body_indent);
+      oss << std::endl;
+    }
+    oss << "}";
+  } else {
+    EagerDumpRef helper(oss);
+    oss << "rgraph.eager() {" << std::endl;
+    std::string body_indent = indent + "  ";
+    for (int i = 0; i < kernel_used_; ++i) {
+      for (auto op : kernels_[i]->objects_) {
+        if (op->flags_ & OBJ_FLAG_EAGER) {
+          oss << body_indent;
+          helper.Dump(op);
+          oss << std::endl;
+        }
+      }
+    }
+    oss << "}";
   }
 }
 

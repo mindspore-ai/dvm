@@ -82,11 +82,11 @@ class VKernel {
 
   virtual void Append(NDObject *obj) = 0;
   virtual uint64_t CodeGen() = 0;
-  virtual void DumpKernel(std::ostringstream &oss, const std::string &indent) = 0;
+  virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
 
   std::string& DumpGraph() {
     std::ostringstream oss;
-    DumpKernel(oss, "");
+    Dump(oss, "");
     dump_str_ = oss.str();
     return dump_str_;
   }
@@ -112,7 +112,7 @@ class VectorKernel : public VKernel {
   VectorKernel(KernelType ktype) : VKernel(ktype) {}
   virtual ~VectorKernel();
 
-  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
   void CollectMetrics(Metrics &metrics) const;
 
   void Reserve(size_t size) {
@@ -203,7 +203,7 @@ class VKernelP : public VKernel {
   void Reserve(size_t size) { children_.back()->Reserve(size); }
 
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
   std::vector<VKernelS*> children_;
@@ -216,7 +216,7 @@ class MixKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
   void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
@@ -273,7 +273,7 @@ class StagesKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
   uint64_t AllocWorkspace();
@@ -296,7 +296,7 @@ class VKernelE : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void DumpKernel(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
   std::string& DisAssemble() override;
 
   void Launch(void *stream) {
@@ -321,8 +321,8 @@ class VKernelE : public VKernel {
   static int GetKernel(NDObject* obj) { return obj->lead_dim_; }
   static void SetKernel(NDObject* obj, int kernel) { obj->lead_dim_ = kernel; }
   static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t*>(store); }
-  static void SetStoreInplace(NDObject *store, int flag) { store->index_ = flag; }
-  static int GetStoreInplace(NDObject *store) { return store->index_; }
+  static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
+  static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }
   static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 

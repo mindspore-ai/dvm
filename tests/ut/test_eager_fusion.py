@@ -127,3 +127,16 @@ def test_eager_split_load():
     t.store_expect(x3, g0 + g1)
     t.store_expect(x4, g0 + g2)
     assert(t.run_check())
+    t.reset_eager()
+
+def test_eager_split_load_reduce():
+    t = Tester("eager")
+    g0 = np.random.normal(0, 1, (1, 4, 1024)).astype(np.float32)
+    g1 = np.random.normal(0, 1, [1, 1, 1024]).astype(np.float32)
+    g2 = np.random.normal(0, 1, [12, 4, 1024]).astype(np.float32)
+    x0 = t.binary("Add", t.load(g0), t.load(g1))
+    x1 = t.reduce("sum", t.load(g2), (0,), True)
+    t.store_expect(x0, g0 + g1)
+    t.store_expect(x1, np.sum(g2, axis=(0,), keepdims=True))
+    assert(t.run_check())
+    t.reset_eager()

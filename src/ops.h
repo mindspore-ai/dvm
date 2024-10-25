@@ -294,16 +294,6 @@ class NDAccess : public NDObject {
       *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
     }
   }
-
-  // stage store
-  void SetWorkspace(int64_t offset) { gm_ = reinterpret_cast<uint8_t*>(offset); }
-  int64_t GetWorkspace() const { return reinterpret_cast<int64_t>(gm_); }
-  void SetOutputReuse(NDAccess *store) { gm_ = reinterpret_cast<uint8_t*>(store); }
-  NDAccess* GetOutputReuse() const { return reinterpret_cast<NDAccess*>(gm_); }
-  // stage load
-  void SetStageStore(NDAccess* store) { gm_ = reinterpret_cast<uint8_t*>(store); }
-  NDAccess* GetStageStore() const { return reinterpret_cast<NDAccess*>(gm_); }
-
   uint8_t *gm_;
   uint64_t *reloc_addr_{nullptr};
   bool is_stage_{false};

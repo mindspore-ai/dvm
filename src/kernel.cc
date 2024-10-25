@@ -1885,12 +1885,12 @@ uint64_t StagesKernel::CodeGen() {
       if (!op->is_stage_) continue;
       if (op->IsStore()) {
         if (op->xbuf_ == STAGE_FLAG_REUSE) {
-          code_.RelocReuse(op, op->GetOutputReuse());
+          code_.RelocReuse(op, GetOutputReuse(op));
         } else {
-          code_.RelocWorkspace(op, op->GetWorkspace());
+          code_.RelocWorkspace(op, GetWorkspace(op));
         }
       } else {
-        code_.RelocReuse(op, op->GetStageStore());
+        code_.RelocReuse(op, GetStageStore(op));
       }
     }
     if (!code.sub_codes_.empty()) {
@@ -1939,7 +1939,7 @@ uint64_t StagesKernel::AllocWorkspace() {
     // stage buffer gen
     for (auto io : stage->ios) {
       if (io->IsLoad() && io->is_stage_) {
-        auto store = io->GetStageStore();
+        auto store = GetStageStore(io);
         if (!store->is_stage_ || lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == kStaticShape) { // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
@@ -1955,7 +1955,7 @@ uint64_t StagesKernel::AllocWorkspace() {
           });
           if (inplace_out) {
             store->xbuf_ = STAGE_FLAG_REUSE;
-            store->SetOutputReuse(inplace_out->is_stage_ ? inplace_out->GetOutputReuse() : inplace_out);
+            SetOutputReuse(store, inplace_out->is_stage_ ? GetOutputReuse(inplace_out) : inplace_out);
             lives[store] = -1;
             continue;
           }
@@ -2000,7 +2000,7 @@ uint64_t StagesKernel::AllocWorkspace() {
   for (auto &g : groups) {
     for (auto op : g.ops) {
       op->xbuf_ = STAGE_FLAG_WORKSPACE;
-      op->SetWorkspace(workspace_size);
+      SetWorkspace(op, workspace_size);
     }
     for (auto stage : g.wss) {
       stage->ws_offset = workspace_size;
@@ -2037,7 +2037,8 @@ class EagerVector : public VectorKernel {
       int type = obj->type_id_;
       if (type > max_type_) {
         max_type_ = type;
-      } else if (type < min_type_) {
+      }
+      if (type < min_type_) {
         min_type_ = type;
       }
     }
@@ -2105,10 +2106,22 @@ class EagerVector : public VectorKernel {
     return fuse_type;
   }
 
-  void Reset(NDObject *init_dom) {
-    max_type_ = init_dom->type_id_;
-    min_type_ = init_dom->type_id_;
-    dom_ = init_dom;
+  bool ElemwiseCheck(NDObject *op) {
+    ASSERT(dom_ != nullptr);
+    const auto &dom_nd = dom_->nd_;
+    const auto &op_nd = op->nd_;
+    if (dom_nd.size() != op_nd.size()) {
+      return false;
+    }
+    for (size_t i = 0; i < op_nd.size(); ++i) {
+      if (dom_nd[i] != op_nd[i]) return false;
+    }
+    return true;
+  }
+
+  void Reset() {
+    max_type_ = -1;
+    min_type_ = DType::kTypeEnd;
     next_ = nullptr;
     fix_dom_ = false;
     ws_ios_.clear();
@@ -2135,18 +2148,19 @@ VKernelE::~VKernelE() {
   }
 }
 
-NDObject* VKernelE::Exchange(EagerVector *kernel, NDObject *input, int input_k) {
+void VKernelE::Exchange(int fuse_idx, int input_k, NDObject *input, NDObject* &cur_input) {
+  EagerVector *kernel = kernels_[fuse_idx];
   auto input_kernel = kernels_[input_k];
+  NDAccess *load;
   if (input->IsLoad()) {
     auto ac = static_cast<NDAccess*>(input);
-    auto load = new NDLoad(ac->gm_, ac->shape_ref_, ac->type_id_);
+    load = new NDLoad(ac->gm_, ac->shape_ref_, ac->type_id_);
     SetStore(load, input);
     load->Normalize(kernel->objects_);
     kernel->EagerVector::Append(load);
     if (ac->gm_ == nullptr) {
       kernel->ws_ios_.push_back(load);
     }
-    return load;
   } else {
     NDAccess *store = GetStore(input);
     if (store == nullptr) {
@@ -2159,13 +2173,23 @@ NDObject* VKernelE::Exchange(EagerVector *kernel, NDObject *input, int input_k) 
       SetStoreInplace(store, 0);
       SetKernel(store, input_k);
     }
-    auto load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+    load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
     SetStore(load, store);
     load->Normalize(kernel->objects_);
     kernel->EagerVector::Append(load);
     kernel->ws_ios_.push_back(load);
-    return load;
   }
+  if (input == cur_input) {
+    cur_input = load;
+  } else {
+    for (auto op : norm_ops_) {
+      if (op->lhs_ == input) { // stuff op is only one input
+        op->lhs_ = load;
+        break;
+      }
+    }
+  }
+  SetKernel(load, fuse_idx);
 }
 
 void VKernelE::AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op) {
@@ -2189,18 +2213,22 @@ void VKernelE::Append(NDObject *obj) {
     SetStore(obj, nullptr);
     return;
   }
+  auto new_kernel = [this](int &idx) -> EagerVector* {
+    if (kernel_used_ == static_cast<int>(kernels_.size())) {
+      kernels_.push_back(new EagerVector());
+    }
+    idx = kernel_used_;
+    auto k = kernels_[kernel_used_++];
+    k->Reset();
+    return k;
+  };
   if (obj->IsStore()) {
     auto prod_idx = GetKernel(lhs);
     EagerVector *prod_k;
     if (prod_idx >= 0) {
       prod_k = kernels_[prod_idx];
     } else {
-      if (kernel_used_ == static_cast<int>(kernels_.size())) {
-        kernels_.push_back(new EagerVector());
-      }
-      prod_idx = kernel_used_;
-      prod_k = kernels_[kernel_used_++];
-      prod_k->Reset(lhs);
+      prod_k = new_kernel(prod_idx);
       AppendPending(prod_k, prod_idx, lhs);
     }
     prod_k->EagerVector::Append(obj);
@@ -2210,64 +2238,55 @@ void VKernelE::Append(NDObject *obj) {
     return;
   }
   int fuse_idx = GetKernel(lhs);
-  if (rhs) {
-    if (int r_idx = GetKernel(rhs); r_idx > fuse_idx) {
-      fuse_idx = r_idx;
+  EagerVector *kernel = nullptr;
+  if (obj->obj_id_ == ObjectType::kReduce) {
+    if (fuse_idx >= 0 && kernels_[fuse_idx]->ElemwiseCheck(obj->lhs_)) {
+      kernel = kernels_[fuse_idx];
+    } else if ((fuse_idx < kernel_used_ - 1) && kernels_[kernel_used_ - 1]->ElemwiseCheck(obj->lhs_)) {
+      fuse_idx = kernel_used_ - 1;
+      kernel = kernels_[fuse_idx];
+    } else {
+      kernel = new_kernel(fuse_idx);
     }
-  }
-  EagerVector *kernel;
-  int ftype = EagerVector::kFuseNone;
-  auto fuse_check = [](NDObject *op) -> bool { return op->obj_id_ != ObjectType::kReduce; };
-  if ((fuse_idx >= 0) && (GetKernel(lhs) != fuse_idx || fuse_check(lhs)) &&
-      (rhs == nullptr || GetKernel(rhs) != fuse_idx || fuse_check(rhs))) {
-    kernel = kernels_[fuse_idx];
-    ftype = kernel->AffineCheck(obj);
-  }
-  if (ftype == EagerVector::kFuseNone && fuse_idx < kernel_used_ - 1) {
-    fuse_idx = kernel_used_ - 1;
-    kernel = kernels_[fuse_idx];
-    ftype = kernel->AffineCheck(obj);
-    if (ftype == EagerVector::kFuseInflate || ftype == EagerVector::kFuseDeflate) {
-      kernel->EagerVector::Append(new AffinePropOp(obj, kernel->dom_));
+    PrepareInput(fuse_idx, lhs, obj->lhs_);
+    kernel->dom_ = obj->lhs_;
+    kernel->fix_dom_ = true;
+  } else {
+    int ftype = EagerVector::kFuseNone;
+    auto fuse_check = [](NDObject *op) -> bool { return op->obj_id_ != ObjectType::kReduce; };
+    if (!rhs || GetKernel(rhs) < fuse_idx) {
+      if ((fuse_idx >= 0) && fuse_check(lhs)) {
+        kernel = kernels_[fuse_idx];
+        ftype = kernel->AffineCheck(obj);
+      }
+    } else {
+      fuse_idx = GetKernel(rhs);
+      if ((fuse_idx >= 0) && fuse_check(rhs) && (GetKernel(lhs) != fuse_idx || fuse_check(lhs))) {
+        kernel = kernels_[fuse_idx];
+        ftype = kernel->AffineCheck(obj);
+      }
     }
-  }
-  if (ftype == EagerVector::kFuseNone) {
-    if (kernel_used_ == static_cast<int>(kernels_.size())) {
-      kernels_.push_back(new EagerVector());
+    if (ftype == EagerVector::kFuseNone && fuse_idx < kernel_used_ - 1) {
+      fuse_idx = kernel_used_ - 1;
+      kernel = kernels_[fuse_idx];
+      ftype = kernel->AffineCheck(obj);
+      if (ftype == EagerVector::kFuseInflate || ftype == EagerVector::kFuseDeflate) {
+        kernel->EagerVector::Append(new AffinePropOp(obj, kernel->dom_));
+      }
     }
-    fuse_idx = kernel_used_;
-    kernel = kernels_[kernel_used_++];
-    kernel->Reset(obj);
-  } else if (ftype == EagerVector::kFuseInflate) {
-    kernel->dom_ = obj;
+    if (ftype == EagerVector::kFuseNone) {
+      kernel = new_kernel(fuse_idx);
+      kernel->dom_ = obj;
+    } else if (ftype == EagerVector::kFuseInflate) {
+      kernel->dom_ = obj;
+    }
+    PrepareInput(fuse_idx, lhs, obj->lhs_);
+    if (rhs) {
+      PrepareInput(fuse_idx, rhs, obj->rhs_);
+    }
   }
   SetKernel(obj, fuse_idx);
   SetStore(obj, nullptr);
-  auto prepare_input = [this, kernel, fuse_idx](NDObject* input, NDObject* &cur_input) {
-    auto input_k = GetKernel(input);
-    if (input_k != fuse_idx) {
-      if (input_k == -1) {
-        AppendPending(kernel, fuse_idx, input);
-      } else {
-        auto new_input = Exchange(kernel, input, input_k);
-        if (input == cur_input) {
-          cur_input = new_input;
-        } else {
-          for (auto op : norm_ops_) {
-            if (op->lhs_ == input) { // stuff op is only one input
-              op->lhs_ = new_input;
-              break;
-            }
-          }
-        }
-        SetKernel(new_input, fuse_idx);
-      }
-    }
-  };
-  prepare_input(lhs, obj->lhs_);
-  if (rhs) {
-    prepare_input(rhs, obj->rhs_);
-  }
   if (!norm_ops_.empty()) {
     kernel->AppendStuff(norm_ops_);
     norm_ops_.clear();

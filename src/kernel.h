@@ -264,7 +264,7 @@ class StagesKernel : public VKernel {
 
   void StageLoad(NDAccess *load, NDAccess *store) {
     load->is_stage_ = true;
-    load->SetStageStore(store);
+    SetStageStore(load, store);
     stages_.back()->kernel->Append(load);
     stages_.back()->ios.push_back(load);
   }
@@ -276,6 +276,13 @@ class StagesKernel : public VKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
+  static void SetWorkspace(NDAccess *op, int64_t offset) { op->gm_ = reinterpret_cast<uint8_t*>(offset); }
+  static int64_t GetWorkspace(NDAccess *op) { return reinterpret_cast<int64_t>(op->gm_); }
+  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->gm_ = reinterpret_cast<uint8_t*>(store); }
+  static NDAccess* GetOutputReuse(NDAccess *op) { return reinterpret_cast<NDAccess*>(op->gm_); }
+  static void SetStageStore(NDAccess *op, NDAccess* store) { op->gm_ = reinterpret_cast<uint8_t*>(store); }
+  static NDAccess* GetStageStore(NDAccess *op) { return reinterpret_cast<NDAccess*>(op->gm_); }
+
   uint64_t AllocWorkspace();
 
   struct Stage {
@@ -326,8 +333,16 @@ class VKernelE : public VKernel {
   static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 
-  NDObject* Exchange(EagerVector *kernel, NDObject *input, int input_k);
+  void Exchange(int fuse_idx, int input_k, NDObject *input, NDObject* &cur_input);
   void AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op);
+  void PrepareInput(int fuse_idx, NDObject* input, NDObject* &cur_input) {
+    auto input_k = GetKernel(input);
+    if (input_k == -1) {
+      AppendPending(kernels_[fuse_idx], fuse_idx, input);
+    } else if (input_k != fuse_idx) {
+      Exchange(fuse_idx, input_k, input, cur_input);
+    }
+  }
 
   std::vector<EagerVector*> kernels_;
   std::multimap<uint64_t, void*> wss_;

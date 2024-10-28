@@ -1215,8 +1215,9 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
   // update shape_ref_
   int shape_size = 0;
   int dim_idx = 0;
+  int dim_size = static_cast<int>(shape_dims_.size());
   for (int i = 0; i < static_cast<int>(input_shape_ref->size); ++i) {
-    if (i != shape_dims_[dim_idx]) {
+    if (dim_idx >= dim_size || i != shape_dims_[dim_idx]) {
       shape_[shape_size++] = input_shape_ref->data[i];
     } else {
       dim_idx++;

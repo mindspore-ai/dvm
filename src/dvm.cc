@@ -485,26 +485,26 @@ int Kernel::Launch(void *workspace, void* stream) {
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                          void **outputs, void *workspace, void *stream) {
   if (msprof_helper_ == nullptr) {
-    NodeInfoPtr info = std::make_shared<NodeInfo>();
-    info->op_name = op_name;
-    info->op_fullname = op_fullname;
-    info->input_size = reloc_table.inputs_size;
-    info->output_size = reloc_table.outputs_size;
-    info->kernel_type = kernel_->KType();
-    info->block_dim = kernel_->code_.block_dim_;
+    msprof_helper_ = new MsProfHelper();
+    auto &info = msprof_helper_->info_;
+    info.op_name = op_name;
+    info.op_fullname = op_fullname;
+    info.input_size = reloc_table.inputs_size;
+    info.output_size = reloc_table.outputs_size;
+    info.kernel_type = kernel_->KType();
+    info.block_dim = kernel_->code_.block_dim_;
     auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
     for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-      info->shapes.emplace_back(GetShape(*loads));
-      info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
+      info.shapes.emplace_back(GetShape(*loads));
+      info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
       loads++;
     }
     auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
     for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-      info->shapes.emplace_back(GetShape(*stores));
-      info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
+      info.shapes.emplace_back(GetShape(*stores));
+      info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
       stores++;
     }
-    msprof_helper_ = new MsProfHelper(info);
     msprof_helper_->InitReportNode();
   } else if (kernel_->KType() == kDynShape) {
     msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
@@ -519,20 +519,20 @@ int Kernel::EagerMsProfLaunch(void *stream) {
   int kernel_used;
   auto kernels = static_cast<VKernelE *>(kernel_)->GetKernels(kernel_used);
   for (int i = 0; i < kernel_used; ++i) {
-    NodeInfoPtr info = std::make_shared<NodeInfo>();
+    MsProfHelper msprof_helper;
+    auto &info = msprof_helper.info_;
     auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);
-    info->kernel_type = vector_kernel->KType();
-    info->block_dim = vector_kernel->code_.block_dim_;
+    info.kernel_type = vector_kernel->KType();
+    info.block_dim = vector_kernel->code_.block_dim_;
     std::ostringstream oss;
     oss << "Dvm";
     for (auto op : vector_kernel->objects_) {
       if (op->flags_ & OBJ_FLAG_EAGER) {
         if (op->IsLoad()) {
-          info->shapes.emplace_back(GetShape(op));
-          info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
-          info->input_size++;
+          info.shapes.emplace_back(GetShape(op));
+          info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
+          info.input_size++;
         } else if (!op->IsStore()) {
-          oss << "_";
           op->Dump(oss); 
         }
       }
@@ -540,16 +540,15 @@ int Kernel::EagerMsProfLaunch(void *stream) {
     for (auto op : vector_kernel->objects_) {
       if (op->flags_ & OBJ_FLAG_EAGER) {
         if (op->IsStore()) {
-          info->shapes.emplace_back(GetShape(op));
-          info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
-          info->output_size++;
+          info.shapes.emplace_back(GetShape(op));
+          info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
+          info.output_size++;
         }
       }
     }
     auto prof_name = oss.str();
-    info->op_name = prof_name.c_str();
-    info->op_fullname = info->op_name;
-    MsProfHelper msprof_helper(info);
+    info.op_name = prof_name.c_str();
+    info.op_fullname = info.op_name;
     msprof_helper.InitReportNode();
     msprof_helper.UpdateBeginTime();
     vector_kernel->code_.Launch(nullptr, stream);

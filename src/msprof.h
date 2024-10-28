@@ -298,16 +298,17 @@ struct NodeInfo {
   std::vector<ShapeRef *> shapes;
   std::vector<DTypeMs> data_types;
 };
-using NodeInfoPtr = std::shared_ptr<NodeInfo>;
 class MsProfHelper {
  public:
-  MsProfHelper(const NodeInfoPtr &info) : info_(info){};
+  MsProfHelper() = default;
   ~MsProfHelper() = default;
 
   void InitReportNode();
   void UpdateReportNode(uint32_t block_dim);
   void UpdateBeginTime();
   void ReportTask();
+
+  NodeInfo info_;
 
  private:
   void InitProfTensorData(const size_t index, const uint64_t offset_idx, MsprofTensorInfo *tensor_info);
@@ -316,7 +317,6 @@ class MsProfHelper {
   void UpdateTensorShape(const size_t index_begin, const size_t index_end, TensorInfoWrapper *tensor_info_wrapper);
 
   ProfNodeAdditionInfo addition_info_;
-  NodeInfoPtr info_;
 };
 }  // namespace dvm
 #endif  // _DVM_MSPROF_H_

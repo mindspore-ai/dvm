@@ -1529,7 +1529,7 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
     for (auto it = dims_set.begin(); it != dims_set.end(); ++it) {
       shape_dims[dim_size++] = *it;
     }
-    int64_t back_idx = shape_dims.back() + 1;
+    int64_t back_idx = shape_dims[dim_size - 1] + 1;
     int64_t back_end = input->nd_.size() - 1;
     while (back_idx <= back_end && input->nd_[back_end - back_idx] == 1) { // align fold may flip dims
       shape_dims[dim_size++] = back_idx++;

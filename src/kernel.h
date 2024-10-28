@@ -306,6 +306,11 @@ class VKernelE : public VKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   std::string& DisAssemble() override;
 
+  const std::vector<EagerVector *> &GetKernels(int &num) {
+    num = kernel_used_;
+    return kernels_;
+  }
+
   void Launch(void *stream) {
     for (int i = 0; i < kernel_used_; ++i) {
       reinterpret_cast<VKernel*>(kernels_[i])->code_.Launch(nullptr, stream);

@@ -496,11 +496,13 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
     for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
       info->shapes.emplace_back(GetShape(*loads));
       info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
+      loads++;
     }
     auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
     for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
       info->shapes.emplace_back(GetShape(*stores));
       info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
+      stores++;
     }
     msprof_helper_ = new MsProfHelper(info);
     msprof_helper_->InitReportNode();
@@ -511,6 +513,49 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
   auto ret = Launch(reloc_table, inputs, outputs, workspace, stream);
   msprof_helper_->ReportTask();
   return ret;
+}
+
+int Kernel::EagerMsProfLaunch(void *stream) {
+  int kernel_used;
+  auto kernels = static_cast<VKernelE *>(kernel_)->GetKernels(kernel_used);
+  for (int i = 0; i < kernel_used; ++i) {
+    NodeInfoPtr info = std::make_shared<NodeInfo>();
+    auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);
+    info->kernel_type = vector_kernel->KType();
+    info->block_dim = vector_kernel->code_.block_dim_;
+    std::ostringstream oss;
+    oss << "Dvm";
+    for (auto op : vector_kernel->objects_) {
+      if (op->flags_ & OBJ_FLAG_EAGER) {
+        if (op->IsLoad()) {
+          info->shapes.emplace_back(GetShape(op));
+          info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
+          info->input_size++;
+        } else if (!op->IsStore()) {
+          oss << "_";
+          op->Dump(oss); 
+        }
+      }
+    }
+    for (auto op : vector_kernel->objects_) {
+      if (op->flags_ & OBJ_FLAG_EAGER) {
+        if (op->IsStore()) {
+          info->shapes.emplace_back(GetShape(op));
+          info->data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
+          info->output_size++;
+        }
+      }
+    }
+    auto prof_name = oss.str();
+    info->op_name = prof_name.c_str();
+    info->op_fullname = info->op_name;
+    MsProfHelper msprof_helper(info);
+    msprof_helper.InitReportNode();
+    msprof_helper.UpdateBeginTime();
+    vector_kernel->code_.Launch(nullptr, stream);
+    msprof_helper.ReportTask();
+  }
+  return 0;
 }
 
 int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void *workspace, void* stream) {

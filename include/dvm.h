@@ -162,6 +162,7 @@ class Kernel {
   void EagerReset(WsAllocFunc ws_alloc, void *user_data);
   void EagerCodeGen(const RelocEntry *reloc_table, size_t reloc_size);
   int EagerLaunch(void *stream);
+  int EagerMsProfLaunch(void *stream);
   void EagerClear();
 
   ShapeRef *GetShape(NDObject *op) const;

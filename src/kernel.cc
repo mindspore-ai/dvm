@@ -1551,8 +1551,8 @@ void VKernelP::Dump(std::ostringstream &oss, const std::string &indent) {
 }
 
 MixKernel::~MixKernel() {
-  if (post_fusion_) delete post_fusion_;
   if (cube_op_) delete cube_op_;
+  if (post_fusion_) delete post_fusion_;
   if (stage_kernel_) delete stage_kernel_;
 }
 

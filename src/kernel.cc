@@ -919,7 +919,7 @@ class DumpRefHelper {
     };
     dump_var(op);
     oss_ << " = ";
-    op->Dump(oss_);
+    op->Dump(true, oss_);
     oss_ << "(";
     if (op->lhs_) {
       dump_var(GetInput(op->lhs_));
@@ -1036,7 +1036,7 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
     oss << body_indent;
     dump_op(op);
     oss << " = ";
-    op->Dump(oss);
+    op->Dump(true, oss);
     oss << "(";
     if (op->lhs_) {
       dump_op(op->lhs_);

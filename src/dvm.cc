@@ -533,7 +533,7 @@ int Kernel::EagerMsProfLaunch(void *stream) {
           info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
           info.input_size++;
         } else if (!op->IsStore()) {
-          op->Dump(oss); 
+          op->Dump(false, oss); 
         }
       }
     }

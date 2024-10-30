@@ -248,7 +248,7 @@ void NDObject::UpdateStride(uint64_t simd_width) {
   }
 }
 
-void NDObject::Dump(std::ostringstream &oss) {
+void NDObject::Dump(bool verbose, std::ostringstream &oss) {
   oss << "NDObject";
 }
 
@@ -257,7 +257,7 @@ int NDLoadDummy::Emit(VectorKernel &k) {
   return 1;
 }
 
-void NDLoadDummy::Dump(std::ostringstream &oss) {
+void NDLoadDummy::Dump(bool verbose, std::ostringstream &oss) {
   oss << "LoadDummy";
 }
 
@@ -337,7 +337,7 @@ void NDLoad::Normalize(std::vector<NDObject*> &run_ops) {
   round_tile_.resize(0);
 }
 
-void NDLoad::Dump(std::ostringstream &oss) {
+void NDLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Load";
 }
 
@@ -390,7 +390,7 @@ int NDPadStore::Emit(VectorKernel &k) {
   return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
 }
 
-void NDPadStore::Dump(std::ostringstream &oss) {
+void NDPadStore::Dump(bool verbose, std::ostringstream &oss) {
   oss << "PadLoad";
 }
 
@@ -482,11 +482,11 @@ int NDSLoad::Emit(VectorKernel &k) {
   }
 }
 
-void NDSLoad::Dump(std::ostringstream &oss) {
+void NDSLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "SLoad";
 }
 
-void NDSStore::Dump(std::ostringstream &oss) {
+void NDSStore::Dump(bool verbose, std::ostringstream &oss) {
   oss << "SStore";
 }
 
@@ -552,7 +552,7 @@ int NDSliceLoad::Emit(VectorKernel &k) {
   return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op);
 }
 
-void NDSliceLoad::Dump(std::ostringstream &oss) {
+void NDSliceLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "SliceLoad";
 }
 
@@ -568,7 +568,7 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   NDSliceLoad::Normalize(run_ops);
 }
 
-void NDStridedSliceLoad::Dump(std::ostringstream &oss) {
+void NDStridedSliceLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "StridedSliceLoad";
 }
 
@@ -716,7 +716,7 @@ int NDStore::Emit(VectorKernel &k) {
   }
 }
 
-void NDStore::Dump(std::ostringstream &oss) {
+void NDStore::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Store";
 }
 
@@ -754,7 +754,7 @@ int CopyOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
 }
 
-void CopyOp::Dump(std::ostringstream &oss) {
+void CopyOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Copy";
 }
 
@@ -803,7 +803,7 @@ int ReshapeOp::Emit(VectorKernel &k) {
   return vReshape::Encode(insn_, (type_id_ == kFloat32 || type_id_ == kInt32) ? V_RESHAPE_B32 : V_RESHAPE_B32, op);
 }
 
-void ReshapeOp::Dump(std::ostringstream &oss) {
+void ReshapeOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Reshape";
 }
 
@@ -821,7 +821,7 @@ int UnaryOp::Emit(VectorKernel &k) {
   return vUnary::Encode(insn_, id, op);
 }
 
-void UnaryOp::Dump(std::ostringstream &oss) {
+void UnaryOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << unary_id_list[op_type_].name;
 }
 
@@ -841,7 +841,7 @@ int IsFinite16Op::Emit(VectorKernel &k) {
   return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
 }
 
-void IsFinite16Op::Dump(std::ostringstream &oss) {
+void IsFinite16Op::Dump(bool verbose, std::ostringstream &oss) {
   oss << "IsFinite";
 }
 
@@ -865,9 +865,9 @@ int AtomicCumOp::Emit(VectorKernel &k) {
   return size;
 }
 
-void AtomicCumOp::Dump(std::ostringstream &oss) {
+void AtomicCumOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "AtomicCum.";
-  inner_->Dump(oss);
+  inner_->Dump(verbose, oss);
 }
 
 int RemovePadOp::Emit(VectorKernel &k) {
@@ -891,9 +891,9 @@ int RemovePadOp::Emit(VectorKernel &k) {
   return size;
 }
 
-void RemovePadOp::Dump(std::ostringstream &oss) {
+void RemovePadOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "RemovePad.";
-  inner_->Dump(oss);
+  inner_->Dump(verbose, oss);
 }
 
 void ElementAnyOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -936,7 +936,7 @@ int ElementAnyOp::Emit(VectorKernel &k) {
   return size;
 }
 
-void ElementAnyOp::Dump(std::ostringstream &oss) {
+void ElementAnyOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "ElementAny";
 }
 
@@ -950,7 +950,7 @@ int CastOp::Emit(VectorKernel &k) {
   return vUnary::Encode(insn_, id, op);
 }
 
-void CastOp::Dump(std::ostringstream &oss) {
+void CastOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Cast";
 }
 
@@ -973,8 +973,11 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
 }
 
 template <typename T>
-void BinaryScalarOp<T>::Dump(std::ostringstream &oss) {
-  oss << binarys_id_list[op_type_].name << "<" << scalar_ << ">";
+void BinaryScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+  oss << binarys_id_list[op_type_].name;
+  if (verbose) {
+    oss << "<" << scalar_ << ">";
+  }
 }
 
 template class BinaryScalarOp<float>;
@@ -998,8 +1001,11 @@ int CompareScalarOp::Emit(VectorKernel &k) {
   return vCompareS::Encode(insn_, type_id_ == kFloat32 ? V_CMPS : V_CMPS_FP16, op);
 }
 
-void CompareScalarOp::Dump(std::ostringstream &oss) {
-  oss << "CompareS<" << cmp_op_ << ", " << scalar_ << ">";
+void CompareScalarOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "CompareS";
+  if (verbose) {
+    oss << "<" << cmp_op_ << ", " << scalar_ << ">";
+  }
 }
 
 _BinaryNormalizer::~_BinaryNormalizer() {
@@ -1108,7 +1114,7 @@ int BinaryOp::Emit(VectorKernel &k) {
   return vBinary::Encode(insn_, id, op);
 }
 
-void BinaryOp::Dump(std::ostringstream &oss) {
+void BinaryOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << binary_id_list[op_type_].name;
 }
 
@@ -1136,8 +1142,11 @@ int CompareOp::Emit(VectorKernel &k) {
   return vCompare::Encode(insn_, type_id_ == kFloat32 ? V_CMP : V_CMP_FP16, op);
 }
 
-void CompareOp::Dump(std::ostringstream &oss) {
-  oss << "Compare<" << cmp_op_ << ">";
+void CompareOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "Compare";
+  if (verbose) {
+    oss << "<" << cmp_op_ << ">";
+  }
 }
 
 int PowerOp::Emit(VectorKernel &k) {
@@ -1152,7 +1161,7 @@ int PowerOp::Emit(VectorKernel &k) {
   return vBinaryWS::Encode(insn_, V_POW, op);
 }
 
-void PowerOp::Dump(std::ostringstream &oss) {
+void PowerOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Power";
 }
 
@@ -1226,7 +1235,7 @@ int SelectOp::Emit(VectorKernel &k) {
   return vSelect::Encode(insn_, id_list[type_id_], op);
 }
 
-void SelectOp::Dump(std::ostringstream &oss) {
+void SelectOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Select";
 }
 
@@ -1322,7 +1331,7 @@ int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim, in
   return vBroadcastY::Encode(p, V_BROADCAST_Y, op);
 }
 
-void _BroadcastOp::Dump(std::ostringstream &oss) {
+void _BroadcastOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Broadcast";
 }
 
@@ -1384,8 +1393,11 @@ int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
 }
 
 template <typename T>
-void BroadcastScalarOp<T>::Dump(std::ostringstream &oss) {
-  oss << "BroadcastS<" << scalar_ << ">";
+void BroadcastScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "BroadcastS" ;
+  if (verbose) {
+    oss << "<" << scalar_ << ">";
+  }
 }
 
 template class BroadcastScalarOp<float>;
@@ -1488,7 +1500,7 @@ int _ReduceOp::Emit(VectorKernel &k) {
   }
 }
 
-void _ReduceOp::Dump(std::ostringstream &oss) {
+void _ReduceOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Reduce";
 }
 
@@ -1681,7 +1693,7 @@ int AffinePropOp::Emit(VectorKernel &k) {
   return 0;
 }
 
-void AffinePropOp::Dump(std::ostringstream &oss) {
+void AffinePropOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "AffineProp";
 }
 
@@ -1844,7 +1856,7 @@ void CubeOp::Tile(vCubeOp *op) {
   k0_ = op->k0;
 }
 
-void CubeOp::Dump(std::ostringstream &oss) {
+void CubeOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "MatMul";
 }
 

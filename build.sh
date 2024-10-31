@@ -17,6 +17,17 @@
 BASEPATH=$(cd "$(dirname $0)"; pwd)
 OUTPUT_DIR="${BASEPATH}/output"
 
+usage()
+{
+  echo "Usage:"
+  echo "bash build.sh [-d] [-a] [-j[n]]"
+  echo ""
+  echo "Options:"
+  echo "    -d Debug mode"
+  echo "    -a Enable ASAN"
+  echo "    -j[n] Set the threads when building (Default: -j8)"
+}
+
 mk_new_dir()
 {
   local create_dir="$1"
@@ -38,11 +49,32 @@ write_checksum()
   done
 }
 
+MAKE_ARGS=""
+while getopts 'daj:' opt
+do
+  case "${opt}" in
+    d)
+      MAKE_ARGS="${MAKE_ARGS} dbg=1"
+      ;;
+    a)
+      MAKE_ARGS="${MAKE_ARGS} asan=1"
+      ;;
+    j)
+      MAKE_ARGS="${MAKE_ARGS} -j${OPTARG}"
+      ;;
+    *)
+      echo "Unknown option ${opt}!"
+      usage
+      exit 1
+  esac
+done
+
 TARGET_FILE="libdvm.a"
 echo "---------------- build start ----------------"
 source ${BASEPATH}/env.sh
-rm -f *.o *.so *.a
-make
+echo "MAKE_ARGS: ${MAKE_ARGS}"
+make clean
+make ${MAKE_ARGS}
 if [ ! -f ${TARGET_FILE} ]; then
   echo "[ERROR] compile failed!"
   exit 1

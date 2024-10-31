@@ -19,6 +19,10 @@ else
 LD_FLAGS = -L${ASCEND_PATH}/latest/lib64 -lascendcl
 endif
 
+ifneq ($(asan),)
+CFLGAS += -fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer
+endif
+
 VMAIN_OFFSET=0x$$(llvm-objdump -t vm_aic_c220.o | grep " vmain_mix_aic$$" | awk '{print $$5}')
 
 HEADERS = $(OBJ:.o=.h) isa.h
@@ -57,4 +61,4 @@ clean:
 	rm -f *.o *.so *.a *bin vm.cc
 
 help:
-	@echo "Usage: make [sim=910B1|910B2|...] [dbg=1]"
+	@echo "Usage: make [sim=910B1|910B2|...] [dbg=1] [asan=1]"

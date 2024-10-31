@@ -320,8 +320,7 @@ class VKernelE : public VKernel {
   void Clear() {
     for (int i = 0; i < kernel_used_; ++i) {
       for (auto op : reinterpret_cast<VectorKernel*>(kernels_[i])->objects_) {
-        op->~NDObject();
-        NDObject::mem_pool_.Put(op);
+        delete op;
       }
     }
     kernel_used_ = 0;

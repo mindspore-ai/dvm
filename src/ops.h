@@ -244,6 +244,10 @@ class NDObject {
     return mem_pool_.Get(size);
   }
 
+  void operator delete(void *ptr) {
+    return mem_pool_.Put(ptr);
+  }
+
   void UpdateStride(uint64_t simd_width);
 
   int64_t Size();

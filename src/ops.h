@@ -245,7 +245,7 @@ class NDObject {
   }
 
   void operator delete(void *ptr) {
-    return mem_pool_.Put(ptr);
+    std::free(ptr);
   }
 
   void UpdateStride(uint64_t simd_width);

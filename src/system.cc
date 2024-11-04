@@ -82,36 +82,47 @@ void DvmException(const char* error_str) {
   throw std::runtime_error(oss.str());
 }
 
+struct SocConfig {
+  const char *name;
+  SocType type;
+  uint64_t aicore_num;
+  uint64_t l2_size;
+};
+
+constexpr uint64_t MB = 1024 * 1024;
+const SocConfig soc_configs[] = {
+  {"Ascend910B1",       kAscend910B1, 25, 192 * MB},
+  {"Ascend910B2",       kAscend910B2, 24, 192 * MB},
+  {"Ascend910B2C",      kAscend910B2, 24, 192 * MB},
+  {"Ascend910B3",       kAscend910B3, 20, 192 * MB},
+  {"Ascend910B4",       kAscend910B4, 20,  96 * MB},
+  {"Ascend910B4-1",     kAscend910B4, 20,  96 * MB},
+  {"Ascend910_9391", kAscend910_9391, 25, 192 * MB},
+  {"Ascend910_9392", kAscend910_9392, 25, 192 * MB},
+  {"Ascend910_9381", kAscend910_9381, 24, 192 * MB},
+  {"Ascend910_9382", kAscend910_9382, 24, 192 * MB},
+  {"Ascend910_9372", kAscend910_9372, 20, 192 * MB},
+  {"Ascend910_9361", kAscend910_9361, 20,  96 * MB},
+};
+
 System::System() {
-  const static std::unordered_map<std::string, SocType> soc_name_map = {
-    {"Ascend910B1", kAscend910B1},       {"Ascend910B2", kAscend910B2},       {"Ascend910B3", kAscend910B3},
-    {"Ascend910B4", kAscend910B4},       {"Ascend910_9391", kAscend910_9391}, {"Ascend910_9392", kAscend910_9392},
-    {"Ascend910_9381", kAscend910_9381}, {"Ascend910_9382", kAscend910_9382}, {"Ascend910_9372", kAscend910_9372},
-    {"Ascend910_9361", kAscend910_9361}, {"Ascend910B2C", kAscend910B2},      {"Ascend910B4-1", kAscend910B4},
-  };
-  const static uint64_t cube_core_nums[kSocUnknow] = {
-    25,  // Ascend910B1
-    24,  // Ascend910B2
-    20,  // Ascend910B3
-    20,  // Ascend910B4
-    25,  // Ascend910_9391
-    25,  // Ascend910_9392
-    24,  // Ascend910_9381
-    24,  // Ascend910_9382
-    20,  // Ascend910_9372
-    20,  // Ascend910_9361
-  };
+  const SocConfig *config = nullptr;
   auto soc_name = GetSocName();
-  auto iter = soc_name_map.find(soc_name);
-  EXCEPTION_IF(iter == soc_name_map.end(), "Unrecognized SoC Version.");
-  soc_name_ = iter->second;
+  for (const SocConfig &c : soc_configs) {
+    if (soc_name == c.name) {
+      config = &c;
+      break;
+    }
+  }
+  EXCEPTION_IF(config == nullptr, "Unrecognized SoC Version.");
+  soc_name_ = config->type;
 
   arch_ = kAiCore_C220;
   local_mem_size_ = 192 * 1024;
   event_num_ = 8;
-  cube_core_num_ = cube_core_nums[soc_name_];
+  cube_core_num_ = config->aicore_num;
   vector_core_num_ = cube_core_num_ * 2;
-  l2_size_ = (soc_name_ == kAscend910B4 || soc_name_ == kAscend910_9361) ? (96 * 1024 * 1024) : (192 * 1024 * 1024);
+  l2_size_ = config->l2_size;
   l1_size_ = 512 * 1024;
   l0c_size_ = 128 * 1024;
   ub_workspace_size_ = 512;

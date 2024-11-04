@@ -476,6 +476,11 @@ py::object KernelPy::Perf() {
 #else
   PrepareIO();
   // warm up
+  if (kernel_.GetImpl()->KType() == kEager) {
+    ASCEND_CALL(kernel_.EagerLaunch(nullptr));
+  } else {
+    ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
+  }
   ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
   float min_us = 1e6;
@@ -490,7 +495,11 @@ py::object KernelPy::Perf() {
       ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
     ASCEND_CALL(aclrtRecordEvent(start, nullptr));
-    ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
+    if (kernel_.GetImpl()->KType() == kEager) {
+      ASCEND_CALL(kernel_.EagerLaunch(nullptr));
+    } else {
+      ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
+    }
     ASCEND_CALL(aclrtRecordEvent(end, nullptr));
     ASCEND_CALL(aclrtSynchronizeStream(nullptr));
     float time_us = 0.0f;

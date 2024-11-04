@@ -637,7 +637,11 @@ UnaryOp::UnaryOp(int op_type, NDObject *input) : NDObject(input, nullptr, input-
     {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE},
     {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE},
     {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE},
-    {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE}};
+    {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE},
+    {V_NONE, V_ROUND_FP16, V_NONE, V_ROUND, V_NONE},
+    {V_NONE, V_FLOOR_FP16, V_NONE, V_FLOOR, V_NONE},
+    {V_NONE, V_CEIL_FP16, V_NONE, V_CEIL, V_NONE},
+    {V_NONE, V_TRUNC_FP16, V_NONE, V_TRUNC, V_NONE}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   shape_ref_ = input->shape_ref_;

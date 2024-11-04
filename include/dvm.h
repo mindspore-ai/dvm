@@ -38,6 +38,10 @@ enum UnaryOpType {
   kReciprocal,
   kIsFinite,
   kLogicalNot,
+  kRound,
+  kFloor,
+  kCeil,
+  kTrunc,
   kUnaryOpEnd,
 };
 

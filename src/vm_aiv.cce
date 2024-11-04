@@ -397,6 +397,10 @@ DELCARE_BINARYS(vadds, half)
 DELCARE_CAST(vconv_s322f32, float, int32_t)
 DELCARE_CAST(vconv_f322f16, half, float)
 DELCARE_CAST(vconv_s162f16, half, int16_t)
+DELCARE_CAST(vconv_f162s16r, int16_t, half)
+DELCARE_CAST(vconv_f162s16c, int16_t, half)
+DELCARE_CAST(vconv_f162s16f, int16_t, half)
+DELCARE_CAST(vconv_f162s16z, int16_t, half)
 DELCARE_CAST(vconv_f162s8, int8_t, half)
 DELCARE_BINARYS(vshl, uint32_t)
 DELCARE_BINARYS_WITH_MODE(vshr, uint32_t, false)
@@ -513,6 +517,24 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       }                                                                                 \
       builtin(xd, xn, op.repeat, 1, 1, rs, rs);                                         \
     }                                                                                   \
+  } while (0)
+
+#define TRUNC_FP16(pc, builtin, head, tile)                                      \
+  do {                                                                           \
+    vUnary op;                                                                   \
+    vUnary::Decode(pc, head, op);                                                \
+    uint64_t rs = GetRepeatStride(tile, half);                                   \
+    __ubuf__ half *xd = (__ubuf__ half *)(op.xd);                                \
+    __ubuf__ half *xn = (__ubuf__ half *)(op.xn);                                \
+    if (op.repeat <= 255) {                                                      \
+      builtin((__ubuf__ int16_t *)xd, xn, op.repeat, 1, 1, rs, rs);              \
+      pipe_barrier(PIPE_V);                                                      \
+      vconv_s162f16(xd, (__ubuf__ int16_t *)xd, op.repeat, 1, 1, rs, rs);        \
+    } else {                                                                     \
+      repeat_##builtin((__ubuf__ int16_t *)xd, xn, op.repeat, 1, 1, rs, rs);     \
+      pipe_barrier(PIPE_V);                                                      \
+      repeat_vconv_s162f16(xd, (__ubuf__ int16_t *)xd, op.repeat, 1, 1, rs, rs); \
+    }                                                                            \
   } while (0)
 
 #define BINARY(pc, builtin, head, tile, VTYPE)                                          \
@@ -1677,6 +1699,10 @@ DEF_DISP_FUNC(V_ABS, UNARY(pc, vabs, head, tile, float))
 DEF_DISP_FUNC(V_LOG, UNARY(pc, vln, head, tile, float))
 DEF_DISP_FUNC(V_EXP, UNARY(pc, vexp, head, tile, float))
 DEF_DISP_FUNC(V_REC, Reciprocal<float>(pc, head, tile))
+DEF_DISP_FUNC(V_ROUND, CAST(pc, vconv_f322f32r, head, tile, float, float))
+DEF_DISP_FUNC(V_FLOOR, CAST(pc, vconv_f322f32f, head, tile, float, float))
+DEF_DISP_FUNC(V_CEIL, CAST(pc, vconv_f322f32c, head, tile, float, float))
+DEF_DISP_FUNC(V_TRUNC, CAST(pc, vconv_f322f32z, head, tile, float, float))
 
 DEF_DISP_FUNC(V_ADDS, BINARYS(pc, vadds, head, float, float))
 DEF_DISP_FUNC(V_MULS, BINARYS(pc, vmuls, head, float, float))
@@ -1704,6 +1730,10 @@ DEF_DISP_FUNC(V_ABS_FP16, UNARY(pc, vabs, head, tile, half))
 DEF_DISP_FUNC(V_LOG_FP16, UNARY(pc, vln, head, tile, half))
 DEF_DISP_FUNC(V_EXP_FP16, UNARY(pc, vexp, head, tile, half))
 DEF_DISP_FUNC(V_REC_FP16, Reciprocal<half>(pc, head, tile))
+DEF_DISP_FUNC(V_ROUND_FP16, TRUNC_FP16(pc, vconv_f162s16r, head, tile))
+DEF_DISP_FUNC(V_FLOOR_FP16, TRUNC_FP16(pc, vconv_f162s16f, head, tile))
+DEF_DISP_FUNC(V_CEIL_FP16, TRUNC_FP16(pc, vconv_f162s16c, head, tile))
+DEF_DISP_FUNC(V_TRUNC_FP16, TRUNC_FP16(pc, vconv_f162s16z, head, tile))
 
 DEF_DISP_FUNC(V_ADDS_FP16, BINARYS(pc, vadds, head, half, float))
 DEF_DISP_FUNC(V_MULS_FP16, BINARYS(pc, vmuls, head, half, float))

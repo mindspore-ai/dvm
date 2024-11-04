@@ -253,3 +253,16 @@ def test_pow_s_left():
     y = t.binary("Pow", 2, x)
     t.store_expect(y, np.power(2, a))
     assert(t.run_check())
+    
+@pytest.mark.parametrize('type', [np.float16, np.float32])
+@pytest.mark.parametrize('op, func', [("Round", np.round), ("Ceil", np.ceil), ("Floor", np.floor), ("Trunc", np.trunc)])
+@pytest.mark.parametrize('shape', [[32, 32], [128*256*2*48]])
+def test_trunc(type, op, func, shape):
+    t = Tester()
+    a = np.random.normal(-10, 10, shape).astype(type)
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.unary(op, x)
+    z = t.copy(z)
+    t.store_expect(z, func(a).astype(type))
+    assert (t.run_check())

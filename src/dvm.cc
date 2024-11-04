@@ -169,10 +169,18 @@ NDObject* Kernel::Unary(int op_type, NDObject* input) {
 }
 
 NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
+  if (lhs->type_id_ == DType::kBool) {
+    // Binary may introduce broadcast which is not supported in Bool. So Cast to f16.
+    auto cast1 = Cast(lhs, DType::kFloat16);
+    auto cast2 = Cast(rhs, DType::kFloat16);
+    auto bin = Binary(op_type, cast1, cast2);
+    auto cast3 = Cast(bin, DType::kBool);
+    return cast3;
+  }
   if (op_type < V_CMP_ALL && lhs->type_id_ == kInt32) {
     if (op_type == kEqual || op_type == kNotEqual) {
       auto sub = Binary(BinaryOpType::kSub, rhs, lhs);
-      auto abs = Binary(BinaryOpType::kMaximum, sub, Binary(BinaryOpType::kMul, sub, -1));;
+      auto abs = Binary(BinaryOpType::kMaximum, sub, Binary(BinaryOpType::kMul, sub, -1));
       auto min = Binary(BinaryOpType::kMinimum, abs, 1);
       if (op_type == kEqual) {
         return Binary(BinaryOpType::kSub, 1, min);
@@ -281,6 +289,12 @@ template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DType ty
 template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DType type, bool dummy_load);
 
 NDObject* Kernel::Broadcast(NDObject* input, ShapeRef *shape) {
+  if (input->type_id_ == DType::kBool) {
+    auto cast1 = Cast(input, DType::kFloat16);
+    auto obj = Broadcast(cast1, shape);
+    auto cast2 = Cast(obj, DType::kBool);
+    return cast2;
+  }
   auto obj = new BroadcastOp(input, shape);
   kernel_->Append(obj);
   return obj;

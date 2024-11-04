@@ -671,6 +671,7 @@ int RemovePadOp::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / strides_[lead_dim_];
   op.iter_num = nd_[lead_dim_];
   op.rs = GetBlocks(strides_[lead_dim_]);
+  ASSERT(id_list[type_id_] != V_NONE);
   return vRemovePad::Encode(insn_, id_list[type_id_], op);
 }
 
@@ -765,8 +766,8 @@ BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs) : NDObject(lhs, rh
     {V_NONE, V_POW_FP16, V_NONE, V_POW, V_NONE},
     {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32},
     {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_AND_BOOL, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
-    {V_OR_BOOL, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
+    {V_NONE, V_MIN_FP16, V_NONE, V_MIN, V_MIN_INT32},
+    {V_NONE, V_MAX_FP16, V_NONE, V_MAX, V_MAX_INT32}};
   id_ = id_list[op_type][type_id_];
   ASSERT(id_ != V_NONE);
   // compare op in BinaryOpType must keep consistent order with vCompareType
@@ -934,6 +935,7 @@ int SelectOp::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / k.simd_width_;
   op.xm = rhs_->xbuf_;
   op.cond =  cond_->xbuf_;
+  ASSERT(id_list[type_id_] != V_NONE);
   return vSelect::Encode(insn_, id_list[type_id_], op);
 }
 
@@ -1009,6 +1011,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_widt
   op.iter_num = end_dim + 2 <  rank_size ? strides_.back() / strides_[end_dim + 1] : 1;
   op.lead_pad = lhs_->strides_[lhs_->lead_dim_] - lhs_->nd_[lhs_->lead_dim_];
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_NONE, V_BROADCAST_X_B32, V_BROADCAST_X_B32};
+  ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
 
@@ -1066,6 +1069,7 @@ int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
   op.scalar = scalar_;
   op.xd = xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
+  ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastS<T>::Encode(insn_, id_list[type_id_], op);
 }
 

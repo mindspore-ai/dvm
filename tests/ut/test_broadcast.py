@@ -131,3 +131,11 @@ def test_broadcast_s():
     x = t.broadcast(0.2, [2, 64], "float32", True)
     t.store_expect(x, 0.2)
     assert(t.run_check())
+
+def test_broadcast_bool():
+    t = Tester()
+    a0 = np.array([[True]]).astype(bool)
+    x0 = t.load(a0)
+    x1 = t.broadcast(x0, [2,3])
+    t.store_expect(x1, True)
+    assert(t.run_check())

@@ -83,7 +83,7 @@ System::System() {
     {"Ascend910B1", kAscend910B1},       {"Ascend910B2", kAscend910B2},       {"Ascend910B3", kAscend910B3},
     {"Ascend910B4", kAscend910B4},       {"Ascend910_9391", kAscend910_9391}, {"Ascend910_9392", kAscend910_9392},
     {"Ascend910_9381", kAscend910_9381}, {"Ascend910_9382", kAscend910_9382}, {"Ascend910_9372", kAscend910_9372},
-    {"Ascend910_9361", kAscend910_9361},
+    {"Ascend910_9361", kAscend910_9361}, {"Ascend910B2C", kAscend910B2},      {"Ascend910B4-1", kAscend910B4},
   };
   const static uint64_t cube_core_nums[kSocUnknow] = {
     25,  // Ascend910B1
@@ -99,7 +99,7 @@ System::System() {
   };
   auto soc_name = GetSocName();
   auto iter = soc_name_map.find(soc_name);
-  EXCEPTION_IF(iter == soc_name_map.end(), "Only Ascend910B and Ascend910_93 is supported");
+  EXCEPTION_IF(iter == soc_name_map.end(), "Unrecognized SoC Version.");
   soc_name_ = iter->second;
 
   arch_ = kAiCore_C220;

@@ -35,6 +35,7 @@ constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
 constexpr int64_t ALIGN_256 = 256;
 constexpr int64_t ALIGN_128 = 128;
 constexpr int64_t ALIGN_32 = 32;
+const size_t MAX_SLICE_DIM = 3;
 
 struct InsnIdTable {
   const char *name;
@@ -386,8 +387,9 @@ int NDPadStore::Emit(VectorKernel &k) {
     op.pad_size = 0;
     op.one_flag = 1;
   }
+  op.round_rank = 0;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
-  return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op);
+  return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op, nullptr);
 }
 
 void NDPadStore::Dump(bool verbose, std::ostringstream &oss) {
@@ -491,7 +493,6 @@ void NDSStore::Dump(bool verbose, std::ostringstream &oss) {
 }
 
 void NDSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
-  ASSERT(src_ref_->size <= 3);
   NDLoad::Normalize(run_ops);
 }
 
@@ -500,14 +501,16 @@ void NDSliceLoad::AlignProp(PropRange &range) {
 }
 
 void NDSliceLoad::FoldProp(PropRange &range) {
-  range.depth = nd_.size() - 1;
+  range.depth = 1;
 }
 
 int64_t NDSliceLoad::CalcOffset() {
   uint64_t src_offset = 0;
   std::vector<int64_t> start(src_ref_->size);
   for (size_t i = 0; i < src_ref_->size; i++) {
-    start[i] = start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i];
+    start[i] = start_ref_ == nullptr
+                 ? 0
+                 : (start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i]);
   }
   if (src_ref_->size == 1) {
     src_offset = start[0];
@@ -521,6 +524,10 @@ int64_t NDSliceLoad::CalcOffset() {
 }
 
 int NDSliceLoad::Emit(VectorKernel &k) {
+  uint64_t rounds[2];
+  if (!round_tile_.empty()) {
+    BuildDimRounds(round_tile_, rounds);
+  }
   auto reloc_offset = CalcOffset();
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
@@ -545,11 +552,12 @@ int NDSliceLoad::Emit(VectorKernel &k) {
       op.slice_k *= size_ref_->data[i];
     }
   }
+  op.round_rank = round_tile_.size();
   op.type_size = ITEM_SIZE[type_id_];
   op.offset = reloc_offset;
   op.one_flag = 0;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
-  return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op);
+  return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op, rounds);
 }
 
 void NDSliceLoad::Dump(bool verbose, std::ostringstream &oss) {
@@ -561,7 +569,9 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
   shape_.Resize(src_ref_->size);
   for (size_t i = 0; i < src_ref_->size; i++) {
     int64_t end = end_ref_->data[i] < 0 ? end_ref_->data[i] + src_ref_->data[i] : end_ref_->data[i];
-    int64_t start = start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i];
+    int64_t start = start_ref_ == nullptr
+                      ? 0
+                      : (start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i]);
     shape_[i] = end - start;
   }
   size_ref_ = shape_ref_;

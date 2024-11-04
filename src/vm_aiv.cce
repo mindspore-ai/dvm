@@ -1355,7 +1355,7 @@ static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       pad_size += op.slice_n - op.tail_n;
     }
     uint64_t offset_slice = begin_m * op.src_n + begin_n + MixTileGroupOffset(tile);
-    src +=  offset_slice * op.type_size;
+    src += offset_slice * op.type_size;
     SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
   }
 }
@@ -1432,6 +1432,12 @@ static inline [aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t til
   vSliceSL op;
   vSliceSL::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
+  if (op.round_rank > 0) {
+    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vSliceSL::ROUND_OFFSET);
+    if (tile_idx == -1) {
+      return;
+    }
+  }
   uint64_t slice_mn = op.slice_n * op.slice_m;
   uint64_t src_mn = op.src_n * op.src_m;
 

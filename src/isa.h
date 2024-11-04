@@ -837,6 +837,7 @@ struct vSStore {
 };
 
 struct vSliceSL {
+  enum { ROUND_OFFSET = 5 };
   enum { RELOC_OFFSET = 1 };
   __gm__ uint8_t *gm;
   uint64_t xn;
@@ -850,14 +851,15 @@ struct vSliceSL {
   uint64_t type_size;
   uint64_t one_flag;
   uint64_t offset;
+  uint64_t round_rank;
   // pc[0]: tile_stride(18) << 18 | xn(18)
   // pc[1]: dst
   // pc[2]: slice_n(20) << 44 | slice_m(20) << 24 | src_n(20) << 4 |  type_size(4)
-  // pc[3]: slice_k(20) << 32 | src_m(20) << 12 | pad_size(8) << 4 | one_flag(4)
+  // pc[3]: slice_k(20) << 44 | src_m(20) << 24 | op.round_rank(4) << 16 | pad_size(8) << 4 | one_flag(4)
   // pc[4]: offset(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceSL &op) {
-    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.tile_stride = (head >> (V_M_HEAD_EXT_OFFSET + 18)) & V_X_MASK;
+    op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + 13, 18);
+    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13));
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
     op.type_size = data & 0xful;
@@ -867,18 +869,24 @@ struct vSliceSL {
     data = pc[3];
     op.one_flag = data & 0xful;
     op.pad_size = (data >> 4) & 0xfful;
-    op.src_m = (data >> 12) & 0xffffful;
-    op.slice_k = (data >> 32) & 0xffffful;
+    op.round_rank = (data >> 16) & 0xful;
+    op.src_m = (data >> 24) & 0xffffful;
+    op.slice_k = (data >> 44) & 0xffffful;
     op.offset = pc[4];
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vSliceSL &op) {
-    uint64_t size = 5;
-    pc[0] = vMakeHead(id, op.tile_stride << 18 | op.xn, size, pipe);
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vSliceSL &op,
+                                    const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vSliceSL::ROUND_OFFSET + round_size;
+    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, pipe);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 44 | op.slice_m << 24 | op.src_n << 4 | op.type_size;
-    pc[3] = op.slice_k << 32 | op.src_m << 12 | op.pad_size << 4 | op.one_flag;
+    pc[3] = op.slice_k << 44 | op.src_m << 24 | op.round_rank << 16 | op.pad_size << 4 | op.one_flag;
     pc[4] = op.offset;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vSliceSL::ROUND_OFFSET + i] = rounds[i];
+    }
     return size;
   }
 };

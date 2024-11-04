@@ -78,3 +78,32 @@ def test_slice_start_end(type, shape, start, end):
     t.store_expect(
         z, 2*(a[start:end]))
     assert (t.run_check())
+
+def test_slice_broadcast():
+    t = Tester()
+    a = np.random.normal(0, 1, [1, 10, 20, 30]).astype(np.float32)
+    b = np.random.normal(0, 1, [10, 10, 20, 1]).astype(np.float32)
+    x = t.slice_load(
+        a, (0, 0, 0, 0), (1, 10, 20, 15))
+    y = t.load(b)
+    z = t.binary("Mul", x, y)
+    t.store_expect(z, a[:, :, :, 0:15]*b)
+    assert (t.run_check())
+
+def test_slice_dit_00():
+    t = Tester("static")
+    a = np.random.normal(0, 1, (1, 14, 41850, 40)).astype(np.float16)
+    b = np.random.normal(0, 1, (2, 1, 41850, 80)).astype(np.float16)
+    c = np.random.normal(0, 1, (1, 14, 41850, 40)).astype(np.float16)
+    x = t.load(a)
+    x = t.cast(x, "float32")
+    y = t.slice_load(b, (0, 0, 0, 0), (2, 1, 41850, 40))
+    y = t.cast(y, "float32")
+    z = t.binary("Mul", x, y)
+    zz = t.load(c)
+    zz = t.cast(zz, "float32")
+    z = t.binary("Add", zz, z)
+    z = t.cast(z, "float16")
+    t.store_expect(
+        z, (a.astype(np.float32)*(b[:, :, :, 0:40].astype(np.float32)) + c.astype(np.float32)).astype(np.float16))
+    assert (t.run_check())

@@ -129,12 +129,17 @@ void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
   DumpVal("offset", op.offset, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vSliceSL::ROUND_OFFSET, oss);
+  }
 }
 
 void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSliceSL op;
   vSliceSL::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "slice_store " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  oss << "slice_store " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", "
+      << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";

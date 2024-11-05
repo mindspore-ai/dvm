@@ -17,7 +17,6 @@
 #include <dlfcn.h>
 #include <stdexcept>
 #include <sstream>
-#include <unordered_map>
 #ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
 #endif

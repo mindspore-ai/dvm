@@ -26,8 +26,8 @@ class PerformanceResult:
         self.mean = results[2]
 
     def __repr__(self):
-        return "kernel time(fun_min_max_avg, us): {}  {}  {}  {}".format(
-            sys._getframe(1).f_code.co_name, self.min, self.max, self.mean)
+        return "fun_min_max_avg(us): {}  {}  {}  {}".format(
+            sys._getframe(1).f_code.co_name, round(self.min, 2), round(self.max, 2), round(self.mean, 2))
 
     def __str__(self):
         return (

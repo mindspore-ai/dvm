@@ -474,14 +474,13 @@ py::object KernelPy::Perf() {
 #ifdef VK_SIM_MODEL
   return py::none();
 #else
-  PrepareIO();
   // warm up
   if (kernel_.GetImpl()->KType() == kEager) {
     ASCEND_CALL(kernel_.EagerLaunch(nullptr));
   } else {
+    PrepareIO();
     ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   }
-  ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   ASCEND_CALL(aclrtSynchronizeStream(nullptr));
   float min_us = 1e6;
   float max_us = 0.0f;

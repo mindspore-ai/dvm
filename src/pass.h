@@ -113,6 +113,12 @@ class BasicBlockContext {
     return res;
   }
 
+  bool IsMultiUsers(NDObject *object) const {
+    ASSERT(object->index_ < static_cast<int>(head_.size()));
+    auto idx = head_[object->index_];
+    return idx != -1 && edges_[idx].next != -1;
+  }
+
   // Delete object from context
   void Erase(NDObject *object);
 

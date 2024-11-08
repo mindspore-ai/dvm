@@ -597,12 +597,20 @@ void InsertRemovePad(BasicBlock &block) {
         iter_size *= iter->nd_[i];
       }
       if (iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE) {
-        auto inner = iter->lhs_;
+        auto input = iter->lhs_;
+        auto inner = input;
+        if (block.context().IsMultiUsers(input)) {
+          inner = new CopyOp(input);
+          inner->nd_ = input->nd_;
+          block.Insert(iter, inner);
+        }
         auto remove_pad = new RemovePadOp(inner);
         remove_pad->nd_ = inner->nd_;
         iter->lhs_ = remove_pad;
         block.Insert(iter, remove_pad);
-        block.Erase(NDObjectIterator<false>(inner));
+        if (inner == input) {
+          block.Erase(NDObjectIterator<false>(inner));
+        }
       }
     }
   }

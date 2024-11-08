@@ -339,6 +339,7 @@ class VKernelE : public VKernel {
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 
   void Exchange(int fuse_idx, int input_k, NDObject *input, NDObject* &cur_input);
+  NDObject *ExchangePending(NDObject *input);
   void AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op);
   void PrepareInput(int fuse_idx, NDObject* input, NDObject* &cur_input) {
     auto input_k = GetKernel(input);

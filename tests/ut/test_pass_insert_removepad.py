@@ -85,3 +85,19 @@ def test_remove_pad_04():
     out = t.store_expect(y3, expect)
     t.set_passes("InsertRemovePad")
     assert (t.run_check())
+
+def test_remove_pad_multi_user():
+    t = Tester()
+    a0 = np.random.normal(0, 100, [1, 4096, 4]).astype(np.float32)
+    a1 = np.abs(np.random.normal(0, 100, [1, 4096, 1]).astype(np.float32)) + 1e-4
+    e1 = a0 / a1
+    e2 = e1 * 2.0
+    x0 = t.load(a0)
+    x1 = t.load(a1)
+    y0 = t.binary("Div", x0, x1)
+    t.store_expect(y0, e1, 1e-4)
+    y1 = t.binary("Mul", y0, 2.0)
+    y2 = t.cast(y1, "bfloat16")
+    t.store_expect(y2, e2, 1e-2)
+    t.set_passes("InsertRemovePad")
+    assert(t.run_check())

@@ -2192,8 +2192,34 @@ void VKernelE::Exchange(int fuse_idx, int input_k, NDObject *input, NDObject* &c
   SetKernel(load, fuse_idx);
 }
 
+NDObject *VKernelE::ExchangePending(NDObject *input) {
+  NDAccess *store = GetStore(input);
+  if (store == nullptr) {
+    int fuse_idx = GetKernel(input);
+    ASSERT(fuse_idx >= 0);
+    auto input_kernel = kernels_[fuse_idx];
+    store = new NDStore(nullptr, input);
+    store->Normalize(input_kernel->objects_);
+    input_kernel->EagerVector::Append(store);
+    input_kernel->ws_ios_.push_back(store);
+    SetStore(input, store);
+    SetStoreSize(store, store->Size());
+    SetStoreInplace(store, 0);
+    SetKernel(store, fuse_idx);
+  }
+  auto load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+  load->Normalize(norm_ops_);
+  SetKernel(load, -1);
+  SetStore(load, store);
+  return load;
+}
+
 void VKernelE::AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op) {
-  if (!op->IsLoad() && kernel->objects_.empty()) {
+  if (op->IsLoad()) {
+    if (GetStore(op) != nullptr) {
+      kernel->ws_ios_.push_back(static_cast<NDAccess*>(op));
+    }
+  } else if (kernel->objects_.empty()) { // first broadcasts
     auto dummy_load = new NDLoadDummy(op->type_id_);
     dummy_load->Normalize(norm_ops_);
     kernel->EagerVector::Append(dummy_load);
@@ -2207,8 +2233,8 @@ void VKernelE::Append(NDObject *obj) {
   auto lhs = obj->lhs_;
   auto rhs = obj->rhs_;
   // TODO: xhs
-  obj->Normalize(norm_ops_);
   if (lhs == nullptr) { // load and broadcasts
+    obj->Normalize(norm_ops_);
     SetKernel(obj, -1);
     SetStore(obj, nullptr);
     return;
@@ -2223,6 +2249,7 @@ void VKernelE::Append(NDObject *obj) {
     return k;
   };
   if (obj->IsStore()) {
+    obj->Normalize(norm_ops_);
     auto prod_idx = GetKernel(lhs);
     EagerVector *prod_k;
     if (prod_idx >= 0) {
@@ -2240,6 +2267,7 @@ void VKernelE::Append(NDObject *obj) {
   int fuse_idx = GetKernel(lhs);
   EagerVector *kernel = nullptr;
   if (obj->obj_id_ == ObjectType::kReduce) {
+    obj->Normalize(norm_ops_);
     if (fuse_idx >= 0 && kernels_[fuse_idx]->ElemwiseCheck(obj->lhs_)) {
       kernel = kernels_[fuse_idx];
     } else if ((fuse_idx < kernel_used_ - 1) && kernels_[kernel_used_ - 1]->ElemwiseCheck(obj->lhs_)) {
@@ -2252,21 +2280,26 @@ void VKernelE::Append(NDObject *obj) {
     kernel->dom_ = obj->lhs_;
     kernel->fix_dom_ = true;
   } else {
-    int ftype = EagerVector::kFuseNone;
-    auto fuse_check = [](NDObject *op) -> bool { return op->obj_id_ != ObjectType::kReduce; };
-    if (!rhs || GetKernel(rhs) < fuse_idx) {
-      if ((fuse_idx >= 0) && fuse_check(lhs)) {
-        kernel = kernels_[fuse_idx];
-        ftype = kernel->AffineCheck(obj);
-      }
-    } else {
+    if (rhs && GetKernel(rhs) > fuse_idx) {
       fuse_idx = GetKernel(rhs);
-      if ((fuse_idx >= 0) && fuse_check(rhs) && (GetKernel(lhs) != fuse_idx || fuse_check(lhs))) {
-        kernel = kernels_[fuse_idx];
-        ftype = kernel->AffineCheck(obj);
-      }
     }
-    if (ftype == EagerVector::kFuseNone && fuse_idx < kernel_used_ - 1) {
+    auto fuse_stop = [](NDObject *op) -> bool { return op->obj_id_ == ObjectType::kReduce; };
+    int min_fuse = fuse_idx;
+    if (fuse_stop(lhs)) {
+      if (fuse_idx == GetKernel(lhs)) fuse_idx = -1;
+      obj->lhs_ = lhs = ExchangePending(lhs);
+    }
+    if (rhs && fuse_stop(rhs)) {
+      if (fuse_idx == GetKernel(rhs)) fuse_idx = -1;
+      obj->rhs_ = rhs = ExchangePending(rhs);
+    }
+    obj->Normalize(norm_ops_);
+    int ftype = EagerVector::kFuseNone;
+    if (fuse_idx >= 0) {
+      kernel = kernels_[fuse_idx];
+      ftype = kernel->AffineCheck(obj);
+    }
+    if (ftype == EagerVector::kFuseNone && min_fuse < kernel_used_ - 1) {
       fuse_idx = kernel_used_ - 1;
       kernel = kernels_[fuse_idx];
       ftype = kernel->AffineCheck(obj);

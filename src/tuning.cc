@@ -53,18 +53,18 @@ void ManualMatMul::SetTiling(const TuningInfo &info) {
   n0_ = info.n0;
   k0_ = info.k0;
   swizzle_ = info.swizzle;
-  core_loop_ = CeilDiv(m_real_, m0_) * CeilDiv(n_real_, n0_);
-  auto core_num = System::Instance().CoreNum(CoreType::kCube);
-  block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+  core_loop_ = info.core_loop;
+  block_dim_ = info.block_dim;
 }
 
 void TunedMatMul::GenTiling(vCubeOp *op) {
   auto &tuning_table = TunedMatMul::GetTuningTable();
-  uint64_t key = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
-  if (type_id_ == dvm::kFloat32) key |= 4ul;
-  if (trans_a_) key |= 2ul;
-  if (trans_b_) key |= 1ul;
-  TuningInfo &best_tuning = tuning_table[key];
+  uint64_t key_batch = (uint64_t)op->batch_a0 << 48 | (uint64_t)op->batch_a1 << 32 | op->batch_b0 << 16 |op->batch_b1;
+  uint64_t key_shape = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
+  if (type_id_ == dvm::kFloat32) key_shape |= 4ul;
+  if (trans_a_) key_shape |= 2ul;
+  if (trans_b_) key_shape |= 1ul;
+  TuningInfo &best_tuning = tuning_table[{key_batch, key_shape}];
   if (best_tuning.swizzle == 0) {
     void *dev_M_, *dev_N_, *dev_O_;
     ASCEND_CALL(aclrtMalloc(&dev_M_, lhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
@@ -90,11 +90,8 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
   op->n0 = n0_ = best_tuning.n0;
   op->k0 = k0_ = best_tuning.k0;
   op->swizzle = best_tuning.swizzle;
-  auto m_loop = CeilDiv(op->m_real, op->m0);
-  auto n_loop = CeilDiv(op->n_real, op->n0);
-  core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
-  auto core_num = System::Instance().CoreNum(CoreType::kCube);
-  block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+  core_loop_ = best_tuning.core_loop;
+  block_dim_ = best_tuning.block_dim;
 }
 
 void TunedMatMul::TileV3(vCubeOp *op) {
@@ -140,11 +137,11 @@ void TunedMatMul::TileV3(vCubeOp *op) {
     // 3. select swizzle
     for (uint32_t cnt = std::min(block_dim, m_loop); cnt >= 1; --cnt) {
       auto swizzle = cnt;
-      Tuning({m0, n0, k0, swizzle});
+      Tuning({m0, n0, k0, swizzle, core_loop, block_dim});
     }
     for (uint32_t cnt = std::min(block_dim, n_loop); cnt >= 1; --cnt) {
       auto swizzle = 1u << 16 | cnt;
-      Tuning({m0, n0, k0, swizzle});
+      Tuning({m0, n0, k0, swizzle, core_loop, block_dim});
     }
     block_dim_ = block_dim;
   };

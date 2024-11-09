@@ -17,7 +17,7 @@
 #ifndef _DVM_TUNING_H_
 #define _DVM_TUNING_H_
 #include <vector>
-#include <unordered_map>
+#include <map>
 #include "dvm.h"
 #include "ops.h"
 
@@ -27,6 +27,8 @@ struct TuningInfo {
   int64_t n0{0};
   int64_t k0{0};
   uint32_t swizzle{0};
+  uint32_t core_loop{0};
+  uint32_t block_dim{0};
 };
 
 class ManualMatMul : public CubeOp {
@@ -48,8 +50,8 @@ class TunedMatMul : public CubeOp {
   void GenTiling(vCubeOp *op) override;
   void TileV3(vCubeOp *op);
   void Tuning(const TuningInfo &parameter);
-  static std::unordered_map<uint64_t, TuningInfo> &GetTuningTable() {
-    static std::unordered_map<uint64_t, TuningInfo> table;
+  static std::map<std::pair<uint64_t, uint64_t>, TuningInfo> &GetTuningTable() {
+    static std::map<std::pair<uint64_t, uint64_t>, TuningInfo> table;
     return table;
   }
 

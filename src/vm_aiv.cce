@@ -1038,7 +1038,9 @@ __aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 static inline [aicore] void Copy(bcodeptr_t pc, uint64_t head) {
   vCopy op;
   vCopy::Decode(pc, head, op);
-  copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, op.config);
+  if (op.xd != op.xn) {
+    copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, op.config);
+  }
 }
 
 __aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head) {

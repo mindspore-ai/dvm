@@ -567,9 +567,6 @@ void ReorderLoad(BasicBlock &block) {
 }
 
 void InsertRemovePad(BasicBlock &block) {
-  if (System::Instance().Arch() != kAiCore_C220) {
-    return;
-  }
   size_t max_depth = 1;
   for (auto &op : block) {
     auto obj_type = op.GetObjectType();
@@ -589,8 +586,9 @@ void InsertRemovePad(BasicBlock &block) {
     op.AlignProp(range);
   }
   for (auto iter = block.begin(); iter != block.end(); iter++) {
-    if (iter->IsStore()) {
-      if (iter->lhs_->obj_id_ == kElementAny || static_cast<int>(iter->nd_.size()) == range.depth) {
+    if (iter->GetObjectType() == kStore) {
+      if (iter->lhs_->obj_id_ == kElementAny || iter->lhs_->obj_id_ == kReduce ||
+          static_cast<int>(iter->nd_.size()) == range.depth) {
         continue;
       }
       uint64_t iter_size = ITEM_SIZE[iter->type_id_];

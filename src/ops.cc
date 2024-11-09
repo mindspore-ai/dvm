@@ -1305,18 +1305,6 @@ REDUCE_TILE:
   _ReduceOp::Tile(tp);
 }
 
-int ReduceOp::Emit(VectorKernel &k) {
-  auto num = _ReduceOp::Emit(k);
-  if (System::Instance().Arch() != kAiCore_C220 && !round_tile_.empty() &&
-      nd_[lead_dim_] != strides_[lead_dim_]) {
-    tail_insn_ = insn_ + num;
-    auto size = EmitClearPad(tail_insn_, this, k.simd_width_);
-    *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-    num += size;
-  }
-  return num;
-}
-
 void ReduceOp::GenClearKernel(NDAccess *store) {
  if (clear_kernel_ == nullptr) {
     clear_kernel_ = new VKernelD();

@@ -29,6 +29,7 @@ enum ObjectType {
   kLoad,
   // Store
   kPadStore,
+  kSStore,
   kStore,
   // Simd
   kReshape,
@@ -480,7 +481,6 @@ class ReduceOp : public _ReduceOp {
   ~ReduceOp();
   void Normalize(std::vector<NDObject*> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
 
   void GenClearKernel(NDAccess *store);
   NDStore *clear_store_{nullptr};
@@ -562,7 +562,8 @@ class CubeOp : public NDObject {
 
 class NDSStore : public NDStore {
  public:
-  using NDStore::NDStore;
+  NDSStore(NDObject *src) : NDStore(src) { obj_id_ = kSStore; }
+  NDSStore(uint8_t *dst, NDObject *src) : NDStore(dst, src) { obj_id_ = kSStore; }
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;

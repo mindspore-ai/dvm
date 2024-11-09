@@ -50,6 +50,7 @@ class CodeGenHelper {
       kGenLoad,  // loaddummy
       kGenLoad,  // load
       kGenStore, // padstore
+      kGenStore, // sstore
       kGenStore, // store
       kGenSimd1, // reshape
       kGenSimd1, // copy
@@ -855,6 +856,7 @@ void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent
     "LoadDummy",
     "Load",
     "PadStore",
+    "SStore",
     "Store",
     "Reshape",
     "Copy",
@@ -1177,6 +1179,7 @@ NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
     true,  // loaddummy
     true,  // load
     false, // padstore
+    false, // sstore
     true,  // store
     true,  // reshape
     true,  // copy

@@ -1538,19 +1538,45 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
       shape_dims[i] = i;
       dims[i] = i;
     }
+    shape_.Resize(0);
+    if (keepdims_) {
+      for (size_t i = 0; i < lhs_dim; ++i) {
+        shape_[i] = 1;
+      }
+      shape_.Resize(lhs_dim);
+    }
   } else {
-    std::set<int64_t> dims_set;
-    for (size_t i = 0; i < dims_ref_->size; i++) {
+    size_t dim_size = dims_ref_->size;
+    for (size_t i = 0; i < dim_size; i++) {
       auto dim = dims_ref_->data[i];
       if (dim < 0) {
         dim += lhs_dim;
       }
-      dims_set.insert(dim);
+      if (i == 0 || dim > shape_dims[i - 1]) {
+        shape_dims[i] = dim;
+      } else {
+        size_t i_pos = i;
+        for (; i_pos > 0 && shape_dims[i_pos - 1] > dim; --i_pos) {
+          shape_dims[i_pos] = shape_dims[i_pos - 1];
+        }
+        shape_dims[i_pos] = dim;
+      }
     }
-    size_t dim_size = 0;
-    for (auto it = dims_set.begin(); it != dims_set.end(); ++it) {
-      shape_dims[dim_size++] = *it;
+    // update shape_ref_
+    size_t shape_size = 0;
+    size_t dim_idx = 0;
+    for (size_t i = 0; i < lhs_dim; ++i) {
+      if (dim_idx >= dim_size || static_cast<int64_t>(i) != shape_dims[dim_idx]) {
+        shape_[shape_size++] = input_shape_ref->data[i];
+      } else {
+        dim_idx++;
+        if (keepdims_) {
+          shape_[shape_size++] = 1;
+        }
+      }
     }
+    shape_.Resize(shape_size);
+    // update dims
     int64_t back_idx = shape_dims[dim_size - 1] + 1;
     int64_t back_end = input->nd_.size() - 1;
     while (back_idx <= back_end && input->nd_[back_end - back_idx] == 1) { // align fold may flip dims
@@ -1562,20 +1588,6 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
       dims[i] = lhs_dim - shape_dims[dim_size - i - 1] - 1;
     }
   }
-  // update shape_ref_
-  int shape_size = 0;
-  int dim_idx = 0;
-  for (int i = 0; i < static_cast<int>(input_shape_ref->size); ++i) {
-    if (i != shape_dims[dim_idx]) {
-      shape_[shape_size++] = input_shape_ref->data[i];
-    } else {
-      dim_idx++;
-      if (keepdims_) {
-        shape_[shape_size++] = 1;
-      }
-    }
-  }
-  shape_.Resize(shape_size);
   size_t stuff_idx = 0;
   int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
   for (size_t i = 0; i < dims.size(); ++i) {

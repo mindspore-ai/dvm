@@ -903,19 +903,13 @@ class DumpRefHelper {
     auto dump_var = [this](NDObject *obj) {
       if (obj == nullptr) {
         oss_ << "%?[]";
-	return;
+        return;
       }
-      oss_ << "%" << idx_map_[obj] << "[";
+      oss_ << "%" << idx_map_[obj];
       if (obj->shape_ref_) {
-        auto shape = obj->shape_ref_;
-        if (shape->size > 0) {
-          for (size_t i = 0; i < shape->size - 1; ++i) {
-            oss_ << shape->data[i] << ",";
-          }
-          oss_ << shape->data[shape->size - 1];
-        }
+        oss_ << *obj->shape_ref_;
       }
-      oss_ << "]<" << DTYPE_NAMES[obj->type_id_] << ">";
+      oss_ << "<" << DTYPE_NAMES[obj->type_id_] << ">";
     };
     dump_var(op);
     oss_ << " = ";

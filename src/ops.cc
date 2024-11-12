@@ -1514,6 +1514,14 @@ void _ReduceOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Reduce";
 }
 
+void ReduceOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "Reduce";
+  oss << "<";
+  oss << *dims_ref_ << ", ";
+  oss << std::boolalpha << keepdims_;
+  oss << ">";
+}
+
 ReduceOp::~ReduceOp() {
   for (auto op : stuff_ops_) {
     delete op;

@@ -77,6 +77,18 @@ struct PropRange {
   int64_t space;
 };
 
+inline std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape) {
+  oss << "[";
+  for (size_t i = 0; i < shape.size; i++) {
+    if (i) {
+      oss << ",";
+    }
+    oss << shape.data[i];
+  }
+  oss << "]";
+  return oss;
+}
+
 static inline void _DimCopy(int64_t *dst, const int64_t *src, size_t size) {
   switch (size) {
     case 10:
@@ -731,6 +743,7 @@ class ReduceOp : public _ReduceOp {
   void GenClearKernel(NDAccess *store);
   NDStore *clear_store_{nullptr};
   VectorKernel *clear_kernel_{nullptr};
+  void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
   std::vector<_ReduceOp*> stuff_ops_;

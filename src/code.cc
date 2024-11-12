@@ -728,6 +728,12 @@ class DisAssembler {
     DumpVal("trans_b", bool(op->flags & V_CUBE_FLAG_TRANS_B), oss);
     oss << ", ";
     DumpVal("swizzle", op->swizzle, oss);
+    if (op->flags & V_CUBE_FLAG_WITH_BIAS) {
+      oss << ", ";
+      DumpVal("gm_bias", reinterpret_cast<void *>(op->gm_bias), oss);
+      oss << ", ";
+      DumpVal("bias_type", (op->flags & V_CUBE_FLAG_BIAS_FP16) ? "fp16" : "fp32", oss);
+    }
   }
 
   void DasVec(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {

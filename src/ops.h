@@ -786,6 +786,7 @@ class AffinePropOp : public NDObject {
 class CubeOp : public NDObject {
  public:
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
+  CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
   ~CubeOp() override;
   int Emit(VectorKernel &k) override { return 0; }
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -829,6 +830,7 @@ class CubeOp : public NDObject {
   bool pingpong_store_{false};
   std::vector<int64_t> pad_a_;
   std::vector<int64_t> pad_b_;
+  NDObject *bias_{nullptr};
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);

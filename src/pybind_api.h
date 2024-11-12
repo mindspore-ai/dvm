@@ -89,7 +89,7 @@ class KernelPy {
   py::object Select(const py::object &cond, const py::object &lhs, const py::object &rhs);
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
-  py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b);
+  py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b, const py::object &bias);
   py::object ConvertToBF16(const py::object &input);
   py::object ConvertFromBF16(const py::object &input);
   void ParallelNext();

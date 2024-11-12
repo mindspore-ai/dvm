@@ -1638,7 +1638,8 @@ uint64_t MixKernel::UnAlignCodeGen() {
       pad_inputs[i] = inputs[i];
     }
   }
-  auto matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_);
+  auto matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, cube_op_->bias_);
+  cube_op_->bias_ = nullptr;
   static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
@@ -1681,12 +1682,14 @@ uint64_t MixKernel::SplitKCodeGen() {
     auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
     (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
     (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
-    auto output = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_);
-    static_cast<CubeOp*>(output)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, i + 1 == split_num ? k_tail : k_stride, offset_a,
-                         offset_b);
+    auto output =
+      stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, i == 0 ? cube_op_->bias_ : nullptr);
+    static_cast<CubeOp *>(output)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_,
+                                                i + 1 == split_num ? k_tail : k_stride, offset_a, offset_b);
     static_cast<CubeOp *>(output)->SetOutFp32(i != 0);
     (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, output)));
   }
+  cube_op_->bias_ = nullptr;
   auto matmul_fp32 = split_out.back()->lhs_;
   auto matmul_fp16 = stage_kernel_->Cast(matmul_fp32, cube_op_->lhs_->type_id_);
   if (post_fusion_) {
@@ -1770,6 +1773,9 @@ uint64_t MixKernel::AlignCodeGen() {
   vCubeOp *link_cube = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
   static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
   static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &link_cube->gm_b;
+  if (cube_op_->bias_) {
+    static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = &link_cube->gm_bias;
+  }
   if (!post_fusion_) {
     cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
     return 0;

@@ -146,7 +146,7 @@ class Kernel {
 
   NDObject *ElemAny(NDObject *input);
 
-  NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
+  NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias = nullptr);
 
   void StageSwitch(KernelType type);
   NDObject *StageLoad(NDObject *stage_store);

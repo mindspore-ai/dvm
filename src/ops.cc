@@ -1756,6 +1756,11 @@ void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
     : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b){};
 
+CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias)
+    : CubeOp(lhs, rhs, trans_a, trans_b) {
+  bias_ = bias;
+}
+
 CubeOp::~CubeOp() {
   if (lhs_->IsLoad()) {
     delete lhs_;
@@ -1765,6 +1770,9 @@ CubeOp::~CubeOp() {
   }
   if (output_->IsStore()) {
     delete output_;
+  }
+  if (bias_) {
+    delete bias_;
   }
 }
 
@@ -2109,6 +2117,10 @@ void CubeOp::CodeGen(vCubeOp *op) {
   if (trans_b_)  op->flags |= V_CUBE_FLAG_TRANS_B;
   if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
   if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
+  if (bias_) {
+    op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
+    op->flags |= V_CUBE_FLAG_WITH_BIAS;
+  }
   auto dtype = lhs_->type_id_;
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;

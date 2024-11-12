@@ -1144,6 +1144,8 @@ struct vStoreStatus {
 #define V_CUBE_FLAG_PINGPONG_STORE 16
 #define V_CUBE_FLAG_OUT_FP32 32
 #define V_CUBE_FLAG_ATOMIC_ADD 64
+#define V_CUBE_FLAG_WITH_BIAS 128
+#define V_CUBE_FLAG_BIAS_FP16 256
 
 struct vCubeOp {
   enum {FP16, BF16};
@@ -1160,6 +1162,7 @@ struct vCubeOp {
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;
+  uint64_t gm_bias;
   uint64_t a_size, b_size;
   uint64_t offset_a, offset_b; 
   // for aiv

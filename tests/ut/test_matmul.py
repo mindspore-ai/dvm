@@ -307,4 +307,22 @@ def test_tuning_matmul(shape_a, shape_b):
     assert (t.run_check())
     t.set_online_tuning(False)
 
-
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[2,16, 128, 128], [1,128, 256]],
+    [[7680, 1024], [1024, 4096]],
+    [[1024, 40960], [40960, 4096]],
+])
+def test_matmul_bias(shape_a, shape_b):
+    t = Tester("mix")
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
+    zx = np.random.normal(0, 0.01, [np_c.shape[len(np_c.shape)-1]]).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    z = t.load(zx)
+    c = t.matmul(a, b, False, False, z)
+    expect = np_c + zx
+    o = t.store_expect(c, expect, 2e-3)
+    assert (t.run_check())

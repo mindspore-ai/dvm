@@ -11,6 +11,7 @@ __aicore_inline__ void Swap(T &x, T &y) {
 }
 
 __aicore_inline__ uint64_t RoundUp(uint64_t val, uint64_t rnd) { return (val + rnd - 1) / rnd * rnd; }
+__aicore_inline__ uint64_t CeilDiv(uint64_t val, uint64_t rnd) { return (val + rnd - 1) / rnd; }
 
 #define __force_inline__ inline __attribute__((always_inline))
 
@@ -18,6 +19,7 @@ constexpr uint32_t L0_PINGPONG_BUFFER_LEN = 16384;
 constexpr uint32_t L1_PINGPONG_BUFFER_LEN = 131072;
 constexpr uint32_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
 constexpr uint32_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
+constexpr uint64_t BIAS_ADDR = 0;
 constexpr int32_t BLOCK_SIZE = 16;
 
 // TODO: only support fp16/bf16 now
@@ -43,6 +45,7 @@ class MatMul {
     n0 = op->n0;
     k0 = op->k0;
     flags = op->flags;
+    bias_type_size = (flags & V_CUBE_FLAG_BIAS_FP16) ? sizeof(half) : sizeof(float);
     swizzle_dir = op->swizzle >> 16;
     swizzle_cnt = op->swizzle & 0xffff;
     int64_t mn_max = m0 > n0 ? m0 : n0;
@@ -222,7 +225,7 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void Mad(__cc__ float *__restrict__ c, 
+  __force_inline__ __aicore__ void MM(__cc__ float *__restrict__ c, 
                                        __ca__ T *__restrict__ a, 
                                        __cb__ T *__restrict__ b, 
                                        bool init_c, 
@@ -242,6 +245,57 @@ class MatMul {
       0,                                      // kDirectionAlign
       0,                                      // cmatrixSource
       init_c                                  // cmatrixInitVal
+    );
+  }
+
+  __force_inline__ __aicore__ void LoadBias(__cbuf__ void *__restrict__ dst,
+                                            __gm__ void *__restrict__ src,
+                                            int64_t n_actual) {
+    copy_gm_to_cbuf(
+      dst,                                // dst
+      src,                                // src
+      0,                                  // sid
+      1,                                  // nBurst
+      CeilDiv(n_actual * bias_type_size, 32),  // lenBurst
+      0,                                  // srcGap
+      0,                                  // dstGap
+      PAD_NONE                            // padMode
+    );
+  }
+
+  __force_inline__ __aicore__ void LoadBt(uint64_t dst, __cbuf__ void *__restrict__ src, int64_t n_actual) {
+    copy_cbuf_to_bt(
+      dst,                                      // dst
+      src,                                      // src
+      (flags & V_CUBE_FLAG_BIAS_FP16) ? 1 : 0,  // convControl
+      1,                                        // nBurst
+      CeilDiv(n_actual * 2, 64),                // lenBurst
+      0,                                        // srcGap
+      0                                         // dstGap
+    );
+  }
+
+  __force_inline__ __aicore__ void MAD(__cc__ float *__restrict__ c, 
+                                        __ca__ T *__restrict__ a, 
+                                        __cb__ T *__restrict__ b, 
+                                        bool init_c, 
+                                        uint8_t unit_flag, 
+                                        int64_t m_actual, 
+                                        int64_t n_actual,
+                                        int64_t k0_actual) {
+    bool special_handle_req = (m_real != 1 && m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
+    mad(
+      c,
+      a,
+      b,
+      BIAS_ADDR,
+      special_handle_req ? 16 : m_actual,     // m
+      k0_actual,                              // k
+      n_actual,                               // n
+      unit_flag,                              // unitFlag
+      0,                                      // kDirectionAlign
+      1,                                      // cmatrixSource
+      0                                       // cmatrixInitVal
     );
   }
 
@@ -351,6 +405,7 @@ class MatMul {
   uint64_t swizzle_cnt;
   uint64_t a_size;
   uint64_t b_size;
+  uint64_t bias_type_size;
   uint32_t flags;
   uint32_t pingpong_store{0};
 };
@@ -370,11 +425,14 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a) + op->offset_a;
   __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b) + op->offset_b;
   __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c);
-  int64_t offset = (op->m0 * op->k0 * sizeof(T) + 256 - 1) / 256 * 256;  // TODO: int8 is 512
+  __gm__ uint8_t *__restrict__ gm_bias = reinterpret_cast<__gm__ uint8_t*>(op->gm_bias);
+  uint64_t offset_mk = RoundUp(op->m0 * op->k0 * sizeof(T), 256);  // TODO: int8 is 512
+  uint64_t offset_nk = RoundUp(op->n0 * op->k0 * sizeof(T), 256);  // TODO: int8 is 512
   __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);
-  __cbuf__ T *__restrict__ l1b = reinterpret_cast<__cbuf__ T*>(offset);
+  __cbuf__ T *__restrict__ l1b = reinterpret_cast<__cbuf__ T*>(offset_mk);
   __cbuf__ T *__restrict__ n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE);
-  __cbuf__ T *__restrict__ n_l1b = n_l1a + offset / sizeof(T);
+  __cbuf__ T *__restrict__ n_l1b = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE + offset_mk);
+  __cbuf__ void *__restrict__ bias_l1 = reinterpret_cast<__cbuf__ void*>(L1_PINGPONG_BUFFER_SIZE + offset_mk + offset_nk);
   __ca__ T *__restrict__ l0a_base = reinterpret_cast<__ca__ T*>(0);
   __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
@@ -388,6 +446,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
   set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+
   for (uint64_t tile = block_idx; tile < tile_end; tile += block_num) {
     __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
     uint64_t c_idx = tile / (mat.m_loop * mat.n_loop);
@@ -408,6 +468,11 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
       mat.LoadB(l1b, gm_b + offset_b, shuffle_k, nidx, k_actual, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+    }
+    if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
+      wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+      mat.LoadBias(bias_l1, gm_bias + mat.bias_type_size * nidx * mat.n0, n_actual);
+      set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
     }
     for (uint64_t k = 0; k < k_loop; ++k) {
       shuffle_k = (k + block_idx) % k_loop;
@@ -469,7 +534,16 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         if (k == k_loop - 1 && k_part_idx == k_part_loop - 1) {
           unit_flag = 0b11;  // allow reading from L0C
         }
-        mat.Mad(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
+        if ((mat.flags & V_CUBE_FLAG_WITH_BIAS) && init_c) {
+          wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
+          mat.LoadBt(BIAS_ADDR, bias_l1, n_actual);
+          set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);  // bias ready, mte2 can begin move A/B or scale
+          set_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);     // bias ready, mmad can begin
+          wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);    // wait move bias fron L1 to BT
+          mat.MAD(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
+        } else{
+          mat.MM(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
+        }
         pipe_barrier(PIPE_M);
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
@@ -498,6 +572,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
   if ((mat.flags & V_CUBE_FLAG_GROUP_SET) && block_idx + block_num < tile_end) {
     wait_flag_dev(1);
   }

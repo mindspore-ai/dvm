@@ -404,12 +404,12 @@ NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
   return obj;
 }
 
-NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b) {
+NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
   NDObject *obj;
   if (System::Instance().online_tuning_) {
-    obj = new TunedMatMul(lhs, rhs, trans_a, trans_b);
+    obj = new TunedMatMul(lhs, rhs, trans_a, trans_b, bias);
   } else {
-    obj = new CubeOp(lhs, rhs, trans_a, trans_b);
+    obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
   }
   kernel_->Append(obj);
   return obj;

@@ -326,3 +326,20 @@ def test_matmul_bias(shape_a, shape_b):
     expect = np_c + zx
     o = t.store_expect(c, expect, 2e-3)
     assert (t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[16, 16], [16, 4096]],
+    [[4096, 16], [16, 16]],
+    [[32, 4096, 16], [16, 16]],
+])
+def test_matmul_skip_loadL1(shape_a, shape_b):
+    t = Tester("mix")
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    o = t.store_expect(c, np_c, 2e-3)
+    assert (t.run_check())

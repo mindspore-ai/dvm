@@ -52,6 +52,7 @@ class MatMul {
     k0_part_len = min((uint64_t)(L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16), k0);
     m_loop = (m_real + m0 - 1) / m0;
     n_loop = (n_real + n0 - 1) / n0;
+    k_loop = (k_real + k0 - 1) / k0;
   }
 
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst,
@@ -395,7 +396,7 @@ class MatMul {
     offset_b = b_idx * b_size;
   }
 
-  uint64_t n_loop, m_loop;
+  uint64_t n_loop, m_loop, k_loop;
   uint64_t k0_part_len;
   uint64_t m_real, n_real, k_real;
   uint64_t m_align, n_align, k_align;
@@ -437,7 +438,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
-  uint64_t k_loop = (mat.k_real + mat.k0 - 1) / mat.k0;
   int64_t pingpong = 1;
   //if (op->forward_fusion) { wait_flag_dev(flag_id); }
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
@@ -458,8 +458,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     vCubeOp::TileMap(tile, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, midx, nidx);
     int64_t m_actual = (midx == (mat.m_loop - 1)) ? (mat.m_real - midx * mat.m0) : mat.m0;
     int64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
-    int64_t shuffle_k = block_idx % k_loop;
-    int64_t k_actual = (shuffle_k == k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
+    int64_t shuffle_k = block_idx % mat.k_loop;
+    int64_t k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
     if (tile == block_idx) {
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
@@ -474,16 +474,16 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       mat.LoadBias(bias_l1, gm_bias + mat.bias_type_size * nidx * mat.n0, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
     }
-    for (uint64_t k = 0; k < k_loop; ++k) {
-      shuffle_k = (k + block_idx) % k_loop;
-      k_actual = (shuffle_k == k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
+    for (uint64_t k = 0; k < mat.k_loop; ++k) {
+      shuffle_k = (k + block_idx) % mat.k_loop;
+      k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
       uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
       uint64_t k_part_loop = (k_actual + mat.k0_part_len - 1) / mat.k0_part_len;
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       auto event_id_next = pingpong ? EVENT_ID1 : EVENT_ID0;
-      if (k < k_loop - 1) {
-        int64_t shuffle_k_next = (block_idx + k + 1) % k_loop;
-        int64_t k_actual_next = (shuffle_k_next == k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
+      if (k < mat.k_loop - 1) {
+        int64_t shuffle_k_next = (block_idx + k + 1) % mat.k_loop;
+        int64_t k_actual_next = (shuffle_k_next == mat.k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         mat.LoadA(n_l1a, gm_a + offset_a, midx, shuffle_k_next, m_actual, k_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
@@ -497,13 +497,26 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         vCubeOp::TileMap(tile + block_num, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, n_midx, n_nidx);
         int64_t m_actual_next = (n_midx == (mat.m_loop - 1)) ? (mat.m_real - n_midx * mat.m0) : mat.m0;
         int64_t n_actual_next = (n_nidx == (mat.n_loop - 1)) ? (mat.n_real - n_nidx * mat.n0) : mat.n0;
-        int64_t shuffle_k_next = block_idx % k_loop;
-        int64_t k_actual_next = (shuffle_k_next == k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
+        int64_t shuffle_k_next = block_idx % mat.k_loop;
+        int64_t k_actual_next = (shuffle_k_next == mat.k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
+        bool load_a_flag = false;
+        bool load_b_flag = false;
+        if (mat.k_loop == 1 && tile >= block_num) {
+          int64_t c_idx_n_last = (tile - block_num) / (mat.m_loop * mat.n_loop);
+          uint64_t offset_a_last, offset_b_last;
+          mat.ComputeOffset(c_idx_n_last, offset_a_last, offset_b_last);
+          load_a_flag = (offset_a == offset_a_last && mat.m_loop < 3);
+          load_b_flag = (offset_b == offset_b_last && mat.n_loop < 3);
+        }
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
-        mat.LoadA(n_l1a, gm_a + offset_a, n_midx, shuffle_k_next, m_actual_next, k_actual_next);
+        if (!load_a_flag) {
+          mat.LoadA(n_l1a, gm_a + offset_a, n_midx, shuffle_k_next, m_actual_next, k_actual_next);
+        }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
-        mat.LoadB(n_l1b, gm_b + offset_b, shuffle_k_next, n_nidx, k_actual_next, n_actual_next);
+        if (!load_b_flag) {
+          mat.LoadB(n_l1b, gm_b + offset_b, shuffle_k_next, n_nidx, k_actual_next, n_actual_next);
+        }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
       for (int64_t k_part_idx = 0; k_part_idx < k_part_loop; ++k_part_idx) {
@@ -531,7 +544,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         wait_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
         bool init_c = (k == 0 && k_part_idx == 0);
         uint8_t unit_flag = 0b10;  // do not allow reading from L0C
-        if (k == k_loop - 1 && k_part_idx == k_part_loop - 1) {
+        if (k == mat.k_loop - 1 && k_part_idx == k_part_loop - 1) {
           unit_flag = 0b11;  // allow reading from L0C
         }
         if ((mat.flags & V_CUBE_FLAG_WITH_BIAS) && init_c) {
@@ -547,7 +560,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         pipe_barrier(PIPE_M);
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
-      pingpong = (pingpong + 1) & 1ul;
+      pingpong = pingpong ^ 1ul;
       Swap(l1a, n_l1a);
       Swap(l1b, n_l1b);
     }

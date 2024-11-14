@@ -332,6 +332,7 @@ def test_matmul_bias(shape_a, shape_b):
     [[16, 16], [16, 4096]],
     [[4096, 16], [16, 16]],
     [[32, 4096, 16], [16, 16]],
+    [[512, 64], [64, 8192]],
 ])
 def test_matmul_skip_loadL1(shape_a, shape_b):
     t = Tester("mix")

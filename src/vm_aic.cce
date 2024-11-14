@@ -385,7 +385,7 @@ class MatMul {
   // Compute global memory offset of matrix A and B based on batch idx of matrix C
   __force_inline__ __aicore__ void ComputeOffset(uint64_t c_idx, uint64_t &offset_a, uint64_t &offset_b) {
     uint64_t c_idx0 = c_idx / batch_c1;
-    uint64_t c_idx1 = c_idx % batch_c1;
+    uint64_t c_idx1 = c_idx - c_idx0 * batch_c1;
     uint64_t a_idx0 = c_idx0 >= batch_a0 ? batch_a0 - 1 : c_idx0;
     uint64_t a_idx1 = c_idx1 >= batch_a1 ? batch_a1 - 1 : c_idx1;
     uint64_t b_idx0 = c_idx0 >= batch_b0 ? batch_b0 - 1 : c_idx0;
@@ -439,6 +439,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
   int64_t pingpong = 1;
+  int64_t last_midx, last_nidx;
   //if (op->forward_fusion) { wait_flag_dev(flag_id); }
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
@@ -503,10 +504,10 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         bool load_b_flag = false;
         if (mat.k_loop == 1 && tile >= block_num) {
           int64_t c_idx_n_last = (tile - block_num) / (mat.m_loop * mat.n_loop);
-          uint64_t offset_a_last, offset_b_last;
-          mat.ComputeOffset(c_idx_n_last, offset_a_last, offset_b_last);
-          load_a_flag = (offset_a == offset_a_last && mat.m_loop < 3);
-          load_b_flag = (offset_b == offset_b_last && mat.n_loop < 3);
+          uint64_t last_offset_a, last_offset_b;
+          mat.ComputeOffset(c_idx_n_last, last_offset_a, last_offset_b);
+          load_a_flag = (offset_a == last_offset_a && last_midx == n_midx);
+          load_b_flag = (offset_b == last_offset_b && last_nidx == n_nidx);
         }
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         if (!load_a_flag) {
@@ -578,6 +579,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
     }
+    last_midx = midx;
+    last_nidx = nidx;
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);

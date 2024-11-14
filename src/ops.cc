@@ -1200,6 +1200,13 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
       shape_dims_[i] = i;
       dims_[i] = i;
     }
+    shape_.Resize(0);
+    if (keepdims_) {
+      for (size_t i = 0; i < lhs_dim; ++i) {
+        shape_[i] = 1;
+      }
+      shape_.Resize(lhs_dim);
+    }
   } else {
     std::set<int64_t> dims_set;
     std::for_each(shape_dims_.begin(), shape_dims_.end(), [&dims_set, lhs_dim](int64_t &n) {
@@ -1209,6 +1216,21 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
       dims_set.insert(n);
     });
     shape_dims_.assign(dims_set.begin(), dims_set.end());
+    // update shape_ref_
+    int shape_size = 0;
+    int dim_idx = 0;
+    int dim_size = static_cast<int>(shape_dims_.size());
+    for (int i = 0; i < static_cast<int>(input_shape_ref->size); ++i) {
+      if (dim_idx >= dim_size || i != shape_dims_[dim_idx]) {
+        shape_[shape_size++] = input_shape_ref->data[i];
+      } else {
+        dim_idx++;
+        if (keepdims_) {
+          shape_[shape_size++] = 1;
+        }
+      }
+    }
+    shape_.Resize(shape_size);
     int back_idx = shape_dims_.back() + 1;
     int back_end = input->nd_.size() - 1;
     while (back_idx <= back_end && input->nd_[back_end - back_idx] == 1) { // align fold may flip dims
@@ -1220,21 +1242,6 @@ void ReduceOp::Normalize(std::vector<NDObject*> &run_ops) {
       dims_[i] = lhs_dim - shape_dims_[size - i - 1] - 1;
     }
   }
-  // update shape_ref_
-  int shape_size = 0;
-  int dim_idx = 0;
-  int dim_size = static_cast<int>(shape_dims_.size());
-  for (int i = 0; i < static_cast<int>(input_shape_ref->size); ++i) {
-    if (dim_idx >= dim_size || i != shape_dims_[dim_idx]) {
-      shape_[shape_size++] = input_shape_ref->data[i];
-    } else {
-      dim_idx++;
-      if (keepdims_) {
-        shape_[shape_size++] = 1;
-      }
-    }
-  }
-  shape_.Resize(shape_size);
   size_t stuff_idx = 0;
   int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
   nd_ = input->nd_;

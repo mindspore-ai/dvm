@@ -439,7 +439,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
   int64_t pingpong = 1;
-  int64_t last_midx, last_nidx;
+  int64_t last_midx = -1;
+  int64_t last_nidx = -1;
   //if (op->forward_fusion) { wait_flag_dev(flag_id); }
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
@@ -472,7 +473,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     }
     if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
       wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
-      mat.LoadBias(bias_l1, gm_bias + mat.bias_type_size * nidx * mat.n0, n_actual);
+      if (nidx != last_nidx) {
+        mat.LoadBias(bias_l1, gm_bias + mat.bias_type_size * nidx * mat.n0, n_actual);
+      }
       set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
     }
     for (uint64_t k = 0; k < mat.k_loop; ++k) {
@@ -550,7 +553,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         }
         if ((mat.flags & V_CUBE_FLAG_WITH_BIAS) && init_c) {
           wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
-          mat.LoadBt(BIAS_ADDR, bias_l1, n_actual);
+          if (nidx != last_nidx) {
+            mat.LoadBt(BIAS_ADDR, bias_l1, n_actual);
+          }
           set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);  // bias ready, mte2 can begin move A/B or scale
           set_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);     // bias ready, mmad can begin
           wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);    // wait move bias fron L1 to BT

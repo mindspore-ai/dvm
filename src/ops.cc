@@ -1879,7 +1879,7 @@ void CubeOp::Tile(vCubeOp *op) {
   // k0
   uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
   uint32_t kBlockSize = BLOCK_SIZE;
-  auto l1_ping_pong_num = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_];
+  auto l1_ping_pong_num = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_] - (bias_ ? op->n0 : 0);
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
   op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
   if (op->k0 > CONST_512) {
@@ -1999,7 +1999,7 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
 
 void CubeOp::TileV2(vCubeOp *op) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
-  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_];
+  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_] - (bias_ ? op->n0 : 0);
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   float mincost = 3.125f;
   uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);

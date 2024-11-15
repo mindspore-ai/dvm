@@ -100,7 +100,7 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
 
 void TunedMatMul::TileV3(vCubeOp *op) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
-  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_];
+  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_] - (bias_ ? op->n0 : 0);
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
   uint32_t round_n = RoundUp(n_align_, BLOCK_SIZE);

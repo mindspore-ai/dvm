@@ -270,7 +270,7 @@ class MatMul {
       src,                                      // src
       (flags & V_CUBE_FLAG_BIAS_FP16) ? 1 : 0,  // convControl
       1,                                        // nBurst
-      CeilDiv(n_actual * 2, 64),                // lenBurst
+      CeilDiv(n_actual * bias_type_size, 64),   // lenBurst
       0,                                        // srcGap
       0                                         // dstGap
     );

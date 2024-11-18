@@ -97,7 +97,7 @@ def parse_operation(operation_part):
     """
     解析操作部分，提取操作名、标量参数和参数列表。
     """
-    op_match = re.match(r'^(\w+)(?:<([^>]+)>)?\((.*)\)$', operation_part)
+    op_match = re.match(r'^(\w+)(?:<([^>]*)>)?\((.*)\)$', operation_part)
     if op_match:
         operation = op_match.group(1)
         scalar_value = op_match.group(2)
@@ -190,6 +190,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
     skip_variables = {}      # 标记需要跳过代码生成的变量
     code_lines = []          # 存储生成的代码行
     requires_positive_inputs = False  # 是否需要正数输入
+    requires_integer_inputs = False   # 是否需要整数输入
 
     # 初始化算子计数器
     operator_count = 0
@@ -242,6 +243,8 @@ def parse_and_generate_code(block, idx, occurrence_count):
         # **检查是否存在 Log 或 Sqrt 操作**
         if operation in ['Log', 'Sqrt']:
             requires_positive_inputs = True
+        if operation == 'Power':
+            requires_integer_inputs = True
 
     # **第二遍：生成代码**
     i = 0
@@ -301,6 +304,9 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 # 处理浮点类型
                 if requires_positive_inputs:
                     line1 = f"{code_var_name}_a = np.abs(np.random.normal(0, 0.1, {shape_ref})).astype(np.{var_type}) + 1e-5"
+                elif requires_integer_inputs:
+                    # 生成整数值，存储为浮点数
+                    line1 = f"{code_var_name}_a = np.random.randint(1, 10, {shape_ref}).astype(np.{var_type})"
                 else:
                     line1 = f"{code_var_name}_a = np.random.normal(0, 0.1, {shape_ref}).astype(np.{var_type})"
             line2 = f"{code_var_name} = t.load({code_var_name}_a)"
@@ -338,7 +344,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
                     numpy_steps[var_name] = numpy_expr
                 else:
                     print(f"Error: variable {param_var_name} not found.")
-        elif operation in ['Add', 'Sub', 'Mul', 'Div', 'Pow', 'Max', 'Min']:
+        elif operation in ['Add', 'Sub', 'Mul', 'Div', 'Power', 'Maximum', 'Minimum', 'Compare', 'LogicalOr', 'LogicalAnd']:
             operator_count += 1  # 增加算子计数
             if len(params_list) == 2:
                 # 二元操作，两个参数
@@ -355,6 +361,10 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 param_numpy_expr1 = numpy_steps.get(param_var_name1)
                 param_numpy_expr2 = numpy_steps.get(param_var_name2)
                 if param_code_var1 and param_code_var2 and param_numpy_expr1 and param_numpy_expr2:
+                    if operation == "Compare":
+                        operation = "Less"
+                    if operation == "Power":
+                        operation = "Pow"
                     line = f"{code_var_name} = t.binary('{operation}', {param_code_var1}, {param_code_var2})"
                     code_lines.append('    ' + line)
                     numpy_op_map = {
@@ -363,8 +373,11 @@ def parse_and_generate_code(block, idx, occurrence_count):
                         'Sub': 'np.subtract',
                         'Div': 'np.divide',
                         'Pow': 'np.power',
-                        'Max': 'np.maximum',
-                        'Min': 'np.minimum',
+                        'Maximum': 'np.maximum',
+                        'Minimum': 'np.minimum',
+                        'Less': 'np.less',
+                        'LogicalOr': 'np.logical_or',
+                        'LogicalAnd': 'np.logical_and',
                     }
                     numpy_op = numpy_op_map.get(operation, 'np.add')
                     numpy_expr = f"{numpy_op}({param_numpy_expr1}, {param_numpy_expr2})"
@@ -373,6 +386,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
                     print(
                         f"Error: variable {param_var_name1} or {param_var_name2} not found.")
             elif len(params_list) == 1:
+                operator_count += 1  # 增加算子计数
                 # 二元操作，带标量参数
                 param_var_def = params_list[0]
                 param_var_name, _, _ = parse_variable_def(
@@ -391,11 +405,8 @@ def parse_and_generate_code(block, idx, occurrence_count):
                     numpy_op_map = {
                         'Add': 'np.add',
                         'Mul': 'np.multiply',
-                        'Sub': 'np.subtract',
-                        'Div': 'np.divide',
-                        'Pow': 'np.power',
-                        'Max': 'np.maximum',
-                        'Min': 'np.minimum',
+                        'Maximum': 'np.maximum',
+                        'Minimum': 'np.minimum',
                     }
                     numpy_op = numpy_op_map.get(operation, 'np.add')
                     numpy_expr = f"{numpy_op}({param_numpy_expr}, {scalar_value})"
@@ -423,7 +434,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
             code_lines.append('    ' + line)
             numpy_expr = f"np.full({shape_ref}, {scalar_value}, dtype=np.{var_type})"
             numpy_steps[var_name] = numpy_expr
-        elif operation in ['Abs', 'Neg', 'Exp', 'Log', 'Sqrt', 'Reciprocal']:
+        elif operation in ['Abs', 'Neg', 'Exp', 'Log', 'Sqrt', 'Reciprocal','IsFinite', 'LogicalNot']:
             operator_count += 1  # 增加算子计数
             if len(params_list) < 1:
                 print(f"{operation} operation缺少参数: {line}")
@@ -444,6 +455,8 @@ def parse_and_generate_code(block, idx, occurrence_count):
                     'Log': 'np.log',
                     'Sqrt': 'np.sqrt',
                     'Reciprocal': 'np.reciprocal',
+                    'IsFinite': 'np.isfinite',
+                    'LogicalNot': 'np.logical_not',
                 }
                 numpy_op = numpy_op_map.get(operation, 'np.abs')
                 numpy_expr = f"{numpy_op}({param_numpy_expr})"
@@ -501,45 +514,30 @@ def parse_and_generate_code(block, idx, occurrence_count):
             param_code_var = variable_mapping.get(param_var_name)
             param_numpy_expr = numpy_steps.get(param_var_name)
             if param_code_var and param_numpy_expr:
-                # 获取输入和输出的 shape
-                input_shape = variable_shapes.get(param_var_name)
-                output_shape = variable_shapes.get(var_name)
-                if input_shape and output_shape:
-                    # 推导 axis
-                    axis = [idx for idx, (in_dim, out_dim) in enumerate(
-                        zip(input_shape, output_shape)) if in_dim != out_dim]
-                    # 考虑形状长度不同的情况
-                    if len(input_shape) > len(output_shape):
-                        axis.extend(range(len(output_shape), len(input_shape)))
-                    # 处理 axis
-                    if not axis:
-                        # 如果 axis 为空列表，选择一个大小为 1 的维度进行归约
-                        axis = [idx for idx, dim in enumerate(
-                            input_shape) if dim == 1]
-                        if not axis:
-                            # 如果没有大小为 1 的维度，则归约所有维度
-                            axis = None
-                        else:
-                            axis = tuple(axis)
+                if scalar_value is not None:
+                    scalar_params = split_params(scalar_value)
+                    if len(scalar_params) == 2:
+                        axis_str = scalar_params[0]
+                        keepdims_str = scalar_params[1]
+                        axis = tuple(eval(axis_str))
+                        keepdims = True if keepdims_str.lower == 'true' else False
                     else:
-                        axis = tuple(axis)
-                    # 生成代码
-                    line = f"{code_var_name} = t.reduce('sum', {param_code_var}, {axis}, True)"
-                    code_lines.append('    ' + line)
-                    if axis is None:
-                        numpy_expr = f"np.sum({param_numpy_expr}, keepdims=True)"
-                    else:
-                        numpy_expr = f"np.sum({param_numpy_expr}, axis={axis}, keepdims=True)"
-                    numpy_steps[var_name] = numpy_expr
+                        print(f"Reduce not aixs")
+                        i += 1
+                        continue
+                        
+                # 生成代码
+                line = f"{code_var_name} = t.reduce('sum', {param_code_var}, {axis}, {keepdims})"
+                code_lines.append('    ' + line)
+                if axis is None:
+                    numpy_expr = f"np.sum({param_numpy_expr}, keepdims={keepdims})"
                 else:
-                    print(
-                        f"Error: shapes for variables {param_var_name} or {var_name} not found.")
+                    numpy_expr = f"np.sum({param_numpy_expr}, axis={axis}, keepdims={keepdims})"
+                numpy_steps[var_name] = numpy_expr
             else:
                 print(f"Error: variable {param_var_name} not found.")
         elif operation == 'AffineProp':
-            # 忽略 AffineProp 操作
-            print(f"Ignoring AffineProp operation for variable {var_name}")
-            # 不生成代码，也不更新映射
+            continue
         elif operation == 'Store':
             # Store 操作不计入算子数量
             if params_list:

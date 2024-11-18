@@ -49,6 +49,7 @@ inline __attribute__((always_inline)) uint32_t RoundDown(uint32_t num, uint32_t 
 constexpr uint32_t FP32_SIZE = 4;
 constexpr uint32_t BLOCK_SIZE = 16;
 constexpr uint32_t CUBE_BLOCK_SIZE = 256;
+constexpr uint32_t MAX_BIAS_SIZE = 1024;
 
 void ManualMatMul::SetTiling(const TuningInfo &info) {
   m0_ = info.m0;
@@ -100,7 +101,8 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
 
 void TunedMatMul::TileV3(vCubeOp *op) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
-  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_] - (bias_ ? op->n0 : 0);
+  auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
+  auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
   uint32_t round_n = RoundUp(n_align_, BLOCK_SIZE);

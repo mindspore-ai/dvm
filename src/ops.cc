@@ -32,6 +32,7 @@ constexpr uint32_t AXES_ALIGN_SIZE = 512;
 constexpr uint32_t CUBE_BLOCK_SIZE = 256;
 constexpr uint32_t CONST_512 = 512;
 constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
+constexpr uint32_t MAX_BIAS_SIZE = 1024;
 constexpr int64_t ALIGN_256 = 256;
 constexpr int64_t ALIGN_128 = 128;
 constexpr int64_t ALIGN_32 = 32;
@@ -1879,7 +1880,8 @@ void CubeOp::Tile(vCubeOp *op) {
   // k0
   uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
   uint32_t kBlockSize = BLOCK_SIZE;
-  auto l1_ping_pong_num = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_] - (bias_ ? op->n0 : 0);
+  auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
+  auto l1_ping_pong_num = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
   op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
   if (op->k0 > CONST_512) {
@@ -1999,7 +2001,8 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
 
 void CubeOp::TileV2(vCubeOp *op) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
-  auto l1_max = System::Instance().L1Size() / 2 / ITEM_SIZE[lhs_->type_id_] - (bias_ ? op->n0 : 0);
+  auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
+  auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   float mincost = 3.125f;
   uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
@@ -2120,6 +2123,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
   if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
   if (bias_) {
+    ASSERT(bias_->shape_ref_->size == 1 && (bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16))
     op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
   }

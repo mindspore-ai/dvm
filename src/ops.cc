@@ -2058,7 +2058,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
   if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
   if (bias_) {
-    ASSERT(bias_->shape_ref_->size == 1 && (bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16))
+    ASSERT(bias_->shape_ref_->size == 1 && (bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16));
     op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
   }

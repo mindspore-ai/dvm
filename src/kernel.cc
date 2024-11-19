@@ -2266,8 +2266,8 @@ uint64_t VKernelE::CodeGen() {
       kernels_.push_back(new EagerVector());
     }
   }
-  for (auto area_it = areas_.rbegin(); kidx > 0 && area_it != areas_.rend(); ++area_it) {
-    auto area = area_it->second;
+  while (area_used_ > 0 && kidx > 0) {
+    auto area = areas_[--area_used_].second;
     if (area->state_ == EagerArea::kFree) continue;
     area->state_ = EagerArea::kFree;
     auto kernel = kernels_[--kidx];
@@ -2336,13 +2336,7 @@ class EagerDumpRef : public DumpRefHelper {
 
 void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
   if (kernel_used_ == 0)  return;
-  bool codegen = true;
-  for (auto op : kernels_.front()->objects_) {
-    if (op->IsLoad() && !(op->flags_ & OBJ_FLAG_DEAD) && GetStore(op) == nullptr) {
-      codegen = false;
-    }
-  }
-  if (codegen) {
+  if (area_used_ == 0) {
     oss << "vgraph.eager() {" << std::endl;
     std::string body_indent = indent + "  ";
     for (int i = 0; i < kernel_used_; ++i) {

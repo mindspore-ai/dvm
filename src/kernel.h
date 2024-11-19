@@ -324,7 +324,6 @@ class VKernelE : public VKernel {
       NDObject::mem_pool_.Put(op);
     }
     objects_.clear();
-    area_used_ = 0;
     kernel_used_ = 0;
   }
 

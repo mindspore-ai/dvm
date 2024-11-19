@@ -32,3 +32,27 @@ def test_videochat_reducesum3():
     y2 = t.reduce("sum", y1, [1], False)
     t.store_expect(y2, e2)
     print(t.run_perf())
+
+def test_slice_dit_00():
+    '''
+      fragmented load2 cause bad performace. for 910B1
+      1. donot broadcast x of b tensor, time is 100us. tile_num=4200, simd_width=64. load(no padsize)=32x349
+      2. do broadcast x of b tensor, time is 600us. tile_num=6300, simd_width=48. load2(padsize=16)=80x93
+      suggestion: entire load to ub and split to diffrent area by vector?
+    '''
+    t = Tester("eager")
+    a = np.random.normal(0, 1, (1, 14, 41850, 40)).astype(np.float16)
+    #b = np.random.normal(0, 1, (1, 1, 41850, 40)).astype(np.float16)  # 100 us
+    b = np.random.normal(0, 1, (1, 1, 41850, 1)).astype(np.float16)   # 600 us
+    c = np.random.normal(0, 1, (1, 14, 41850, 40)).astype(np.float16)
+    y = t.load(b)
+    y = t.cast(y, "float32")
+    x = t.load(a)
+    x = t.cast(x, "float32")
+    z = t.binary("Mul", x, y)
+    zz = t.load(c)
+    zz = t.cast(zz, "float32")
+    z = t.binary("Add", zz, z)
+    z = t.cast(z, "float16")
+    t.store(z)
+    print(t.run_perf())

@@ -1040,7 +1040,7 @@ struct vCubeOp {
     start_m *= op->m0;
     start_n *= op->n0;
     uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n_real * op->m_real;
-    return tile_flag << 30 | (start_m * op->n_real + start_n + batch_offset);
+    return tile_flag << 32 | (start_m * op->n_real + start_n + batch_offset);
   }
 
   __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,

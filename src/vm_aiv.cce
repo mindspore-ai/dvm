@@ -31,13 +31,13 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define BlockDataShift(x)  (5 - sizeof(x) / 2)   // 1B - 5, 2B - 4, 4B - 3, 8B - not support
 
 // tile format:
-// mix: simd_width(8) << 56 | is_last_tile_m(1) << 55 | is_last_tile_n(1) << 54 | group_idx_offset(30) << 24 | tile_idx(20) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// mix: simd_width(8) << 56 | is_last_tile_m(1) << 53 | is_last_tile_n(1) << 52 | group_idx_offset(32) << 20 | tile_idx(16) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
 // vec: simd_width(8) << 56 | ------------------------------------------------------------------------------ | tile_idx(32) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
 #define V_TILE_N_BEGIN_FLAG_OFFSET  0
 #define V_TILE_END_FLAG_OFFSET      1
 #define V_TILE_TAIL_FLAG_OFFSET     2
 #define V_TILE_CUR_IDX_OFFSET       4
-#define V_TILE_GROUP_IDX_OFFSET     24
+#define V_TILE_GROUP_IDX_OFFSET     20
 #define V_TILE_SIMD_WIDTH_OFFSET    56
 #define V_SLOAD_FLAG_BROADCAST_N    1
 #define V_SLOAD_FLAG_BROADCAST_M    2
@@ -49,10 +49,10 @@ const uint64_t UB_WORKSPACE_SIZE = 1024;
 #define TileSimdWidth(tile)   (tile >> V_TILE_SIMD_WIDTH_OFFSET)
 #define GetRepeatStride(tile, x)  (tile >> (V_TILE_SIMD_WIDTH_OFFSET + BlockDataShift(x)))
 
-#define MixTileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 20)
-#define MixTileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 30)
-#define MixTileIsLastN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 30, 1)
-#define MixTileIsLastM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 31, 1)
+#define MixTileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 16)
+#define MixTileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, 32)
+#define MixTileIsLastN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 32, 1)
+#define MixTileIsLastM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + 33, 1)
 
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
   return (stride * type_size + 31) >> 5;

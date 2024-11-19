@@ -517,7 +517,7 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 
 int Kernel::EagerMsProfLaunch(void *stream) {
   int kernel_used;
-  auto kernels = static_cast<VKernelE *>(kernel_)->GetKernels(kernel_used);
+  const auto &kernels = static_cast<VKernelE*>(kernel_)->GetKernels(kernel_used);
   for (int i = 0; i < kernel_used; ++i) {
     MsProfHelper msprof_helper;
     auto &info = msprof_helper.info_;

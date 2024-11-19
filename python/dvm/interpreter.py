@@ -536,8 +536,6 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 numpy_steps[var_name] = numpy_expr
             else:
                 print(f"Error: variable {param_var_name} not found.")
-        elif operation == 'AffineProp':
-            continue
         elif operation == 'Store':
             # Store 操作不计入算子数量
             if params_list:

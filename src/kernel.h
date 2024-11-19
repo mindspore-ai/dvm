@@ -296,6 +296,7 @@ class StagesKernel : public VKernel {
 };
 
 class EagerVector;
+class EagerArea;
 class VKernelE : public VKernel {
  public:
   VKernelE(WsAllocFunc func, void *user_data);
@@ -318,42 +319,36 @@ class VKernelE : public VKernel {
   }
 
   void Clear() {
-    for (int i = 0; i < kernel_used_; ++i) {
-      for (auto op : reinterpret_cast<VectorKernel*>(kernels_[i])->objects_) {
-        op->~NDObject();
-        NDObject::mem_pool_.Put(op);
-      }
+    for (auto op : objects_) {
+      op->~NDObject();
+      NDObject::mem_pool_.Put(op);
     }
+    objects_.clear();
+    area_used_ = 0;
     kernel_used_ = 0;
   }
 
   static NDAccess* GetStore(NDObject *obj) { return reinterpret_cast<NDAccess*>(obj->insn_); }
 
  protected:
-  static int GetKernel(NDObject* obj) { return obj->lead_dim_; }
-  static void SetKernel(NDObject* obj, int kernel) { obj->lead_dim_ = kernel; }
+  static int GetArea(NDObject* obj) { return obj->lead_dim_; }
+  static void SetArea(NDObject* obj, int area_id) { obj->lead_dim_ = area_id; }
   static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t*>(store); }
   static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
   static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }
   static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 
-  void Exchange(int fuse_idx, int input_k, NDObject *input, NDObject* &cur_input);
-  NDObject *ExchangePending(NDObject *input);
-  void AppendPending(EagerVector *kernel, int fuse_idx, NDObject *op);
-  void PrepareInput(int fuse_idx, NDObject* input, NDObject* &cur_input) {
-    auto input_k = GetKernel(input);
-    if (input_k == -1) {
-      AppendPending(kernels_[fuse_idx], fuse_idx, input);
-    } else if (input_k != fuse_idx) {
-      Exchange(fuse_idx, input_k, input, cur_input);
-    }
-  }
+  void Split(NDObject *root);
+  NDObject* Exchange(EagerArea *area, NDObject *input);
 
+  std::vector<std::pair<EagerArea*, EagerArea*>> areas_;
   std::vector<EagerVector*> kernels_;
+  int area_used_{0};
+  int kernel_used_{0};
+  std::vector<NDObject*> objects_;
+  std::vector<NDObject*> temp_ops_;
   std::multimap<uint64_t, void*> wss_;
-  std::vector<NDObject*> norm_ops_;
-  int kernel_used_;
   WsAllocFunc ws_alloc_;
   void *user_data_;
 };

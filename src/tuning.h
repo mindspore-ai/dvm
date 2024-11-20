@@ -16,7 +16,6 @@
 
 #ifndef _DVM_TUNING_H_
 #define _DVM_TUNING_H_
-#include <vector>
 #include <map>
 #include "dvm.h"
 #include "ops.h"

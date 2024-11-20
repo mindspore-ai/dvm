@@ -17,10 +17,7 @@
 #ifndef _DVM_MSPROF_H_
 #define _DVM_MSPROF_H_
 
-#include <string>
 #include <vector>
-#include <memory>
-#include <map>
 #include <dvm.h>
 
 // rts_msprof
@@ -104,7 +101,6 @@ enum MsprofGeTensorType {
   MSPROF_GE_TENSOR_TYPE_INPUT = 0,
   MSPROF_GE_TENSOR_TYPE_OUTPUT,
 };
-const uint32_t MSPROF_DIFFERENCE = 200;
 
 #pragma pack(1)
 struct MsprofNodeBasicInfo {
@@ -217,56 +213,6 @@ struct ProfNodeAdditionInfo {
   MsprofApi api;
 };
 
-// format
-constexpr auto kOpFormat_DEFAULT = "DefaultFormat";
-constexpr auto kOpFormat_ChannelFirst = "ChannelFirst";
-constexpr auto kOpFormat_ChannelLast = "ChannelLast";
-constexpr auto kOpFormat_NC1KHKWHWC0 = "NC1KHKWHWC0";
-constexpr auto kOpFormat_ND = "ND";
-constexpr auto kOpFormat_NCHW = "NCHW";
-constexpr auto kOpFormat_NHWC = "NHWC";
-constexpr auto kOpFormat_HWCN = "HWCN";
-constexpr auto kOpFormat_CHWN = "CHWN";
-constexpr auto kOpFormat_NC1HWC0 = "NC1HWC0";
-constexpr auto kOpFormat_FRAC_Z = "FRACTAL_Z";
-constexpr auto kOpFormat_FRACTAL_Z = "FRACTAL_Z";
-constexpr auto kOpFormat_FRAC_NZ = "FRACTAL_NZ";
-constexpr auto kOpFormat_C1HWNCoC0 = "C1HWNCoC0";
-constexpr auto kOpFormat_NC1HWC0_C04 = "NC1HWC0_C04";
-constexpr auto kOpFormat_FRACTAL_Z_C04 = "FRACTAL_Z_C04";
-constexpr auto kOpFormat_NDHWC = "NDHWC";
-constexpr auto kOpFormat_NCDHW = "NCDHW";
-constexpr auto kOpFormat_DHWNC = "DHWNC";
-constexpr auto kOpFormat_DHWCN = "DHWCN";
-constexpr auto kOpFormat_NDC1HWC0 = "NDC1HWC0";
-constexpr auto kOpFormat_FRACTAL_Z_3D = "FRACTAL_Z_3D";
-constexpr auto kOpFormat_FRACTAL_ZN_LSTM = "FRACTAL_ZN_LSTM";
-constexpr auto kOpFormat_FRACTAL_ZN_RNN = "FRACTAL_ZN_RNN";
-constexpr auto kOpFormat_ND_RNN_BIAS = "ND_RNN_BIAS";
-
-// 0 means unknown format
-static std::map<std::string, uint32_t> OpFormat2Index{{kOpFormat_DEFAULT, 1},
-                                                      {kOpFormat_NC1KHKWHWC0, 2},
-                                                      {kOpFormat_ND, 3},
-                                                      {kOpFormat_NCHW, 4},
-                                                      {kOpFormat_NHWC, 5},
-                                                      {kOpFormat_HWCN, 6},
-                                                      {kOpFormat_NC1HWC0, 7},
-                                                      {kOpFormat_FRAC_Z, 8},
-                                                      {kOpFormat_C1HWNCoC0, 9},
-                                                      {kOpFormat_FRAC_NZ, 10},
-                                                      {kOpFormat_NC1HWC0_C04, 11},
-                                                      {kOpFormat_FRACTAL_Z_C04, 12},
-                                                      {kOpFormat_NDHWC, 13},
-                                                      {kOpFormat_FRACTAL_ZN_LSTM, 14},
-                                                      {kOpFormat_FRACTAL_ZN_RNN, 15},
-                                                      {kOpFormat_ND_RNN_BIAS, 16},
-                                                      {kOpFormat_NDC1HWC0, 17},
-                                                      {kOpFormat_NCDHW, 18},
-                                                      {kOpFormat_FRACTAL_Z_3D, 19},
-                                                      {kOpFormat_DHWNC, 20},
-                                                      {kOpFormat_DHWCN, 21}};
-
 namespace dvm {
 enum DTypeMs {
   kTypeUnKnown = 0,
@@ -285,8 +231,7 @@ enum DTypeMs {
   kNumberTypeBFloat16 = 45,
 };
 
-static const DTypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {
-  kNumberTypeInt8, kNumberTypeFloat16, kNumberTypeBFloat16, kNumberTypeFloat32, kNumberTypeInt32, kTypeUnKnown};
+extern const DTypeMs MAP_DTYPE_TO_MSDTYPE[];
 
 struct NodeInfo {
   const char *op_name;

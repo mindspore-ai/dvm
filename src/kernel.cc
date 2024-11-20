@@ -2166,7 +2166,7 @@ void VKernelE::Split(NDObject *root) {
   }
   area->Reset(root, kidx);
   kernel_used_++;
-  auto push_input = [area, kidx, this](NDObject* input, NDObject* &update) {
+  auto push_input = [area, this](NDObject* input, NDObject* &update) {
     if (auto idx = GetArea(input); idx >= 0) {
       if (auto a = areas_[idx].second; a != area) {
         if (a->state_ == EagerArea::kPending) {

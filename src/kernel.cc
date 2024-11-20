@@ -2312,6 +2312,7 @@ uint64_t VKernelE::CodeGen() {
     (void)kernel->EagerVector::CodeGen();
   }
   wss_.clear();
+  area_used_ = 0;
   return 0;
 }
 

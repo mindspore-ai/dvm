@@ -89,7 +89,7 @@ def test_matmul_bf16(trans):
     a = t.load(g0, "bfloat16")
     b = t.load(g1, "bfloat16")
     c = t.matmul(a, b, trans[0], trans[1])
-    t.store_expect(c, expect, 1e-1)
+    t.store_expect(c, expect, 5e-3)
     assert (t.run_check())
 
 @pytest.mark.mix
@@ -326,6 +326,25 @@ def test_matmul_bias(shape_a, shape_b):
     c = t.matmul(a, b, False, False, z)
     expect = np_c + zx
     o = t.store_expect(c, expect, 2e-3)
+    assert (t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[256, 256], [256, 256]],
+    [[102, 40000], [40000, 400]],
+])
+def test_matmul_bias_bf16(shape_a, shape_b):
+    t = Tester("mix")
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float32)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float32)
+    np_c = np.matmul(ax, bx)
+    zx = np.random.normal(0, 0.01, [np_c.shape[len(np_c.shape)-1]]).astype(np.float32)
+    a = t.load(ax, "bfloat16")
+    b = t.load(bx, "bfloat16")
+    z = t.load(zx, "bfloat16")
+    c = t.matmul(a, b, False, False, z)
+    expect = np_c + zx
+    o = t.store_expect(c, expect, 5e-3)
     assert (t.run_check())
 
 @pytest.mark.mix

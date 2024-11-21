@@ -223,6 +223,7 @@ class MixKernel : public VKernel {
   uint64_t SplitKCodeGen();
   uint64_t UnAlignCodeGen();
   uint64_t AlignCodeGen();
+  uint64_t BiasBF16CodeGen();
 
   VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};

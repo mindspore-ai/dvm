@@ -1715,6 +1715,39 @@ uint64_t MixKernel::SplitKCodeGen() {
   return workspace_size;
 }
 
+uint64_t MixKernel::BiasBF16CodeGen() {
+  stage_kernel_ = new Kernel();
+  stage_kernel_->Reset(KernelType::kStaticStages);
+  stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
+  auto bias_bf16 = stage_kernel_->Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
+  auto bias_fp32 = stage_kernel_->StageStore(stage_kernel_->Cast(bias_bf16, kFloat32));
+
+  stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
+  auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
+  auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
+  auto matmul_op = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32));
+  if (post_fusion_) {
+    EmplacePostFusion(sload_, matmul_op);
+  }
+  NDAccess *real_out{nullptr};
+  if (cube_op_->output_ != sload_) {
+    real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op));
+  }
+  auto stage_workspace_size = stage_kernel_->CodeGen();
+  auto workspace_size = stage_workspace_size;
+  code_ = std::move(stage_kernel_->GetImpl()->code_);
+
+  auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
+  auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
+  src_lhs->reloc_addr_ = static_cast<NDAccess *>(x)->reloc_addr_;
+  src_rhs->reloc_addr_ = static_cast<NDAccess *>(y)->reloc_addr_;
+  static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = static_cast<NDAccess *>(bias_bf16)->reloc_addr_;
+  if (real_out) {
+    cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
+  }
+  return workspace_size;
+}
+
 uint64_t MixKernel::AlignCodeGen() {
   size_t size = code_.HeadSize() + sizeof(vCubeOp);
   vCubeOp cube_code;
@@ -1802,6 +1835,9 @@ uint64_t MixKernel::CodeGen() {
     cube_op_->output_ = sload_;
   }
   cube_op_->InitPadShape();
+  if (cube_op_->bias_ && cube_op_->bias_->type_id_ == kBFloat16) {
+    return BiasBF16CodeGen();
+  }
   if (cube_op_->pad_a_.size() || cube_op_->pad_b_.size()) {
     return UnAlignCodeGen();
   }

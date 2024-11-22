@@ -25,6 +25,9 @@ def test_cmp(shape, type, op, func):
     t = Tester()
     a = np.random.randint(1024, size=shape).astype(type)
     b = np.random.randint(1024, size=shape).astype(type)
+    if type != np.int32:
+        a[0] = np.nan
+        b[0] = np.nan
     x = t.load(a)
     y = t.load(b)
     y = t.copy(y)

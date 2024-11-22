@@ -440,9 +440,9 @@ __aicore_inline__ void CastToBool(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint16_t src_rs = GetRepeatStride(tile, half);
   __ubuf__ half *xd = (__ubuf__ half *)(op.xd);
   __ubuf__ int16_t *xn = (__ubuf__ int16_t *)(op.xn);
-  repeat_vconv_s162f16(xd, xn, op.repeat, 1, 1, src_rs, src_rs);
+  repeat_vabs(xd, (__ubuf__ int16_t *)xd, op.repeat, 1, 1, src_rs, src_rs);
   pipe_barrier(PIPE_V);
-  repeat_vabs(xd, xd, op.repeat, 1, 1, src_rs, src_rs);
+  repeat_vconv_s162f16(xd, (__ubuf__ int16_t *)xd, op.repeat, 1, 1, src_rs, src_rs);
   pipe_barrier(PIPE_V);
   repeat_vmins(xd, xd, (half)1.0, op.repeat, 1, 1, src_rs, src_rs);
   pipe_barrier(PIPE_V);
@@ -602,13 +602,27 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 
 template <typename T>
 __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-#define CMP_DISPATCH(op_type, builtin) case op_type : do {                     \
-    for (uint64_t i = 0; i < op.repeat; i++) {                                 \
-      builtin(xn, xm, 1, rs);                                                  \
-      vSel(xd, (__ubuf__ T*)WORKSPACE, (__ubuf__ T*)(WORKSPACE + 256), 1, rs); \
-      xn += simd_width; xm += simd_width; xd += simd_width;                    \
-    }                                                                          \
-  } while (0); break
+#define CMP_DISPATCH(op_type, builtin)                                             \
+  case op_type:                                                                    \
+    do {                                                                           \
+      pipe_barrier(PIPE_V);                                                        \
+      if constexpr (op_type == V_CMP_NE) {                                         \
+        vDup((__ubuf__ T *)WORKSPACE, (T)0.0, 1, rs);                              \
+        vDup((__ubuf__ T *)(WORKSPACE + 256), (T)1.0, 1, rs);                      \
+      } else {                                                                     \
+        vDup((__ubuf__ T *)WORKSPACE, (T)1.0, 1, rs);                              \
+        vDup((__ubuf__ T *)(WORKSPACE + 256), (T)0.0, 1, rs);                      \
+      }                                                                            \
+      pipe_barrier(PIPE_V);                                                        \
+      for (uint64_t i = 0; i < op.repeat; i++) {                                   \
+        builtin(xn, xm, 1, rs);                                                    \
+        vSel(xd, (__ubuf__ T *)WORKSPACE, (__ubuf__ T *)(WORKSPACE + 256), 1, rs); \
+        xn += simd_width;                                                          \
+        xm += simd_width;                                                          \
+        xd += simd_width;                                                          \
+      }                                                                            \
+    } while (0);                                                                   \
+    break
   vCompare op;
   vCompare::Decode(pc, head, op);
   __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
@@ -616,13 +630,9 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
   uint64_t simd_width = TileSimdWidth(tile);
   uint64_t rs = simd_width >> SIMD_WIDTH_SHIFT(xd);
-  pipe_barrier(PIPE_V);
-  vDup((__ubuf__ T *)WORKSPACE, (T)1.0, 1, rs);
-  vDup((__ubuf__ T *)(WORKSPACE + 256), (T)0.0, 1, rs);
-  pipe_barrier(PIPE_V);
   switch (op.type) {
     CMP_DISPATCH(V_CMP_EQ, vCmpEq);
-    CMP_DISPATCH(V_CMP_NE, vCmpNe);
+    CMP_DISPATCH(V_CMP_NE, vCmpEq);
     CMP_DISPATCH(V_CMP_GT, vCmpGt);
     CMP_DISPATCH(V_CMP_GE, vCmpGe);
     CMP_DISPATCH(V_CMP_LT, vCmpLt);

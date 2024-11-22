@@ -112,7 +112,7 @@ def test_cast_block1_align():
 
 def test_cast_bool_select():
     t = Tester()
-    a = np.array([0.23, -0.5, 0.6, -1.2]).astype(np.float32)
+    a = np.array([0.23, -0, 0.6, -1.2]).astype(np.float32)
     b = np.full([4], 1.0).astype(np.float16)
     c = np.full([4], 2.0).astype(np.float16)
     x1 = t.load(a)
@@ -127,6 +127,10 @@ def test_cast_bool_select():
 def test_cast_fp_to_bool_fp(type):
     t = Tester()
     a = np.random.normal(0, 1, [1024, 32]).astype(type)
+    a[0] = np.nan
+    a[1] = -0.0
+    a[2] = 0.0
+    a[3] = np.inf
     x = t.load(a)
     y = t.cast(x, "bool")
     y = t.cast(y, type.__name__)

@@ -514,24 +514,6 @@ __aicore_inline__ void Reciprocal(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-// First, treat fp16 as int16, then convert to fp16 to ensure all non-zero floats are greater than 1 and are integers
-// Normalize using abs and min to only have 0 and 1, ensuring the correctness of converting fp16 to bool
-__aicore_inline__ void CastToBool(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vUnary op;
-  vUnary::Decode(pc, head, op);
-  uint16_t dst_rs = GetRepeatStride(tile, int8_t);
-  uint16_t src_rs = GetRepeatStride(tile, half);
-  __ubuf__ half *xd = (__ubuf__ half *)(op.xd);
-  __ubuf__ int16_t *xn = (__ubuf__ int16_t *)(op.xn);
-  repeat_vconv_s162f16(xd, xn, op.repeat, 1, 1, src_rs, src_rs);
-  pipe_barrier(PIPE_V);
-  repeat_vabs(xd, xd, op.repeat, 1, 1, src_rs, src_rs);
-  pipe_barrier(PIPE_V);
-  repeat_vmins(xd, xd, (half)1.0, op.repeat, 1, 1, src_rs, src_rs);
-  pipe_barrier(PIPE_V);
-  repeat_vconv_f162s8((__ubuf__ int8_t *)xd, xd, op.repeat, 1, 1, dst_rs, src_rs);
-}
-
 template <typename T>
 __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vElementAny op;
@@ -685,22 +667,27 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 
 template <typename T>
 __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-#define CMP_DISPATCH(op_type, builtin)                                                \
-  case op_type:                                                                       \
-    do {                                                                              \
+#define CMP_DISPATCH(op_type, builtin)                                                 \
+  case op_type:                                                                        \
+    do {                                                                               \
       repeat_##builtin(ws, xn, xm, op.repeat, 1, 1, 1, rs, rs, rs);                    \
-      pipe_barrier(PIPE_V);                                                           \
-      vDup((__ubuf__ T *)WORKSPACE, (T)0.0, 1, rs);                                   \
-      vDup((__ubuf__ T *)(WORKSPACE + 256), (T)1.0, 1, rs);                           \
-      pipe_barrier(PIPE_V);                                                           \
-      set_cmpmask((__ubuf__ void *)(WORKSPACE));                                      \
-      for (; op.repeat > 255; op.repeat -= 255) {                                     \
+      pipe_barrier(PIPE_V);                                                            \
+      if constexpr (op_type == V_CMP_NE) {                                             \
+        vDup((__ubuf__ T *)WORKSPACE, (T)1.0, 1, rs);                                  \
+        vDup((__ubuf__ T *)(WORKSPACE + 256), (T)0.0, 1, rs);                          \
+      } else {                                                                         \
+        vDup((__ubuf__ T *)WORKSPACE, (T)0.0, 1, rs);                                  \
+        vDup((__ubuf__ T *)(WORKSPACE + 256), (T)1.0, 1, rs);                          \
+      }                                                                                \
+      pipe_barrier(PIPE_V);                                                            \
+      set_cmpmask((__ubuf__ void *)(WORKSPACE));                                       \
+      for (; op.repeat > 255; op.repeat -= 255) {                                      \
         vsel(xd, (__ubuf__ T *)(WORKSPACE + 256), ws, 255, 1, 1, 1, rs, 0, rs, 1);     \
-        xd += 255 * simd_width;                                                       \
-        ws += 255 * 32 * rs;                                                  \
-      }                                                                               \
+        xd += 255 * simd_width;                                                        \
+        ws += 255 * 32 * rs;                                                           \
+      }                                                                                \
       vsel(xd, (__ubuf__ T *)(WORKSPACE + 256), ws, op.repeat, 1, 1, 1, rs, 0, rs, 1); \
-    } while (0);                                                                      \
+    } while (0);                                                                       \
     break
   vCompare op;
   vCompare::Decode(pc, head, op);
@@ -712,7 +699,7 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t rs = simd_width >> SIMD_WIDTH_SHIFT(xd);
   switch (op.type) {
     CMP_DISPATCH(V_CMP_EQ, vcmpv_eq);
-    CMP_DISPATCH(V_CMP_NE, vcmpv_ne);
+    CMP_DISPATCH(V_CMP_NE, vcmpv_eq);
     CMP_DISPATCH(V_CMP_GT, vcmpv_gt);
     CMP_DISPATCH(V_CMP_GE, vcmpv_ge);
     CMP_DISPATCH(V_CMP_LT, vcmpv_lt);
@@ -723,13 +710,18 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 
 template <typename T>
 __aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-#define CMPS_DISPATCH(op_type, builtin)                                                 \
+#define CMPS_DISPATCH(op_type, builtin)                                                \
   case op_type:                                                                        \
     do {                                                                               \
       repeat_##builtin(ws, xn, (T)op.scalar, op.repeat, 1, 1, rs, rs);                 \
       pipe_barrier(PIPE_V);                                                            \
-      vDup((__ubuf__ T *)WORKSPACE, (T)0.0, 1, rs);                                    \
-      vDup((__ubuf__ T *)(WORKSPACE + 256), (T)1.0, 1, rs);                            \
+      if constexpr (op_type == V_CMP_NE) {                                             \
+        vDup((__ubuf__ T *)WORKSPACE, (T)1.0, 1, rs);                                  \
+        vDup((__ubuf__ T *)(WORKSPACE + 256), (T)0.0, 1, rs);                          \
+      } else {                                                                         \
+        vDup((__ubuf__ T *)WORKSPACE, (T)0.0, 1, rs);                                  \
+        vDup((__ubuf__ T *)(WORKSPACE + 256), (T)1.0, 1, rs);                          \
+      }                                                                                \
       pipe_barrier(PIPE_V);                                                            \
       set_cmpmask((__ubuf__ void *)(WORKSPACE));                                       \
       for (; op.repeat > 255; op.repeat -= 255) {                                      \
@@ -749,7 +741,7 @@ __aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   uint64_t rs = simd_width >> SIMD_WIDTH_SHIFT(xd);
   switch (op.type) {
     CMPS_DISPATCH(V_CMP_EQ, vcmpvs_eq);
-    CMPS_DISPATCH(V_CMP_NE, vcmpvs_ne);
+    CMPS_DISPATCH(V_CMP_NE, vcmpvs_eq);
     CMPS_DISPATCH(V_CMP_GT, vcmpvs_gt);
     CMPS_DISPATCH(V_CMP_GE, vcmpvs_ge);
     CMPS_DISPATCH(V_CMP_LT, vcmpvs_lt);
@@ -1908,7 +1900,7 @@ DEF_DISP_FUNC(V_DIV_FP16, BINARY(pc, vdiv, head, tile, half))
 DEF_DISP_FUNC(V_MIN_FP16, BINARY(pc, vmin, head, tile, half))
 DEF_DISP_FUNC(V_MAX_FP16, BINARY(pc, vmax, head, tile, half))
 
-DEF_DISP_FUNC(V_CAST_FP16_TO_BOOL, CastToBool(pc, head, tile))
+DEF_DISP_FUNC(V_CAST_FP16_TO_BOOL, CAST(pc, vconv_f162s8, head, tile, half, int8_t))
 DEF_DISP_FUNC(V_CAST_FP16_TO_FP32, CAST(pc, vconv_f162f32, head, tile, half, float))
 DEF_DISP_FUNC(V_CAST_FP16_TO_INT32, CAST(pc, vconv_f162s32z, head, tile, half, int32_t))
 DEF_DISP_FUNC(V_CMP_FP16, BinCompare<half>(pc, head, tile))

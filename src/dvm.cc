@@ -305,6 +305,17 @@ NDObject* Kernel::Cast(NDObject* input, DType type) {
   if (input->type_id_ == type) {
     return input;
   }
+  auto input_obj_type = input->GetObjectType();
+  if (type == kBool && input_obj_type != kCompare && input_obj_type != kCompareS) {
+    if (input->type_id_ == kBFloat16) {
+      input = Cast(input, kFloat32);
+    }
+    if (input->type_id_ == kInt32) {
+      input = Binary(BinaryOpType::kNotEqual, input, 0);
+    } else {
+      input = Binary(BinaryOpType::kNotEqual, input, 0.0f);
+    }
+  }
   auto stuff_type = g_cast_staff_type[input->type_id_][type];
   while (stuff_type != -1) {
     input = new CastOp(input, static_cast<DType>(stuff_type));

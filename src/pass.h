@@ -23,94 +23,148 @@
 #include "ops.h"
 
 namespace dvm::pass {
-#define NEXT_OBJ(a) reinterpret_cast<NDObject *>((a)->insn_)
-#define PREV_OBJ(a) reinterpret_cast<NDObject *>((a)->tail_insn_)
-
-template <bool IsReverse>
-class NDObjectIterator {
-  friend NDObjectIterator<!IsReverse>;
-
+class BasicBlock;
+class ObjectList {
  public:
-  // these alias is used in <algorithm>
-  using value_type = NDObject;
-  using pointer = NDObject *;
-  using reference = NDObject &;
-  using iterator_category = std::bidirectional_iterator_tag;
-  using difference_type = std::ptrdiff_t;
+  ObjectList() : sentinel_(kTypeEnd) {}
+  void Build(const std::vector<NDObject *> &objects, bool reindex);
 
- private:
-  pointer ptr_;
-
- public:
-  NDObjectIterator(pointer ptr) : ptr_(ptr) {}
-
-  // Get a reverse iterator to the same content
-  NDObjectIterator<!IsReverse> GetReverse() const { return NDObjectIterator<!IsReverse>(ptr_); }
-
-  NDObjectIterator &operator++() {
-    ptr_ = IsReverse ? PREV_OBJ(ptr_) : NEXT_OBJ(ptr_);
-    return *this;
+  void Insert(NDObject *pos, NDObject *obj) {
+    auto prev = Prev(pos);
+    SetPrev(obj, prev);
+    SetNext(obj, pos);
+    SetPrev(pos, obj);
+    SetNext(prev, obj);
+    size_++;
+    obj->index_ = capacity_++;
   }
 
-  NDObjectIterator operator++(int) {
-    NDObjectIterator tmp = *this;
-    ++(*this);
-    return tmp;
+  void Erase(NDObject *obj) {
+    auto prev = Prev(obj);
+    auto next = Next(obj);
+    SetNext(prev, next);
+    SetPrev(next, prev);
+    size_--;
   }
 
-  NDObjectIterator operator--() {
-    ptr_ = IsReverse ? NEXT_OBJ(ptr_) : PREV_OBJ(ptr_);
-    return *this;
-  }
+  static NDObject *Next(NDObject *obj) { return reinterpret_cast<NDObject*>(obj->insn_); }
+  static NDObject *Prev(NDObject *obj) { return reinterpret_cast<NDObject*>(obj->tail_insn_); }
+  static void SetNext(NDObject *obj, NDObject *next) { obj->insn_ = reinterpret_cast<uint64_t*>(next); }
+  static void SetPrev(NDObject *obj, NDObject *prev) { obj->tail_insn_ = reinterpret_cast<uint64_t*>(prev); }
 
-  NDObjectIterator operator--(int) {
-    NDObjectIterator tmp = *this;
-    --(*this);
-    return tmp;
-  }
+  template <bool reverse>
+  class Iterator {
+    public:
+      // these alias is used in <algorithm>
+      using value_type = NDObject;
+      using pointer = NDObject *;
+      using reference = NDObject &;
+      using iterator_category = std::bidirectional_iterator_tag;
+      using difference_type = std::ptrdiff_t;
 
-  bool operator!=(const NDObjectIterator &other) const { return ptr_ != other.ptr_; }
+      Iterator(pointer ptr) : ptr_(ptr) {}
 
-  reference operator*() { return *ptr_; }
+      Iterator &operator++() {
+        ptr_ = reverse ? ObjectList::Prev(ptr_) : ObjectList::Next(ptr_);
+        return *this;
+      }
 
-  pointer operator->() { return ptr_; }
+      Iterator operator++(int) {
+        Iterator tmp = *this;
+        ++(*this);
+        return tmp;
+      }
 
-  NDObjectIterator GetPrev() {
-    NDObjectIterator iter = *this;
-    return --iter;
-  }
+      Iterator operator--() {
+        ptr_ = reverse ? ObjectList::Next(ptr_) : ObjectList::Prev(ptr_);
+        return *this;
+      }
 
-  NDObjectIterator GetNext() {
-    NDObjectIterator iter = *this;
-    return ++iter;
-  }
+      Iterator operator--(int) {
+        Iterator tmp = *this;
+        --(*this);
+        return tmp;
+      }
 
-  NDObject *get() { return ptr_; }
+      bool operator!=(const Iterator &other) const { return ptr_ != other.ptr_; }
+
+      reference operator*() { return *ptr_; }
+      pointer operator->() { return ptr_; }
+
+      Iterator GetPrev() {
+        Iterator iter = *this;
+        return --iter;
+      }
+
+      Iterator GetNext() {
+        Iterator iter = *this;
+        return ++iter;
+      }
+
+      NDObject *get() { return ptr_; }
+
+    private:
+      pointer ptr_;
+  };
+
+ protected:
+  NDLoadDummy sentinel_;
+  size_t size_;
+  size_t capacity_;
+  friend BasicBlock;
 };
 
-class BasicBlockContext {
-  friend class BasicBlock;
+class BasicBlock {
+ public:
   struct Edge {
     int64_t next;
     NDObject *user;
   };
 
-  void Init(const std::vector<NDObject *> &objects);
+  using iterator = ObjectList::Iterator<false>;
+  using reverse_iterator = ObjectList::Iterator<true>;
+  using pointer = NDObject *;
 
-  void Init(NDObjectIterator<false> begin, NDObjectIterator<false> end, size_t capcity);
+  BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner);
 
- public:
+  iterator begin() { return iterator(ObjectList::Next(&list_.sentinel_)); }
+  iterator end() { return iterator(&list_.sentinel_); }
+  reverse_iterator rbegin() { return reverse_iterator(ObjectList::Prev(&list_.sentinel_)); }
+  reverse_iterator rend() { return reverse_iterator(&list_.sentinel_); }
+
+  inline size_t size() const { return list_.size_; }
+  inline size_t capacity() const { return list_.capacity_; }
+
+  iterator Insert(iterator iter, pointer object);
+  void Erase(NDObject *object);
+  iterator Move(iterator iter, pointer object);
+
+  void PushFront(pointer ptr) { Insert(begin(), ptr); }
+  void PushBack(pointer ptr) { Insert(end(), ptr); }
+
+  template <bool if_update_index = true>
+  std::vector<NDObject *> ToVector();
+
+  void Export(std::vector<NDObject *> &objects);
+
   // Will fail when object is not exist in the context.
   // And users may duplicate
   std::vector<NDObject *> GetUsers(NDObject *object) const {
     ASSERT(object->index_ < static_cast<int>(head_.size()));
     std::vector<NDObject *> res;
-    auto idx = head_[object->index_];
-    while (idx != -1) {
+    for (auto idx = head_[object->index_]; idx != -1; idx = edges_[idx].next) {
       res.push_back(edges_[idx].user);
-      idx = edges_[idx].next;
     }
     return res;
+  }
+
+  size_t GetUserNum(NDObject *object) const {
+    ASSERT(object->index_ < static_cast<int>(head_.size()));
+    size_t num = 0;
+    for (auto idx = head_[object->index_]; idx != -1; idx = edges_[idx].next) {
+      num++;
+    }
+    return num;
   }
 
   bool IsMultiUsers(NDObject *object) const {
@@ -119,86 +173,20 @@ class BasicBlockContext {
     return idx != -1 && edges_[idx].next != -1;
   }
 
-  // Delete object from context
-  void Erase(NDObject *object);
-
   inline void AddUser(NDObject *obj, NDObject *new_user) {
     ASSERT(obj->index_ < static_cast<int>(head_.size()));
     edges_.push_back({head_[obj->index_], new_user});
     head_[obj->index_] = edges_.size() - 1;
   }
 
+  ObjectList &List() { return list_; }
+
  protected:
+  ObjectList list_;
   std::vector<int64_t> head_;
   std::vector<Edge> edges_;
-};
-
-/// @brief Container of NDObject* in pass pipeline
-/// @note For efficiency, we use vector instead of map-like data structures
-/// in many scenarios in the underlying implementation. So the implementation
-/// is relying on NDObject's index_, which will be monotonically increasing.
-class BasicBlock {
- public:
-  BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner);
-
- public:
-  using iterator = NDObjectIterator<false>;
-  using reverse_iterator = NDObjectIterator<true>;
-  using pointer = NDObject *;
-
-  // Change topological order, note that the graph should not have been changed.
-  // If shoose to update index, context will be invalid
-  void ReOrder(const std::vector<NDObject *> &objects, bool if_update_index = false);
-
-  iterator begin() { return iterator(NEXT_OBJ(&sentinel_)); }
-
-  iterator end() { return iterator(&sentinel_); }
-
-  reverse_iterator rbegin() { return reverse_iterator(PREV_OBJ(&sentinel_)); }
-
-  reverse_iterator rend() { return reverse_iterator(&sentinel_); }
-
-  inline size_t size() const { return size_; }
-
-  inline size_t capacity() const { return capacity_; }
-
-  // Insert a object before position of iterator, ownership is moved to object_owner_.
-  iterator Insert(iterator iter, pointer object);
-
-  // Remove the object at position of iterator, the NDObject won't be deleted.
-  iterator Erase(iterator iter);
-
-  // Move an object to a new position just before the iterator
-  iterator Move(iterator iter, pointer object);
-
-  void PushFront(pointer ptr) { Insert(begin(), ptr); }
-
-  void PushBack(pointer ptr) { Insert(end(), ptr); }
-
-  template <bool if_update_index = true>
-  std::vector<NDObject *> ToVector();
-
-  void Export(std::vector<NDObject *> &objects);
-
-  // Remove use of insn_ and tail_insn_
-  void Clear();
-
-  BasicBlockContext &context() { return context_; }
-  const BasicBlockContext &context() const { return context_; }
-
-  // Should be called after dependency graph of objects has changed
-  void UpdateContext();
-
- protected:
-  NDLoadDummy sentinel_;
-  size_t size_;
-  size_t capacity_;
-  BasicBlockContext context_;
   std::vector<NDObject *> &objects_owner_;
 };
-
-#undef NEXT_OBJ
-#undef PREV_OBJ
 
 // ------ Introducing Pass--------
 

@@ -26,10 +26,6 @@
 #include <optional>
 
 namespace dvm::pass {
-#define NEXT_OBJ(a) reinterpret_cast<NDObject *>((a)->insn_)
-#define PREV_OBJ(a) reinterpret_cast<NDObject *>((a)->tail_insn_)
-#define ASSIGN_NEXT_OBJ(a, b) (a)->insn_ = reinterpret_cast<uint64_t *>(b)
-#define ASSIGN_PREV_OBJ(a, b) (a)->tail_insn_ = reinterpret_cast<uint64_t *>(b)
 
 namespace {
 constexpr int kNumUsersBig = 100;
@@ -91,8 +87,6 @@ NDObject *&GetInputRef(NDObject *obj, NDObject *input) {
   return static_cast<FlexOp*>(obj)->xhs_;
 }
 
-inline std::vector<NDObject *> GetSuccs(NDObject *obj, const BasicBlock &bb) { return bb.context().GetUsers(obj); }
-
 size_t MaxLive(BasicBlock &bb) {
   size_t peak = 0;
   size_t current_live = 0;
@@ -122,7 +116,7 @@ size_t MaxLive(BasicBlock &bb) {
       continue;
     }
     if (num_users.find(&obj) == num_users.end()) {
-      num_users[&obj] = GetSuccs(&obj, bb).size();
+      num_users[&obj] = bb.GetUserNum(&obj);
       ++current_live;
     }
 
@@ -211,7 +205,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
   for (auto iter = bb.rbegin(); iter != bb.rend(); ++iter) {
     auto obj = iter.get();
     heights[obj] = 0;
-    for (auto user : GetSuccs(iter.get(), bb)) {
+    for (auto user : bb.GetUsers(iter.get())) {
       heights[obj] = std::max(heights[obj], heights[user] + 1);
     }
     if (!obj->IsSimd()) {
@@ -235,7 +229,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     auto obj = pq.top();
     pq.pop();
     res.emplace_back(obj);
-    for (auto user : GetSuccs(obj, bb)) {
+    for (auto user : bb.GetUsers(obj)) {
       --in_degrees[user];
       if (in_degrees[user] == 0) {
         pq.push(user);
@@ -273,12 +267,12 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
   }
   // Init arrange and out_degrees
   for (auto &obj : bb) {
-    out_degrees_bak[&obj] = GetSuccs(&obj, bb).size();
+    out_degrees_bak[&obj] = bb.GetUserNum(&obj);
     if (obj.IsLoad()) {
       cur_live++;
       arrange_bak.emplace_back(&obj);
       out_degrees_bak[&obj] += kNumUsersBig;  // Load won't be deallocated
-      for (auto user : GetSuccs(&obj, bb)) {
+      for (auto user : bb.GetUsers(&obj)) {
         in_degrees_bak[user]--;
         if (in_degrees_bak[user] == 0) {
           readys_bak.emplace_back(user);
@@ -309,7 +303,7 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
         for (auto pred : GetPreds(obj)) {
           out_degrees[pred]--;
         }
-        for (auto user : GetSuccs(obj, bb)) {
+        for (auto user : bb.GetUsers(obj)) {
           in_degrees[user]--;
         }
       }
@@ -319,7 +313,7 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
         std::unordered_set<NDObject *> new_readys(readys.begin(), readys.end());
         new_readys.erase(obj);
         // Object may be used twice by same user, so we need to really do the calculation
-        for (auto user : GetSuccs(obj, bb)) {
+        for (auto user : bb.GetUsers(obj)) {
           if (--in_degrees[user] == 0) {
             new_readys.insert(user);
           }
@@ -328,7 +322,7 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
         if (new_tape.find(new_code) != new_tape.end() && new_tape[new_code].peak_live <= peak_live) {
           // skip
           arrange.pop_back();
-          for (auto user : GetSuccs(obj, bb)) {
+          for (auto user : bb.GetUsers(obj)) {
             ++in_degrees[user];
           }
           continue;
@@ -365,7 +359,7 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
         for (auto pred : GetPreds(obj)) {
           ++out_degrees[pred];
         }
-        for (auto user : GetSuccs(obj, bb)) {
+        for (auto user : bb.GetUsers(obj)) {
           ++in_degrees[user];
         }
       }
@@ -377,24 +371,79 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
 }
 }  // namespace
 
-void BasicBlockContext::Init(const std::vector<NDObject *> &objects) {
-  // users_.resize(objects.size());
+void ObjectList::Build(const std::vector<NDObject *> &objects, bool reindex) {
+  // build linked list from objects
+  NDObject *last_object = &sentinel_;
+  int index = 0;
+  for (auto object : objects) {
+    SetNext(last_object, object);
+    SetPrev(object, last_object);
+    last_object = object;
+    if (reindex) {
+      last_object->index_ = index;
+      ++index;
+    }
+  }
+  SetNext(last_object, &sentinel_);
+  SetPrev(&sentinel_, last_object);
+  if (reindex) {
+    size_ = capacity_ = objects.size();
+  }
+}
+
+BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner)
+    : objects_owner_(owner) {
+  // build linked list from objects
+  list_.Build(objects, true);
   head_.resize(objects.size(), -1);
   for (auto obj : objects) {
     ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
   }
 }
 
-void BasicBlockContext::Init(NDObjectIterator<false> begin, NDObjectIterator<false> end, size_t capcity) {
-  edges_.clear();
-  head_.resize(capcity, -1);
-  while (begin != end) {
-    auto obj = begin.get();
-    ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
-  };
+template <bool if_update_index>
+std::vector<NDObject *> BasicBlock::ToVector() {
+  auto iter = begin();
+  std::vector<NDObject *> res;
+  res.reserve(size());
+  int i = 0;
+  while (iter != end()) {
+    if constexpr (if_update_index) {
+      iter->index_ = i++;
+    }
+    res.push_back(iter.get());
+    ++iter;
+  }
+  return res;
 }
 
-void BasicBlockContext::Erase(NDObject *object) {
+void BasicBlock::Export(std::vector<NDObject *> &objects) {
+  auto iter = begin();
+  objects.clear();
+  objects.reserve(size());
+  int i = 0;
+  while (iter != end()) {
+    iter->index_ = i++;
+    ObjectList::Prev(iter.get())->insn_ = nullptr;
+    iter->tail_insn_ = nullptr;
+    objects.push_back(iter.get());
+    ++iter;
+  }
+  ObjectList::Prev(iter.get())->insn_ = nullptr;
+}
+
+BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *object) {
+  if (iter.get() == object) {
+    return iter;
+  }
+  list_.Insert(iter.get(), object);
+  // object should be deleted by owner
+  objects_owner_.push_back(object);
+  return BasicBlock::iterator(object);
+}
+
+void BasicBlock::Erase(NDObject *object) {
+  list_.Erase(object);
   head_[object->index_] = -1;
   for (auto pred : GetPreds(object)) {
     auto idx = head_[pred->index_];
@@ -415,116 +464,14 @@ void BasicBlockContext::Erase(NDObject *object) {
   }
 }
 
-BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner)
-    : sentinel_(kTypeEnd), size_(objects.size()), capacity_(objects.size()), objects_owner_(owner) {
-  // build linked list from objects
-  ReOrder(objects, true);
-  context_.Init(objects);
-}
-
-void BasicBlock::ReOrder(const std::vector<NDObject *> &objects, bool if_update_index) {
-  // build linked list from objects
-  NDObject *last_object = &sentinel_;
-  int index = 0;
-  for (auto object : objects) {
-    ASSIGN_NEXT_OBJ(last_object, object);
-    ASSIGN_PREV_OBJ(object, last_object);
-    last_object = object;
-    if (if_update_index) {
-      last_object->index_ = index;
-    }
-    ++index;
-  }
-  size_ = index;
-  if (if_update_index) {
-    capacity_ = index;
-  }
-  ASSIGN_NEXT_OBJ(last_object, &sentinel_);
-  ASSIGN_PREV_OBJ(&sentinel_, last_object);
-}
-
-template <bool if_update_index>
-std::vector<NDObject *> BasicBlock::ToVector() {
-  auto iter = begin();
-  std::vector<NDObject *> res;
-  res.reserve(size());
-  int i = 0;
-  while (iter != end()) {
-    if constexpr (if_update_index) {
-      iter->index_ = i++;
-    }
-    res.push_back(iter.get());
-    ++iter;
-  }
-  return res;
-}
-
-void BasicBlock::Clear() {
-  auto iter = begin();
-  while (iter != end()) {
-    PREV_OBJ(iter)->insn_ = nullptr;
-    iter->tail_insn_ = nullptr;
-    ++iter;
-  }
-  PREV_OBJ(iter)->insn_ = nullptr;
-}
-
-void BasicBlock::Export(std::vector<NDObject *> &objects) {
-  auto iter = begin();
-  objects.clear();
-  objects.reserve(size());
-  int i = 0;
-  while (iter != end()) {
-    iter->index_ = i++;
-    PREV_OBJ(iter)->insn_ = nullptr;
-    iter->tail_insn_ = nullptr;
-    objects.push_back(iter.get());
-    ++iter;
-  }
-  PREV_OBJ(iter)->insn_ = nullptr;
-}
-
-BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *object) {
-  if (iter.get() == object) {
-    return iter;
-  }
-  auto prev = PREV_OBJ(iter);
-  ASSIGN_PREV_OBJ(object, prev);
-  ASSIGN_NEXT_OBJ(object, iter.get());
-  ASSIGN_PREV_OBJ(iter, object);
-  ASSIGN_NEXT_OBJ(prev, object);
-  ++size_;
-  object->index_ = capacity_++;
-  // object should be deleted by owner
-  objects_owner_.push_back(object);
-  return NDObjectIterator<false>(object);
-}
-
-BasicBlock::iterator BasicBlock::Erase(BasicBlock::iterator iter) {
-  ASSERT(iter != end());
-  auto prev = PREV_OBJ(iter);
-  auto next = NEXT_OBJ(iter);
-  ASSIGN_NEXT_OBJ(prev, next);
-  ASSIGN_PREV_OBJ(next, prev);
-  --size_;
-  return NDObjectIterator<false>(next);
-}
-
 BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, BasicBlock::pointer obj) {
   if (iter.get() == obj || iter.GetPrev().get() == obj) {
     return iterator(obj);
   }
-  auto prev = PREV_OBJ(iter);
-  ASSIGN_NEXT_OBJ(PREV_OBJ(obj), NEXT_OBJ(obj));
-  ASSIGN_PREV_OBJ(NEXT_OBJ(obj), PREV_OBJ(obj));
-  ASSIGN_NEXT_OBJ(prev, obj);
-  ASSIGN_PREV_OBJ(iter, obj);
-  ASSIGN_NEXT_OBJ(obj, iter.get());
-  ASSIGN_PREV_OBJ(obj, prev);
+  list_.Erase(obj);
+  list_.Insert(iter.get(), obj);
   return iterator(obj);
 }
-
-void BasicBlock::UpdateContext() { context_.Init(begin(), end(), capacity_); }
 
 void ReorderStore(BasicBlock &block) {
   for (auto iter = block.begin(); iter != block.end();) {
@@ -599,7 +546,7 @@ void InsertRemovePad(BasicBlock &block) {
       if (iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE) {
         auto input = iter->lhs_;
         auto inner = input;
-        if (block.context().IsMultiUsers(input)) {
+        if (block.IsMultiUsers(input)) {
           inner = new CopyOp(input);
           inner->nd_ = input->nd_;
           block.Insert(iter, inner);
@@ -609,7 +556,7 @@ void InsertRemovePad(BasicBlock &block) {
         iter->lhs_ = remove_pad;
         block.Insert(iter, remove_pad);
         if (inner == input) {
-          block.Erase(NDObjectIterator<false>(inner));
+          block.Erase(inner);
         }
       }
     }
@@ -625,7 +572,7 @@ void InsertAtomicCum(BasicBlock &block) {
         atomic_cum->nd_ = inner->nd_;
         iter->lhs_ = atomic_cum;
         block.Insert(iter, atomic_cum);
-        block.Erase(NDObjectIterator<false>(inner));
+        block.Erase(inner);
       }
     }
   }
@@ -640,11 +587,11 @@ void CompactPeakLiveness(BasicBlock &bb) {
   std::vector<NDObject *> backup = bb.ToVector<false>();
   auto old_peak = MaxLive(bb);
   auto new_order = ReorderObjectsHeuristic(bb);
-  bb.ReOrder(new_order);
+  bb.List().Build(new_order, false);
   auto new_peak = MaxLive(bb);
   if (new_peak >= old_peak) {
     // Reorder cause a bad result, rollback
-    bb.ReOrder(backup);
+    bb.List().Build(backup, false);
   }
 }
 
@@ -818,9 +765,10 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
         return true;
       }
       intermediate.RegisterNewShape(obj, new_shape);
-      if (GetSuccs(obj, bb).size() == 1) return true;
+      auto users = bb.GetUsers(obj);
+      if (users.size() == 1) return true;
       // Need to change all other users of this Reshape
-      for (auto succ : GetSuccs(obj, bb)) {
+      for (auto succ : users) {
         if (succ == last) {
           continue;
         }
@@ -881,7 +829,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
   }
 
   if (!forward_shape.empty()) {
-    for (auto succ : GetSuccs(obj, bb)) {
+    for (auto succ : bb.GetUsers(obj)) {
       todos.push_back({true, succ, obj, forward_shape});
     }
   }
@@ -929,7 +877,7 @@ void EliminateReshape(BasicBlock &bb) {
       inter.RegisterNewShape(&reshape, new_shape);
       bool can_eliminate = true;
       if (is_forward) {
-        for (auto user : GetSuccs(&reshape, bb)) {
+        for (auto user : bb.GetUsers(&reshape)) {
           if (!Propagate(user, new_shape, &reshape, true, bb, inter)) {
             can_eliminate = false;
             break;
@@ -961,15 +909,13 @@ void EliminateReshape(BasicBlock &bb) {
         }
       }
       // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
-      auto &context = bb.context();
       auto prev = reshape.lhs_;
-      for (auto succ : GetSuccs(&reshape, bb)) {
+      for (auto succ : bb.GetUsers(&reshape)) {
         auto &input_ref = GetInputRef(succ, &reshape);
         input_ref = prev;
-        context.AddUser(prev, succ);
+        bb.AddUser(prev, succ);
       }
-      bb.Erase(BasicBlock::iterator(&reshape));
-      context.Erase(&reshape);
+      bb.Erase(&reshape);
     }
   };
 

@@ -17,7 +17,9 @@
 #include <cstdlib>
 #include <iostream>
 #include <cstring>
+#ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
+#endif
 #include "tuning.h"
 #include "kernel.h"
 #include "ops.h"
@@ -58,6 +60,7 @@ void ManualMatMul::SetTiling(const TuningInfo &info) {
 }
 
 void TunedMatMul::GenTiling(vCubeOp *op) {
+#ifndef VK_SIM_MODEL
   auto &tuning_table = TunedMatMul::GetTuningTable();
   uint64_t key_batch = (uint64_t)op->batch_a0 << 48 | (uint64_t)op->batch_a1 << 32 | op->batch_b0 << 16 |op->batch_b1;
   uint64_t key_shape = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
@@ -90,8 +93,12 @@ void TunedMatMul::GenTiling(vCubeOp *op) {
   op->n0 = n0_ = best_tuning.n0;
   op->k0 = k0_ = best_tuning.k0;
   op->swizzle = best_tuning.swizzle;
-  core_loop_ = best_tuning.core_loop;
-  block_dim_ = best_tuning.block_dim;
+  auto m_loop = CeilDiv(op->m_real, op->m0);
+  auto n_loop = CeilDiv(op->n_real, op->n0);
+  core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
+  auto core_num = System::Instance().CoreNum(CoreType::kCube);
+  block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
+#endif
 }
 
 void TunedMatMul::TileV3(vCubeOp *op) {
@@ -160,6 +167,7 @@ void TunedMatMul::TileV3(vCubeOp *op) {
 }
 
 void TunedMatMul::Tuning(const TuningInfo &parameter) {
+#ifndef VK_SIM_MODEL
   matmul_->SetTiling(parameter);
   kernel_->CodeGen();
   float min_us = 1e6;
@@ -192,5 +200,6 @@ void TunedMatMul::Tuning(const TuningInfo &parameter) {
     best_time_ = mean_time;
     best_tuning_ = parameter;
   }
+#endif
 }
 }  // namespace dvm

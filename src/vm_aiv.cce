@@ -440,7 +440,7 @@ __aicore_inline__ void CastToBool(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint16_t src_rs = GetRepeatStride(tile, half);
   __ubuf__ half *xd = (__ubuf__ half *)(op.xd);
   __ubuf__ int16_t *xn = (__ubuf__ int16_t *)(op.xn);
-  repeat_vabs(xd, (__ubuf__ int16_t *)xd, op.repeat, 1, 1, src_rs, src_rs);
+  repeat_vabs(xd, (__ubuf__ half *)xn, op.repeat, 1, 1, src_rs, src_rs);
   pipe_barrier(PIPE_V);
   repeat_vconv_s162f16(xd, (__ubuf__ int16_t *)xd, op.repeat, 1, 1, src_rs, src_rs);
   pipe_barrier(PIPE_V);

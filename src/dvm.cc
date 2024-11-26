@@ -206,11 +206,7 @@ NDObject* Kernel::Unary(int op_type, NDObject* input) {
     }
   }
   NDObject *obj;
-  if (op_type == UnaryOpType::kIsFinite && input->type_id_ == kFloat16) {
-    obj = new IsFinite16Op(input);
-  } else {
-    obj = new UnaryOp(op_type, input);
-  }
+  obj = new UnaryOp(op_type, input);
   kernel_->Append(obj);
   return obj;
 }

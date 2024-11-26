@@ -63,7 +63,6 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenFlex,  true }, // Power
   {kGenFlex,  true }, // Compare
   {kGenFlex,  true }, // CompareS
-  {kGenFlex,  true }, // IsFinite16
   {kGenWrap,  true }, // AtomicCum
 };
 

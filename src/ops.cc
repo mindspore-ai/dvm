@@ -843,19 +843,6 @@ int UnaryOp::QueryId(const std::string &op_name) {
   return -1;
 }
 
-int IsFinite16Op::Emit(VectorKernel &k) {
-  vBinary op;
-  op.xd = xbuf_;
-  op.xn = lhs_->xbuf_;
-  op.xm = wss_[0];
-  op.repeat = strides_.back() / k.simd_width_;
-  return vBinary::Encode(insn_, V_ISFINITE_FP16, op);
-}
-
-void IsFinite16Op::Dump(bool verbose, std::ostringstream &oss) {
-  oss << "IsFinite";
-}
-
 int AtomicCumOp::Emit(VectorKernel &k) {
   if (!(round_tile_->size() & 1)) {
     int size = InnerEmit(k, insn_, xbuf_);

@@ -48,7 +48,6 @@ enum ObjectType {
   kPower,
   kCompare,
   kCompareS,
-  kIsFinite16,
   kAtomicCum,
   kCubeOp,
   kObjectBulk
@@ -501,17 +500,6 @@ class UnaryOp : public NDObject {
 
  protected:
   int op_type_;
-};
-
-class IsFinite16Op : public FlexOp {
- public:
-  IsFinite16Op(NDObject *input) : FlexOp(input, nullptr, input->type_id_, ObjectType::kIsFinite16) {
-    shape_ref_ = input->shape_ref_;
-    ws_num_ = 1;
-  }
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
 class RemovePadOp : public WrapOp {

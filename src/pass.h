@@ -47,6 +47,11 @@ class ObjectList {
     size_--;
   }
 
+  NDObject *Begin() { return Next(&sentinel_); }
+  NDObject *End() { return &sentinel_; }
+  NDObject *ReverseBegin() { return Prev(&sentinel_); }
+  NDObject *ReverseEnd() { return &sentinel_; }
+
   static NDObject *Next(NDObject *obj) { return reinterpret_cast<NDObject*>(obj->insn_); }
   static NDObject *Prev(NDObject *obj) { return reinterpret_cast<NDObject*>(obj->tail_insn_); }
   static void SetNext(NDObject *obj, NDObject *next) { obj->insn_ = reinterpret_cast<uint64_t*>(next); }
@@ -123,24 +128,23 @@ class BasicBlock {
 
   using iterator = ObjectList::Iterator<false>;
   using reverse_iterator = ObjectList::Iterator<true>;
-  using pointer = NDObject *;
 
   BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner);
 
-  iterator begin() { return iterator(ObjectList::Next(&list_.sentinel_)); }
-  iterator end() { return iterator(&list_.sentinel_); }
-  reverse_iterator rbegin() { return reverse_iterator(ObjectList::Prev(&list_.sentinel_)); }
-  reverse_iterator rend() { return reverse_iterator(&list_.sentinel_); }
+  iterator begin() { return iterator(list_.Begin()); }
+  iterator end() { return iterator(list_.End()); }
+  reverse_iterator rbegin() { return reverse_iterator(list_.ReverseBegin()); }
+  reverse_iterator rend() { return reverse_iterator(list_.ReverseEnd()); }
 
   inline size_t size() const { return list_.size_; }
   inline size_t capacity() const { return list_.capacity_; }
 
-  iterator Insert(iterator iter, pointer object);
+  iterator Insert(iterator iter, NDObject *object);
   void Erase(NDObject *object);
-  iterator Move(iterator iter, pointer object);
+  iterator Move(iterator iter, NDObject *object);
 
-  void PushFront(pointer ptr) { Insert(begin(), ptr); }
-  void PushBack(pointer ptr) { Insert(end(), ptr); }
+  void PushFront(NDObject *ptr) { Insert(begin(), ptr); }
+  void PushBack(NDObject *ptr) { Insert(end(), ptr); }
 
   template <bool if_update_index = true>
   std::vector<NDObject *> ToVector();
@@ -150,40 +154,38 @@ class BasicBlock {
   // Will fail when object is not exist in the context.
   // And users may duplicate
   std::vector<NDObject *> GetUsers(NDObject *object) const {
-    ASSERT(object->index_ < static_cast<int>(head_.size()));
     std::vector<NDObject *> res;
-    for (auto idx = head_[object->index_]; idx != -1; idx = edges_[idx].next) {
+    for (auto idx = GetHead(object); idx != -1; idx = edges_[idx].next) {
       res.push_back(edges_[idx].user);
     }
     return res;
   }
 
   size_t GetUserNum(NDObject *object) const {
-    ASSERT(object->index_ < static_cast<int>(head_.size()));
     size_t num = 0;
-    for (auto idx = head_[object->index_]; idx != -1; idx = edges_[idx].next) {
+    for (auto idx = GetHead(object); idx != -1; idx = edges_[idx].next) {
       num++;
     }
     return num;
   }
 
   bool IsMultiUsers(NDObject *object) const {
-    ASSERT(object->index_ < static_cast<int>(head_.size()));
-    auto idx = head_[object->index_];
+    auto idx = GetHead(object);
     return idx != -1 && edges_[idx].next != -1;
   }
 
   inline void AddUser(NDObject *obj, NDObject *new_user) {
-    ASSERT(obj->index_ < static_cast<int>(head_.size()));
-    edges_.push_back({head_[obj->index_], new_user});
-    head_[obj->index_] = edges_.size() - 1;
+    edges_.push_back({GetHead(obj), new_user});
+    SetHead(obj, static_cast<int>(edges_.size() - 1));
   }
 
   ObjectList &List() { return list_; }
 
  protected:
+  static int GetHead(NDObject *obj) { return obj->lead_dim_; }
+  static void SetHead(NDObject *obj, int head) { obj->lead_dim_ = head; }
+
   ObjectList list_;
-  std::vector<int64_t> head_;
   std::vector<Edge> edges_;
   std::vector<NDObject *> &objects_owner_;
 };

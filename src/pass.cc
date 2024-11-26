@@ -395,7 +395,10 @@ BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObj
     : objects_owner_(owner) {
   // build linked list from objects
   list_.Build(objects, true);
-  head_.resize(objects.size(), -1);
+  for (auto obj : objects) {
+    SetHead(obj, -1);
+  }
+  edges_.reserve(objects.size() * 2);
   for (auto obj : objects) {
     ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
   }
@@ -437,6 +440,10 @@ BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *obj
     return iter;
   }
   list_.Insert(iter.get(), object);
+  SetHead(object, -1);
+  for (auto pred : GetPreds(object)) {
+    AddUser(pred, object);
+  }
   // object should be deleted by owner
   objects_owner_.push_back(object);
   return BasicBlock::iterator(object);
@@ -444,14 +451,14 @@ BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *obj
 
 void BasicBlock::Erase(NDObject *object) {
   list_.Erase(object);
-  head_[object->index_] = -1;
+  SetHead(object, -1);
   for (auto pred : GetPreds(object)) {
-    auto idx = head_[pred->index_];
+    auto idx = GetHead(pred);
     auto last = idx;
     while (idx != -1) {
       if (edges_[idx].user == object) {
-        if (idx == head_[pred->index_]) {
-          head_[pred->index_] = edges_[idx].next;
+        if (idx == GetHead(pred)) {
+          SetHead(pred, edges_[idx].next);
         } else {
           edges_[last].next = edges_[idx].next;
         }
@@ -464,7 +471,7 @@ void BasicBlock::Erase(NDObject *object) {
   }
 }
 
-BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, BasicBlock::pointer obj) {
+BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, NDObject *obj) {
   if (iter.get() == obj || iter.GetPrev().get() == obj) {
     return iterator(obj);
   }

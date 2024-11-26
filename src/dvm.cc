@@ -121,8 +121,15 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
       return nullptr;
     }
     case BinaryOpType::kPow:
-      if (rhs_val && isInteger(val)) {
-        return PowS(kernel, input, val);
+      if (rhs_val) {
+        if (isInteger(val)) return PowS(kernel, input, val);
+      } else if (val > 0) {
+        if (input->type_id_ != kFloat32) {
+          auto result = GetBinaryS<float, false>(kernel, BinaryOpType::kPow, (float)val, kernel->Cast(input, kFloat32));
+          return kernel->Cast(result, input->type_id_);
+        }
+        auto tmp = GetBinaryS<float, true>(kernel, BinaryOpType::kMul, std::log((float)val), input);
+        return kernel->Unary(UnaryOpType::kExp, tmp);
       }
     default:
       return nullptr;

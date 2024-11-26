@@ -1069,12 +1069,12 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   vReduceX::DecodeBlock(pc, op);
   uint64_t dst_rs = op.dup_block + op.dup_pad;
-  uint64_t src_rs = (op.red_size * op.dup_block) >> 3;
+  uint64_t src_rs = op.red_size * op.dup_block;
   uint64_t iter_num = op.dup_size / op.dup_block;
-  for (uint64_t block = 0; block < op.dup_block; ++block) {
-    repeat_vcadd(xd, xn, iter_num, dst_rs, src_rs);
-    xd++;
-    xn += op.red_size;
+  while(iter_num--) {
+    repeat_vcadd(xd, xn, op.dup_block, 1, op.red_size >> 3);
+    xd += dst_rs;
+    xn += src_rs;
   }
 }
 

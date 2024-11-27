@@ -364,3 +364,20 @@ def test_matmul_skip_loadL1(shape_a, shape_b):
     c = t.matmul(a, b, False, False)
     o = t.store_expect(c, np_c, 2e-3)
     assert (t.run_check())
+
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[256, 256], [81960, 256]],
+])
+def test_matmul_n_big(shape_a, shape_b):
+    t = Tester("mix")
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32).transpose()).astype(np.float16)
+    zx = np.random.normal(0, 0.01, np_c.shape).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, True)
+    z = t.load(zx)
+    d = t.binary("Add", c, z)
+    o = t.store_expect(d, np_c + zx, 2e-3)
+    assert (t.run_check())

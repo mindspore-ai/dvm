@@ -194,7 +194,7 @@ enum vSimdInsnID {
 #define V_C_X_BITS               13
 #define V_X_MASK                 0x3fffful
 #define V_RS_MASK                0xful   // repeat stride
-
+#define V_GROUP_OFFSET_SIZE      32
 #define vCompactX(x)    ((x) >> 5)
 #define vDeCompactX(x)  ((x) << 5)
 
@@ -767,16 +767,16 @@ struct vSLoad {
   uint64_t flags;
   // pc[0]: xn(18)
   // pc[1]: src
-  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
+  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(24) << 8 | pad_size(8);
   // pc[2]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | op.flags(4) << 4 | type_size(4)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSLoad &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
-    op.src_n = (data >> 16) & 0xfffful;
+    op.src_n = (data >> 8) & 0xfffffful;
     op.slice_m = (data >> 32) & 0xfffful;
     op.slice_n = (data >> 48) & 0xfffful;
-    op.pad_size = data & 0xfffful;
+    op.pad_size = data & 0xfful;
     data = pc[3];
     op.tail_n = (data >> 48) & 0xfffful;
     op.tail_m = (data >> 32) & 0xfffful;
@@ -789,7 +789,7 @@ struct vSLoad {
     uint64_t size = 4;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
-    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
+    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 8 | op.pad_size;
     pc[3] = op.tail_n << 48 | op.tail_m << 32 | op.tile_stride << 8 | op.flags << 4 | op.type_size;
     return size;
   }
@@ -809,16 +809,16 @@ struct vSStore {
   uint64_t type_size;
   // pc[0]: xn(18)
   // pc[1]: dst
-  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(16) << 16 | pad_size(16);
+  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(24) << 8 | pad_size(8);
   // pc[2]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | type_size(4)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSStore &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
     uint64_t data = pc[2];
-    op.src_n = (data >> 16) & 0xfffful;
+    op.src_n = (data >> 8) & 0xfffffful;
     op.slice_m = (data >> 32) & 0xfffful;
     op.slice_n = (data >> 48) & 0xfffful;
-    op.pad_size = data & 0xfffful;
+    op.pad_size = data & 0xfful;
     data = pc[3];
     op.tail_n = (data >> 48) & 0xfffful;
     op.tail_m = (data >> 32) & 0xfffful;
@@ -830,7 +830,7 @@ struct vSStore {
     uint64_t size = 4;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_STORE);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
-    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 16 | op.pad_size;
+    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 8 | op.pad_size;
     pc[3] = op.tail_n << 48 | op.tail_m << 32 | op.tile_stride << 8 | op.type_size;
     return size;
   }
@@ -1181,7 +1181,7 @@ struct vCubeOp {
     start_m *= op->m0;
     start_n *= op->n0;
     uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n_real * op->m_real;
-    return tile_flag << 30 | (start_m * op->n_real + start_n + batch_offset);
+    return tile_flag << V_GROUP_OFFSET_SIZE | (start_m * op->n_real + start_n + batch_offset);
   }
 
   __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,

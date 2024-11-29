@@ -23,6 +23,7 @@
 #include <float.h>
 #include "ops.h"
 #include "kernel.h"
+#include "comm.h"
 
 namespace dvm {
 namespace {
@@ -446,7 +447,7 @@ int NDSStore::Emit(VectorKernel &k) { // TODO: broadcast
 int NDSLoad::Emit(VectorKernel &k) {
   uint64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  if (cube_op_->output_ == this && cube_op_->pingpong_store_) {
+  if ((cube_op_->output_ == this && cube_op_->pingpong_store_) || pingpong_load_) {
     uint64_t rounds[2];
     if (!round_tile_.empty()) {
       BuildDimRounds(round_tile_, rounds);
@@ -917,7 +918,7 @@ int ElementAnyOp::Emit(VectorKernel &k) {
     insn_num++;
   }
   vElementAny op;
-  op.xn = lhs_->xbuf_ ; 
+  op.xn = lhs_->xbuf_ ;
   op.xd = xbuf_;
   op.rs = GetBlocks(k.simd_width_);
   op.iter_size = lhs_->strides_.back();
@@ -1290,7 +1291,7 @@ int _BroadcastOp::Emit(VectorKernel &k) {
       break;
     }
   }
-  int64_t offset; 
+  int64_t offset;
   if (start_dim == 0 || start_dim == lead_dim_) {
     offset = EmitBroadcastX(insn_, end_dim, k.simd_width_);
   } else {
@@ -2022,6 +2023,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
   op->b_size = rhs_->nd_[0] * rhs_->nd_[1];
   op->offset_a = offset_a_;
   op->offset_b = offset_b_;
+  op->rank_size = rank_size_;
   if (lhs_->IsLoad()) {
     auto a = static_cast<NDAccess*>(lhs_);
     op->gm_a = reinterpret_cast<uint64_t>(a->gm_);
@@ -2049,10 +2051,370 @@ void CubeOp::CodeGen(vCubeOp *op) {
     op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
   }
+  if (peer_store_) {
+    op->flags |= V_CUBE_FLAG_PEER_STORE;
+    op->flags |= V_CUBE_FLAG_PINGPONG_STORE;
+  }
   auto dtype = lhs_->type_id_;
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
   GenTiling(op);
   //std::cout << "result tiling: m0=" << op->m0 << ", n0=" << op->n0 << ", k0=" << op->k0 << ", swizzle=(" << (op->swizzle >> 16) << ", " << (op->swizzle & 0xfffful) << ")" << std::endl;
+}
+
+AllReduceOp::AllReduceOp(NDObject *input, const Communicator *comm)
+    : CommOp(input, comm, ObjectType::kAllReduce) {
+  add_id_ = binary_id_list[kAdd].ids[type_id_];
+}
+
+void AllReduceOp::Tile(const TileParam &tp) {
+  if (tp.tail > 0) {
+    // ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
+    tail_dim_ = tp.start;
+    tail_size_ = tp.tail;
+  }
+  NDObject::Tile(tp);
+}
+
+void AllReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
+  nd_ = lhs_->nd_;
+  if (nd_.prod() > 128 * static_cast<uint32_t>(comm_->GetRankSize())) {
+    use_twoshot_ = true;
+  }
+  // init CommOp related member
+  xbuf_reserve_ = use_twoshot_ ? 1 : 2;
+  code_reserve_ = use_twoshot_ ? (5 * sizeof(uint64_t) * (2 + 3 * (comm_->GetRankSize() - 1)))
+                               : (5 * sizeof(uint64_t) * 2 * (comm_->GetRankSize() - 1));
+}
+
+int AllReduceOp::MatmulEmit(VectorKernel &k) {
+  uint64_t *current_insn = insn_;
+  uint64_t code_size = 0;
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  uint64_t lead_align = LeadAlign();
+  uint64_t tile_stride = strides_.back() / lead_align * nd_[lead_dim_];
+  uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
+  uint64_t forward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event2 = backward_event - 1;
+  if (use_twoshot_) {
+    // Prepare variables
+    // Use the fact that lead_align is divisible by simd_width
+    uint64_t nburst = strides_.back() / lead_align;
+    uint64_t per_rank_nburst = nburst / rank_size;
+    uint64_t last_rank_nburst = nburst - per_rank_nburst * (rank_size - 1);
+    uint64_t this_rank_nburst = rank_id == rank_size - 1 ? last_rank_nburst : per_rank_nburst;
+    uint64_t lenburst = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+    uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - lenburst;
+    uint64_t per_rank_offset = per_rank_nburst * lead_align * ITEM_SIZE[type_id_];
+    uint64_t per_rank_load_offset = per_rank_nburst * lenburst;
+    ASSERT(per_rank_offset % 32 == 0);
+    // Should be 32Byte aligned in UB
+    uint64_t this_rank_repeat = this_rank_nburst * lead_align / k.simd_width_;
+
+    // Used by statge 2
+    uint64_t per_rank_lenburst = per_rank_offset / 32;
+    uint64_t last_rank_lenburst = last_rank_nburst * lead_align * ITEM_SIZE[type_id_] / 32;
+    uint64_t this_rank_lenburst = this_rank_nburst * lead_align * ITEM_SIZE[type_id_] / 32;
+
+    // Twoshot Stage 1
+    bool is_begin = true;
+    uint64_t add_dst = xbuf_ + per_rank_offset * rank_id;
+    uint64_t rhs = xbufs_[0];
+    for (int i = 1; i < rank_size; ++i) {
+      rhs += per_rank_offset;
+      vPingPongPeerLoad ppp_load;
+      vPingPongLoad &pp_load = ppp_load.base;
+      pp_load.from = comm_->GetPeerMemPtr(rank_id + i);
+      pp_load.xn = rhs;
+      pp_load.tile_stride = tile_stride_size;
+      pp_load.body_iter = this_rank_nburst;
+      pp_load.tail_iter = this_rank_nburst;
+      pp_load.iter_size = lenburst;
+      pp_load.pad_size = pad_size;
+      pp_load.pingpong = 0;
+      pp_load.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
+      pp_load.round_rank = 0;
+      ppp_load.peer_mem_offset = rank_id * per_rank_load_offset;
+      current_insn = insn_ + code_size;
+      code_size += vPingPongPeerLoad::Encode(current_insn, vLoadInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
+      unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
+      *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+      if (is_begin && rank_size > 2) {
+        *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | backward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
+      }
+      vBinary add;
+      add.xd = add_dst;
+      add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
+      add.xm = rhs;
+      add.repeat = this_rank_repeat;
+      current_insn = insn_ + code_size;
+      code_size += vBinary::Encode(current_insn, add_id_, add);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      if (is_begin) lhs_simd_ = current_insn;
+      is_begin = false;
+    }
+    // Last Add backsync first PingPongPeerLoad
+    if (rank_size > 2) {
+      *current_insn |= 0x1ul << V_HEAD_BACK_SET_OFFSET | backward_event << V_HEAD_B_SET_EVENT_OFFSET;
+    }
+
+    // TwoShot stage 2
+    *current_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET | forward_event << V_HEAD_SET_EVENT_OFFSET;
+    *current_insn |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET | backward_event << V_HEAD_B_WAIT_EVENT_OFFSET;
+    vPeerDMA p_store;
+    p_store.peer_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_TWOSHOT_OFFSET;
+    p_store.flag_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_TWOSHOT_FLAG_OFFSET;
+    p_store.xn = add_dst;  // store result of Allreduce
+    p_store.tile_stride = tile_stride_size;
+    p_store.lenburst = this_rank_lenburst;
+    p_store.tail_lenburst = p_store.lenburst;
+    p_store.round_rank = 0;
+    current_insn = insn_ + code_size;
+    code_size += vPeerDMA::Encode(current_insn, vStoreInsnID::V_PEER_STORE_MIX, vPipe::V_PIPE_STORE, p_store, nullptr);
+    unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | forward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
+    *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | backward_event << V_M_HEAD_SET_EVENT_OFFSET;
+
+    for (int i = 1; i < rank_size; ++i) {
+      uint64_t dst = xbuf_ + ((i + rank_id) % rank_size) * per_rank_offset;
+      bool is_last = (i + rank_id == rank_size - 1);
+      // PeerLoad
+      vPeerDMA p_load;
+      p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_TWOSHOT_FLAG_OFFSET;
+      p_load.xn = dst;
+      p_load.tile_stride = tile_stride_size;
+      p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_TWOSHOT_OFFSET;
+      p_load.lenburst = is_last ? last_rank_lenburst : per_rank_lenburst;
+      p_load.tail_lenburst = p_load.lenburst;
+      p_load.round_rank = 0;  // TODO: consider broadcast
+      current_insn = insn_ + code_size;
+      if(i==1){
+        backsync_load_ = current_insn;
+      }
+      code_size += vPeerDMA::Encode(current_insn, vLoadInsnID::V_PEER_LOAD_MIX, vPipe::V_PIPE_LOAD, p_load, nullptr);
+      unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    }
+  } else {
+    // OneShot
+    bool is_begin = true;
+    uint64_t add_dst = xbuf_;
+    uint64_t rhs = 0;
+    bool is_ping = true;
+    for (int i = 1; i < rank_size; ++i) {
+      rhs = xbufs_[is_ping ? 0 : 1];
+      vPingPongPeerLoad ppp_load;
+      vPingPongLoad &pp_load = ppp_load.base;
+      pp_load.from = comm_->GetPeerMemPtr(rank_id + i);
+      pp_load.xn = rhs;
+      pp_load.tile_stride = tile_stride_size;
+      pp_load.body_iter = strides_.back() / lead_align;
+      pp_load.tail_iter = tail_dim_ <= lead_dim_ ? pp_load.body_iter : pp_load.body_iter / nd_[tail_dim_] * tail_size_;
+      pp_load.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+      pp_load.pad_size = lead_align * ITEM_SIZE[type_id_] - pp_load.iter_size;
+      pp_load.pingpong = 0;
+      pp_load.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
+      pp_load.round_rank = 0;
+      ppp_load.peer_mem_offset = 0;
+      ppp_load.event_id = backward_event2;
+      if (!is_begin && rank_size - i > 1) {
+        ppp_load.set_flag = true;
+      }
+      if (i > 2) {
+        ppp_load.wait_flag = true;
+      }
+      current_insn = insn_ + code_size;
+      code_size += vPingPongPeerLoad::Encode(current_insn, vLoadInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
+      unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
+      *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+      if(is_begin && rank_size >2){
+        *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | backward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
+      }
+
+
+      vBinary add;
+      add.xd = add_dst;
+      add.xn = is_begin ? lhs_->xbuf_ : add_dst;
+      add.xm = rhs;
+      add.repeat = strides_.back() / k.simd_width_;
+      current_insn = insn_ + code_size;
+      code_size += vBinary::Encode(current_insn, add_id_, add);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      if (is_begin) lhs_simd_ = current_insn;
+      is_begin = false;
+      is_ping = !is_ping;
+    }
+    // add backward sync pingpongpeerload
+    if(rank_size > 2){
+      *current_insn |= 0x1ul << V_HEAD_BACK_SET_OFFSET | backward_event << V_HEAD_B_SET_EVENT_OFFSET;
+    }
+  }
+  tail_insn_ = current_insn;
+  return code_size;
+}
+
+int AllReduceOp::Emit(VectorKernel &k) {
+  if(cube_op_!=nullptr){
+    return MatmulEmit(k);
+  }
+  auto store_id = mix_ ? vStoreInsnID::V_PEER_STORE_MIX : vStoreInsnID::V_PEER_STORE;
+  auto load_id = mix_ ? vLoadInsnID::V_PEER_LOAD_MIX : vLoadInsnID::V_PEER_LOAD;
+  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  uint64_t forward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event2 = backward_event - 1;
+  int code_size = 0;
+  uint64_t *current_insn{nullptr};
+
+  vPeerDMA p_store;
+  p_store.peer_mem = comm_->GetPeerMemPtr(rank_id);
+  p_store.flag_mem = p_store.peer_mem + PEERMEM_FLAG_OFFSET;
+  p_store.xn = lhs_->xbuf_;
+  p_store.tile_stride = tile_stride_size;
+  p_store.lenburst = GetBlocks(tile_stride);
+  p_store.tail_lenburst = p_store.lenburst;
+  p_store.round_rank = 0;
+  code_size += vPeerDMA::Encode(insn_, store_id, vPipe::V_PIPE_STORE, p_store, nullptr);
+  unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(insn_ + vPeerDMA::UNIQUEID_OFFSET));
+
+  if (use_twoshot_) {
+    uint64_t repeat_full = strides_.back() / k.simd_width_;
+    uint64_t per_rank_repeat = repeat_full / rank_size;
+    uint64_t last_rank_repeat = repeat_full - per_rank_repeat * (rank_size - 1);
+    uint64_t this_rank_repeat = rank_id == rank_size -1 ? last_rank_repeat : per_rank_repeat;
+    uint64_t per_rank_offset = per_rank_repeat * k.simd_width_ * ITEM_SIZE[type_id_];
+    ASSERT(per_rank_offset % 32 == 0); // Should be 32Byte aligned in UB
+    uint64_t per_rank_lenburst = GetBlocks(per_rank_repeat * k.simd_width_);
+    uint64_t last_rank_lenburst = GetBlocks(last_rank_repeat * k.simd_width_);
+    uint64_t this_rank_lenburst = rank_id == rank_size -1 ? last_rank_lenburst : per_rank_lenburst;
+
+    // TwoShot stage 1:
+    // Copy data to peermem
+    // Reduce the data this rank is responsible for
+    bool is_begin = true;
+    uint64_t rhs = 0;
+    uint64_t add_dst = xbuf_ + per_rank_offset * rank_id;  // used as destnation of add
+    rhs = xbufs_[0];
+    for (int i = 1; i < rank_size; ++i) {
+      rhs += per_rank_offset;
+      // PeerLoad
+      vPeerDMA p_load;
+      p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_FLAG_OFFSET;
+      p_load.xn = rhs;
+      p_load.tile_stride = tile_stride_size;
+      p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id) + rank_id * per_rank_offset;
+      p_load.lenburst = this_rank_lenburst;
+      // TODO: consider tail, If use tail will faster?(less mte2 in tail tile)
+      p_load.tail_lenburst = p_load.lenburst;
+      p_load.round_rank = 0;  // TODO: consider broadcast
+      current_insn = insn_ + code_size;
+      code_size += vPeerDMA::Encode(current_insn, load_id, vPipe::V_PIPE_LOAD, p_load, nullptr);
+      unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+      *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET |
+                       forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+
+      vBinary add;
+      add.xd = add_dst;
+      add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
+      add.xm = rhs;
+      add.repeat = this_rank_repeat;
+      current_insn = insn_ + code_size;
+      code_size += vBinary::Encode(current_insn, add_id_, add);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      is_begin = false;
+    }
+
+    // TwoShot stage 2
+    // Copy reduced data to peermem
+    // load other reduced data
+
+    // Store should wait last Add
+    *current_insn |= 0x1ul << V_HEAD_SET_FLAG_OFFSET | forward_event << V_HEAD_SET_EVENT_OFFSET;
+    *current_insn |= 0x1ul << V_HEAD_BACK_WAIT_OFFSET | backward_event << V_HEAD_B_WAIT_EVENT_OFFSET;
+    vPeerDMA p_store2;
+    p_store2.peer_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_TWOSHOT_OFFSET;
+    p_store2.flag_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_TWOSHOT_FLAG_OFFSET;
+    p_store2.xn = add_dst;  // store result of Allreduce
+    p_store2.tile_stride = tile_stride_size;
+    p_store2.lenburst = this_rank_lenburst;
+    p_store2.tail_lenburst = p_store2.lenburst;
+    p_store2.round_rank = 0;
+    current_insn = insn_ + code_size;
+    code_size += vPeerDMA::Encode(current_insn, store_id, vPipe::V_PIPE_STORE, p_store2, nullptr);
+    unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | forward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
+    *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | backward_event << V_M_HEAD_SET_EVENT_OFFSET;
+
+    for (int i = 1; i < rank_size; ++i) {
+      uint64_t dst = xbuf_ + ((i + rank_id) % rank_size) * per_rank_offset;
+      bool is_last = (i + rank_id == rank_size -1);
+      // PeerLoad
+      vPeerDMA p_load;
+      p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_TWOSHOT_FLAG_OFFSET;
+      p_load.xn = dst;
+      p_load.tile_stride = tile_stride_size;
+      p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_TWOSHOT_OFFSET;
+      p_load.lenburst = is_last ? last_rank_lenburst : per_rank_lenburst;
+      p_load.tail_lenburst = p_load.lenburst;
+      p_load.round_rank = 0;
+      current_insn = insn_ + code_size;
+      code_size += vPeerDMA::Encode(current_insn, load_id, vPipe::V_PIPE_LOAD, p_load, nullptr);
+      unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    }
+  } else {
+    // OneShot
+    bool is_begin = true;
+    bool is_ping = true;
+    uint64_t rhs = 0;
+    for (int i = 1; i < rank_size; ++i) {
+      rhs = xbufs_[is_ping ? 0 : 1];
+      // PeerLoad
+      vPeerDMA p_load;
+      p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id);
+      p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_FLAG_OFFSET;
+      p_load.xn = rhs;
+      p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
+      p_load.lenburst = GetBlocks(tile_stride);
+      p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / nd_[tail_dim_] * tail_size_);
+      p_load.round_rank = 0;
+      p_load.event_id = backward_event2;
+      if (!is_begin && rank_size - i > 1) {
+        p_load.set_flag = true;
+      }
+      if (i > 2) {
+        p_load.wait_flag = true;
+      }
+      current_insn = insn_ + code_size;
+      code_size += vPeerDMA::Encode(current_insn, load_id, vPipe::V_PIPE_LOAD, p_load, nullptr);
+      unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+      *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+
+      vBinary add;
+      add.xd = xbuf_;
+      add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
+      add.xm = rhs;
+      add.repeat = strides_.back() / k.simd_width_;
+      current_insn = insn_ + code_size;
+      code_size += vBinary::Encode(current_insn, add_id_, add);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      is_begin = false;
+      is_ping = !is_ping;
+    }
+  }
+  tail_insn_ = current_insn;
+  // std::cout << "Allreduce Emit code size: " << code_size << std::endl;
+  return code_size;
+}
+
+void AllReduceOp::Dump(bool verbose, std::ostringstream &oss){
+  oss << "AllReduce";
 }
 } // namespace dvm

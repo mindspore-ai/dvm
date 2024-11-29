@@ -17,6 +17,7 @@
 #ifndef _DVM_CODE_H_
 #define _DVM_CODE_H_
 #include <sstream>
+#include <atomic>
 #include "isa.h"
 #include "system.h"
 
@@ -95,10 +96,17 @@ class Code {
   std::vector<Code*> sub_codes_;
   std::vector<std::pair<uint64_t*, uint64_t>> reloc_workspaces_;
   std::vector<std::pair<uint64_t*, uint64_t*>> reloc_reuse_;
+  std::vector<uint32_t*> unique_ids_;  // used to ensure softsync work, not affected by last kernel
   size_t mem_size_{0};
 
  private:
   int DoLaunch(void *workspace, void* stream) {
+    if (!unique_ids_.empty()) {
+      uint32_t cur_id = ++unique_id_;
+      for (auto id : unique_ids_) {
+        *id = cur_id;
+      }
+    }
     if (extern_code_ >= 0) {
       return LaunchEx(workspace, stream);
     }
@@ -111,6 +119,8 @@ class Code {
     return System::Instance().launch_func_(stub_func, block_dim_, data_, data_size_, nullptr, stream);
   }
   int LaunchEx(void *workspace, void* stream);
+
+  static std::atomic<uint32_t> unique_id_;  // each kernel has a unique id
 };
-} // namespace dvm 
+} // namespace dvm
 #endif // _DVM_CODE_H_

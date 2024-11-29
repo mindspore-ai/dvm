@@ -70,7 +70,7 @@ class RootDomain : public PropDomain {
   PropRange align_;
 
  private:
-  int block_align_;    // mim block align
+  int block_align_;    // min block align
   int64_t tile_size_;  // shape size of object tile size
   int64_t tile_num_;   // current tile num. multiply by tile
 };
@@ -83,7 +83,6 @@ class VKernel {
   virtual void Append(NDObject *obj) = 0;
   virtual uint64_t CodeGen() = 0;
   virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
-
   std::string& DumpGraph() {
     std::ostringstream oss;
     Dump(oss, "");
@@ -126,7 +125,13 @@ class VectorKernel : public VKernel {
   int MaxType() const { return max_type_; }
   int MinType() const { return min_type_; }
   uint64_t BlockAlign() const { return SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_]; }
-  uint64_t ReserveCodeSize() const { return (objects_.size() * V_INSN_SIZE_MAX + 511ul) & ~511ul; } // 512B align
+  inline uint64_t ReserveCodeSize() const {
+    auto res = objects_.size() * V_INSN_SIZE_MAX;
+    if (comm_op_) {
+      res += comm_op_->CodeReserve();
+    }
+    return (res + 511ul) & ~511ul;  // 512B align
+  }
 
   void BuildDomain(const std::vector<NDObject *> &objects);
   void NormalizeDomain() { root_dom_.Normalize(this); }
@@ -134,6 +139,10 @@ class VectorKernel : public VKernel {
     for (auto op : build_ops_) {
       op->Normalize(objects_);
       objects_.emplace_back(op);
+      if(op->IsComm()){
+        ASSERT(comm_op_==nullptr);
+        comm_op_ = static_cast<CommOp*>(op);
+      }
     }
   }
 
@@ -144,6 +153,7 @@ class VectorKernel : public VKernel {
 
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
+  CommOp* comm_op_{nullptr};
   RootDomain root_dom_;
 
   uint64_t tile_num_{0};

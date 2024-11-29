@@ -41,7 +41,7 @@ namespace dvm {
 #define ASSERT(cond)
 #endif
 
-#define EXCEPTION_IF(cond, error_str)   do { if (cond) DvmException(error_str); } while (0)
+#define EXCEPTION_IF(cond, error_str)   do { if (cond) dvm::DvmException(error_str); } while (0)
 void DvmException(const char* error_str);
 
 enum AiCoreArch {

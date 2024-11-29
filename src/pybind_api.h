@@ -24,7 +24,6 @@
 
 namespace dvm {
 namespace py = pybind11;
-
 class NDObjectPy {
  public:
   NDObjectPy(NDObject *obj): obj_(obj) {}
@@ -89,6 +88,7 @@ class KernelPy {
   py::object Select(const py::object &cond, const py::object &lhs, const py::object &rhs);
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
+  py::object AllReduce(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b, const py::object &bias);
   py::object ConvertToBF16(const py::object &input);
   py::object ConvertFromBF16(const py::object &input);
@@ -106,6 +106,7 @@ class KernelPy {
   void ClearStoreMemory(const py::object &store);
   void Tile(int start, int end, int64_t num);
   void CodeGen(const py::object& pass_names);
+  void InitComm(int rank_id, int rank_size);
   void Run();
 
   py::object DisAssemble();
@@ -160,6 +161,7 @@ class KernelPy {
 
   int dev_id_{0};
   void *workspace_{nullptr};
+  static Comm comm_;
 };
 }
 #endif // _DVM_PYBIND_API_H_

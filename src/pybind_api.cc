@@ -112,6 +112,8 @@ void ShapeRefPy::Update(const py::object &shape){
   *shape_ref_ = shape_;
 }
 
+Comm KernelPy::comm_;
+
 KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
   auto it = kernel_type_map.find(type_str);
   KernelType type = it != kernel_type_map.end() ? it->second : kStaticShape;
@@ -119,7 +121,7 @@ KernelPy::KernelPy(int dev_id,  const std::string &type_str) {
   ASCEND_CALL(aclrtGetDeviceCount(&dev_count));
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
   ASCEND_CALL(aclrtSetDevice(dev_id));
-  dev_id_ = dev_id_;
+  dev_id_ = dev_id;
   if (type == kEager) {
     kernel_.EagerReset(WsAllocCallback, &eager_wss_);
   } else {
@@ -311,6 +313,12 @@ py::object KernelPy::ElementAny(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
+py::object KernelPy::AllReduce(const py::object &input) {
+  auto input_obj = input.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.AllReduce(input_obj, &comm_);
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
 py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b,
                             const py::object &bias) {
   auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
@@ -452,6 +460,12 @@ py::object KernelPy::DisAssemble() {
 py::object KernelPy::DumpGraph() {
   std::string data = kernel_.GetImpl()->DumpGraph();
   return py::cast(data);
+}
+
+void KernelPy::InitComm(int rank_id, int rank_size){
+  if(comm_.GetImpl() == nullptr){
+    comm_.Init(rank_id, rank_size);
+  }
 }
 
 void KernelPy::Run() {
@@ -670,7 +684,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("update", &ShapeRefPy::Update, "update shape");
 
   (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "Kernel")
-      .def(py::init([](int dev_id, const std::string &ker_type) { return std::make_shared<KernelPy>(dev_id, ker_type); }))
+      .def(py::init<int, const std::string &>(), py::arg("dev_id"), py::arg("kernel_type"))
       .def("load", &KernelPy::Load, "load array")
       .def("slice_load", &KernelPy::SliceLoad, "load array")
       .def("stridedslice_load", &KernelPy::StridedSliceLoad, "load array")
@@ -686,6 +700,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("reshape", &KernelPy::Reshape, "emit reshape op")
       .def("reduce", &KernelPy::Reduce, "emit reduce op")
       .def("copy", &KernelPy::Copy, "emit copy op")
+      .def("allreduce", &KernelPy::AllReduce, "emit allreduce op")
       .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
          py::arg("trans_b"), py::arg("bias") = py::none())
       .def("convert_to_bf16", &KernelPy::ConvertToBF16, "convert f32 array to bf16 array")
@@ -706,6 +721,7 @@ PYBIND11_MODULE(_dvm_py, m) {
       .def("perf", &KernelPy::Perf, "perf test")
       .def("measure", &KernelPy::Measure, "measure metrics")
       .def("run", &KernelPy::Run, "run kernel")
+      .def("init_comm", &KernelPy::InitComm, "init communicatior")
       .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
       .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning");
 

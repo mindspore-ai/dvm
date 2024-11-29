@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 #include <cstring>
@@ -96,6 +97,8 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tail_m", op.tail_m, oss);
   oss << ", ";
   DumpVal("tail_n", op.tail_n, oss);
+  oss << ", ";
+  DumpVal("flags", op.flags, oss);
 }
 
 void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -195,6 +198,34 @@ void DumpPingPongLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("iter_tail", op.tail_iter, oss);
   oss << ", ";
   DumpVal("pingpong_stride", op.pingpong_stride, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vLoad::ROUND_OFFSET, oss);
+  }
+}
+
+void DumpPingpongPeerLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vPingPongPeerLoad p_load;
+  vPingPongPeerLoad::Decode(dump_info.insn, *dump_info.insn, p_load);
+  vPingPongLoad& op = p_load.base;
+  oss << "PingPongPeerLoad.u8." << op.iter_size << "x" << op.body_iter;
+  oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.tail_iter, oss);
+  oss << ", ";
+  DumpVal("pingpong_stride", op.pingpong_stride, oss);
+  oss << ", ";
+  DumpVal("offset", p_load.peer_mem_offset, oss);
+  oss << ", ";
+  DumpVal("set_flag", reinterpret_cast<void *>(p_load.set_flag), oss);
+  oss << ", ";
+  DumpVal("wait_flag", reinterpret_cast<void *>(p_load.wait_flag), oss);
+  oss << ", ";
+  DumpVal("event_id", reinterpret_cast<void *>(p_load.event_id), oss);
   if (op.round_rank > 0) {
     oss << ", ";
     DumpRounds(op.round_rank, dump_info.insn + vLoad::ROUND_OFFSET, oss);
@@ -456,6 +487,36 @@ void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("xn_pad", op.xn_pad, oss);
 }
 
+const char name_peer_load[] = "peer_load";
+const char name_peer_load_mix[] = "peer_load_mix";
+const char name_peer_store[] = "peer_store";
+const char name_peer_store_mix[] = "peer_store_mix";
+
+template <char const *name>
+void DumpPeerDMA(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vPeerDMA op;
+  vPeerDMA::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << name;
+  oss << ".u8.32x" << op.lenburst;
+  oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.peer_mem);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("tail_lenburst", op.tail_lenburst, oss);
+  oss << ", ";
+  DumpVal("flag_mem", reinterpret_cast<void *>(op.flag_mem), oss);
+  oss << ", ";
+  DumpVal("set_flag", reinterpret_cast<void *>(op.set_flag), oss);
+  oss << ", ";
+  DumpVal("wait_flag", reinterpret_cast<void *>(op.wait_flag), oss);
+  oss << ", ";
+  DumpVal("set_event_id", reinterpret_cast<void *>(op.event_id), oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vDMA::ROUND_OFFSET, oss);
+  }
+}
+
 using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 
 std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
@@ -465,6 +526,9 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_SLICE_LOAD, &DumpSliceLoad},
   {V_SLOAD, &DumpSLoad},
   {V_PINGPONG_LOAD, &DumpPingPongLoad},
+  {V_PINGPONG_PEER_LOAD, &DumpPingpongPeerLoad},
+  {V_PEER_LOAD, &DumpPeerDMA<name_peer_load>},
+  {V_PEER_LOAD_MIX, &DumpPeerDMA<name_peer_load_mix>},
   {V_LOAD_NONE, &DumpLoadExit},
 };
 
@@ -475,6 +539,8 @@ std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_SSTORE, &DumpSStore},
+  {V_PEER_STORE, &DumpPeerDMA<name_peer_store>},
+  {V_PEER_STORE_MIX, &DumpPeerDMA<name_peer_store_mix>},
   {V_SLICE_STORE, &DumpSliceStore},
 };
 
@@ -635,7 +701,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
     oss << "\n";
     if (offset == 0) break;
     insn = insn + offset;
-    oss <<  indent << "  {";
+    oss <<  indent << "    {";
     bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
     if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
       oss << "simd";
@@ -764,6 +830,9 @@ class DisAssembler {
     if (cube->flags & V_CUBE_FLAG_PINGPONG_STORE) {
       oss << ", pingpong_store=1";
     }
+    if (cube->flags & V_CUBE_FLAG_PEER_STORE) {
+      oss << ", peer_store=1";
+    }
     oss << ") {" << std::endl;
     DasCubeBody(cube, indent + "  ");
     oss << std::endl << indent << "}";
@@ -857,6 +926,8 @@ class DisAssembler {
   std::ostringstream &oss;
 };
 
+std::atomic<uint32_t> Code::unique_id_ = 0;
+
 Code::~Code() {
   if (data_) {
     if (mem_size_ <= PARAM_TABLE_LIMIT) {
@@ -940,6 +1011,12 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
                         ? old_dst - old_base + new_base
                         : old_dst;
       reloc_reuse_.emplace_back(dst, src);
+    }
+  }
+  if (!code.unique_ids_.empty()){
+    auto distance = (data_ + offset) - (code.data_ + HeadSize());
+    for(auto unique_id_addr: code.unique_ids_){
+      unique_ids_.push_back(reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(unique_id_addr)+distance));
     }
   }
   if (!code.sub_codes_.empty()) {

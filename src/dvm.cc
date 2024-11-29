@@ -16,10 +16,12 @@
 
 #include <unordered_map>
 #include <cmath>
+#include <vector>
 #include "dvm.h"
 #include "kernel.h"
 #include "msprof.h"
 #include "tuning.h"
+#include "comm.h"
 
 namespace dvm {
 namespace {
@@ -137,8 +139,18 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
 }
 }  // namespace
 
-Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr} {
+Comm::~Comm() {
+  if (comm_) delete comm_;
 }
+
+bool Comm::Init(int rank_id, int rank_size) {
+  if (!comm_) {
+    comm_ = new Communicator(rank_id, rank_size);
+  }
+  return comm_->Init();
+}
+
+Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr} {}
 
 Kernel::~Kernel() {
   delete kernel_;
@@ -385,7 +397,7 @@ NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keep
 }
 
 NDObject* Kernel::Store(void *addr, NDObject* input) {
-  if (input->IsLoad()) {
+  if (input->IsLoad() || input->IsComm()) {
     input = Copy(input);
   }
   auto ktype = kernel_->KType();
@@ -414,6 +426,15 @@ NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
   }
   NDObject *obj;
   obj = new NDPadStore(static_cast<uint8_t *>(addr), input, pad_shape);
+  kernel_->Append(obj);
+  return obj;
+}
+
+NDObject* Kernel::AllReduce(NDObject *input, const Comm *comm) {
+  if(input->IsLoad()){
+    input = Copy(input);
+  }
+  NDObject *obj = new AllReduceOp(input, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
 }
@@ -547,7 +568,7 @@ int Kernel::EagerMsProfLaunch(void *stream) {
           info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
           info.input_size++;
         } else if (!op->IsStore()) {
-          op->Dump(false, oss); 
+          op->Dump(false, oss);
         }
       }
     }

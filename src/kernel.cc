@@ -22,6 +22,7 @@
 #include <algorithm>
 #include "kernel.h"
 #include "pass.h"
+#include "comm.h"
 
 namespace dvm {
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
@@ -31,6 +32,7 @@ enum CodeGenTmpl {
   kGenSimd0 = 0,
   kGenSimd1,
   kGenSimd2,
+  kGenComm,
   kGenFlex,
   kGenWrap,
   kGenLoad,
@@ -47,7 +49,9 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenLoad,  true }, // Load
   {kGenStore, false}, // PadStore
   {kGenStore, true }, // SStore
+  {kGenStore, true},  // PeerStore
   {kGenStore, true }, // Store
+  {kGenComm,  true }, // AllReduce
   {kGenSimd1, true }, // Reshape
   {kGenSimd1, true }, // Copy
   {kGenSimd1, true }, // Unary
@@ -76,7 +80,10 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VectorKernel &kernel): kernel_(kernel) {}
+  CodeGenHelper(VectorKernel &kernel)
+      : forward_event_num_(System::Instance().EventNum()),
+        backward_event_num_(System::Instance().EventNum()),
+        kernel_(kernel) {}
   bool Generate() {
     auto &code = kernel_.code_;
     auto code_reserved = kernel_.ReserveCodeSize();
@@ -86,6 +93,18 @@ class CodeGenHelper {
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
+    }
+    if (kernel_.comm_op_) {
+      auto comm = kernel_.comm_op_;
+      for (size_t i = 0; i < comm->XbufReserve(); ++i) {
+        comm->xbufs_.push_back(static_xbuf_);
+        static_xbuf_ += xbuf_size_;
+      }
+      comm->SetXbufSize(xbuf_size_);
+      ASSERT(forward_event_num_ > 1);
+      ASSERT(backward_event_num_ > 2);
+      forward_event_num_ -= 1;
+      backward_event_num_ -= 2;
     }
     auto simd_width = kernel_.simd_width_;
     for (auto op: kernel_.objects_) {
@@ -161,6 +180,21 @@ class CodeGenHelper {
 #endif
           break;
         }
+        case kGenComm: {
+          if (op->xbuf_ == 0) {
+            AllocOutXBuf(op);
+          }
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.emplace(op->lhs_->xbuf_, op);
+          }
+          static_cast<CommOp*>(op)->unique_ids_ptr_ = &code.unique_ids_;
+          auto code_size = op->Emit(kernel_);
+          code_ptr += code_size;
+          if (static_cast<CommOp *>(op)->StoreLhs()) {
+            StoreSync(op->lhs_, op);
+          }
+          break;
+        }
         default:
           ASSERT(0);
           break;
@@ -178,9 +212,9 @@ class CodeGenHelper {
   void BackwardSync() {
     auto &objects = kernel_.objects_;
     EventManager vl_event, sv_event;
-    auto alloc_event = [](EventManager &m, uint64_t &event) -> bool {
+    auto alloc_event = [backward_event_num = this->backward_event_num_](EventManager &m, uint64_t &event) -> bool {
       event = m.hold_event + 1;
-      if (event >= System::Instance().EventNum()) {
+      if ((int)event >= backward_event_num) {
         event = m.hold_event;
         return false;
       }
@@ -193,8 +227,7 @@ class CodeGenHelper {
       if (op->flags_ & OBJ_FLAG_DEAD) {
         continue;
       }
-      auto pipe = op->Pipe();
-      if (pipe == V_PIPE_STORE) {  // STORE -> SIMD
+      if (op->IsStore()) {  // STORE -> SIMD
         auto simd = op->lhs_;
         if (simd->index_ < sv_event.sync_idx) {
           uint64_t event;
@@ -207,27 +240,55 @@ class CodeGenHelper {
           *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
           sv_event.sync_idx = simd->index_;
         }
-      } else if (pipe == V_PIPE_SIMD && op->lhs_) { // SIMD -> LOAD
-        NDObject *load = nullptr;
-        if (op->lhs_->IsLoad()) load = op->lhs_;
-        auto rhs = op->rhs_;
-        if (rhs) {
-          if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
-          if (op->flags_ & OBJ_FLAG_XHS) {
-            NDObject *xhs = reinterpret_cast<FlexOp*>(op)->xhs_;
-            if (xhs->IsLoad() && (load == nullptr || xhs->index_ < load->index_)) load = xhs;
+      } else if (op->IsSimd() && op->lhs_) {
+        if (op->IsComm()) {
+          auto comm_op = static_cast<CommOp *>(op);
+          NDObject *last = op->lhs_;
+          if (last->IsLoad() && last->index_ < vl_event.sync_idx) {  // case 1: simd -> load
+            uint64_t event;
+            if (alloc_event(vl_event, event)) {
+              *(comm_op->lhs_simd_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
+            } else {
+              auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
+              *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
+            }
+            *(last->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
+            vl_event.sync_idx = last->index_;
+          } else if (static_cast<CommOp *>(op)->StoreLhs()) {  // case 2: store -> simd
+            if (last->index_ < sv_event.sync_idx) {
+              uint64_t event;
+              if (alloc_event(sv_event, event)) {
+                *(op->insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
+              } else {
+                auto to_sync = kernel_.objects_[sv_event.sync_idx]->insn_;
+                *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
+              }
+              *(last->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
+              sv_event.sync_idx = last->index_;
+            }
           }
-        }
-        if (load != nullptr && load->index_ < vl_event.sync_idx) {
-          uint64_t event;
-          if (alloc_event(vl_event, event)) {
-            *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
-          } else {
-            auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
-            *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
+        } else {  // SIMD -> LOAD
+          NDObject *load = nullptr;
+          if (op->lhs_->IsLoad()) load = op->lhs_;
+          auto rhs = op->rhs_;
+          if (rhs) {
+            if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
+            if (op->flags_ & OBJ_FLAG_XHS) {
+              NDObject *xhs = reinterpret_cast<FlexOp *>(op)->xhs_;
+              if (xhs->IsLoad() && (load == nullptr || xhs->index_ < load->index_)) load = xhs;
+            }
           }
-          *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
-          vl_event.sync_idx = load->index_;
+          if (load != nullptr && load->index_ < vl_event.sync_idx) {
+            uint64_t event;
+            if (alloc_event(vl_event, event)) {
+              *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
+            } else {
+              auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
+              *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
+            }
+            *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
+            vl_event.sync_idx = load->index_;
+          }
         }
       }
     }
@@ -377,7 +438,9 @@ class CodeGenHelper {
   void SimdSync(NDObject *from, NDObject *to) {
     if (from->IsSimd()) {
       SimdBarrier(from, to);
-      return;
+      if (!from->IsComm() || *(from->tail_insn_) & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
+        return;
+      }
     }
     int from_pipe_idx = from->index_;
     if (from_pipe_idx <= lv_event_.sync_idx) return;
@@ -411,7 +474,7 @@ class CodeGenHelper {
   }
 
   inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
-    int total = System::Instance().EventNum();
+    int total = forward_event_num_;
     for (int i = 1; i <= total; ++i) {
       event = (m.hold_event + i) % total;
       if (from_idx >= m.hold_idx[event]) {
@@ -431,13 +494,15 @@ class CodeGenHelper {
   int vector_vector_sync = 0;
   EventManager lv_event_;
   EventManager vs_event_;
+  int forward_event_num_;
+  int backward_event_num_;
 
   VectorKernel &kernel_;
   friend VectorKernel;
 };
 
 void PropDomain::Normalize() {
-  size_t nd_size = 1;
+  size_t nd_size = 1; // rank
   dom_ = nullptr;
   auto select_dom = [this](NDObject *cand) -> bool {
     auto &dom_nd = dom_->nd_;
@@ -462,6 +527,7 @@ void PropDomain::Normalize() {
     } else if (obj_type == kBroadcastTo) {
       if (op != dom_) cand = op;
     }
+    // Find the largest dom (bigger rank or bigger shape[i])
     if (cand) {
       if (dom_ == nullptr || select_dom(cand)) dom_ = cand;
     } else if (dom_ == nullptr && !op->IsStore() && obj_type != kLoadDummy) {
@@ -470,6 +536,7 @@ void PropDomain::Normalize() {
   }
   ASSERT(dom_ != nullptr);
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
+    // Make rank of all ops equal by broadcast to (..., 1, 1, .., 1)
     if (op->nd_.size() < nd_size) {
       op->nd_.resize(nd_size, 1);
     }
@@ -749,7 +816,7 @@ class ShapeTiling {
     // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
     // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
     // floor(a/b) <= c --> b >= floor(a/c)
-    // floor(tile_size_/tile_num <= tile_size_limit_) --> tile_num >= floor(tile_size_/tile_size_limit_)
+    // floor(tile_size_/tile_num) <= tile_size_limit_ --> tile_num >= floor(tile_size_/tile_size_limit_)
     // (tile_size / space) * floor(space /tile_num) <= tile_size_limit_) --> tile_num >= floor(space/max_factor)
     // EQUAL TO:
     //  int64_t tile_num = (space + max_factor - 1) / max_factor;
@@ -951,14 +1018,14 @@ VectorKernel::~VectorKernel() {
 void VectorKernel::DoCodeGen(uint64_t core_limit) {
   int peak_live = Analyze();
   int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
-  int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);
+  int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);  // max tile_size for each op
   // tiling
   ShapeTiling tiling(this, root_dom_, core_limit);
   if (tiles_.empty()) {
     tiling.Run(tile_size_limit);
   } else {
     auto &dims = root_dom_.DimSpace();
-    for (auto &t: tiles_) {
+    for (auto &t : tiles_) {
       int64_t space = dims[t.start];
       for (int i = t.start + 1; i <= t.end; ++i) {
         space *= dims[i];
@@ -972,7 +1039,7 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
   // simd_width
   int64_t lead_dim = root_dom_.DimSpace()[0];
   int64_t block_sw = BlockAlign();
-  int64_t align_lead_dim = CeilDiv(lead_dim, block_sw) *  block_sw;
+  int64_t align_lead_dim = CeilDiv(lead_dim, block_sw) * block_sw;
   int64_t tile_outer = root_dom_.TileSize() / align_lead_dim;
   int64_t best_repeat;
   if (tiling.proposal_sw_) {
@@ -1110,8 +1177,12 @@ int VectorKernel::Analyze() {
   constexpr int REUSE_READY = 0;
   constexpr int REUSE_SUCC = 1;
   int cur_live = static_ops_.size();
+  if(comm_op_){
+    cur_live += comm_op_->XbufReserve();
+  }
   int live_peak = cur_live;
   auto LivenessEnd = [this, &cur_live](NDObject *op, NDObject *end) {
+    // TODO: check if other comm op can also spare 1 xbuf(like AllReduce)
     if (end->IsSimd()) {
       if (!OP_LIVE(end)) {
         OP_GEN_D(end);
@@ -1305,7 +1376,7 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
     }
     if (op->IsLoad()) {
       static_ops_.push_back(op);
-    } else if (op->IsStore()) {
+    } else if (op->IsStore() || (op->IsComm() && static_cast<CommOp *>(op)->StoreLhs())) {
       static_ops_.push_back(op->lhs_);
     }
   }
@@ -1361,6 +1432,10 @@ void VKernelS::Append(NDObject *obj) {
   build_ops_.push_back(obj);
   obj->Normalize(objects_);
   objects_.emplace_back(obj);
+  if(obj->IsComm()){
+    ASSERT(comm_op_==nullptr);
+    comm_op_ = static_cast<CommOp*>(obj);
+  }
 }
 
 void VKernelS::Optimize() {
@@ -1563,10 +1638,19 @@ void MixKernel::Append(NDObject *obj) {
     if (post_fusion_ == nullptr) {
       post_fusion_ = new VKernelS();
     }
+    if(obj->IsComm() && obj->lhs_ == cube_op_){
+      cube_op_->peer_store_ = true;
+      cube_op_->pingpong_store_ = true;
+      cube_op_->rank_size_ = static_cast<CommOp*>(obj)->comm_->GetRankSize();
+    }
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
-          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          auto sload = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          if(cube_op_->peer_store_){
+            sload->pingpong_load_ = true;
+          }
+          sload_ = sload;
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;
@@ -1761,7 +1845,7 @@ uint64_t MixKernel::AlignCodeGen() {
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
     post_fusion_->NormalizeDomain();
-    if (cube_op_->output_ == sload_) {
+    if (cube_op_->output_ == sload_ && !cube_op_->peer_store_) {
       inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr);
       if (inplace_store == nullptr) {
         cube_op_->pingpong_store_ = true;
@@ -1773,6 +1857,12 @@ uint64_t MixKernel::AlignCodeGen() {
         static_cast<NDSLoad*>(op)->SetCubeOp(cube_op_);
       } else if (op->IsStore()) {
         static_cast<NDSStore*>(op)->SetCubeOp(cube_op_);
+      } else if (op->IsComm()) {
+        auto comm = static_cast<CommOp*>(op);
+        comm->mix_ = true;
+        if(cube_op_->peer_store_){
+          static_cast<CommOp*>(op)->SetCubeOp(cube_op_);
+        }
       }
     }
     auto m = cube_op_->output_->nd_[1];
@@ -1797,6 +1887,11 @@ uint64_t MixKernel::AlignCodeGen() {
   code_.Alloc(size);
   code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
   std::memcpy(code_.data_ + code_.HeadSize(), &cube_code, sizeof(vCubeOp));
+  // record vCubeOp's unique_id address
+  if (cube_op_->peer_store_) {
+    auto distance = reinterpret_cast<uint8_t *>(&cube_code.unique_id) - reinterpret_cast<uint8_t *>(&cube_code);
+    code_.unique_ids_.push_back(reinterpret_cast<uint32_t *>(code_.data_ + code_.HeadSize() + distance));
+  }
   // only support post fusion
   vCubeOp *link_cube = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
   static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
@@ -1819,6 +1914,11 @@ uint64_t MixKernel::AlignCodeGen() {
     return 0;
   } else if (cube_op_->output_->IsStore()) {
     cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
+    code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
+    return 0;
+  } else if(cube_op_->peer_store_){
+    const auto comm = post_fusion_->comm_op_->comm_;
+    link_cube->gm_c = reinterpret_cast<uint64_t>(comm->GetPeerMemPtr(comm->GetRankId()));
     code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
     return 0;
   } else {

@@ -82,6 +82,7 @@ enum KernelType {
 class NDObject;
 class VKernel;
 class MsProfHelper;
+class Communicator;
 
 struct ShapeRef {
   ShapeRef() {}
@@ -109,7 +110,18 @@ struct RelocEntry {
   void *addr;
 };
 
-typedef void*(*WsAllocFunc)(uint64_t size, void *user_data);
+typedef void *(*WsAllocFunc)(uint64_t size, void *user_data);
+
+class Comm {
+ public:
+  Comm() = default;
+  ~Comm();
+  bool Init(int rank_id, int rank_size);
+  inline const Communicator *GetImpl() const { return comm_; };
+
+ private:
+  Communicator *comm_{nullptr};
+};
 
 class Kernel {
  public:
@@ -147,6 +159,9 @@ class Kernel {
   NDObject *ElemAny(NDObject *input);
 
   NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
+
+  // collective communication
+  NDObject *AllReduce(NDObject *input, const Comm *comm);
 
   void StageSwitch(KernelType type);
   NDObject *StageLoad(NDObject *stage_store);

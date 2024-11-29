@@ -28,10 +28,16 @@ enum ObjectType {
   // Load
   kLoadDummy = 0,
   kLoad,
+
   // Store
   kPadStore,
   kSStore,
+  kPeerStore,
   kStore,
+
+  // Comm
+  kAllReduce,
+
   // Simd
   kReshape,
   kCopy,
@@ -147,6 +153,13 @@ class DimArray {
     size_ = size;
   }
   size_t size() const { return size_; }
+  size_t prod() const {
+    size_t res = 1;
+    for (size_t i = 0; i < size_; ++i) {
+      res *= data_[i];
+    }
+    return res;
+  }
   int64_t &operator[](size_t i) { return data_[i]; }
   const int64_t &operator[](size_t i) const { return data_[i]; }
   int64_t &back() { return *(data_ + size_ - 1); }
@@ -264,9 +277,12 @@ class NDObject {
   int64_t LeadAlign() const { return strides_[lead_dim_]; }
   uint64_t GetBlocks(int64_t size) const { return (size * ITEM_SIZE[type_id_] + 31) >> 5; }
   ObjectType GetObjectType() const { return obj_id_; }
+  // Now we have comm op, which will cross different pipe. This method should be deprecated
   int Pipe() const { return obj_id_ <= kLoad ?  V_PIPE_LOAD : (obj_id_ <= kStore ? V_PIPE_STORE : V_PIPE_SIMD); }
   bool IsLoad() const { return obj_id_ <= kLoad; }
   bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
+  bool IsComm() const { return obj_id_ > kStore && obj_id_ <= kAllReduce; }
+  // Comm op is considered a simd op, remember use !IsComm() to exclude comm op
   bool IsSimd() const { return obj_id_ > kStore; }
 
   template <typename T>
@@ -287,7 +303,7 @@ class NDObject {
   NDObject *rhs_;
   uint64_t xbuf_;
   ShapeRef *shape_ref_{nullptr};
-  NDObject *pd_next_{nullptr};
+  NDObject *pd_next_{nullptr}; // PropDomain next
   ObjectType obj_id_;
   DType type_id_;
   int lead_dim_;
@@ -797,9 +813,11 @@ class CubeOp : public NDObject {
   int64_t m0_{0};
   int64_t n0_{0};
   int64_t k0_{0};
+  int32_t rank_size_{0};
   bool trans_a_{false};
   bool trans_b_{false};
   bool pingpong_store_{false};
+  bool peer_store_{false};
   std::vector<int64_t> pad_a_;
   std::vector<int64_t> pad_b_;
   NDObject *bias_{nullptr};
@@ -817,6 +835,56 @@ class CubeOp : public NDObject {
   bool atomic_add_{false};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
+};
+
+class CommOp : public NDObject {
+ public:
+  CommOp(NDObject *input, const Communicator *comm, ObjectType obj_id)
+      : NDObject(input, nullptr, input->type_id_, obj_id), comm_(comm) {
+    shape_ref_ = input->shape_ref_;
+  }
+  inline bool StoreLhs() { return cube_op_ == nullptr; }
+  // Extra space needed to store expanded instructions
+  uint64_t CodeReserve() { return code_reserve_; }
+  uint64_t XbufReserve() { return xbuf_reserve_; }
+  void SetXbufSize(uint32_t size) { xbuf_size_ = size; }
+  void SetCubeOp(CubeOp *op) { cube_op_ = op; }
+
+ public:
+  std::vector<uint64_t> xbufs_;
+  std::vector<uint64_t> forward_events_;
+  std::vector<uint64_t> backward_events_;
+  std::vector<uint32_t*> *unique_ids_ptr_;
+  uint64_t *lhs_simd_{nullptr};  // the simd instruction after lhs_(now only AllReudce has)
+  uint64_t *backsync_load_{nullptr};  // the load which need bacysync from the simd after comm op
+  bool mix_{false};
+  const Communicator *comm_;
+
+ protected:
+  uint64_t xbuf_reserve_; // static
+  uint64_t code_reserve_;
+  CubeOp *cube_op_{nullptr};
+  uint32_t xbuf_size_{0};
+};
+
+// Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore
+class AllReduceOp : public CommOp {
+ public:
+  AllReduceOp(NDObject *input, const Communicator *comm);
+  // ~AllReduceOp() = default;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Tile(const TileParam &tp) override;
+  int Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+  int MatmulEmit(VectorKernel &k);  // used when lhs_ is Matmul
+
+ protected:
+  int tail_dim_{-1};
+  int tail_size_{0};
+  bool use_twoshot_{false};
+
+ private:
+  vSimdInsnID add_id_;
 };
 
 class NDSStore : public NDStore {
@@ -844,6 +912,7 @@ class NDSLoad : public NDLoad {
   void Dump(bool verbose, std::ostringstream &oss) override;
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
+  bool pingpong_load_{false};
  private:
   CubeOp *cube_op_;
 };

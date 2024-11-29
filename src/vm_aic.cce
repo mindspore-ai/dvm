@@ -226,12 +226,12 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void MM(__cc__ float *__restrict__ c, 
-                                       __ca__ T *__restrict__ a, 
-                                       __cb__ T *__restrict__ b, 
-                                       bool init_c, 
-                                       uint8_t unit_flag, 
-                                       int64_t m_actual, 
+  __force_inline__ __aicore__ void MM(__cc__ float *__restrict__ c,
+                                       __ca__ T *__restrict__ a,
+                                       __cb__ T *__restrict__ b,
+                                       bool init_c,
+                                       uint8_t unit_flag,
+                                       int64_t m_actual,
                                        int64_t n_actual,
                                        int64_t k0_actual) {
     bool special_handle_req = (m_real != 1 && m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
@@ -313,10 +313,10 @@ class MatMul {
     static constexpr QuantMode_t type = F322BF16;
   };
 
-  __force_inline__ __aicore__ void StoreC_Fp32(__gm__ float *__restrict__ dst, 
-                                               __cc__ float *__restrict__ c, 
-                                               int64_t midx, 
-                                               int64_t nidx, 
+  __force_inline__ __aicore__ void StoreC_Fp32(__gm__ float *__restrict__ dst,
+                                               __cc__ float *__restrict__ c,
+                                               int64_t midx,
+                                               int64_t nidx,
                                                uint8_t unit_flag,
                                                int64_t m_actual,
                                                int64_t n_actual) {
@@ -336,10 +336,10 @@ class MatMul {
     );
   }
 
-  __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst, 
-                                          __cc__ float *__restrict__ c, 
-                                          int64_t midx, 
-                                          int64_t nidx, 
+  __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst,
+                                          __cc__ float *__restrict__ c,
+                                          int64_t midx,
+                                          int64_t nidx,
                                           uint8_t unit_flag,
                                           int64_t m_actual,
                                           int64_t n_actual) {
@@ -453,7 +453,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   for (uint64_t tile = block_idx; tile < tile_end; tile += block_num) {
     __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
     uint64_t c_idx = tile / (mat.m_loop * mat.n_loop);
-    uint64_t offset_c = c_idx * mat.m_real * mat.n_real;
+    uint64_t batch_offset = c_idx * mat.m_real * mat.n_real;
     uint64_t offset_a, offset_b;
     mat.ComputeOffset(c_idx, offset_a, offset_b);
     int64_t midx, nidx;
@@ -576,10 +576,21 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint8_t unit_flag = 0b11;
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
       mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual);
+      if (mat.flags & V_CUBE_FLAG_PEER_STORE) {
+        int64_t pingpong_offset = mat.pingpong_store ? block_idx : block_num + block_idx;
+        // result of GetCubeOffset()
+        uint32_t group_offset = midx * mat.m0 * mat.n_real + nidx * mat.n0;
+        set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
+        wait_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
+        __gm__ uint64_t *peer_flag_mem =
+          (__gm__ uint64_t *)((__gm__ uint8_t *)gm_c + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
+        *peer_flag_mem = ((uint64_t)(op->unique_id) << 32) | (group_offset + 1);
+        dcci(peer_flag_mem, 0);
+      }
     } else if (mat.flags & V_CUBE_FLAG_OUT_FP32) {
-      mat.StoreC_Fp32((__gm__ float *__restrict__)gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
+      mat.StoreC_Fp32((__gm__ float *__restrict__)gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     } else {
-      mat.StoreC(gm_c + offset_c, l0c, midx, nidx, unit_flag, m_actual, n_actual);
+      mat.StoreC(gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     }
     if (mat.flags & V_CUBE_FLAG_GROUP_SET) {
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
@@ -611,6 +622,19 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t 
     __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
     uint64_t flags = op->flags;
     uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
+    // Clear backsync area
+    if (flags & V_CUBE_FLAG_PEER_STORE) {
+      __gm__ int32_t *peer_mem =
+        (__gm__ int32_t *)((__gm__ uint8_t *)op->gm_c + PEERMEM_ATOMIC_OFFSET + block_idx * CACHE_LINE_SIZE);
+      __gm__ int32_t *peer_mem2 = (__gm__ int32_t *)((__gm__ uint8_t *)op->gm_c + PEERMEM_ATOMIC_OFFSET +
+                                                     (block_idx + block_num) * CACHE_LINE_SIZE);
+      *peer_mem = 0;
+      dcci(peer_mem, 0);
+      *peer_mem2 = 0;
+      dcci(peer_mem2, 0);
+      set_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
+      wait_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
+    }
     if (block_idx < tile_num) {
       switch (op->dtype) {
         case vCubeOp::FP16:

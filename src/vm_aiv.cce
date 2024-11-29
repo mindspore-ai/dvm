@@ -1654,6 +1654,133 @@ __aicore_inline__ uint64_t vBlockNum() {
   return get_subblockdim() * block_num;
 }
 
+/******************************************************
+ * Collective Communication Operations
+*******************************************************/
+__aicore_inline__ void WaitBuffFlag(uint64_t flag, __gm__ uint64_t *buff){
+  while (1) {
+    if (*buff == flag) {
+      break;
+    }
+    dcci(buff, 0);
+    // TODO: do we need this?
+    for (int64_t i = 0; i < 10; ++i) {
+      __asm__ __volatile__("nop");
+    }
+  }
+}
+
+template <bool MIX>
+__aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  pipe_barrier(PIPE_ALL);
+  vPeerDMA op;
+  vPeerDMA::Decode(pc, head, op);
+  if (op.lenburst == 0) {
+    return;
+  }
+  if(op.wait_flag){
+    wait_flag(PIPE_V, PIPE_MTE2, op.event_id);
+  }
+  if(op.set_flag){
+    set_flag(PIPE_V, PIPE_MTE2, op.event_id);
+  }
+  uint32_t tile_idx;
+  if constexpr (MIX) {
+    // pingpong2(2) << 16 | tile_idx(16)
+    tile_idx = ((op.pingpong) << 16) | (MixTileIdx(tile) & 0xfffful);
+  } else {
+    tile_idx = TileIdx(tile);
+  }
+  uint64_t offset_idx = vBlockIdx() * 2 + (op.pingpong & 0x1ul);
+  vPeerDMA::PingPongSwitch(pc);
+  // soft sync
+  __gm__ uint64_t *flag_mem = (__gm__ uint64_t *)((__gm__ uint8_t *)op.flag_mem + offset_idx * CACHE_LINE_SIZE);
+  uint64_t sync_flag = (op.unique_id << 32) | (tile_idx + 1);
+  WaitBuffFlag(sync_flag, flag_mem);
+  set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+  wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+  uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
+  __gm__ void *gm = (__gm__ uint8_t *)op.peer_mem + op.tile_stride * offset_idx;
+  copy_gm_to_ubuf((__ubuf__ void *)op.xn, gm, 0, 1, len_burst, 0, 0);
+}
+
+template <bool MIX>
+__aicore_inline__ void PeerStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vPeerDMA op;
+  vPeerDMA::Decode(pc, head, op);
+  if (op.lenburst == 0) {
+    return;
+  }
+  uint32_t tile_idx;
+  if constexpr (MIX) {
+    // pingpong2(2) << 16 | tile_idx(16)
+    tile_idx = ((op.pingpong) << 16) | (MixTileIdx(tile) & 0xfffful);
+  } else {
+    tile_idx = TileIdx(tile);
+  }
+  uint64_t offset_idx = vBlockIdx() * 2  + (op.pingpong & 0x1ul);
+  vPeerDMA::PingPongSwitch(pc);
+  __gm__ uint64_t *flag_mem = (__gm__ uint64_t *)((__gm__ uint8_t *)op.flag_mem + offset_idx * CACHE_LINE_SIZE);
+  __gm__ void *gm = (__gm__ uint8_t *)op.peer_mem + op.tile_stride * offset_idx;
+  uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
+  copy_ubuf_to_gm(gm, (__ubuf__ void *)op.xn, 0, 1, len_burst, 0, 0);
+  set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+  *flag_mem = (op.unique_id << 32) | (tile_idx + 1);
+  dcci(flag_mem, 0);
+}
+
+static inline[aicore] void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vPingPongPeerLoad speer_load;
+  vPingPongPeerLoad::Decode(pc, head, speer_load);
+  vPingPongLoad &op = speer_load.base;
+  if (IsEndTile(tile)) {
+    vPingPongPeerLoad::PingPongSwitch(pc);
+  }
+  if(speer_load.wait_flag){
+    wait_flag(PIPE_V, PIPE_MTE2, speer_load.event_id);
+  }
+  if(speer_load.set_flag){
+    set_flag(PIPE_V, PIPE_MTE2, speer_load.event_id);
+  }
+
+  uint64_t tile_idx = MixTileIdx(tile);
+  if (op.round_rank > 0) {
+    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vPingPongPeerLoad::ROUND_OFFSET);
+    if (tile_idx == -1) {
+      return;
+    }
+  }
+  uint64_t pingpong_offset = op.pingpong ? block_num + block_idx : block_idx;
+  __gm__ uint64_t *flag_mem =
+    (__gm__ uint64_t *)((__gm__ uint8_t *)op.from + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
+
+  uint32_t group_offset = MixTileGroupOffset(tile);
+  uint64_t sync_flag = (speer_load.unique_id << 32) | (group_offset + 1);
+  WaitBuffFlag(sync_flag, flag_mem);
+  set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+  wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+  __gm__ uint8_t *src = (__gm__ uint8_t *)op.from + speer_load.peer_mem_offset + pingpong_offset * op.pingpong_stride + op.tile_stride * tile_idx;
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
+  uint64_t truck_num = IsLastTile(tile) ? op.tail_iter : op.body_iter;
+  copy_gm_to_ubuf_align_b8(dst, src, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
+
+  if (IsEndTile(tile)) {
+    set_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID0);
+    __gm__ int32_t *gm_accum =
+      (__gm__ int32_t *)((__gm__ uint8_t *)(op.from) + PEERMEM_ATOMIC_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
+    uint64_t step_addr = (uint64_t)speer_load.step_addr & 0x1fffful;
+    uint64_t align_step_addr = (step_addr >> 5) << 5;
+    uint64_t align_size = step_addr - align_step_addr;
+    set_atomic_f32();
+    set_atomic_add();
+    copy_ubuf_to_gm_align_b8((__gm__ uint8_t *)gm_accum - align_size, (__ubuf__ void *)align_step_addr, 0, 1,
+                             align_size + sizeof(int32_t), 0, 0, 0, 0);
+    set_atomic_none();
+  }
+}
+
 extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
   __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
@@ -1806,6 +1933,26 @@ TILE_LOOP:
         tile_loops |= subtile_1;
         tile |= subtile_0 << V_TILE_CUR_IDX_OFFSET;
       }
+      // Use vector to backsync, then use ffts to sync core
+      if (cube->flags & V_CUBE_FLAG_PEER_STORE) {
+        // cube peer_store backsync
+        bool pingpong = (group_idx - block_idx) / block_num % 2;
+        int32_t subblocknum = subtile_1 == 0 ? 1 : 2;
+        int32_t expect = ((group_idx - block_idx) / block_num + 1) / 2 * subblocknum * (cube->rank_size -1);
+        uint64_t pingpong_offset = pingpong ? block_idx : block_idx + block_num;
+        __gm__ int32_t *peer_mem =
+          (__gm__ int32_t *)((__gm__ uint8_t *)cube->gm_c + PEERMEM_ATOMIC_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
+        while (1) {
+          if (*peer_mem == expect) {
+            break;
+          }
+          dcci(peer_mem, 0);
+          // TODO: do we need this?
+          for (int64_t i = 0; i < 10; ++i) {
+            __asm__ __volatile__("nop");
+          }
+        }
+      }
       ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(2, 1));
       set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
       wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
@@ -1815,7 +1962,8 @@ TILE_LOOP:
   pipe_barrier(PIPE_ALL);
 }
 
-#define DEF_DISP_FUNC(OP, func)  extern "C" __noinline__ [aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
+#define DEF_DISP_FUNC(OP, func) \
+  extern "C" __noinline__[aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
 
 DEF_DISP_FUNC(V_LOAD, Load(pc, head, tile))
 DEF_DISP_FUNC(V_LOAD_2, Load2(pc, head, tile))
@@ -1823,6 +1971,9 @@ DEF_DISP_FUNC(V_LOAD_DUMMY, void(0))
 DEF_DISP_FUNC(V_SLICE_LOAD, SliceLoad(pc, head, tile))
 DEF_DISP_FUNC(V_SLOAD, SLoad(pc, head, tile))
 DEF_DISP_FUNC(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))
+DEF_DISP_FUNC(V_PINGPONG_PEER_LOAD, PingPongPeerLoad(pc, head, tile))
+DEF_DISP_FUNC(V_PEER_LOAD, PeerLoad<false>(pc, head, tile))
+DEF_DISP_FUNC(V_PEER_LOAD_MIX, PeerLoad<true>(pc, head, tile))
 
 DEF_DISP_FUNC(V_STORE, Store(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_2, Store2(pc, head, tile))
@@ -1831,6 +1982,8 @@ DEF_DISP_FUNC(V_STORE_ATOMIC_DETERM, StoreAtomicDeterm(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_STATUS, StoreStatus(pc, head))
 DEF_DISP_FUNC(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_FUNC(V_SLICE_STORE, SliceStore(pc, head, tile))
+DEF_DISP_FUNC(V_PEER_STORE, PeerStore<false>(pc, head, tile))
+DEF_DISP_FUNC(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))
 
 DEF_DISP_FUNC(V_COPY, Copy(pc, head))
 DEF_DISP_FUNC(V_BROADCAST_X_B32, BroadcastX<uint32_t>(pc, head, tile))

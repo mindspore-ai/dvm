@@ -38,13 +38,19 @@ class PerformanceResult:
 
 class Tester(Kernel):
     __test__ = False
-    def __init__(self, ker_type="", use_pass_opt=False):
+    def __init__(self, ker_type="", use_pass_opt=False, comm=None):
+        if comm:
+            os.environ["DEVICE_ID"] = str(comm.Get_rank())
+            os.environ["RANK_SIZE"] = str(comm.Get_size())
         dev_id = int(os.getenv("DEVICE_ID"))
         Kernel.__init__(self, dev_id, ker_type)
+        if comm:
+            self.init_comm(dev_id, comm.Get_size())
         self.is_dyn = ker_type == "dyn"
         self.is_codegen = False
         self.expects = [] # [(op, expect, eps)]
         self.passes = None if use_pass_opt else []
+        self.comm = comm
 
     def load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
@@ -99,11 +105,16 @@ class Tester(Kernel):
             print(self.dump())
         self.codegen()
         Kernel.run(self)
+        if self.comm:
+            self.comm.Barrier()
         if verbose:
             print("******* after tiling *******")
             print(self.dump())
             print("********* bytecode *********")
             print(self.das())
+
+    def bare_run(self):
+        Kernel.run(self)
 
     def check(self, store, expect, eps=None, verbose=False):
         def _print_result_diff(out, expect, eps):

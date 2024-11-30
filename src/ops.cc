@@ -50,9 +50,9 @@ static const InsnIdTable unary_id_list[kUnaryOpEnd] = {
   {"Abs",        {V_NONE, V_ABS_FP16, V_NONE, V_ABS, V_NONE}},
   {"Log",        {V_NONE, V_LOG_FP16, V_NONE, V_LOG, V_NONE}},
   {"Exp",        {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE}},
-  {"Reciprocal", {V_NONE, V_REC_FP16, V_NONE, V_REC, V_NONE}},
+  {"Reciprocal", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
   {"IsFinite",   {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE}},
-  {"LogicalNot", {V_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE}},
+  {"LogicalNot", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
   {"Round",      {V_NONE, V_ROUND_FP16, V_NONE, V_ROUND, V_NONE}},
   {"Floor",      {V_NONE, V_FLOOR_FP16, V_NONE, V_FLOOR, V_NONE}},
   {"Ceil",       {V_NONE, V_CEIL_FP16, V_NONE, V_CEIL, V_NONE}},
@@ -88,6 +88,7 @@ static const InsnIdTable binarys_id_list[] = {
   {"LessEqual",   {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
   {"Add",         {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32}},
   {"Mul",         {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32}},
+  {"Div",         {V_NONE, V_SDIV_FP16, V_NONE, V_SDIV, V_NONE}},
   {"Maximum",     {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32}},
   {"Minimum",     {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}}
 };

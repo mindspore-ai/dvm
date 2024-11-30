@@ -566,6 +566,7 @@ enum BinarySOpType {
   kLessEquals,
   kAdds,
   kMuls,
+  kDivs,
   kMaximums,
   kMinimums,
   kBinarySOpEnd,

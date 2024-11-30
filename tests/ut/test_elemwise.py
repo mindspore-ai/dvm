@@ -86,6 +86,19 @@ def test_binary_s(type, op, func):
     t.store_expect(y, func(a, 0.1))
     assert(t.run_check())
 
+
+@pytest.mark.parametrize('type', [np.float16, np.float32])
+@pytest.mark.parametrize('op, func', [("Div", np.divide), ("Sub", np.subtract)])
+def test_binary_s_l(type, op, func):
+    t = Tester()
+    a = np.random.normal(0, 1, [32, 1024]).astype(type)
+    x = t.load(a)
+    x = t.copy(x)
+    y = t.binary(op, 0.1, x)
+    y = t.copy(y)
+    t.store_expect(y, func(0.1, a))
+    assert (t.run_check())
+
 @pytest.mark.parametrize('type', [np.float16] if dvm.device.arch() != 'AscendC220' else [np.float16,np.float32])
 @pytest.mark.parametrize("size",[1024, 24, 66666])
 def test_isfinite(type, size):

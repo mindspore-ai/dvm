@@ -53,7 +53,7 @@ static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
   kAdds,
   kBinarySOpEnd,
   kMuls,
-  kBinarySOpEnd,
+  kDivs,
   kBinarySOpEnd,
   kMaximums,
   kMinimums,
@@ -122,7 +122,7 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
       }
       return nullptr;
     }
-    case BinaryOpType::kPow:
+    case BinaryOpType::kPow: {
       if (rhs_val) {
         if (isInteger(val)) return PowS(kernel, input, val);
       } else if (val > 0) {
@@ -133,6 +133,25 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
         auto tmp = GetBinaryS<float, true>(kernel, BinaryOpType::kMul, std::log((float)val), input);
         return kernel->Unary(UnaryOpType::kExp, tmp);
       }
+      return nullptr;
+    }
+    case BinaryOpType::kSub: {
+      if (rhs_val) {
+        return GetBinaryS<T, true>(kernel, BinaryOpType::kAdd, -val, input);
+      } else {
+        auto neg_input = GetBinaryS<T, true>(kernel, BinaryOpType::kMul, static_cast<T>(-1.0), input);
+        return GetBinaryS<T, true>(kernel, BinaryOpType::kAdd, val, neg_input);
+      }
+    }
+    case BinaryOpType::kDiv: {
+      if (rhs_val) {
+        return GetBinaryS<T, true>(kernel, BinaryOpType::kMul, static_cast<T>(1.0 / val), input);
+      } else {
+        auto obj = new BinaryScalarOp<T>(lhs_val_binary_map[op_type], input, val);
+        vkernel->Append(obj);
+        return obj;
+      }
+    }
     default:
       return nullptr;
   }
@@ -210,11 +229,20 @@ NDObject* Kernel::Unary(int op_type, NDObject* input) {
       return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));
     }
   }
-  if (op_type == UnaryOpType::kLogicalNot && input->type_id_ != kBool) {
-    if (input->type_id_ == kInt32) {
+  if (op_type == UnaryOpType::kLogicalNot) {
+    if (input->type_id_ == kBool) {
+      return Cast(Binary(BinaryOpType::kSub, 1.0f, Cast(input, kFloat16)), kBool);
+    } else if (input->type_id_ == kInt32) {
       return Binary(BinaryOpType::kSub, 1, input);
     } else {
       return Binary(BinaryOpType::kSub, 1.0f, input);
+    }
+  }
+  if (op_type == UnaryOpType::kReciprocal) {
+    if (input->type_id_ == kInt32 || input->type_id_ == kBool) {
+      return Cast(Binary(BinaryOpType::kDiv, 1.0f, Cast(input, kFloat32)), input->type_id_);
+    } else {
+      return Binary(BinaryOpType::kDiv, 1.0f, input);
     }
   }
   NDObject *obj;

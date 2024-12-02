@@ -43,7 +43,7 @@ inline std::vector<NDObject *> GetPreds(NDObject *obj) {
   }
   res.emplace_back(obj->rhs_);
   if (obj->flags_ & OBJ_FLAG_XHS) {
-    res.emplace_back(static_cast<FlexOp*>(obj)->xhs_);
+    res.emplace_back(static_cast<FlexOp *>(obj)->xhs_);
   }
   return res;
 }
@@ -58,7 +58,7 @@ inline void ItePreds(NDObject *obj, std::function<void(NDObject *)> fun) {
   }
   fun(obj->rhs_);
   if (obj->flags_ & OBJ_FLAG_XHS) {
-    fun(static_cast<FlexOp*>(obj)->xhs_);
+    fun(static_cast<FlexOp *>(obj)->xhs_);
   }
 }
 
@@ -84,7 +84,7 @@ NDObject *&GetInputRef(NDObject *obj, NDObject *input) {
   }
   // Now only select have more than 2 inputs
   ASSERT(obj->flags_ & OBJ_FLAG_XHS);
-  return static_cast<FlexOp*>(obj)->xhs_;
+  return static_cast<FlexOp *>(obj)->xhs_;
 }
 
 size_t MaxLive(BasicBlock &bb) {
@@ -149,7 +149,7 @@ size_t MaxLive(BasicBlock &bb) {
     try_deallcate(obj.rhs_);
     // SelectOp has three inpus
     if (obj.flags_ & OBJ_FLAG_XHS) {
-      try_deallcate(static_cast<FlexOp*>(&obj)->xhs_);
+      try_deallcate(static_cast<FlexOp *>(&obj)->xhs_);
     }
   }
   return peak;
@@ -197,7 +197,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     if (!obj->rhs_->IsLoad()) {
       ++res;
     }
-    if ((obj->flags_ & OBJ_FLAG_XHS) && !static_cast<FlexOp*>(obj)->xhs_->IsLoad()) {
+    if ((obj->flags_ & OBJ_FLAG_XHS) && !static_cast<FlexOp *>(obj)->xhs_->IsLoad()) {
       ++res;
     }
     return res;
@@ -391,8 +391,7 @@ void ObjectList::Build(const std::vector<NDObject *> &objects, bool reindex) {
   }
 }
 
-BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner)
-    : objects_owner_(owner) {
+BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner) : objects_owner_(owner) {
   // build linked list from objects
   list_.Build(objects, true);
   for (auto obj : objects) {
@@ -575,7 +574,7 @@ void InsertAtomicCum(BasicBlock &block) {
     if (iter->IsStore()) {
       if (iter->lhs_->obj_id_ == kReduce) {
         auto inner = iter->lhs_;
-        auto atomic_cum = new AtomicCumOp(inner, &(static_cast<NDStore*>(iter.get())->round_tile_));
+        auto atomic_cum = new AtomicCumOp(inner, &(static_cast<NDStore *>(iter.get())->round_tile_));
         atomic_cum->nd_ = inner->nd_;
         iter->lhs_ = atomic_cum;
         block.Insert(iter, atomic_cum);
@@ -632,8 +631,7 @@ struct ShapePacket {
   size_t end;
   bool is_broadcast_axis;
 };
-std::vector<ShapePacket> GetShapePackets(const DimArray &shape_ori,
-                                         const DimArray &shape_to_change) {
+std::vector<ShapePacket> GetShapePackets(const DimArray &shape_ori, const DimArray &shape_to_change) {
   std::vector<ShapePacket> shape_packets;
   shape_packets.reserve(3);
   ASSERT(shape_ori.size() >= 1);
@@ -731,8 +729,8 @@ std::vector<int64_t> TryReshape(DimArray &shape_to_change, DimArray &shape_ori, 
   return res;
 }
 
-bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is_forward,
-               const BasicBlock &bb, AnalysisIntermediate &intermediate) {
+bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is_forward, const BasicBlock &bb,
+               AnalysisIntermediate &intermediate) {
   auto &need_reshape = intermediate.need_reshape;
   auto &todos = intermediate.todos;
   if (need_reshape[obj->index_].has_value()) {
@@ -933,5 +931,6 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad, &InsertAtomicCum};
+std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad,
+                            &ReorderStore,     &InsertRemovePad,     &InsertAtomicCum};
 }  // namespace dvm::pass

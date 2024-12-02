@@ -22,27 +22,29 @@
 // rts_runtime
 typedef int32_t rtError_t;
 typedef char char_t;
-const int32_t RT_ERROR_NONE = 0; // success
+const int32_t RT_ERROR_NONE = 0;  // success
 typedef void *rtStream_t;
 struct tagRtSmCtrl;
 typedef struct tagRtSmCtrl rtSmDesc_t;
 
 namespace dvm {
 #ifdef DEBUG
-#define ASSERT(cond)                                                           \
-  do {                                                                         \
-    if (!(cond)) {                                                             \
-      std::cout << "[ASSERT ERROR]" << __FILE__ << ":" << __LINE__             \
-	        << ": ASSERT(" << #cond << ")" << std::endl;                   \
-      exit(0);                                                                 \
-    }                                                                          \
+#define ASSERT(cond)                                                                                            \
+  do {                                                                                                          \
+    if (!(cond)) {                                                                                              \
+      std::cout << "[ASSERT ERROR]" << __FILE__ << ":" << __LINE__ << ": ASSERT(" << #cond << ")" << std::endl; \
+      exit(0);                                                                                                  \
+    }                                                                                                           \
   } while (0)
 #else
 #define ASSERT(cond)
 #endif
 
-#define EXCEPTION_IF(cond, error_str)   do { if (cond) dvm::DvmException(error_str); } while (0)
-void DvmException(const char* error_str);
+#define EXCEPTION_IF(cond, error_str)       \
+  do {                                      \
+    if (cond) dvm::DvmException(error_str); \
+  } while (0)
+void DvmException(const char *error_str);
 
 enum AiCoreArch {
   kAiCore_C220,
@@ -86,11 +88,11 @@ class System {
   uint64_t EventNum() const { return event_num_; }
   SocType SocName() { return soc_name_; }
 
-  rtError_t (*launch_func_)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                              rtSmDesc_t *smDesc, rtStream_t stm);
-  rtError_t(*get_c2c_addr_func_)(uint64_t*, uint32_t*){nullptr};
+  rtError_t (*launch_func_)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize, rtSmDesc_t *smDesc,
+                            rtStream_t stm);
+  rtError_t (*get_c2c_addr_func_)(uint64_t *, uint32_t *){nullptr};
 
-  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t*>(this) + target; }
+  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
   bool deterministic_{false};
   bool online_tuning_{false};
 
@@ -108,13 +110,13 @@ class System {
   SocType soc_name_{kSocUnknow};
 };
 
-constexpr uint64_t SIMD_BLOCK_SIZE  = 32;
+constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;
 constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
-extern const char* DTYPE_NAMES[dvm::kTypeEnd];
+extern const char *DTYPE_NAMES[dvm::kTypeEnd];
 
-} // namespace dvm 
-#endif // _DVM_SYSTEM_H_
+}  // namespace dvm
+#endif  // _DVM_SYSTEM_H_

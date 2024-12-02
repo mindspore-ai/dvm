@@ -21,15 +21,15 @@
 
 #ifdef _CCE_KERNEL_
 #define INSN_ATTR __attribute__((device_immutable))
-#define __aicore_inline__ static inline [aicore]
+#define __aicore_inline__ static inline[aicore]
 #define __bcode__ __gm__
-#define bcodeptr_t __bcode__ uint64_t* __restrict__
+#define bcodeptr_t __bcode__ uint64_t *__restrict__
 #else
 #define __gm__
 #define INSN_ATTR
 #define __bcode__
 #define __aicore_inline__ static inline
-#define bcodeptr_t uint64_t*
+#define bcodeptr_t uint64_t *
 #endif
 
 enum vPipe {
@@ -154,43 +154,44 @@ enum vSimdInsnID {
 };
 
 // head(simd):
-//  ID(16) << 48 | ext(26) << 22 | b_wait_event(3) << 19 | b_set_event(3) << 16 | wait_event(3) << 13 | set_event(3) << 10 | len(3) << 7 |
-//  back_wait(1) << 6 | back_set(1) << 5 | wait_flag(1) << 4 | set_flag(1) << 3 | bar_flag(1) << 2 | LOAD_FLAG(1) << 1 | SIMD_FLAG(1)
+//  ID(16) << 48 | ext(26) << 22 | b_wait_event(3) << 19 | b_set_event(3) << 16 | wait_event(3) << 13 | set_event(3) <<
+//  10 | len(3) << 7 | back_wait(1) << 6 | back_set(1) << 5 | wait_flag(1) << 4 | set_flag(1) << 3 | bar_flag(1) << 2 |
+//  LOAD_FLAG(1) << 1 | SIMD_FLAG(1)
 // head(load/store):
 //  ID(16) << 48 | ext(34) << 14 | wait_event(3) << 11 | set_event(3) << 8 | len(4) << 4 |
 //  wait_flag(1) << 3 | set_flag(1) << 2 | LOAD_FLAG(1) << 1 | SIMD_FLAG(1)
 
 // common area
-#define V_HEAD_SIMD_FLAG_OFFSET    0
-#define V_HEAD_LOAD_FLAG_OFFSET    1
-#define V_HEAD_ID_OFFSET           48
-#define V_HEAD_ID_MASK             0xfffful
-#define V_HEAD_EVENT_MASK          0x7ul
+#define V_HEAD_SIMD_FLAG_OFFSET 0
+#define V_HEAD_LOAD_FLAG_OFFSET 1
+#define V_HEAD_ID_OFFSET 48
+#define V_HEAD_ID_MASK 0xfffful
+#define V_HEAD_EVENT_MASK 0x7ul
 
 // simd
-#define V_HEAD_BAR_FLAG_OFFSET     2
-#define V_HEAD_SET_FLAG_OFFSET     3
-#define V_HEAD_WAIT_FLAG_OFFSET    4
-#define V_HEAD_BACK_SET_OFFSET     5
-#define V_HEAD_BACK_WAIT_OFFSET    6
-#define V_HEAD_SIZE_OFFSET         7
-#define V_HEAD_SET_EVENT_OFFSET    10
-#define V_HEAD_WAIT_EVENT_OFFSET   13
-#define V_HEAD_B_SET_EVENT_OFFSET  16
+#define V_HEAD_BAR_FLAG_OFFSET 2
+#define V_HEAD_SET_FLAG_OFFSET 3
+#define V_HEAD_WAIT_FLAG_OFFSET 4
+#define V_HEAD_BACK_SET_OFFSET 5
+#define V_HEAD_BACK_WAIT_OFFSET 6
+#define V_HEAD_SIZE_OFFSET 7
+#define V_HEAD_SET_EVENT_OFFSET 10
+#define V_HEAD_WAIT_EVENT_OFFSET 13
+#define V_HEAD_B_SET_EVENT_OFFSET 16
 #define V_HEAD_B_WAIT_EVENT_OFFSET 19
-#define V_HEAD_EXT_OFFSET          22
-#define V_HEAD_EXT_MASK            0x3fffffful
-#define V_HEAD_SIZE_MASK           0x7ul
+#define V_HEAD_EXT_OFFSET 22
+#define V_HEAD_EXT_MASK 0x3fffffful
+#define V_HEAD_SIZE_MASK 0x7ul
 
 // load/store
-#define V_M_HEAD_SET_FLAG_OFFSET   2
-#define V_M_HEAD_WAIT_FLAG_OFFSET  3
-#define V_M_HEAD_SIZE_OFFSET       4
-#define V_M_HEAD_SET_EVENT_OFFSET  8
+#define V_M_HEAD_SET_FLAG_OFFSET 2
+#define V_M_HEAD_WAIT_FLAG_OFFSET 3
+#define V_M_HEAD_SIZE_OFFSET 4
+#define V_M_HEAD_SET_EVENT_OFFSET 8
 #define V_M_HEAD_WAIT_EVENT_OFFSET 11
-#define V_M_HEAD_EXT_OFFSET        14
-#define V_M_HEAD_EXT_MASK          0x3fffffffful
-#define V_M_HEAD_SIZE_MASK         0xful
+#define V_M_HEAD_EXT_OFFSET 14
+#define V_M_HEAD_EXT_MASK 0x3fffffffful
+#define V_M_HEAD_SIZE_MASK 0xful
 
 // Comm related
 #define PEERMEM_FLAG_OFFSET (200 * 1024 * 1024)          // 200MB
@@ -201,13 +202,13 @@ enum vSimdInsnID {
 
 // common mask
 // ub address, loop ext, stride should not extent ub size limit
-#define V_X_BITS                 18
-#define V_C_X_BITS               13
-#define V_X_MASK                 0x3fffful
-#define V_RS_MASK                0xful   // repeat stride
-#define V_GROUP_OFFSET_SIZE      32
-#define vCompactX(x)    ((x) >> 5)
-#define vDeCompactX(x)  ((x) << 5)
+#define V_X_BITS 18
+#define V_C_X_BITS 13
+#define V_X_MASK 0x3fffful
+#define V_RS_MASK 0xful  // repeat stride
+#define V_GROUP_OFFSET_SIZE 32
+#define vCompactX(x) ((x) >> 5)
+#define vDeCompactX(x) ((x) << 5)
 
 #ifndef _CCE_KERNEL_
 extern const uint64_t g_simd_func_offset[];
@@ -215,17 +216,17 @@ extern const uint64_t g_load_func_offset[];
 extern const uint64_t g_store_func_offset[];
 __aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
   if (pipe == V_PIPE_SIMD) {
-    return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | g_simd_func_offset[id] << V_HEAD_ID_OFFSET | 1 << V_HEAD_SIMD_FLAG_OFFSET;
+    return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | g_simd_func_offset[id] << V_HEAD_ID_OFFSET |
+           1 << V_HEAD_SIMD_FLAG_OFFSET;
   } else if (pipe == V_PIPE_LOAD) {
-    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_load_func_offset[id] << V_HEAD_ID_OFFSET | 1 << V_HEAD_LOAD_FLAG_OFFSET;
+    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_load_func_offset[id] << V_HEAD_ID_OFFSET |
+           1 << V_HEAD_LOAD_FLAG_OFFSET;
   } else {
     return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_store_func_offset[id] << V_HEAD_ID_OFFSET;
   }
 }
 #else
-__aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
-  return 0;
-}
+__aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) { return 0; }
 #endif
 
 __aicore_inline__ uint64_t vGetBitRange(uint64_t x, uint64_t offset, uint64_t len) {
@@ -481,7 +482,7 @@ struct vBroadcastS {
   }
 };
 
-struct vSelect { //24B
+struct vSelect {  // 24B
   uint64_t xn;
   uint64_t xd;
   uint64_t repeat;
@@ -582,9 +583,7 @@ struct vReduceX {
     op.xn = pc[2] >> 32;
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
   }
-  __aicore_inline__ uint64_t GetXd(bcodeptr_t pc, uint64_t head) {
-    return (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
-  }
+  __aicore_inline__ uint64_t GetXd(bcodeptr_t pc, uint64_t head) { return (head >> V_HEAD_EXT_OFFSET) & V_X_MASK; }
   __aicore_inline__ void DecodeBlock(bcodeptr_t pc, vReduceX &op) {
     uint64_t data2 = pc[2];
     op.dup_block = data2 & 0xfffful;
@@ -695,7 +694,7 @@ struct vElementAny {
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vElementAny &op) {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
-    pc[1] = op.rs << 60 | op.tail_size  << 32 | op.iter_size << 16 | op.repeat;
+    pc[1] = op.rs << 60 | op.tail_size << 32 | op.iter_size << 16 | op.repeat;
     return size;
   }
 };
@@ -946,9 +945,9 @@ struct vPingPongLoad {
   __gm__ void *from;
   uint64_t xn;
   uint64_t tile_stride;
-  uint64_t body_iter; // nburst
+  uint64_t body_iter;  // nburst
   uint64_t tail_iter;
-  uint64_t iter_size; // lenburst
+  uint64_t iter_size;  // lenburst
   uint64_t pad_size;
   uint64_t round_rank;
   uint64_t pingpong;
@@ -971,9 +970,7 @@ struct vPingPongLoad {
     op.pingpong_stride = data >> 32;
     op.pingpong = data & 0xfffful;
   }
-  __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) {
-    pc[3] ^= 0x1ul;
-  }
+  __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) { pc[3] ^= 0x1ul; }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vPingPongLoad::ROUND_OFFSET + round_size;
@@ -990,14 +987,14 @@ struct vPingPongLoad {
 
 struct vPingPongPeerLoad {
   enum { ROUND_OFFSET = 6 };
-  enum { UNIQUEID_OFFSET = 5};
+  enum { UNIQUEID_OFFSET = 5 };
   vPingPongLoad base;
   uint64_t peer_mem_offset;
   uint64_t unique_id;
   uint64_t event_id{0};
   bool set_flag{false};
   bool wait_flag{false};
-  __bcode__ int32_t* __restrict__ step_addr;
+  __bcode__ int32_t *__restrict__ step_addr;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
   // pc[1]: from
   // pc[2]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
@@ -1007,21 +1004,20 @@ struct vPingPongPeerLoad {
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vPingPongPeerLoad &op) {
     vPingPongLoad::Decode(pc, head, op.base);
     op.peer_mem_offset = pc[4] >> 32;
-    op.step_addr = reinterpret_cast<__bcode__ int32_t*>(pc + 4);
+    op.step_addr = reinterpret_cast<__bcode__ int32_t *>(pc + 4);
     op.unique_id = pc[5] & 0xfffffffful;
     op.event_id = (pc[5] >> 32) & 0x7ul;
     op.set_flag = (pc[5] >> 35) & 0x1ul;
     op.wait_flag = (pc[5] >> 36) & 0x1ul;
   }
-  __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) {
-    pc[3] ^= 0x1ul;
-  }
+  __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) { pc[3] ^= 0x1ul; }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongPeerLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.base.round_rank + 1) / 2;
     uint64_t size = vPingPongPeerLoad::ROUND_OFFSET + round_size;  // Do we need round?
     pc[0] = vMakeHead(id, op.base.tile_stride << 13 | vCompactX(op.base.xn), size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.base.from);
-    pc[2] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.tail_iter << 16 | op.base.body_iter;
+    pc[2] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.tail_iter << 16 |
+            op.base.body_iter;
     pc[3] = op.base.pingpong_stride << 32 | (op.base.pingpong & 0xfffful);
     pc[4] = (op.peer_mem_offset & 0xfffffffful) << 32;
     pc[5] = op.event_id << 32 | 0x1ul;
@@ -1031,7 +1027,7 @@ struct vPingPongPeerLoad {
     if (op.wait_flag) {
       pc[5] |= 0x1ul << 36;
     }
-    __bcode__ int32_t* int_data = reinterpret_cast<__bcode__ int32_t*>(pc + 4);
+    __bcode__ int32_t *int_data = reinterpret_cast<__bcode__ int32_t *>(pc + 4);
     int_data[0] = 1;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vPingPongPeerLoad::ROUND_OFFSET + i] = rounds[i];
@@ -1097,8 +1093,8 @@ struct vStoreAtomic {
   uint64_t round_rank;
   uint64_t cum_flag;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
-  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
-  // pc[2]: to
+  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 |
+  // iter_num(16) pc[2]: to
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomic &op) {
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
     op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
@@ -1116,7 +1112,8 @@ struct vStoreAtomic {
     uint64_t size = vStoreAtomic::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | vCompactX(op.xn);
     pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
-    pc[1] = op.round_rank << 60 | op.cum_flag << 58 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 | op.iter_num;
+    pc[1] = op.round_rank << 60 | op.cum_flag << 58 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 |
+            op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vStoreAtomic::ROUND_OFFSET + i] = rounds[i];
@@ -1131,15 +1128,14 @@ struct vStoreAtomicDeterm {
   enum { ROUND_OFFSET = 5 };
   vStoreAtomic base;
   uint64_t stride_num;
-  __bcode__ float* __restrict__ step_addr;
-  __bcode__ float* __restrict__ step_end_addr;
+  __bcode__ float *__restrict__ step_addr;
+  __bcode__ float *__restrict__ step_end_addr;
   uint64_t core_tile_num;
   uint64_t tail_tile_num;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
-  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 | iter_num(16)
-  // pc[2]: to
-  // pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | stride_num(20)
-  // pc[4]: step_end(32) << 32 | step(32)
+  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 |
+  // iter_num(16) pc[2]: to pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | stride_num(20) pc[4]:
+  // step_end(32) << 32 | step(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomicDeterm &op) {
     op.base.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
     op.base.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
@@ -1155,11 +1151,11 @@ struct vStoreAtomicDeterm {
     op.stride_num = data & 0xffffful;
     op.core_tile_num = (data >> 20) & 0xffffful;
     op.tail_tile_num = data >> 40;
-    op.step_addr = reinterpret_cast<__bcode__ float*>(pc + 4);
+    op.step_addr = reinterpret_cast<__bcode__ float *>(pc + 4);
     op.step_end_addr = op.step_addr + 1;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, uint32_t core_num,
-                                   const vStoreAtomicDeterm &op, const uint64_t *rounds) {
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, uint32_t core_num, const vStoreAtomicDeterm &op,
+                                    const uint64_t *rounds) {
     uint64_t round_size = (op.base.round_rank + 1) / 2;
     uint64_t size = vStoreAtomicDeterm::ROUND_OFFSET + round_size;
     uint64_t ext = op.base.tile_stride << 13 | vCompactX(op.base.xn);
@@ -1168,7 +1164,7 @@ struct vStoreAtomicDeterm {
             op.base.iter_tail << 16 | op.base.iter_num;
     pc[2] = op.base.to;
     pc[3] = op.tail_tile_num << 40 | op.core_tile_num << 20 | op.stride_num;
-    __bcode__ float* fp_data = reinterpret_cast<__bcode__ float*>(pc + 4);
+    __bcode__ float *fp_data = reinterpret_cast<__bcode__ float *>(pc + 4);
     fp_data[0] = 1.0f;
 #ifndef _CCE_KERNEL_
     fp_data[1] = float(core_num);
@@ -1198,12 +1194,12 @@ struct vStoreStatus {
   }
 };
 
-#define V_INSN_SIZE_MAX   (4 * sizeof(uint64_t))
+#define V_INSN_SIZE_MAX (4 * sizeof(uint64_t))
 
-#define V_CUBE_FLAG_TRANS_A  1
-#define V_CUBE_FLAG_TRANS_B  2
+#define V_CUBE_FLAG_TRANS_A 1
+#define V_CUBE_FLAG_TRANS_B 2
 #define V_CUBE_FLAG_GROUP_SET 4
-#define V_CUBE_FLAG_PRE_WAIT  8
+#define V_CUBE_FLAG_PRE_WAIT 8
 #define V_CUBE_FLAG_PINGPONG_STORE 16
 #define V_CUBE_FLAG_OUT_FP32 32
 #define V_CUBE_FLAG_ATOMIC_ADD 64
@@ -1212,7 +1208,7 @@ struct vStoreStatus {
 #define V_CUBE_FLAG_PEER_STORE 512
 
 struct vCubeOp {
-  enum {FP16, BF16};
+  enum { FP16, BF16 };
 
   uint32_t flags;
   uint32_t rank_size{0};
@@ -1238,7 +1234,7 @@ struct vCubeOp {
   uint64_t a_size, b_size;
   uint64_t offset_a, offset_b;
   // for aiv
-  uint64_t subtilenum; // subblockid1 << 32 | subblockid0
+  uint64_t subtilenum;  // subblockid1 << 32 | subblockid0
 
   __aicore_inline__ uint64_t GetCubeOffset(__gm__ vCubeOp *__restrict__ op, uint32_t block_tile) {
     int64_t midx, nidx;
@@ -1257,7 +1253,7 @@ struct vCubeOp {
   }
 
   __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,
-                                        uint64_t swizzle_cnt, int64_t &midx, int64_t &nidx) {
+                                 uint64_t swizzle_cnt, int64_t &midx, int64_t &nidx) {
     tile = tile % (m_loop * n_loop);
     if (swizzle_dir == 0) {
       uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
@@ -1392,21 +1388,19 @@ struct vPeerDMA {
 // [entry]
 // tilenum(32) << 32 | simd_width(8) << 24 | code_size_8B(12) << 12 |
 // ---(1) << 6 | next_stage(1) << 5 | extern_code(1) << 4 | mix(1) << 3 | parallel(1) << 2 | ---(1) << 1 | pre_wait(1)
-#define V_ENTRY_FLAG_PRE_WAIT            1
-#define V_ENTRY_FLAG_PARALLEL            4
-#define V_ENTRY_FLAG_MIX                 8
-#define V_ENTRY_FLAG_EXTERN_CODE         16
-#define V_ENTRY_FLAG_NEXT_STAGE          32
+#define V_ENTRY_FLAG_PRE_WAIT 1
+#define V_ENTRY_FLAG_PARALLEL 4
+#define V_ENTRY_FLAG_MIX 8
+#define V_ENTRY_FLAG_EXTERN_CODE 16
+#define V_ENTRY_FLAG_NEXT_STAGE 32
 
-#define V_ENTRY_CODE_SIZE_OFFSET         12
-#define V_ENTRY_SIMD_WIDTH_OFFSET        24
-#define V_ENTRY_TILE_NUM_OFFSET          32
+#define V_ENTRY_CODE_SIZE_OFFSET 12
+#define V_ENTRY_SIMD_WIDTH_OFFSET 24
+#define V_ENTRY_TILE_NUM_OFFSET 32
 
-#define V_ENTRY_CODE_SIZE_BITS           12
-#define V_ENTRY_SIMD_WIDTH_BITS          8
-#define V_ENTRY_TILE_NUM_BITS            32
+#define V_ENTRY_CODE_SIZE_BITS 12
+#define V_ENTRY_SIMD_WIDTH_BITS 8
+#define V_ENTRY_TILE_NUM_BITS 32
 
-__aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) {
-  return 1ul | mode << 4 | event_id << 8;
-}
-#endif // _DVM_ISA_H_
+__aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) { return 1ul | mode << 4 | event_id << 8; }
+#endif  // _DVM_ISA_H_

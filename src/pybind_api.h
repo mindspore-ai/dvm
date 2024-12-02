@@ -26,7 +26,7 @@ namespace dvm {
 namespace py = pybind11;
 class NDObjectPy {
  public:
-  NDObjectPy(NDObject *obj): obj_(obj) {}
+  NDObjectPy(NDObject *obj) : obj_(obj) {}
   py::object GetShape() {
     py::tuple out(obj_->shape_ref_->size);
     for (size_t i = 0; i < obj_->shape_ref_->size; ++i) {
@@ -35,22 +35,19 @@ class NDObjectPy {
     return out;
   }
   std::string GetDType() const;
-  NDObject* Get() const { return obj_; }
+  NDObject *Get() const { return obj_; }
+
  private:
   NDObject *obj_;
 };
 
-class ShapeRefPy{
+class ShapeRefPy {
  public:
-  ShapeRefPy() {
-    shape_ref_ = new ShapeRef(shape_);
-  }
-  ShapeRefPy(const std::vector<int64_t> &shape): shape_(shape) {
-    shape_ref_ = new ShapeRef(shape_);
-  }
+  ShapeRefPy() { shape_ref_ = new ShapeRef(shape_); }
+  ShapeRefPy(const std::vector<int64_t> &shape) : shape_(shape) { shape_ref_ = new ShapeRef(shape_); }
   ~ShapeRefPy() { delete shape_ref_; }
   void Update(const py::object &shape);
-  ShapeRef* Get() const { return shape_ref_; }
+  ShapeRef *Get() const { return shape_ref_; }
 
   py::object GetShape() {
     py::tuple out(shape_.size());
@@ -75,8 +72,10 @@ class KernelPy {
   ~KernelPy();
 
   py::object Load(const py::object &shape, const std::string &type);
-  py::object SliceLoad(const py::object &shape, const py::object &start, const py::object &size, const std::string &type);
-  py::object StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end, const py::object &step, const std::string &type);
+  py::object SliceLoad(const py::object &shape, const py::object &start, const py::object &size,
+                       const std::string &type);
+  py::object StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end,
+                              const py::object &step, const std::string &type);
   py::object Store(const py::object &obj);
   py::object PadStore(const py::object &obj, const py::object &pad_shape);
   py::object Unary(const std::string &op_name, const py::object &input);
@@ -105,7 +104,7 @@ class KernelPy {
   py::object Output(const py::object &store);
   void ClearStoreMemory(const py::object &store);
   void Tile(int start, int end, int64_t num);
-  void CodeGen(const py::object& pass_names);
+  void CodeGen(const py::object &pass_names);
   void InitComm(int rank_id, int rank_size);
   void Run();
 
@@ -114,28 +113,22 @@ class KernelPy {
   py::object Measure();
   py::object Perf();
 
-  static void SetDeterm(bool enable) {
-    SetDeterministic(enable);
-  }
+  static void SetDeterm(bool enable) { SetDeterministic(enable); }
 
-  static void SetTuning(bool enable) {
-    SetOnlineTuning(enable);
-  }
+  static void SetTuning(bool enable) { SetOnlineTuning(enable); }
 
   static std::string Arch() {
-    static const char* soc_names[] = {"AscendC220"};
+    static const char *soc_names[] = {"AscendC220"};
     return soc_names[System::Instance().Arch()];
   }
-  static int CoreNum() {
-    return System::Instance().CoreNum();
-  }
+  static int CoreNum() { return System::Instance().CoreNum(); }
   static std::string SocName() {
-    static const char* soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
+    static const char *soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
     return soc_names[System::Instance().SocName()];
   }
 
  protected:
-  ShapeRef* GetShapeRef(const py::object &shape);
+  ShapeRef *GetShapeRef(const py::object &shape);
   void PrepareIO();
 
   struct LoadInfo {
@@ -152,16 +145,16 @@ class KernelPy {
 
   Kernel kernel_;
   std::vector<std::vector<int64_t>> shape_vec_;
-  std::vector<ShapeRef*> shape_;
-  std::unordered_map<NDObject*, LoadInfo> loads_;
-  std::unordered_map<NDObject*, StoreInfo> stores_;
-  std::vector<std::vector<float>> f32s_; // store f32 converted from bf16
-  std::vector<std::vector<uint16_t>> bf16s_; // store bf16 converted from f32
-  std::vector<void*> eager_wss_;
+  std::vector<ShapeRef *> shape_;
+  std::unordered_map<NDObject *, LoadInfo> loads_;
+  std::unordered_map<NDObject *, StoreInfo> stores_;
+  std::vector<std::vector<float>> f32s_;      // store f32 converted from bf16
+  std::vector<std::vector<uint16_t>> bf16s_;  // store bf16 converted from f32
+  std::vector<void *> eager_wss_;
 
   int dev_id_{0};
   void *workspace_{nullptr};
   static Comm comm_;
 };
-}
-#endif // _DVM_PYBIND_API_H_
+}  // namespace dvm
+#endif  // _DVM_PYBIND_API_H_

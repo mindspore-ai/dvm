@@ -45,34 +45,33 @@ struct NDObjectAttr {
 };
 
 static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
-  {kGenLoad,  true }, // LoadDummy
-  {kGenLoad,  true }, // Load
-  {kGenStore, false}, // PadStore
-  {kGenStore, true }, // SStore
-  {kGenStore, true},  // PeerStore
-  {kGenStore, true }, // Store
-  {kGenComm,  true }, // AllReduce
-  {kGenSimd1, true }, // Reshape
-  {kGenSimd1, true }, // Copy
-  {kGenSimd1, true }, // Unary
-  {kGenSimd2, true }, // Binary
-  {kGenSimd1, true }, // Cast
-  {kGenSimd1, true }, // BinaryS
-  {kGenSimd1, false}, // BroadcastTo
-  {kGenSimd0, true }, // BroadcastS
-  {kGenSimd1, false}, // Reduce
-  {kGenFlex,  true }, // Select
-  {kGenSimd1, false}, // ElemAny
-  {kGenWrap,  true }, // RemovePad
-  {kGenFlex,  true }, // Power
-  {kGenFlex,  true }, // Compare
-  {kGenFlex,  true }, // CompareS
-  {kGenWrap,  true }, // AtomicCum
+  {kGenLoad, true},    // LoadDummy
+  {kGenLoad, true},    // Load
+  {kGenStore, false},  // PadStore
+  {kGenStore, true},   // SStore
+  {kGenStore, true},   // PeerStore
+  {kGenStore, true},   // Store
+  {kGenComm, true},    // AllReduce
+  {kGenSimd1, true},   // Reshape
+  {kGenSimd1, true},   // Copy
+  {kGenSimd1, true},   // Unary
+  {kGenSimd2, true},   // Binary
+  {kGenSimd1, true},   // Cast
+  {kGenSimd1, true},   // BinaryS
+  {kGenSimd1, false},  // BroadcastTo
+  {kGenSimd0, true},   // BroadcastS
+  {kGenSimd1, false},  // Reduce
+  {kGenFlex, true},    // Select
+  {kGenSimd1, false},  // ElemAny
+  {kGenWrap, true},    // RemovePad
+  {kGenFlex, true},    // Power
+  {kGenFlex, true},    // Compare
+  {kGenFlex, true},    // CompareS
+  {kGenWrap, true},    // AtomicCum
 };
 
 class CodeGenHelper {
  public:
-
   struct EventManager {
     enum { MAX_EVENT_NUM = 8 };
     int hold_idx[MAX_EVENT_NUM]{0};
@@ -88,7 +87,7 @@ class CodeGenHelper {
     auto &code = kernel_.code_;
     auto code_reserved = kernel_.ReserveCodeSize();
     code.Alloc(code_reserved + code.HeadSize());
-    uint64_t *code_ptr = reinterpret_cast<uint64_t*>(code.data_ + code.HeadSize());
+    uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code.data_ + code.HeadSize());
     static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserved;
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
@@ -107,7 +106,7 @@ class CodeGenHelper {
       backward_event_num_ -= 2;
     }
     auto simd_width = kernel_.simd_width_;
-    for (auto op: kernel_.objects_) {
+    for (auto op : kernel_.objects_) {
       if (op->flags_ & OBJ_FLAG_DEAD) {
         continue;
       }
@@ -156,11 +155,11 @@ class CodeGenHelper {
           break;
         }
         case kGenFlex: {
-          code_ptr += GenFlexOp(static_cast<FlexOp*>(op));
+          code_ptr += GenFlexOp(static_cast<FlexOp *>(op));
           break;
         };
         case kGenWrap: {
-          code_ptr += GenWrapOp(static_cast<WrapOp*>(op));
+          code_ptr += GenWrapOp(static_cast<WrapOp *>(op));
           break;
         };
         case kGenLoad: {
@@ -187,7 +186,7 @@ class CodeGenHelper {
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
-          static_cast<CommOp*>(op)->unique_ids_ptr_ = &code.unique_ids_;
+          static_cast<CommOp *>(op)->unique_ids_ptr_ = &code.unique_ids_;
           auto code_size = op->Emit(kernel_);
           code_ptr += code_size;
           if (static_cast<CommOp *>(op)->StoreLhs()) {
@@ -198,11 +197,11 @@ class CodeGenHelper {
         default:
           ASSERT(0);
           break;
-      } // end switch
-    } // end for op
+      }  // end switch
+    }  // end for op
     *code_ptr++ = vMakeHead(vLoadInsnID::V_LOAD_NONE, 0, 0, V_PIPE_LOAD);
     BackwardSync();
-    code.data_size_ = reinterpret_cast<uint8_t*>(code_ptr) - code.data_;
+    code.data_size_ = reinterpret_cast<uint8_t *>(code_ptr) - code.data_;
     ASSERT(code.data_size_ <= code_reserved + code.HeadSize());
     code.UpdateHead(kernel_.tile_num_, simd_width, 0);
     return true;
@@ -294,7 +293,7 @@ class CodeGenHelper {
     }
   }
 
-  int GenFlexOpCommon(FlexOp *op, NDObject* anti_ops[], int anti_num) {
+  int GenFlexOpCommon(FlexOp *op, NDObject *anti_ops[], int anti_num) {
     if (op->flags_ & OBJ_FLAG_FREE_LHS) {
       free_xbuf_.emplace(op->lhs_->xbuf_, op);
     }
@@ -321,14 +320,14 @@ class CodeGenHelper {
       }
     } else {
       NDObject *inputs[3] = {op->lhs_, op->rhs_, op->xhs_};
-      if(inputs[0]->index_ < inputs[1]->index_) {
-        std::swap(inputs[0],inputs[1]);
+      if (inputs[0]->index_ < inputs[1]->index_) {
+        std::swap(inputs[0], inputs[1]);
       }
-      if(inputs[0]->index_ < inputs[2]->index_) {
-        std::swap(inputs[0],inputs[2]);
+      if (inputs[0]->index_ < inputs[2]->index_) {
+        std::swap(inputs[0], inputs[2]);
       }
-      if(inputs[1]->index_ < inputs[2]->index_) {
-        std::swap(inputs[1],inputs[2]);
+      if (inputs[1]->index_ < inputs[2]->index_) {
+        std::swap(inputs[1], inputs[2]);
       }
       for (size_t i = 0; i < 3; i++) {
         SimdSync(inputs[i], op);
@@ -339,7 +338,7 @@ class CodeGenHelper {
 
   int GenFlexOp(FlexOp *op) {
     int anti_num = 0;
-    NDObject* anti_ops[FlexOp::kWsMax + 1];
+    NDObject *anti_ops[FlexOp::kWsMax + 1];
     if (op->xbuf_ == 0) {
       auto anti = AllocOutXBuf(op);
       if (anti) anti_ops[anti_num++] = anti;
@@ -359,7 +358,7 @@ class CodeGenHelper {
 
   int GenWrapOp(WrapOp *op) {
     int anti_num = 0;
-    NDObject* anti_ops[FlexOp::kWsMax + 2];
+    NDObject *anti_ops[FlexOp::kWsMax + 2];
     int free_wss_num = 0;
     int free_wss[FlexOp::kWsMax + 1];
     if (op->xbuf_ == 0) {
@@ -379,7 +378,7 @@ class CodeGenHelper {
       if (anti) anti_ops[anti_num++] = anti;
     }
     if (op->inner_->flags_ & OBJ_FLAG_WORKSPACE) {
-      FlexOp *inner = static_cast<FlexOp*>(op->inner_);
+      FlexOp *inner = static_cast<FlexOp *>(op->inner_);
       ASSERT(inner->ws_num_ <= FlexOp::kWsMax);
       ASSERT(!(inner->flags_ & OBJ_FLAG_WRAP));
       for (int i = 0; i < inner->ws_num_; ++i) {
@@ -395,7 +394,7 @@ class CodeGenHelper {
     return size;
   }
 
-  uint64_t AllocDynXBuf(NDObject *obj,  NDObject **anti) {
+  uint64_t AllocDynXBuf(NDObject *obj, NDObject **anti) {
     uint64_t xbuf;
     if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
@@ -414,7 +413,7 @@ class CodeGenHelper {
     return xbuf;
   }
 
-  NDObject* AllocOutXBuf(NDObject *obj) {
+  NDObject *AllocOutXBuf(NDObject *obj) {
     if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
       obj->xbuf_ = obj->lhs_->xbuf_;
       return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
@@ -489,7 +488,7 @@ class CodeGenHelper {
 
   uint32_t xbuf_size_{0};
   uint64_t static_xbuf_{0};
-  std::queue<std::pair<uint64_t, NDObject*>> free_xbuf_;
+  std::queue<std::pair<uint64_t, NDObject *>> free_xbuf_;
 
   int vector_vector_sync = 0;
   EventManager lv_event_;
@@ -502,7 +501,7 @@ class CodeGenHelper {
 };
 
 void PropDomain::Normalize() {
-  size_t nd_size = 1; // rank
+  size_t nd_size = 1;  // rank
   dom_ = nullptr;
   auto select_dom = [this](NDObject *cand) -> bool {
     auto &dom_nd = dom_->nd_;
@@ -542,7 +541,7 @@ void PropDomain::Normalize() {
     }
   }
   if (!subdoms_.empty()) {
-    for (auto sd: subdoms_) {
+    for (auto sd : subdoms_) {
       sd->Normalize();
     }
   }
@@ -553,7 +552,7 @@ void PropDomain::AlignProp(PropRange &range) {
     op->AlignProp(range);
   }
   if (!subdoms_.empty()) {
-    for (auto sd: subdoms_) {
+    for (auto sd : subdoms_) {
       sd->AlignProp(range);
     }
   }
@@ -572,7 +571,7 @@ void PropDomain::FoldProp(PropRange &range) {
     range.space = space;
   }
   if (!subdoms_.empty()) {
-    for (auto sd: subdoms_) {
+    for (auto sd : subdoms_) {
       sd->FoldProp(range);
     }
   }
@@ -583,7 +582,7 @@ void PropDomain::TileProp(const TileParam &tp) {
     op->Tile(tp);
   }
   if (!subdoms_.empty()) {
-    for (auto sd: subdoms_) {
+    for (auto sd : subdoms_) {
       sd->TileProp(tp);
     }
   }
@@ -654,8 +653,7 @@ void RootDomain::Align(int depth, int64_t space) {
 
 class ReshapeDomain : public PropDomain {
  public:
-  ReshapeDomain(NDObject *head, const DimArray &src, const DimArray &dst)
-   : PropDomain(head), src_(src), dst_(dst) {}
+  ReshapeDomain(NDObject *head, const DimArray &src, const DimArray &dst) : PropDomain(head), src_(src), dst_(dst) {}
   void FoldProp(PropRange &range) override {
     PropRange dst_range;
     dst_range.base = 0;
@@ -749,7 +747,7 @@ class ReshapeDomain : public PropDomain {
 class ShapeTiling {
  public:
   ShapeTiling(VectorKernel *kernel, RootDomain &prim_dom, int64_t core_limit)
-  : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {
+      : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {
     repeat_size_ = ITEM_SIMD_WIDTH_MAX[kernel->MaxType()];
   }
   ~ShapeTiling() = default;
@@ -760,14 +758,14 @@ class ShapeTiling {
     fold.base = prim_dom_.DimSpace().size() - 1;
     int64_t tile_size = prim_dom_.TileSize();
     int64_t num;
-    do  {
+    do {
       if (fold.base + 1 > align_depth) {
         fold.depth = fold.base + 1;
         fold.space = -1;
         prim_dom_.FoldProp(fold);
         int start_dim = fold.base + 1 - fold.depth;
         ASSERT(start_dim > 0);
-        if (start_dim < align_depth) { // axis of 1
+        if (start_dim < align_depth) {  // axis of 1
           start_dim = align_depth;
         }
         num = CalcTile(tile_size, fold);
@@ -780,7 +778,7 @@ class ShapeTiling {
         tile_size = prim_dom_.Tile(0, fold.base, prim_dom_.align_.space, num);
         return;
       }
-    } while(tile_size > tile_size_limit_ || (num > 1 && num == fold.space));
+    } while (tile_size > tile_size_limit_ || (num > 1 && num == fold.space));
     if (align_depth > 1) {
       prim_dom_.Align(align_depth, prim_dom_.align_.space);
     }
@@ -809,9 +807,7 @@ class ShapeTiling {
     ASSERT(0);
     return -1;
   }
-  int64_t CostMeasure(int64_t factor, int64_t tile_num) {
-    return CeilDiv(tile_num, core_limit_) * (factor + 2);
-  }
+  int64_t CostMeasure(int64_t factor, int64_t tile_num) { return CeilDiv(tile_num, core_limit_) * (factor + 2); }
   int64_t CalcTile(int64_t tile_size, const PropRange &range) {
     // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
     // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
@@ -828,13 +824,13 @@ class ShapeTiling {
     if (tile_size > tile_size_limit_) {
       int64_t max_factor = tile_size_limit_ / (tile_size / space);
       if (max_factor <= 1) {
-       return space;
+        return space;
       }
       tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(tile_size_limit_, tile_size));
     } else {
       tile_num = 1;
     }
-    if (prim_dom_.TileNum() > 1) { // avoid tile range pad
+    if (prim_dom_.TileNum() > 1) {  // avoid tile range pad
       tile_num = GetDivision(space, tile_num);
       if (tile_num < space && range.affine < PropRange::REDUCE) {
         int64_t tile_num_base = prim_dom_.TileNum();
@@ -911,12 +907,12 @@ class ShapeTiling {
   }
 
   int64_t CalcLeadTile(int64_t tile_size, const PropRange &range) {
-    if (prim_dom_.TileNum() > 1) { // avoid tile range pad
+    if (prim_dom_.TileNum() > 1) {  // avoid tile range pad
       return CalcLeadDivision(tile_size, range);
     }
     int64_t space = range.space;
     int64_t init_repeat = space > repeat_size_ ? std::min(tile_size_limit_, space) / repeat_size_ : 1L;
-    int64_t best_tile = (space -1) / (init_repeat * repeat_size_)+ 1;
+    int64_t best_tile = (space - 1) / (init_repeat * repeat_size_) + 1;
     int64_t best_cost = CostMeasure2(init_repeat, best_tile);
     int64_t start_num = best_tile + 1;
     int64_t block_size = kernel_->BlockAlign();
@@ -949,7 +945,7 @@ class ShapeTiling {
     return best_tile;
   }
 
-  VectorKernel* kernel_;
+  VectorKernel *kernel_;
   RootDomain &prim_dom_;
   int64_t tile_size_limit_;
   int64_t repeat_size_;
@@ -984,7 +980,7 @@ class DumpRefHelper {
         dump_var(GetInput(op->rhs_));
         if (op->flags_ & OBJ_FLAG_XHS) {
           oss_ << ", ";
-          dump_var(GetInput(static_cast<FlexOp*>(op)->xhs_));
+          dump_var(GetInput(static_cast<FlexOp *>(op)->xhs_));
         }
       }
     }
@@ -996,13 +992,14 @@ class DumpRefHelper {
     }
     return input;
   }
+
  protected:
   std::ostringstream &oss_;
   int idx_{0};
   std::unordered_map<NDObject *, int> idx_map_;
 };
 
-std::string& VKernel::DisAssemble() {
+std::string &VKernel::DisAssemble() {
   std::ostringstream oss;
   code_.DisAssemble(oss);
   dump_str_ = oss.str();
@@ -1010,7 +1007,7 @@ std::string& VKernel::DisAssemble() {
 }
 
 VectorKernel::~VectorKernel() {
-  for (auto &op: build_ops_) {
+  for (auto &op : build_ops_) {
     delete op;
   }
 }
@@ -1076,7 +1073,7 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
     return;
   }
   auto dump_op = [&oss](NDObject *op) {
-    oss << "%" << op->index_<< "[";
+    oss << "%" << op->index_ << "[";
     if (!op->nd_.empty()) {
       for (size_t i = 0; i < op->nd_.size() - 1; ++i) {
         oss << op->nd_[i] << ",";
@@ -1085,7 +1082,7 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
     }
     oss << "]<" << DTYPE_NAMES[op->type_id_] << ">";
   };
-  oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width="<< simd_width_ << ") {" << std::endl;
+  oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width=" << simd_width_ << ") {" << std::endl;
   std::string body_indent = indent + "  ";
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
@@ -1100,7 +1097,7 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
         oss << ", ";
         dump_op(op->rhs_);
         if (op->flags_ & OBJ_FLAG_XHS) {
-          dump_op(static_cast<FlexOp*>(op)->xhs_);
+          dump_op(static_cast<FlexOp *>(op)->xhs_);
           oss << ", ";
         }
       }
@@ -1126,20 +1123,32 @@ void VectorKernel::CollectMetrics(Metrics &metrics) const {
     }
   }
   NDObject *dom = root_dom_.DomObject();
-  metrics.mem_usage = float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(System::Instance().LocalMemSize()) - ReserveCodeSize();
+  metrics.mem_usage =
+    float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(System::Instance().LocalMemSize()) -
+    ReserveCodeSize();
   uint64_t tile_per_block = CeilDiv(tile_num_, static_cast<uint64_t>(code_.block_dim_));
-  metrics.core_usage = float(tile_num_) / float(tile_per_block  * System::Instance().CoreNum());
+  metrics.core_usage = float(tile_num_) / float(tile_per_block * System::Instance().CoreNum());
   uint64_t tiled_shape_size = 1;
   for (size_t i = 0; i < dom->nd_.size(); ++i) {
     tiled_shape_size *= dom->nd_[i];
   }
-  metrics.simd_usage = float(tiled_shape_size) / float(dom->strides_.back() / simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
+  metrics.simd_usage =
+    float(tiled_shape_size) / float(dom->strides_.back() / simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
 }
 
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
-#define OP_GEN_S(op) do { op->lead_dim_ = 2; } while(0)
-#define OP_GEN_D(op) do { op->lead_dim_ = 1; } while(0)
-#define OP_KILL(op) do { op->lead_dim_ = 0; } while(0)
+#define OP_GEN_S(op)   \
+  do {                 \
+    op->lead_dim_ = 2; \
+  } while (0)
+#define OP_GEN_D(op)   \
+  do {                 \
+    op->lead_dim_ = 1; \
+  } while (0)
+#define OP_KILL(op)    \
+  do {                 \
+    op->lead_dim_ = 0; \
+  } while (0)
 #define OP_LIVE(op) (op->lead_dim_)
 #define OP_LIVE_D(op) (op->lead_dim_ == 1)
 
@@ -1177,7 +1186,7 @@ int VectorKernel::Analyze() {
   constexpr int REUSE_READY = 0;
   constexpr int REUSE_SUCC = 1;
   int cur_live = static_ops_.size();
-  if(comm_op_){
+  if (comm_op_) {
     cur_live += comm_op_->XbufReserve();
   }
   int live_peak = cur_live;
@@ -1235,24 +1244,24 @@ int VectorKernel::Analyze() {
           op->reuse_dep_ = 0;
           kill->reuse_dep_ = op->index_;
         } else {
-          op->flags_ |=  OBJ_FLAG_FREE_RHS;
+          op->flags_ |= OBJ_FLAG_FREE_RHS;
           cur_live++;
         }
       }
       int ws_num = 0;
       if (op->flags_ & OBJ_FLAG_WORKSPACE) {
         if (op->flags_ & OBJ_FLAG_XHS) {
-          FlexOp *flex = static_cast<FlexOp*>(op);
+          FlexOp *flex = static_cast<FlexOp *>(op);
           if (LivenessEnd(op, flex->xhs_)) {
             cur_live++;
             flex->free_xhs_ = true;
           }
         }
-        ws_num = static_cast<FlexOp*>(op)->ws_num_;
+        ws_num = static_cast<FlexOp *>(op)->ws_num_;
         if ((op->flags_ & OBJ_FLAG_WRAP) && reuse_flag == REUSE_SUCC) {
           cur_live++;
           ws_num--;
-          reuse_flag = REUSE_READY; // kill cur op if LIVE_D
+          reuse_flag = REUSE_READY;  // kill cur op if LIVE_D
         }
       }
       if (cur_live + ws_num > live_peak) {
@@ -1273,9 +1282,9 @@ int VectorKernel::Analyze() {
 
 class PropDomainBuilder {
  public:
-  void Build(const std::vector<NDObject*> &objects, RootDomain &root) {
+  void Build(const std::vector<NDObject *> &objects, RootDomain &root) {
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-      NDObject* op = *it;
+      NDObject *op = *it;
       if (GetHead(op) == nullptr) {
         SetHead(op, op);
       }
@@ -1284,11 +1293,11 @@ class PropDomainBuilder {
         if (op->rhs_) {
           BuildOp(op, op->rhs_);
           if (op->flags_ & OBJ_FLAG_XHS) {
-            BuildOp(op, static_cast<FlexOp*>(op)->xhs_);
+            BuildOp(op, static_cast<FlexOp *>(op)->xhs_);
           }
         }
       }
-    } // end for
+    }  // end for
     auto dom_op = GetHead(objects.back());
     root.SetHead(dom_op);
     link_num_ = link_ops_.size();
@@ -1296,10 +1305,11 @@ class PropDomainBuilder {
       BuildSumDomain(&root, dom_op);
     }
   }
+
  private:
-  NDObject* GetHead(NDObject *op)  { return reinterpret_cast<NDObject*>(op->insn_); }
-  void SetHead(NDObject *op, NDObject* head)  { op->insn_ = reinterpret_cast<uint64_t*>(head); }
-  void BuildOp(NDObject* op, NDObject* next) {
+  NDObject *GetHead(NDObject *op) { return reinterpret_cast<NDObject *>(op->insn_); }
+  void SetHead(NDObject *op, NDObject *head) { op->insn_ = reinterpret_cast<uint64_t *>(head); }
+  void BuildOp(NDObject *op, NDObject *next) {
     auto op_head = GetHead(op);
     auto next_head = GetHead(next);
     if (op_head == next_head) return;
@@ -1353,7 +1363,7 @@ class PropDomainBuilder {
       }
     }
   }
-  std::vector<NDObject*> link_ops_;
+  std::vector<NDObject *> link_ops_;
   int link_num_;
 };
 
@@ -1385,7 +1395,7 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
     builder.Build(objects, root_dom_);
   } else {
     NDObject *next = nullptr;
-    for (auto obj: objects) {
+    for (auto obj : objects) {
       obj->pd_next_ = next;
       next = obj;
     }
@@ -1393,19 +1403,19 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
   }
 }
 
-NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
+NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const {
   auto update_flag = [](int input_flag, bool elem_type, int &flag) {
     // undetermined -> elemwise -> no-elemwise
     //          |___________________|
     if (input_flag != 0 && flag != -1) {
       if (flag == 0) {
         flag = input_flag == 1 && elem_type ? 1 : -1;
-      } else if (input_flag == -1 || !elem_type) { // 1
+      } else if (input_flag == -1 || !elem_type) {  // 1
         flag = -1;
       }
     }
   };
-  std::vector<int> elem_flags(objects_.size(), 0); // 1: elemwise, 0: undetermined, -1: no-elemwise
+  std::vector<int> elem_flags(objects_.size(), 0);  // 1: elemwise, 0: undetermined, -1: no-elemwise
   elem_flags[load->index_] = 1;
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
@@ -1416,13 +1426,13 @@ NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
       if (op->rhs_) {
         update_flag(elem_flags[op->rhs_->index_], elem_type, flag);
         if (op->flags_ & OBJ_FLAG_XHS) {
-          update_flag(elem_flags[static_cast<FlexOp*>(op)->xhs_->index_], elem_type, flag);
+          update_flag(elem_flags[static_cast<FlexOp *>(op)->xhs_->index_], elem_type, flag);
         }
       }
     }
     if (op->IsStore() && flag == 1 && op->type_id_ == load->type_id_ &&
-        (check == nullptr || check(static_cast<NDAccess*>(op)))) {
-      return static_cast<NDAccess*>(op);
+        (check == nullptr || check(static_cast<NDAccess *>(op)))) {
+      return static_cast<NDAccess *>(op);
     }
   }
   return nullptr;
@@ -1432,9 +1442,9 @@ void VKernelS::Append(NDObject *obj) {
   build_ops_.push_back(obj);
   obj->Normalize(objects_);
   objects_.emplace_back(obj);
-  if(obj->IsComm()){
-    ASSERT(comm_op_==nullptr);
-    comm_op_ = static_cast<CommOp*>(obj);
+  if (obj->IsComm()) {
+    ASSERT(comm_op_ == nullptr);
+    comm_op_ = static_cast<CommOp *>(obj);
   }
 }
 
@@ -1467,7 +1477,7 @@ void VKernelD::RecordOpRelation() {
       // already recorded during the first iteration
       continue;
     }
-    NDObject *xhs = op->flags_ & OBJ_FLAG_XHS ? static_cast<FlexOp*>(op)->xhs_ : nullptr;
+    NDObject *xhs = op->flags_ & OBJ_FLAG_XHS ? static_cast<FlexOp *>(op)->xhs_ : nullptr;
     auto is_select = op->obj_id_ == ObjectType::kSelect;
     bool has_reshape = op->obj_id_ == ObjectType::kReshape ||
                        (op->lhs_ != nullptr && op->lhs_->obj_id_ == ObjectType::kReshape) ||
@@ -1491,7 +1501,7 @@ void VKernelD::RecoverOpRelation() {
     op->lhs_ = item.second[0];
     op->rhs_ = item.second[1];
     if (op->flags_ & OBJ_FLAG_XHS) {
-      static_cast<FlexOp*>(op)->xhs_ = item.second[2];
+      static_cast<FlexOp *>(op)->xhs_ = item.second[2];
     }
   }
 }
@@ -1503,7 +1513,7 @@ uint64_t VKernelD::CodeGen() {
     RecoverOpRelation();
     Normalize();
     RecordOpRelation();
-    pass::BasicBlock bb(objects_, build_ops_); // build_ops_ is not used
+    pass::BasicBlock bb(objects_, build_ops_);  // build_ops_ is not used
     pass::EliminateReshape(bb);
     bb.Export(objects_);
     BuildDomain(objects_);
@@ -1511,7 +1521,7 @@ uint64_t VKernelD::CodeGen() {
     DoCodeGen(System::Instance().CoreNum());
     return 0;
   }
-  if (pd_nexts_.empty()) { // first
+  if (pd_nexts_.empty()) {  // first
     BuildDomain(build_ops_);
     for (auto op : build_ops_) {
       pd_nexts_.push_back(op->pd_next_);
@@ -1555,7 +1565,8 @@ uint64_t VKernelP::CodeGen() {
     k->NormalizeDomain();
     total_workload += WorkLoad(k);
   }
-  std::sort(children_.begin(), children_.end(), [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
+  std::sort(children_.begin(), children_.end(),
+            [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
   uint64_t core_num = System::Instance().CoreNum();
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
@@ -1576,7 +1587,7 @@ uint64_t VKernelP::CodeGen() {
   code_.data_size_ = code_.HeadSize() + summary_size + code_size;
   code_.Alloc(code_.data_size_);
   uint64_t offset = summary_size;
-  uint64_t *summaries = reinterpret_cast<uint64_t*>(code_.data_ + code_.HeadSize());
+  uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + code_.HeadSize());
   uint64_t summary_idx = 0;
   for (size_t k = 0; k < children_.size(); ++k) {
     Code &code = children_[k]->code_;
@@ -1593,9 +1604,9 @@ uint64_t VKernelP::CodeGen() {
     }
     summaries[summary_idx++] = summary | (tile_num - start_idx) << 20 | start_idx | 1ul << 40;
     // data
-    std::vector<NDAccess*> ios;
-    for (auto op :  children_[k]->objects_) {
-      if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
+    std::vector<NDAccess *> ios;
+    for (auto op : children_[k]->objects_) {
+      if (!op->IsSimd()) ios.push_back(static_cast<NDAccess *>(op));
     }
     code_.LinkBody(code_.HeadSize() + offset, code, ios, 0);
     offset += ((code.data_size_ - code.HeadSize() + 31) >> 5) << 5;
@@ -1626,28 +1637,28 @@ void MixKernel::Append(NDObject *obj) {
     obj->xbuf_ = LOAD_PENDING;
   } else if (obj->obj_id_ == kCubeOp) {
     EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
-    std::vector<NDObject*> empty_run_ops;
+    std::vector<NDObject *> empty_run_ops;
     obj->lhs_->Normalize(empty_run_ops);
     obj->rhs_->Normalize(empty_run_ops);
-    cube_op_ = static_cast<CubeOp*>(obj);
+    cube_op_ = static_cast<CubeOp *>(obj);
     cube_op_->NormalizeCube();
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
     obj->nd_ = cube_op_->nd_;
-    cube_op_->output_ = static_cast<NDAccess*>(obj);
+    cube_op_->output_ = static_cast<NDAccess *>(obj);
   } else {
     if (post_fusion_ == nullptr) {
       post_fusion_ = new VKernelS();
     }
-    if(obj->IsComm() && obj->lhs_ == cube_op_){
+    if (obj->IsComm() && obj->lhs_ == cube_op_) {
       cube_op_->peer_store_ = true;
       cube_op_->pingpong_store_ = true;
-      cube_op_->rank_size_ = static_cast<CommOp*>(obj)->comm_->GetRankSize();
+      cube_op_->rank_size_ = static_cast<CommOp *>(obj)->comm_->GetRankSize();
     }
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
           auto sload = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
-          if(cube_op_->peer_store_){
+          if (cube_op_->peer_store_) {
             sload->pingpong_load_ = true;
           }
           sload_ = sload;
@@ -1664,7 +1675,7 @@ void MixKernel::Append(NDObject *obj) {
       if (obj->rhs_) {
         WorkLoad(obj->rhs_);
         if (obj->flags_ & OBJ_FLAG_XHS) {
-          WorkLoad(static_cast<FlexOp*>(obj)->xhs_);
+          WorkLoad(static_cast<FlexOp *>(obj)->xhs_);
         }
       }
     }
@@ -1683,7 +1694,7 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
       InplaceOp(op->lhs_);
       InplaceOp(op->rhs_);
       if (op->flags_ & OBJ_FLAG_XHS) {
-        InplaceOp(static_cast<FlexOp*>(op)->xhs_);
+        InplaceOp(static_cast<FlexOp *>(op)->xhs_);
       }
       stage_kernel_->GetImpl()->Append(op);
     }
@@ -1808,7 +1819,8 @@ uint64_t MixKernel::BiasBF16CodeGen() {
   stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
   auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
   auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
-  auto matmul_op = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32));
+  auto matmul_op =
+    stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32));
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
   }
@@ -1854,14 +1866,14 @@ uint64_t MixKernel::AlignCodeGen() {
     }
     for (auto op : post_fusion_->objects_) {
       if (op->IsLoad()) {
-        static_cast<NDSLoad*>(op)->SetCubeOp(cube_op_);
+        static_cast<NDSLoad *>(op)->SetCubeOp(cube_op_);
       } else if (op->IsStore()) {
-        static_cast<NDSStore*>(op)->SetCubeOp(cube_op_);
+        static_cast<NDSStore *>(op)->SetCubeOp(cube_op_);
       } else if (op->IsComm()) {
-        auto comm = static_cast<CommOp*>(op);
+        auto comm = static_cast<CommOp *>(op);
         comm->mix_ = true;
-        if(cube_op_->peer_store_){
-          static_cast<CommOp*>(op)->SetCubeOp(cube_op_);
+        if (cube_op_->peer_store_) {
+          static_cast<CommOp *>(op)->SetCubeOp(cube_op_);
         }
       }
     }
@@ -1893,9 +1905,9 @@ uint64_t MixKernel::AlignCodeGen() {
     code_.unique_ids_.push_back(reinterpret_cast<uint32_t *>(code_.data_ + code_.HeadSize() + distance));
   }
   // only support post fusion
-  vCubeOp *link_cube = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
-  static_cast<NDAccess*>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
-  static_cast<NDAccess*>(cube_op_->rhs_)->reloc_addr_ = &link_cube->gm_b;
+  vCubeOp *link_cube = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
+  static_cast<NDAccess *>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
+  static_cast<NDAccess *>(cube_op_->rhs_)->reloc_addr_ = &link_cube->gm_b;
   if (cube_op_->bias_) {
     static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = &link_cube->gm_bias;
   }
@@ -1903,9 +1915,9 @@ uint64_t MixKernel::AlignCodeGen() {
     cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
     return 0;
   }
-  std::vector<NDAccess*> ios;
+  std::vector<NDAccess *> ios;
   for (auto op : post_fusion_->objects_) {
-    if (!op->IsSimd()) ios.push_back(static_cast<NDAccess*>(op));
+    if (!op->IsSimd()) ios.push_back(static_cast<NDAccess *>(op));
   }
   code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
   if (inplace_store) {
@@ -1916,7 +1928,7 @@ uint64_t MixKernel::AlignCodeGen() {
     cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
     code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
     return 0;
-  } else if(cube_op_->peer_store_){
+  } else if (cube_op_->peer_store_) {
     const auto comm = post_fusion_->comm_op_->comm_;
     link_cube->gm_c = reinterpret_cast<uint64_t>(comm->GetPeerMemPtr(comm->GetRankId()));
     code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
@@ -1985,12 +1997,12 @@ StagesKernel::~StagesKernel() {
 void StagesKernel::Append(NDObject *obj) {
   stages_.back()->kernel->Append(obj);
   if (!obj->IsSimd()) {
-    stages_.back()->ios.push_back(static_cast<NDAccess*>(obj));
+    stages_.back()->ios.push_back(static_cast<NDAccess *>(obj));
   }
 }
 
-#define STAGE_FLAG_WORKSPACE  1
-#define STAGE_FLAG_REUSE      2
+#define STAGE_FLAG_WORKSPACE 1
+#define STAGE_FLAG_REUSE 2
 
 uint64_t StagesKernel::CodeGen() {
   for (auto s : stages_) {
@@ -2001,7 +2013,7 @@ uint64_t StagesKernel::CodeGen() {
   for (auto s : stages_) {
     auto &code = s->kernel->code_;
     if (!code.reloc_workspaces_.empty()) {
-      for (auto &[dst, offset]: code.reloc_workspaces_) {
+      for (auto &[dst, offset] : code.reloc_workspaces_) {
         code_.reloc_workspaces_.emplace_back(dst, offset + s->ws_offset);
       }
       code.reloc_workspaces_.clear();
@@ -2042,14 +2054,14 @@ uint64_t StagesKernel::CodeGen() {
 uint64_t StagesKernel::AllocWorkspace() {
   struct Group {
     Group(uint64_t s, bool l) : size(s), live(l) {}
-    std::vector<NDAccess*> ops;
-    std::vector<Stage*> wss;
+    std::vector<NDAccess *> ops;
+    std::vector<Stage *> wss;
     uint64_t size;
     bool live;
   };
   std::vector<Group> groups;
   groups.reserve(stages_.size() * 8);
-  std::unordered_map<NDAccess*, int> lives; // >= 0: group_idx. -1: reused
+  std::unordered_map<NDAccess *, int> lives;  // >= 0: group_idx. -1: reused
   auto select_group = [&groups](uint64_t size) -> int {
     int up = -1, down = -1;
     for (int i = 0; i < static_cast<int>(groups.size()); ++i) {
@@ -2059,7 +2071,7 @@ uint64_t StagesKernel::AllocWorkspace() {
         if (up == -1 || g.size < groups[up].size) {
           up = i;
         }
-      } else if (up == -1 && (down == -1|| g.size > groups[down].size)) {
+      } else if (up == -1 && (down == -1 || g.size > groups[down].size)) {
         down = i;
       }
     }
@@ -2072,18 +2084,18 @@ uint64_t StagesKernel::AllocWorkspace() {
       if (io->IsLoad() && io->is_stage_) {
         auto store = GetStageStore(io);
         if (!store->is_stage_ || lives.find(store) != lives.end()) continue;
-        if (stage->kernel->KType() == kStaticShape) { // TODO: parallel fusion
+        if (stage->kernel->KType() == kStaticShape) {  // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
-          auto inplace_out = static_cast<VectorKernel*>(stage->kernel)->FindInplaceStore(io,
-            [&lives, &inplace_stage](NDAccess *op) -> bool {
-              if (!op->is_stage_ || op->xbuf_ == STAGE_FLAG_REUSE) {
-                return true;
-              }
-              if (inplace_stage == nullptr && lives[op] >= 0) {
-                inplace_stage = op;
-              }
-              return false;
-          });
+          auto inplace_out = static_cast<VectorKernel *>(stage->kernel)
+                               ->FindInplaceStore(io, [&lives, &inplace_stage](NDAccess *op) -> bool {
+                                 if (!op->is_stage_ || op->xbuf_ == STAGE_FLAG_REUSE) {
+                                   return true;
+                                 }
+                                 if (inplace_stage == nullptr && lives[op] >= 0) {
+                                   inplace_stage = op;
+                                 }
+                                 return false;
+                               });
           if (inplace_out) {
             store->xbuf_ = STAGE_FLAG_REUSE;
             SetOutputReuse(store, inplace_out->is_stage_ ? GetOutputReuse(inplace_out) : inplace_out);
@@ -2217,7 +2229,7 @@ class EagerArea {
     fused_.clear();
   }
 
-  bool TryFuse(EagerArea *a, std::vector<std::pair<EagerArea*, EagerArea*>> &areas) {
+  bool TryFuse(EagerArea *a, std::vector<std::pair<EagerArea *, EagerArea *>> &areas) {
     ASSERT(dom_ != nullptr);
     const auto &dom_nd = dom_->nd_;
     const auto &op_nd = a->dom_->nd_;
@@ -2241,12 +2253,12 @@ class EagerArea {
   int state_;
   int area_id_;
   NDObject *dom_;
-  std::vector<NDObject*> objects_;
-  std::vector<EagerArea*> fused_;
+  std::vector<NDObject *> objects_;
+  std::vector<EagerArea *> fused_;
 };
 
 VKernelE::VKernelE(WsAllocFunc func, void *user_data)
-  : VKernel(KernelType::kEager), ws_alloc_(func), user_data_(user_data) {
+    : VKernel(KernelType::kEager), ws_alloc_(func), user_data_(user_data) {
   objects_.reserve(128);
   temp_ops_.reserve(64);
   areas_.reserve(16);
@@ -2266,7 +2278,7 @@ VKernelE::~VKernelE() {
 NDObject *VKernelE::Exchange(EagerArea *area, NDObject *input) {
   NDAccess *load;
   if (input->IsLoad()) {
-    auto ac = static_cast<NDAccess*>(input);
+    auto ac = static_cast<NDAccess *>(input);
     load = new NDLoad(ac->gm_, ac->shape_ref_, ac->type_id_);
     SetStore(load, input);
     load->Normalize(area->objects_);
@@ -2301,7 +2313,7 @@ void VKernelE::Split(NDObject *root) {
   }
   area->Reset(root, kidx);
   kernel_used_++;
-  auto push_input = [area, this](NDObject* input, NDObject* &update) {
+  auto push_input = [area, this](NDObject *input, NDObject *&update) {
     if (auto idx = GetArea(input); idx >= 0) {
       if (auto a = areas_[idx].second; a != area) {
         if (a->state_ == EagerArea::kPending) {
@@ -2338,7 +2350,7 @@ void VKernelE::Split(NDObject *root) {
 }
 
 void VKernelE::Append(NDObject *obj) {
-  obj->flags_ |= OBJ_FLAG_EAGER; //TODO: add eager param for Normalize
+  obj->flags_ |= OBJ_FLAG_EAGER;  // TODO: add eager param for Normalize
   SetArea(obj, -1);
   SetStore(obj, nullptr);
   if (obj->IsStore()) {
@@ -2378,7 +2390,7 @@ void VKernelE::Append(NDObject *obj) {
 }
 
 uint64_t VKernelE::CodeGen() {
-  auto append_ops = [this](EagerVector *kernel, const std::vector<NDObject*> &objects) {
+  auto append_ops = [this](EagerVector *kernel, const std::vector<NDObject *> &objects) {
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
       auto op = *it;
       if (GetArea(op) == -1) continue;
@@ -2415,29 +2427,29 @@ uint64_t VKernelE::CodeGen() {
     append_ops(kernel, area->objects_);
     if (kidx > 0) {
       for (size_t i = obj_size; i < objects_.size(); ++i) {
-        NDAccess *io = static_cast<NDAccess*>(objects_[i]);
+        NDAccess *io = static_cast<NDAccess *>(objects_[i]);
         auto store = GetStore(io);
         if (store->gm_ == nullptr) {
-          if (auto is = kernel->FindInplaceStore(io,
-              [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
+          if (auto is =
+                kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
             store->gm_ = is->gm_;
             SetStoreInplace(is, 1);
           } else {
             auto size = GetStoreSize(store);
             if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-              store->gm_ = static_cast<uint8_t*>(it->second);
+              store->gm_ = static_cast<uint8_t *>(it->second);
               wss_.erase(it);
               SetStoreSize(store, it->first);
             } else {
-              store->gm_ = static_cast<uint8_t*>(ws_alloc_(size, user_data_));
+              store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
             }
           }
         }
         io->gm_ = store->gm_;
       }
       if (kidx > 1) {
-        for (auto op: temp_ops_) {
-          NDAccess *store = static_cast<NDAccess*>(op);
+        for (auto op : temp_ops_) {
+          NDAccess *store = static_cast<NDAccess *>(op);
           wss_.insert({GetStoreSize(store), store->gm_});
         }
       }
@@ -2453,8 +2465,8 @@ uint64_t VKernelE::CodeGen() {
 
 class EagerDumpRef : public DumpRefHelper {
  public:
-   EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
-   virtual NDObject *GetInput(NDObject *input) {
+  EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
+  virtual NDObject *GetInput(NDObject *input) {
     while (input && idx_map_.count(input) == 0) {
       if (input->IsLoad()) {
         auto acc = VKernelE::GetStore(input);
@@ -2471,7 +2483,7 @@ class EagerDumpRef : public DumpRefHelper {
 };
 
 void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (kernel_used_ == 0)  return;
+  if (kernel_used_ == 0) return;
   if (area_used_ == 0) {
     oss << "vgraph.eager() {" << std::endl;
     std::string body_indent = indent + "  ";
@@ -2496,7 +2508,7 @@ void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
   }
 }
 
-std::string& VKernelE::DisAssemble() {
+std::string &VKernelE::DisAssemble() {
   std::ostringstream oss;
   for (int i = 0; i < kernel_used_; ++i) {
     oss << "// eager " << i << std::endl;
@@ -2507,4 +2519,4 @@ std::string& VKernelE::DisAssemble() {
   return dump_str_;
 }
 
-} // namespace dvm
+}  // namespace dvm

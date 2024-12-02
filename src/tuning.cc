@@ -63,7 +63,7 @@ void ManualMatMul::SetTiling(const TuningInfo &info) {
 void TunedMatMul::GenTiling(vCubeOp *op) {
 #ifndef VK_SIM_MODEL
   auto &tuning_table = TunedMatMul::GetTuningTable();
-  uint64_t key_batch = (uint64_t)op->batch_a0 << 48 | (uint64_t)op->batch_a1 << 32 | op->batch_b0 << 16 |op->batch_b1;
+  uint64_t key_batch = (uint64_t)op->batch_a0 << 48 | (uint64_t)op->batch_a1 << 32 | op->batch_b0 << 16 | op->batch_b1;
   uint64_t key_shape = m_real_ << 44 | n_real_ << 24 | k_real_ << 2;
   if (type_id_ == dvm::kFloat32) key_shape |= 4ul;
   if (trans_a_) key_shape |= 2ul;

@@ -27,24 +27,24 @@
 #if defined(__cplusplus)
 extern "C" {
 #endif
-#define RT_DEV_BINARY_MAGIC_ELF        0x43554245U
-#define RT_DEV_BINARY_MAGIC_ELF_AICPU  0x41415243U
-#define RT_DEV_BINARY_MAGIC_ELF_AIVEC  0x41415246U
+#define RT_DEV_BINARY_MAGIC_ELF 0x43554245U
+#define RT_DEV_BINARY_MAGIC_ELF_AICPU 0x41415243U
+#define RT_DEV_BINARY_MAGIC_ELF_AIVEC 0x41415246U
 #define RT_DEV_BINARY_MAGIC_ELF_AICUBE 0x41494343U
 
 typedef struct tagRtDevBinary {
-    uint32_t magic;    // magic number
-    uint32_t version;  // version of binary
-    const void *data;  // binary data
-    uint64_t length;   // binary length
+  uint32_t magic;    // magic number
+  uint32_t version;  // version of binary
+  const void *data;  // binary data
+  uint64_t length;   // binary length
 } rtDevBinary_t;
 
 rtError_t rtDevBinaryRegister(const rtDevBinary_t *bin, void **hdl);
 rtError_t rtDevBinaryUnRegister(void *hdl);
-rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName,
-                         const void *kernelInfoExt, uint32_t funcMode);
-rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                         rtSmDesc_t *smDesc, rtStream_t stm);
+rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName, const void *kernelInfoExt,
+                             uint32_t funcMode);
+rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize, rtSmDesc_t *smDesc,
+                         rtStream_t stm);
 rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 #if defined(__cplusplus)
 }
@@ -56,7 +56,7 @@ extern unsigned int g_vkernel_c220_bin_len;
 namespace dvm {
 
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
-const char* DTYPE_NAMES[dvm::kTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32"};
+const char *DTYPE_NAMES[dvm::kTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32"};
 
 static std::string GetSocName() {
   std::string res;
@@ -75,7 +75,7 @@ static std::string GetSocName() {
   return res;
 }
 
-void DvmException(const char* error_str) {
+void DvmException(const char *error_str) {
   std::ostringstream oss;
   oss << "DVM EXCEPTION. reason: " << error_str;
   throw std::runtime_error(oss.str());
@@ -90,18 +90,12 @@ struct SocConfig {
 
 constexpr uint64_t MB = 1024 * 1024;
 const SocConfig soc_configs[] = {
-  {"Ascend910B1",       kAscend910B1, 25, 192 * MB},
-  {"Ascend910B2",       kAscend910B2, 24, 192 * MB},
-  {"Ascend910B2C",      kAscend910B2, 24, 192 * MB},
-  {"Ascend910B3",       kAscend910B3, 20, 192 * MB},
-  {"Ascend910B4",       kAscend910B4, 20,  96 * MB},
-  {"Ascend910B4-1",     kAscend910B4, 20,  96 * MB},
-  {"Ascend910_9391", kAscend910_9391, 25, 192 * MB},
-  {"Ascend910_9392", kAscend910_9392, 25, 192 * MB},
-  {"Ascend910_9381", kAscend910_9381, 24, 192 * MB},
-  {"Ascend910_9382", kAscend910_9382, 24, 192 * MB},
-  {"Ascend910_9372", kAscend910_9372, 20, 192 * MB},
-  {"Ascend910_9361", kAscend910_9361, 20,  96 * MB},
+  {"Ascend910B1", kAscend910B1, 25, 192 * MB},       {"Ascend910B2", kAscend910B2, 24, 192 * MB},
+  {"Ascend910B2C", kAscend910B2, 24, 192 * MB},      {"Ascend910B3", kAscend910B3, 20, 192 * MB},
+  {"Ascend910B4", kAscend910B4, 20, 96 * MB},        {"Ascend910B4-1", kAscend910B4, 20, 96 * MB},
+  {"Ascend910_9391", kAscend910_9391, 25, 192 * MB}, {"Ascend910_9392", kAscend910_9392, 25, 192 * MB},
+  {"Ascend910_9381", kAscend910_9381, 24, 192 * MB}, {"Ascend910_9382", kAscend910_9382, 24, 192 * MB},
+  {"Ascend910_9372", kAscend910_9372, 20, 192 * MB}, {"Ascend910_9361", kAscend910_9361, 20, 96 * MB},
 };
 
 System::System() {
@@ -152,27 +146,27 @@ System::System() {
   dev_bin.length = g_vkernel_c220_bin_len;
   err = rt_binary_register(&dev_bin, &module);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-  uint8_t* stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetVec;
-  err = rt_function_register(module, stub_func, "vmain_mix_aiv",  "vmain_mix_aiv", 0);
+  uint8_t *stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetVec;
+  err = rt_function_register(module, stub_func, "vmain_mix_aiv", "vmain_mix_aiv", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
 
   dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
   err = rt_binary_register(&dev_bin, &module);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-  stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetCube;
-  err = rt_function_register(module, stub_func, "vmain_mix_aic",  "vmain_mix_aic", 0);
+  stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetCube;
+  err = rt_function_register(module, stub_func, "vmain_mix_aic", "vmain_mix_aic", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
 
   dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
   err = rt_binary_register(&dev_bin, &module);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-  stub_func = reinterpret_cast<uint8_t*>(this) + Code::kTargetMix;
-  err = rt_function_register(module, stub_func, "vmain",  "vmain", 0);
+  stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetMix;
+  err = rt_function_register(module, stub_func, "vmain", "vmain", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 #ifdef VK_SIM_MODEL
   get_c2c_addr_func_ = rtGetC2cCtrlAddr;
 #else
-  get_c2c_addr_func_ = reinterpret_cast<rtError_t(*)(uint64_t*, uint32_t*)>(dlsym(handle, "rtGetC2cCtrlAddr"));
+  get_c2c_addr_func_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(handle, "rtGetC2cCtrlAddr"));
 #endif
 }
 }  // namespace dvm

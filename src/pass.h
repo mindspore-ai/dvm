@@ -52,64 +52,64 @@ class ObjectList {
   NDObject *ReverseBegin() { return Prev(&sentinel_); }
   NDObject *ReverseEnd() { return &sentinel_; }
 
-  static NDObject *Next(NDObject *obj) { return reinterpret_cast<NDObject*>(obj->insn_); }
-  static NDObject *Prev(NDObject *obj) { return reinterpret_cast<NDObject*>(obj->tail_insn_); }
-  static void SetNext(NDObject *obj, NDObject *next) { obj->insn_ = reinterpret_cast<uint64_t*>(next); }
-  static void SetPrev(NDObject *obj, NDObject *prev) { obj->tail_insn_ = reinterpret_cast<uint64_t*>(prev); }
+  static NDObject *Next(NDObject *obj) { return reinterpret_cast<NDObject *>(obj->insn_); }
+  static NDObject *Prev(NDObject *obj) { return reinterpret_cast<NDObject *>(obj->tail_insn_); }
+  static void SetNext(NDObject *obj, NDObject *next) { obj->insn_ = reinterpret_cast<uint64_t *>(next); }
+  static void SetPrev(NDObject *obj, NDObject *prev) { obj->tail_insn_ = reinterpret_cast<uint64_t *>(prev); }
 
   template <bool reverse>
   class Iterator {
-    public:
-      // these alias is used in <algorithm>
-      using value_type = NDObject;
-      using pointer = NDObject *;
-      using reference = NDObject &;
-      using iterator_category = std::bidirectional_iterator_tag;
-      using difference_type = std::ptrdiff_t;
+   public:
+    // these alias is used in <algorithm>
+    using value_type = NDObject;
+    using pointer = NDObject *;
+    using reference = NDObject &;
+    using iterator_category = std::bidirectional_iterator_tag;
+    using difference_type = std::ptrdiff_t;
 
-      Iterator(pointer ptr) : ptr_(ptr) {}
+    Iterator(pointer ptr) : ptr_(ptr) {}
 
-      Iterator &operator++() {
-        ptr_ = reverse ? ObjectList::Prev(ptr_) : ObjectList::Next(ptr_);
-        return *this;
-      }
+    Iterator &operator++() {
+      ptr_ = reverse ? ObjectList::Prev(ptr_) : ObjectList::Next(ptr_);
+      return *this;
+    }
 
-      Iterator operator++(int) {
-        Iterator tmp = *this;
-        ++(*this);
-        return tmp;
-      }
+    Iterator operator++(int) {
+      Iterator tmp = *this;
+      ++(*this);
+      return tmp;
+    }
 
-      Iterator operator--() {
-        ptr_ = reverse ? ObjectList::Next(ptr_) : ObjectList::Prev(ptr_);
-        return *this;
-      }
+    Iterator operator--() {
+      ptr_ = reverse ? ObjectList::Next(ptr_) : ObjectList::Prev(ptr_);
+      return *this;
+    }
 
-      Iterator operator--(int) {
-        Iterator tmp = *this;
-        --(*this);
-        return tmp;
-      }
+    Iterator operator--(int) {
+      Iterator tmp = *this;
+      --(*this);
+      return tmp;
+    }
 
-      bool operator!=(const Iterator &other) const { return ptr_ != other.ptr_; }
+    bool operator!=(const Iterator &other) const { return ptr_ != other.ptr_; }
 
-      reference operator*() { return *ptr_; }
-      pointer operator->() { return ptr_; }
+    reference operator*() { return *ptr_; }
+    pointer operator->() { return ptr_; }
 
-      Iterator GetPrev() {
-        Iterator iter = *this;
-        return --iter;
-      }
+    Iterator GetPrev() {
+      Iterator iter = *this;
+      return --iter;
+    }
 
-      Iterator GetNext() {
-        Iterator iter = *this;
-        return ++iter;
-      }
+    Iterator GetNext() {
+      Iterator iter = *this;
+      return ++iter;
+    }
 
-      NDObject *get() { return ptr_; }
+    NDObject *get() { return ptr_; }
 
-    private:
-      pointer ptr_;
+   private:
+    pointer ptr_;
   };
 
  protected:

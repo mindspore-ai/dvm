@@ -24,19 +24,19 @@
 #ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
 #else
-#define aclrtMallocHost(addr, size) 0; *addr = std::malloc(size)
-#define aclrtFreeHost(addr) 0; std::free(addr)
+#define aclrtMallocHost(addr, size) \
+  0;                                \
+  *addr = std::malloc(size)
+#define aclrtFreeHost(addr) \
+  0;                        \
+  std::free(addr)
 #endif
 
 namespace dvm {
 namespace {
 std::unordered_map<std::string, vCompareType> cmp_insn_id = {
-  {"Greater", V_CMP_GT},
-  {"Less", V_CMP_LT},
-  {"GreaterEqual", V_CMP_GE},
-  {"LessEqual", V_CMP_LE},
-  {"Equal", V_CMP_EQ},
-  {"NotEqual", V_CMP_NE},
+  {"Greater", V_CMP_GT},   {"Less", V_CMP_LT},  {"GreaterEqual", V_CMP_GE},
+  {"LessEqual", V_CMP_LE}, {"Equal", V_CMP_EQ}, {"NotEqual", V_CMP_NE},
 };
 
 template <typename T>
@@ -84,7 +84,8 @@ void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSLoad op;
   vSLoad::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "sload " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  oss << "sload " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", "
+      << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
@@ -104,7 +105,8 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSStore op;
   vSStore::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "sstore " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.gm) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << "sstore " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.gm) << ", "
+      << reinterpret_cast<void *>(op.xn);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
@@ -127,7 +129,8 @@ void DumpAtomicCum(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpSliceLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSliceSL op;
   vSliceSL::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "slice_load " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
+  oss << "slice_load " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", "
+      << reinterpret_cast<void *>(op.gm);
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
@@ -149,9 +152,7 @@ void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("one_flag", op.one_flag, oss);
 }
 
-void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "exit 0";
-}
+void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "exit 0"; }
 
 void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vDMA op;
@@ -207,7 +208,7 @@ void DumpPingPongLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpPingpongPeerLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vPingPongPeerLoad p_load;
   vPingPongPeerLoad::Decode(dump_info.insn, *dump_info.insn, p_load);
-  vPingPongLoad& op = p_load.base;
+  vPingPongLoad &op = p_load.base;
   oss << "PingPongPeerLoad.u8." << op.iter_size << "x" << op.body_iter;
   oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from);
   oss << " //";
@@ -405,7 +406,6 @@ void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
       << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
-
 }
 
 void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -428,7 +428,7 @@ void DumpReduceX(const DumpInfo &dump_info, std::ostringstream &oss) {
   auto head = *dump_info.insn;
   vReduceX::Decode(dump_info.insn, head, op);
   vReduceX::DecodeBlock(dump_info.insn, op);
-  oss << "[" << op.red_size<< "]x" << op.dup_size;
+  oss << "[" << op.red_size << "]x" << op.dup_size;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("red_tail", op.red_tail, oss);
   oss << ", ";
@@ -479,7 +479,8 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {
   vReshape op;
   vReshape::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << op.xd_lead << "x" << op.dup_size << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  oss << op.xd_lead << "x" << op.dup_size << " " << reinterpret_cast<void *>(op.xd) << ", "
+      << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("xd_pad", op.xd_pad, oss);
   oss << ", ";
   DumpVal("xn_lead", op.xn_lead, oss);
@@ -688,7 +689,8 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
   return offset;
 }
 
-void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
+void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width,
+             const std::string &indent) {
   bcodeptr_t insn = reinterpret_cast<bcodeptr_t>(bcode);
   bcodeptr_t insn_end = reinterpret_cast<bcodeptr_t>(bcode + bcode_size);
   uint64_t insn_idx = 0;
@@ -700,7 +702,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
     oss << "\n";
     if (offset == 0) break;
     insn = insn + offset;
-    oss <<  indent << "    {";
+    oss << indent << "    {";
     bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
     if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
       oss << "simd";
@@ -746,8 +748,8 @@ class DisAssembler {
   DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
 
   void Run(Code *code, const char *prefix) {
-    void* ffts = *reinterpret_cast<void**>(code->data_);
-    uint64_t entry = *reinterpret_cast<uint64_t*>(code->data_ + sizeof(uint64_t));
+    void *ffts = *reinterpret_cast<void **>(code->data_);
+    uint64_t entry = *reinterpret_cast<uint64_t *>(code->data_ + sizeof(uint64_t));
     uint8_t *bcode = code->data_ + code->HeadSize();
     uint64_t bcode_size = code->data_size_ - code->HeadSize();
     if (!code->sub_codes_.empty()) {
@@ -806,7 +808,7 @@ class DisAssembler {
     auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
     oss << indent << "aiv(tile_num=" << tile_num << ", simd_width=" << simd_width;
     if (entry & V_ENTRY_FLAG_MIX) {
-      oss <<", mix=1";
+      oss << ", mix=1";
     }
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
@@ -818,7 +820,7 @@ class DisAssembler {
 
   void DasCube(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
     oss << indent << "aic(mix=" << bool(entry & V_ENTRY_FLAG_MIX);
-    vCubeOp *cube = reinterpret_cast<vCubeOp*>(bcode);
+    vCubeOp *cube = reinterpret_cast<vCubeOp *>(bcode);
     if (cube->flags & V_CUBE_FLAG_GROUP_SET) {
       oss << ", sub_tile_num=[" << (cube->subtilenum & 0xfffffffful) << ", " << (cube->subtilenum >> 32) << "]";
       oss << ", group_set=1";
@@ -838,7 +840,8 @@ class DisAssembler {
   }
 
   void DasMix(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
-    oss << indent << "mix(tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS) << ") {" << std::endl;
+    oss << indent << "mix(tile_num=" << vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS) << ") {"
+        << std::endl;
     DasCube(entry, bcode, sizeof(vCubeOp), indent + "  ");
     oss << std::endl;
     DasVec(entry, bcode + sizeof(vCubeOp), bcode_size - sizeof(vCubeOp), indent + "  ");
@@ -858,7 +861,7 @@ class DisAssembler {
     };
     std::vector<Summary> summays;
     Summary *current = nullptr;
-    uint64_t *summaries = reinterpret_cast<uint64_t*>(bcode);
+    uint64_t *summaries = reinterpret_cast<uint64_t *>(bcode);
     auto block_dim = vGetBitRange(entry, V_ENTRY_TILE_NUM_OFFSET, V_ENTRY_TILE_NUM_BITS);
     for (uint64_t i = 0; i < block_dim; ++i) {
       uint64_t sum_data = *summaries++;
@@ -884,9 +887,9 @@ class DisAssembler {
     oss << indent << "parallel() {" << std::endl;
     for (uint64_t i = 0; i < summays.size(); ++i) {
       auto &summary = summays[i];
-      oss << " kernel_" << i << "(simd_width="<< summary.simd_width <<
-            ", block_range=[" << summary.block_start << ", " << summary.block_end << "], block_step=" << summary.block_step <<
-            ", block_tail=" << summary.block_tail << ") {" << std::endl;
+      oss << " kernel_" << i << "(simd_width=" << summary.simd_width << ", block_range=[" << summary.block_start << ", "
+          << summary.block_end << "], block_step=" << summary.block_step << ", block_tail=" << summary.block_tail
+          << ") {" << std::endl;
       DasVecBody(summary.bcode, summary.code_size, summary.simd_width, indent + "  ");
       oss << indent << " }" << std::endl;
     }
@@ -915,7 +918,7 @@ class DisAssembler {
       oss << std::endl;
       if ((entry & V_ENTRY_FLAG_NEXT_STAGE) == 0) break;
       bcode += stage_size;
-      entry = *reinterpret_cast<uint64_t*>(bcode);
+      entry = *reinterpret_cast<uint64_t *>(bcode);
       bcode += sizeof(uint64_t);
     }
     oss << indent << "}";
@@ -938,7 +941,7 @@ Code::~Code() {
   }
 }
 
-Code& Code::operator=(Code &&other) {
+Code &Code::operator=(Code &&other) {
   MoveCode(other);
   sub_codes_ = std::move(other.sub_codes_);
   reloc_workspaces_ = std::move(other.reloc_workspaces_);
@@ -987,19 +990,17 @@ void Code::Alloc(size_t size) {
   mem_size_ = size;
 }
 
-void Code::DisAssemble(std::ostringstream &oss) {
-  DisAssembler(oss).Run(this, "vmain");
-}
+void Code::DisAssemble(std::ostringstream &oss) { DisAssembler(oss).Run(this, "vmain"); }
 
-void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess*> &ios, uint64_t ws_offset) {
+void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess *> &ios, uint64_t ws_offset) {
   std::memcpy(data_ + offset, code.data_ + HeadSize(), code.data_size_ - HeadSize());
-  uint64_t *new_base = reinterpret_cast<uint64_t*>(data_ + offset);
-  uint64_t *old_base = reinterpret_cast<uint64_t*>(code.data_ + HeadSize());
-  for (auto a :  ios) {
+  uint64_t *new_base = reinterpret_cast<uint64_t *>(data_ + offset);
+  uint64_t *old_base = reinterpret_cast<uint64_t *>(code.data_ + HeadSize());
+  for (auto a : ios) {
     a->reloc_addr_ = a->reloc_addr_ - old_base + new_base;
   }
   if (!code.reloc_workspaces_.empty()) {
-    for (auto &[dst, offset]: code.reloc_workspaces_) {
+    for (auto &[dst, offset] : code.reloc_workspaces_) {
       reloc_workspaces_.emplace_back(dst - old_base + new_base, offset + ws_offset);
     }
   }
@@ -1012,10 +1013,10 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
       reloc_reuse_.emplace_back(dst, src);
     }
   }
-  if (!code.unique_ids_.empty()){
+  if (!code.unique_ids_.empty()) {
     auto distance = (data_ + offset) - (code.data_ + HeadSize());
-    for(auto unique_id_addr: code.unique_ids_){
-      unique_ids_.push_back(reinterpret_cast<uint32_t*>(reinterpret_cast<uint8_t*>(unique_id_addr)+distance));
+    for (auto unique_id_addr : code.unique_ids_) {
+      unique_ids_.push_back(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(unique_id_addr) + distance));
     }
   }
   if (!code.sub_codes_.empty()) {
@@ -1025,7 +1026,7 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
   }
 }
 
-void Code::RelocReuse(NDAccess* op, NDAccess* reuse) {
+void Code::RelocReuse(NDAccess *op, NDAccess *reuse) {
   auto reloc_addr = op->reloc_addr_;
   for (auto it = reloc_reuse_.begin(); it != reloc_reuse_.end(); ++it) {
     if (it->second == reloc_addr) {
@@ -1036,18 +1037,18 @@ void Code::RelocReuse(NDAccess* op, NDAccess* reuse) {
   reloc_reuse_.emplace_back(reloc_addr, reuse->reloc_addr_);
 }
 
-void Code::RelocWorkspace(NDAccess* op, int64_t ws_offset) {
+void Code::RelocWorkspace(NDAccess *op, int64_t ws_offset) {
   reloc_workspaces_.emplace_back(op->reloc_addr_, ws_offset);
 }
 
-int Code::LaunchEx(void *workspace, void* stream) {
+int Code::LaunchEx(void *workspace, void *stream) {
 #ifdef VK_SIM_MODEL
   return -1;
 #else
-  auto data_dev = reinterpret_cast<uint8_t*>(workspace) + extern_code_;
+  auto data_dev = reinterpret_cast<uint8_t *>(workspace) + extern_code_;
   auto ret = aclrtMemcpyAsync(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
-  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t*>(data_) + 1)};
+  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(data_) + 1)};
   auto stub_func = System::Instance().StubFunc(target_);
   return System::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);
 #endif

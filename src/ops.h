@@ -170,6 +170,7 @@ class DimArray {
     ASSERT(size_ < kMaxDimSize);
     data_[size_++] = val;
   }
+
  private:
   int64_t data_[DimArray::kMaxDimSize];
   size_t size_;
@@ -215,7 +216,7 @@ class MemPool {
     if (top_ < POOL_SIZE) {
       std::lock_guard<std::mutex> guard(mutex_);
       auto top = top_;
-      if (top < POOL_SIZE ) {
+      if (top < POOL_SIZE) {
         top_ = top + 1;
         pool_[top] = mem;
         return;
@@ -232,28 +233,28 @@ class MemPool {
 
 class VectorKernel;
 
-#define OBJ_FLAG_FREE_LHS   1
-#define OBJ_FLAG_FREE_RHS   2
-#define OBJ_FLAG_REUSE_LHS  4
-#define OBJ_FLAG_REUSE_RHS  8
-#define OBJ_FLAG_DEAD       16
+#define OBJ_FLAG_FREE_LHS 1
+#define OBJ_FLAG_FREE_RHS 2
+#define OBJ_FLAG_REUSE_LHS 4
+#define OBJ_FLAG_REUSE_RHS 8
+#define OBJ_FLAG_DEAD 16
 
-#define OBJ_FLAG_WORKSPACE  (1u << 16)
-#define OBJ_FLAG_XHS        (2u << 16)
-#define OBJ_FLAG_WRAP       (4u << 16)
-#define OBJ_FLAG_EAGER      (8u << 16)
+#define OBJ_FLAG_WORKSPACE (1u << 16)
+#define OBJ_FLAG_XHS (2u << 16)
+#define OBJ_FLAG_WRAP (4u << 16)
+#define OBJ_FLAG_EAGER (8u << 16)
 
 class NDObject {
  public:
   NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
     type_id_ = type_id;
   }
-  NDObject(const NDObject&) = delete;
-  NDObject &operator=(const NDObject&) = delete;
+  NDObject(const NDObject &) = delete;
+  NDObject &operator=(const NDObject &) = delete;
   virtual ~NDObject() = default;
 
   // re-infer shape(nd_) from its inputs nd_
-  virtual void Normalize(std::vector<NDObject*> &run_ops) {}
+  virtual void Normalize(std::vector<NDObject *> &run_ops) {}
   // fold axis right alignment: [base-depth+1, base]
   virtual void FoldProp(PropRange &range) {}
   // fold axis left alignment:  [0, depth-1]
@@ -263,13 +264,9 @@ class NDObject {
   virtual int Emit(VectorKernel &k) = 0;
   virtual void Dump(bool verbose, std::ostringstream &oss);
 
-  void* operator new(size_t size) {
-    return mem_pool_.Get(size);
-  }
+  void *operator new(size_t size) { return mem_pool_.Get(size); }
 
-  void operator delete(void *ptr) {
-    std::free(ptr);
-  }
+  void operator delete(void *ptr) { std::free(ptr); }
 
   void UpdateStride(uint64_t simd_width);
 
@@ -278,7 +275,7 @@ class NDObject {
   uint64_t GetBlocks(int64_t size) const { return (size * ITEM_SIZE[type_id_] + 31) >> 5; }
   ObjectType GetObjectType() const { return obj_id_; }
   // Now we have comm op, which will cross different pipe. This method should be deprecated
-  int Pipe() const { return obj_id_ <= kLoad ?  V_PIPE_LOAD : (obj_id_ <= kStore ? V_PIPE_STORE : V_PIPE_SIMD); }
+  int Pipe() const { return obj_id_ <= kLoad ? V_PIPE_LOAD : (obj_id_ <= kStore ? V_PIPE_STORE : V_PIPE_SIMD); }
   bool IsLoad() const { return obj_id_ <= kLoad; }
   bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
   bool IsComm() const { return obj_id_ > kStore && obj_id_ <= kAllReduce; }
@@ -303,7 +300,7 @@ class NDObject {
   NDObject *rhs_;
   uint64_t xbuf_;
   ShapeRef *shape_ref_{nullptr};
-  NDObject *pd_next_{nullptr}; // PropDomain next
+  NDObject *pd_next_{nullptr};  // PropDomain next
   ObjectType obj_id_;
   DType type_id_;
   int lead_dim_;
@@ -318,7 +315,8 @@ class NDObject {
 
 class NDAccess : public NDObject {
  public:
-  NDAccess(uint8_t *gm, NDObject *lhs, DType type_id, ObjectType obj_id) : NDObject(lhs, nullptr, type_id, obj_id), gm_(gm) {}
+  NDAccess(uint8_t *gm, NDObject *lhs, DType type_id, ObjectType obj_id)
+      : NDObject(lhs, nullptr, type_id, obj_id), gm_(gm) {}
   void Reloc(void *dst) {
     if (reloc_addr_) {
       *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
@@ -331,13 +329,13 @@ class NDAccess : public NDObject {
 
 class NDLoadDummy : public NDAccess {
  public:
-  NDLoadDummy(DType type_id) : NDAccess (nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
+  NDLoadDummy(DType type_id) : NDAccess(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
     nd_.resize(1, 1);
     shape_.Resize(1);
     shape_[0] = 1;
     shape_ref_ = &shape_;
   }
-  void Tile(const TileParam &tp) override { }
+  void Tile(const TileParam &tp) override {}
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -351,7 +349,7 @@ class NDLoad : public NDAccess {
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -397,13 +395,11 @@ class NDStridedSliceLoad : public NDSliceLoad {
 
 class NDStore : public NDAccess {
  public:
-  NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) {
-    shape_ref_ = src->shape_ref_;
-  }
+  NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) { shape_ref_ = src->shape_ref_; }
   NDStore(uint8_t *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -417,14 +413,13 @@ class NDStore : public NDAccess {
 
 class NDPadStore : public NDAccess {
  public:
-  NDPadStore(NDObject *src, ShapeRef *pad_shape) : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_shape_(pad_shape) {
+  NDPadStore(NDObject *src, ShapeRef *pad_shape)
+      : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_shape_(pad_shape) {
     shape_ref_ = &shape_;
   }
-  NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) {
-    gm_ = dst;
-  }
+  NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) { gm_ = dst; }
 
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
@@ -455,7 +450,7 @@ class FlexOp : public NDObject {
 class WrapOp : public FlexOp {
  public:
   WrapOp(NDObject *inner, ObjectType wrap_id);
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
@@ -474,29 +469,31 @@ class WrapOp : public FlexOp {
 };
 
 template <typename T>
-inline T NDObject::Cast() { return static_cast<T>(flags_ & OBJ_FLAG_WRAP ? static_cast<WrapOp*>(this)->inner_ : this); }
-inline ObjectType NDObject::RealObjType() const { return flags_ & OBJ_FLAG_WRAP ? static_cast<const WrapOp*>(this)->wrap_id_ : obj_id_; }
+inline T NDObject::Cast() {
+  return static_cast<T>(flags_ & OBJ_FLAG_WRAP ? static_cast<WrapOp *>(this)->inner_ : this);
+}
+inline ObjectType NDObject::RealObjType() const {
+  return flags_ & OBJ_FLAG_WRAP ? static_cast<const WrapOp *>(this)->wrap_id_ : obj_id_;
+}
 
 class CopyOp : public NDObject {
  public:
-  CopyOp(NDObject *input)
-      : NDObject(input, nullptr, input->type_id_, ObjectType::kCopy) {
+  CopyOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kCopy) {
     shape_ref_ = input->shape_ref_;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
 class ReshapeOp : public CopyOp {
  public:
-  ReshapeOp(NDObject *input, ShapeRef *shape_ref)
-      : CopyOp(input) {
+  ReshapeOp(NDObject *input, ShapeRef *shape_ref) : CopyOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
     obj_id_ = ObjectType::kReshape;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -508,7 +505,7 @@ class ReshapeOp : public CopyOp {
 class UnaryOp : public NDObject {
  public:
   UnaryOp(int op_type, NDObject *input);
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -525,9 +522,9 @@ class RemovePadOp : public WrapOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
-class ElementAnyOp: public NDObject {
+class ElementAnyOp : public NDObject {
  public:
-  ElementAnyOp(NDObject *input): NDObject(input, nullptr, input->type_id_, ObjectType::kElementAny) {
+  ElementAnyOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kElementAny) {
     ASSERT(type_id_ == kFloat32);
     shape_ref_data_.data = &shape_;
     shape_ref_data_.size = 1;
@@ -547,12 +544,11 @@ class ElementAnyOp: public NDObject {
 
 class CastOp : public NDObject {
  public:
-  CastOp(NDObject *input, DType type_id)
-      : NDObject(input, nullptr, type_id, ObjectType::kCast) {
+  CastOp(NDObject *input, DType type_id) : NDObject(input, nullptr, type_id, ObjectType::kCast) {
     ASSERT(type_id != lhs_->type_id_);
     shape_ref_ = input->shape_ref_;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
@@ -576,7 +572,7 @@ template <typename T>
 class BinaryScalarOp : public NDObject {
  public:
   BinaryScalarOp(int op_type, NDObject *input, T scalar);
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -588,7 +584,7 @@ class BinaryScalarOp : public NDObject {
 class CompareScalarOp : public FlexOp {
  public:
   CompareScalarOp(int op_type, NDObject *input, float scalar);
-  void Normalize(std::vector<NDObject*> &run_ops) override { nd_ = lhs_->nd_; }
+  void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -601,16 +597,16 @@ class _BinaryNormalizer {
  public:
   _BinaryNormalizer() = default;
   ~_BinaryNormalizer();
-  void Normalize(NDObject *self, std::vector<NDObject*> &run_ops);
-  std::vector<NDObject*> lhs_stuff_ops_;
-  std::vector<NDObject*> rhs_stuff_ops_;
+  void Normalize(NDObject *self, std::vector<NDObject *> &run_ops);
+  std::vector<NDObject *> lhs_stuff_ops_;
+  std::vector<NDObject *> rhs_stuff_ops_;
   ShapeWithRef shape_;
 };
 
 class BinaryOp : public NDObject {
  public:
   BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
-  void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
+  void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -627,7 +623,7 @@ class PowerOp : public FlexOp {
     ws_num_ = 2;
     shape_ref_ = &norm_.shape_;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
+  void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -638,7 +634,7 @@ class PowerOp : public FlexOp {
 class CompareOp : public FlexOp {
  public:
   CompareOp(int op_type, NDObject *lhs, NDObject *rhs);
-  void Normalize(std::vector<NDObject*> &run_ops) override { norm_.Normalize(this, run_ops); }
+  void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -649,14 +645,13 @@ class CompareOp : public FlexOp {
 
 class SelectOp : public FlexOp {
  public:
-  SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs)
-      : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
+  SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
     shape_ref_ = &shape_;
     ws_num_ = 1;
     SetXhs(cond);
   }
   ~SelectOp();
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -667,8 +662,7 @@ class SelectOp : public FlexOp {
 
 class _BroadcastOp : public NDObject {
  public:
-  _BroadcastOp(NDObject *input)
-      : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {}
+  _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {}
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   int Emit(VectorKernel &k) override;
@@ -676,23 +670,21 @@ class _BroadcastOp : public NDObject {
 
  private:
   int64_t EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_width);
-  int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim,
-                         int64_t simd_width);
+  int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim, int64_t simd_width);
 };
 
 // expect shape is align: equal rank
 class BroadcastOp : public _BroadcastOp {
  public:
-  BroadcastOp(NDObject *input, ShapeRef *shape_ref)
-      : _BroadcastOp(input) {
+  BroadcastOp(NDObject *input, ShapeRef *shape_ref) : _BroadcastOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
   }
   ~BroadcastOp();
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
 
  private:
-  std::vector<NDObject*> stuff_ops_;
+  std::vector<NDObject *> stuff_ops_;
   ShapeRef *dst_shape_ref_;
   ShapeWithRef shape_;
 };
@@ -701,10 +693,10 @@ template <typename T>
 class BroadcastScalarOp : public NDObject {
  public:
   BroadcastScalarOp(T scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
-  : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
+      : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
   }
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -716,15 +708,18 @@ class _ReduceOp : public NDObject {
  public:
   enum { SUM, MAX, MIN };
   _ReduceOp(NDObject *input, int red_op)
-    : NDObject(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {
-  }
+      : NDObject(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {}
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  void SetRange(int start, int end) { start_dim_ = start; end_dim_ = end; tail_dim_ = -1; }
+  void SetRange(int start, int end) {
+    start_dim_ = start;
+    end_dim_ = end;
+    tail_dim_ = -1;
+  }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
   int red_op_;
@@ -742,7 +737,7 @@ class ReduceOp : public _ReduceOp {
     shape_ref_ = &shape_;
   }
   ~ReduceOp();
-  void Normalize(std::vector<NDObject*> &run_ops) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
 
   void GenClearKernel(NDAccess *store);
   NDStore *clear_store_{nullptr};
@@ -750,7 +745,7 @@ class ReduceOp : public _ReduceOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
-  std::vector<_ReduceOp*> stuff_ops_;
+  std::vector<_ReduceOp *> stuff_ops_;
   ShapeWithRef shape_;
   bool keepdims_;
   ShapeRef *dims_ref_;
@@ -762,7 +757,7 @@ class ReduceOp : public _ReduceOp {
 class AtomicCumOp : public WrapOp {
  public:
   AtomicCumOp(NDObject *inner, const DimArray *round_tile)
-   : WrapOp(inner, ObjectType::kAtomicCum), round_tile_(round_tile) {
+      : WrapOp(inner, ObjectType::kAtomicCum), round_tile_(round_tile) {
     ws_num_ = 1;
   }
   int Emit(VectorKernel &k) override;
@@ -797,7 +792,7 @@ class CubeOp : public NDObject {
     offset_b_ = offset_b;
     NormalizeOutput();
   }
-  void SetOutFp32(bool atomic_add){
+  void SetOutFp32(bool atomic_add) {
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }
@@ -855,14 +850,14 @@ class CommOp : public NDObject {
   std::vector<uint64_t> xbufs_;
   std::vector<uint64_t> forward_events_;
   std::vector<uint64_t> backward_events_;
-  std::vector<uint32_t*> *unique_ids_ptr_;
-  uint64_t *lhs_simd_{nullptr};  // the simd instruction after lhs_(now only AllReudce has)
+  std::vector<uint32_t *> *unique_ids_ptr_;
+  uint64_t *lhs_simd_{nullptr};       // the simd instruction after lhs_(now only AllReudce has)
   uint64_t *backsync_load_{nullptr};  // the load which need bacysync from the simd after comm op
   bool mix_{false};
   const Communicator *comm_;
 
  protected:
-  uint64_t xbuf_reserve_; // static
+  uint64_t xbuf_reserve_;  // static
   uint64_t code_reserve_;
   CubeOp *cube_op_{nullptr};
   uint32_t xbuf_size_{0};
@@ -914,8 +909,9 @@ class NDSLoad : public NDLoad {
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
   bool pingpong_load_{false};
+
  private:
   CubeOp *cube_op_;
 };
-} // namespace dvm
-#endif // _DVM_OPS_H_
+}  // namespace dvm
+#endif  // _DVM_OPS_H_

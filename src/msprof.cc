@@ -102,9 +102,8 @@ static std::map<std::string, uint32_t> OpFormat2Index{{kOpFormat_DEFAULT, 1},
                                                       {kOpFormat_DHWNC, 20},
                                                       {kOpFormat_DHWCN, 21}};
 
-const DTypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {
-  kNumberTypeInt8, kNumberTypeFloat16, kNumberTypeBFloat16, kNumberTypeFloat32, kNumberTypeInt32, kTypeUnKnown
-};
+const DTypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {kNumberTypeInt8,    kNumberTypeFloat16, kNumberTypeBFloat16,
+                                                           kNumberTypeFloat32, kNumberTypeInt32,   kTypeUnKnown};
 
 class MsProfHolder {
  public:

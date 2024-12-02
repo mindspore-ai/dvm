@@ -26,8 +26,10 @@
 #include "pass.h"
 
 namespace dvm {
-template<typename T>
-static inline T CeilDiv(T a, T b)  { return (a - 1) / b + 1; }
+template <typename T>
+static inline T CeilDiv(T a, T b) {
+  return (a - 1) / b + 1;
+}
 
 class VectorKernel;
 class PropDomainBuilder;
@@ -45,12 +47,12 @@ class PropDomain {
   virtual void FoldProp(PropRange &range);
   virtual void TileProp(const TileParam &tp);
 
-  NDObject* DomObject() const { return dom_; }
+  NDObject *DomObject() const { return dom_; }
 
  protected:
-  NDObject* head_;
-  NDObject* dom_;
-  std::vector<PropDomain*> subdoms_;
+  NDObject *head_;
+  NDObject *dom_;
+  std::vector<PropDomain *> subdoms_;
   friend PropDomainBuilder;
 };
 
@@ -63,7 +65,7 @@ class RootDomain : public PropDomain {
   void GroupTile(int dim, int64_t space, int64_t tile);
   void Align(int depth, int64_t space);
 
-  DimArray& DimSpace() const { return dom_->nd_; }
+  DimArray &DimSpace() const { return dom_->nd_; }
   int64_t TileNum() const { return tile_num_; }
   int64_t TileSize() const { return tile_size_; }
 
@@ -83,13 +85,13 @@ class VKernel {
   virtual void Append(NDObject *obj) = 0;
   virtual uint64_t CodeGen() = 0;
   virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
-  std::string& DumpGraph() {
+  std::string &DumpGraph() {
     std::ostringstream oss;
     Dump(oss, "");
     dump_str_ = oss.str();
     return dump_str_;
   }
-  virtual std::string& DisAssemble();
+  virtual std::string &DisAssemble();
   KernelType KType() const { return ktype_; }
 
   Code code_;
@@ -100,9 +102,9 @@ class VKernel {
 };
 
 struct Metrics {
-  float mem_usage{0.0f};  // total_use_ub / ub_mem_size
-  float core_usage{0.0f}; // load * tile_num / (per_core_load * core_num)
-  float simd_usage{0.0f}; // tiled_shape_size / (repeat_num * max_simd_width)
+  float mem_usage{0.0f};   // total_use_ub / ub_mem_size
+  float core_usage{0.0f};  // load * tile_num / (per_core_load * core_num)
+  float simd_usage{0.0f};  // tiled_shape_size / (repeat_num * max_simd_width)
 };
 
 class CodeGenHelper;
@@ -119,9 +121,7 @@ class VectorKernel : public VKernel {
     objects_.reserve(size * 2);
   }
 
-  void SetTile(int start, int end, int64_t num) {
-    tiles_.emplace_back(DimTile{start, end, num});
-  }
+  void SetTile(int start, int end, int64_t num) { tiles_.emplace_back(DimTile{start, end, num}); }
   int MaxType() const { return max_type_; }
   int MinType() const { return min_type_; }
   uint64_t BlockAlign() const { return SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_]; }
@@ -139,9 +139,9 @@ class VectorKernel : public VKernel {
     for (auto op : build_ops_) {
       op->Normalize(objects_);
       objects_.emplace_back(op);
-      if(op->IsComm()){
-        ASSERT(comm_op_==nullptr);
-        comm_op_ = static_cast<CommOp*>(op);
+      if (op->IsComm()) {
+        ASSERT(comm_op_ == nullptr);
+        comm_op_ = static_cast<CommOp *>(op);
       }
     }
   }
@@ -149,11 +149,11 @@ class VectorKernel : public VKernel {
   int Analyze();
   void DoCodeGen(uint64_t core_limit);
 
-  NDAccess* FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const;
+  NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
 
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
-  CommOp* comm_op_{nullptr};
+  CommOp *comm_op_{nullptr};
   RootDomain root_dom_;
 
   uint64_t tile_num_{0};
@@ -163,7 +163,7 @@ class VectorKernel : public VKernel {
   int max_type_{-1};
   int min_type_{-1};
 
-  std::vector<NDObject*> static_ops_;
+  std::vector<NDObject *> static_ops_;
 
   struct DimTile {
     int start;
@@ -194,16 +194,14 @@ class VKernelD : public VectorKernel {
   void RecordOpRelation();
   void RecoverOpRelation();
 
-  std::unordered_map<NDObject*, std::vector<NDObject*>> op_relations_;
-  std::vector<NDObject*> pd_nexts_;
+  std::unordered_map<NDObject *, std::vector<NDObject *>> op_relations_;
+  std::vector<NDObject *> pd_nexts_;
   bool elim_reshape_{false};
 };
 
 class VKernelP : public VKernel {
  public:
-  VKernelP() : VKernel(KernelType::kStaticParallel) {
-    children_.push_back(new VKernelS());
-  }
+  VKernelP() : VKernel(KernelType::kStaticParallel) { children_.push_back(new VKernelS()); }
   ~VKernelP() override;
   void AppendNext() {
     children_.push_back(new VKernelS());
@@ -216,7 +214,7 @@ class VKernelP : public VKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  std::vector<VKernelS*> children_;
+  std::vector<VKernelS *> children_;
 };
 
 class MixKernel : public VKernel {
@@ -264,7 +262,7 @@ class StagesKernel : public VKernel {
   void ParallelSwitch() {
     auto current = stages_.back()->kernel;
     ASSERT(current->KType() != KernelType::kStaticParallel);
-    static_cast<VKernelP*>(current)->AppendNext();
+    static_cast<VKernelP *>(current)->AppendNext();
   }
 
   void StageStore(NDAccess *store) {
@@ -280,30 +278,30 @@ class StagesKernel : public VKernel {
     stages_.back()->ios.push_back(load);
   }
 
-  VKernel* Current() const { return stages_.back()->kernel; }
+  VKernel *Current() const { return stages_.back()->kernel; }
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  static void SetWorkspace(NDAccess *op, int64_t offset) { op->gm_ = reinterpret_cast<uint8_t*>(offset); }
+  static void SetWorkspace(NDAccess *op, int64_t offset) { op->gm_ = reinterpret_cast<uint8_t *>(offset); }
   static int64_t GetWorkspace(NDAccess *op) { return reinterpret_cast<int64_t>(op->gm_); }
-  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->gm_ = reinterpret_cast<uint8_t*>(store); }
-  static NDAccess* GetOutputReuse(NDAccess *op) { return reinterpret_cast<NDAccess*>(op->gm_); }
-  static void SetStageStore(NDAccess *op, NDAccess* store) { op->gm_ = reinterpret_cast<uint8_t*>(store); }
-  static NDAccess* GetStageStore(NDAccess *op) { return reinterpret_cast<NDAccess*>(op->gm_); }
+  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->gm_ = reinterpret_cast<uint8_t *>(store); }
+  static NDAccess *GetOutputReuse(NDAccess *op) { return reinterpret_cast<NDAccess *>(op->gm_); }
+  static void SetStageStore(NDAccess *op, NDAccess *store) { op->gm_ = reinterpret_cast<uint8_t *>(store); }
+  static NDAccess *GetStageStore(NDAccess *op) { return reinterpret_cast<NDAccess *>(op->gm_); }
 
   uint64_t AllocWorkspace();
 
   struct Stage {
     Stage(VKernel *k) : kernel(k) {}
-    VKernel* kernel;
+    VKernel *kernel;
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
-    std::vector<NDAccess*> ios;
+    std::vector<NDAccess *> ios;
   };
-  std::vector<Stage*> stages_;
+  std::vector<Stage *> stages_;
 };
 
 class EagerVector;
@@ -316,7 +314,7 @@ class VKernelE : public VKernel {
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
-  std::string& DisAssemble() override;
+  std::string &DisAssemble() override;
 
   const std::vector<EagerVector *> &GetKernels(int &num) {
     num = kernel_used_;
@@ -325,7 +323,7 @@ class VKernelE : public VKernel {
 
   void Launch(void *stream) {
     for (int i = 0; i < kernel_used_; ++i) {
-      reinterpret_cast<VKernel*>(kernels_[i])->code_.Launch(nullptr, stream);
+      reinterpret_cast<VKernel *>(kernels_[i])->code_.Launch(nullptr, stream);
     }
   }
 
@@ -338,29 +336,29 @@ class VKernelE : public VKernel {
     kernel_used_ = 0;
   }
 
-  static NDAccess* GetStore(NDObject *obj) { return reinterpret_cast<NDAccess*>(obj->insn_); }
+  static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
 
  protected:
-  static int GetArea(NDObject* obj) { return obj->lead_dim_; }
-  static void SetArea(NDObject* obj, int area_id) { obj->lead_dim_ = area_id; }
-  static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t*>(store); }
+  static int GetArea(NDObject *obj) { return obj->lead_dim_; }
+  static void SetArea(NDObject *obj, int area_id) { obj->lead_dim_ = area_id; }
+  static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t *>(store); }
   static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
   static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }
   static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 
   void Split(NDObject *root);
-  NDObject* Exchange(EagerArea *area, NDObject *input);
+  NDObject *Exchange(EagerArea *area, NDObject *input);
 
-  std::vector<std::pair<EagerArea*, EagerArea*>> areas_;
-  std::vector<EagerVector*> kernels_;
+  std::vector<std::pair<EagerArea *, EagerArea *>> areas_;
+  std::vector<EagerVector *> kernels_;
   int area_used_{0};
   int kernel_used_{0};
-  std::vector<NDObject*> objects_;
-  std::vector<NDObject*> temp_ops_;
-  std::multimap<uint64_t, void*> wss_;
+  std::vector<NDObject *> objects_;
+  std::vector<NDObject *> temp_ops_;
+  std::multimap<uint64_t, void *> wss_;
   WsAllocFunc ws_alloc_;
   void *user_data_;
 };
-} // namespace dvm
-#endif // _DVM_KERNEL_H_
+}  // namespace dvm
+#endif  // _DVM_KERNEL_H_

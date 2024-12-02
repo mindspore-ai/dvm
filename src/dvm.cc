@@ -26,39 +26,13 @@
 namespace dvm {
 namespace {
 static const BinarySOpType binary_map[kBinaryOpEnd] = {
-  kEquals,
-  kNotEquals,
-  kGreaters,
-  kGreaterEquals,
-  kLesss,
-  kLessEquals,
-  kAdds,
-  kBinarySOpEnd,
-  kMuls,
-  kBinarySOpEnd,
-  kBinarySOpEnd,
-  kMaximums,
-  kMinimums,
-  kBinarySOpEnd,
-  kBinarySOpEnd,
+  kEquals, kNotEquals,    kGreaters,     kGreaterEquals, kLesss,    kLessEquals,   kAdds,         kBinarySOpEnd,
+  kMuls,   kBinarySOpEnd, kBinarySOpEnd, kMaximums,      kMinimums, kBinarySOpEnd, kBinarySOpEnd,
 };
 
 static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
-  kEquals,
-  kNotEquals,
-  kLesss,
-  kLessEquals,
-  kGreaters,
-  kGreaterEquals,
-  kAdds,
-  kBinarySOpEnd,
-  kMuls,
-  kDivs,
-  kBinarySOpEnd,
-  kMaximums,
-  kMinimums,
-  kBinarySOpEnd,
-  kBinarySOpEnd,
+  kEquals, kNotEquals, kLesss,        kLessEquals, kGreaters, kGreaterEquals, kAdds,         kBinarySOpEnd,
+  kMuls,   kDivs,      kBinarySOpEnd, kMaximums,   kMinimums, kBinarySOpEnd,  kBinarySOpEnd,
 };
 
 template <typename T>
@@ -198,7 +172,7 @@ void Kernel::Reset(KernelType type) {
 NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
   auto ktype = kernel_->KType();
   if (ktype == kStaticStages) {
-    ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
+    ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
   NDObject *obj;
   if (ktype == kStaticMix) {
@@ -216,14 +190,14 @@ NDObject *Kernel::SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeR
   return obj;
 }
 
-
-NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step, DType type) {
+NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step,
+                                   DType type) {
   auto obj = new NDStridedSliceLoad(static_cast<uint8_t *>(addr), shape, start, end, step, type);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject* Kernel::Unary(int op_type, NDObject* input) {
+NDObject *Kernel::Unary(int op_type, NDObject *input) {
   if (GetDType(input) == kInt32) {
     if (op_type == UnaryOpType::kAbs) {
       return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));
@@ -251,7 +225,7 @@ NDObject* Kernel::Unary(int op_type, NDObject* input) {
   return obj;
 }
 
-NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
+NDObject *Kernel::Binary(int op_type, NDObject *lhs, NDObject *rhs) {
   if (lhs->type_id_ == DType::kBool) {
     // Binary may introduce broadcast which is not supported in Bool. So Cast to f16.
     auto cast1 = Cast(lhs, DType::kFloat16);
@@ -301,7 +275,7 @@ NDObject* Kernel::Binary(int op_type, NDObject* lhs, NDObject* rhs) {
   return obj;
 }
 
-template<typename T>
+template <typename T>
 NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
   NDObject *obj = GetBinaryS<T, false>(this, op_type, val, rhs);
   if (obj == nullptr) {
@@ -312,7 +286,7 @@ NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
   return obj;
 }
 
-template<typename T>
+template <typename T>
 NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
   NDObject *obj = GetBinaryS<T, true>(this, op_type, val, lhs);
   if (obj == nullptr) {
@@ -328,7 +302,7 @@ template NDObject *Kernel::Binary<int32_t>(int op_type, NDObject *lhs, int32_t v
 template NDObject *Kernel::Binary<float>(int op_type, float val, NDObject *rhs);
 template NDObject *Kernel::Binary<int32_t>(int op_type, int32_t val, NDObject *rhs);
 
-NDObject* Kernel::Select(NDObject* cond, NDObject* lhs, NDObject* rhs) {
+NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   if (cond->type_id_ != lhs->type_id_) {
     cond = this->Cast(cond, lhs->type_id_);
   }
@@ -337,7 +311,7 @@ NDObject* Kernel::Select(NDObject* cond, NDObject* lhs, NDObject* rhs) {
   return obj;
 }
 
-NDObject* Kernel::Cast(NDObject* input, DType type) {
+NDObject *Kernel::Cast(NDObject *input, DType type) {
   static const int g_cast_staff_type[kTypeEnd][kTypeEnd] = {
     {-1, -1, kFloat16, kFloat16, kFloat16},  // V_BOOL
     {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
@@ -370,19 +344,19 @@ NDObject* Kernel::Cast(NDObject* input, DType type) {
   return obj;
 }
 
-NDObject* Kernel::Copy(NDObject* input) {
+NDObject *Kernel::Copy(NDObject *input) {
   auto obj = new CopyOp(input);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject* Kernel::ElemAny(NDObject* input) {
+NDObject *Kernel::ElemAny(NDObject *input) {
   auto obj = new ElementAnyOp(input);
   kernel_->Append(obj);
   return obj;
 }
 
-template<typename T>
+template <typename T>
 NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load) {
   NDObject *load = nullptr;
   if (dummy_load) {
@@ -397,7 +371,7 @@ NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load)
 template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DType type, bool dummy_load);
 template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DType type, bool dummy_load);
 
-NDObject* Kernel::Broadcast(NDObject* input, ShapeRef *shape) {
+NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
   if (input->type_id_ == DType::kBool) {
     auto cast1 = Cast(input, DType::kFloat16);
     auto obj = Broadcast(cast1, shape);
@@ -409,13 +383,13 @@ NDObject* Kernel::Broadcast(NDObject* input, ShapeRef *shape) {
   return obj;
 }
 
-NDObject* Kernel::Reshape(NDObject* input, ShapeRef *shape) {
+NDObject *Kernel::Reshape(NDObject *input, ShapeRef *shape) {
   auto obj = new ReshapeOp(input, shape);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keepdims) {
+NDObject *Kernel::Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims) {
   if (input->type_id_ != DType::kFloat32) {
     return nullptr;
   }
@@ -424,7 +398,7 @@ NDObject* Kernel::Reduce(int op_type, NDObject* input, ShapeRef *dims, bool keep
   return obj;
 }
 
-NDObject* Kernel::Store(void *addr, NDObject* input) {
+NDObject *Kernel::Store(void *addr, NDObject *input) {
   if (input->IsLoad() || input->IsComm()) {
     input = Copy(input);
   }
@@ -435,7 +409,7 @@ NDObject* Kernel::Store(void *addr, NDObject* input) {
       return store;
     }
   } else if (ktype == kStaticStages) {
-    ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
+    ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
   NDObject *obj;
   if (ktype == kStaticMix) {
@@ -447,10 +421,10 @@ NDObject* Kernel::Store(void *addr, NDObject* input) {
   return obj;
 }
 
-NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
+NDObject *Kernel::PadStore(void *addr, NDObject *input, ShapeRef *pad_shape) {
   auto ktype = kernel_->KType();
   if (ktype == kStaticStages) {
-    ktype = static_cast<StagesKernel*>(kernel_)->Current()->KType();
+    ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
   NDObject *obj;
   obj = new NDPadStore(static_cast<uint8_t *>(addr), input, pad_shape);
@@ -458,8 +432,8 @@ NDObject* Kernel::PadStore(void *addr, NDObject* input, ShapeRef *pad_shape) {
   return obj;
 }
 
-NDObject* Kernel::AllReduce(NDObject *input, const Comm *comm) {
-  if(input->IsLoad()){
+NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
+  if (input->IsLoad()) {
     input = Copy(input);
   }
   NDObject *obj = new AllReduceOp(input, comm->GetImpl());
@@ -467,7 +441,7 @@ NDObject* Kernel::AllReduce(NDObject *input, const Comm *comm) {
   return obj;
 }
 
-NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
+NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
   NDObject *obj;
   if (System::Instance().online_tuning_) {
     obj = new TunedMatMul(lhs, rhs, trans_a, trans_b, bias);
@@ -481,17 +455,17 @@ NDObject* Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_
 void Kernel::Reserve(size_t size) {
   auto ktype = kernel_->KType();
   if (ktype == KernelType::kStaticParallel) {
-    static_cast<VKernelP*>(kernel_)->Reserve(size);
+    static_cast<VKernelP *>(kernel_)->Reserve(size);
   } else {
-    static_cast<VectorKernel*>(kernel_)->Reserve(size);
+    static_cast<VectorKernel *>(kernel_)->Reserve(size);
   }
 }
 
 int Kernel::ParallelNext() {
   if (kernel_->KType() == KernelType::kStaticParallel) {
-    static_cast<VKernelP*>(kernel_)->AppendNext();
+    static_cast<VKernelP *>(kernel_)->AppendNext();
   } else if (kernel_->KType() == KernelType::kStaticStages) {
-    static_cast<StagesKernel*>(kernel_)->ParallelSwitch();
+    static_cast<StagesKernel *>(kernel_)->ParallelSwitch();
   } else {
     ASSERT(0);
   }
@@ -500,47 +474,43 @@ int Kernel::ParallelNext() {
 
 void Kernel::StageSwitch(KernelType type) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  static_cast<StagesKernel*>(kernel_)->StageSwitch(type);
+  static_cast<StagesKernel *>(kernel_)->StageSwitch(type);
 }
 
-NDObject* Kernel::StageLoad(NDObject *stage_store) {
+NDObject *Kernel::StageLoad(NDObject *stage_store) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
   auto op = static_cast<StagesKernel *>(kernel_)->Current()->KType() == kStaticMix
               ? new NDSLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_)
               : new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
-  static_cast<StagesKernel*>(kernel_)->StageLoad(op, static_cast<NDStore*>(stage_store));
+  static_cast<StagesKernel *>(kernel_)->StageLoad(op, static_cast<NDStore *>(stage_store));
   return op;
 }
 
-NDObject* Kernel::StageStore(NDObject *input) {
+NDObject *Kernel::StageStore(NDObject *input) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = static_cast<StagesKernel*>(kernel_)->Current()->KType() == kStaticMix ?
-     new NDSStore(nullptr, input) : new NDStore(nullptr, input);
-  static_cast<StagesKernel*>(kernel_)->StageStore(op);
+  auto op = static_cast<StagesKernel *>(kernel_)->Current()->KType() == kStaticMix ? new NDSStore(nullptr, input)
+                                                                                   : new NDStore(nullptr, input);
+  static_cast<StagesKernel *>(kernel_)->StageStore(op);
   return op;
 }
 
-NDObject* Kernel::StagePadStore(NDObject *input, ShapeRef *pad_shape) {
+NDObject *Kernel::StagePadStore(NDObject *input, ShapeRef *pad_shape) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
   auto op = new NDPadStore(nullptr, input, pad_shape);
-  static_cast<StagesKernel*>(kernel_)->StageStore(op);
+  static_cast<StagesKernel *>(kernel_)->StageStore(op);
   return op;
 }
 
-ShapeRef* Kernel::GetShape(NDObject* op) const {
-  return op->shape_ref_;
-}
+ShapeRef *Kernel::GetShape(NDObject *op) const { return op->shape_ref_; }
 
-DType Kernel::GetDType(NDObject* op) const {
-  return op->type_id_;
-}
+DType Kernel::GetDType(NDObject *op) const { return op->type_id_; }
 
 uint64_t Kernel::CodeGen() {
   uint64_t ws_size = kernel_->CodeGen();
   return kernel_->code_.ReserveWorkspace(ws_size);
 }
 
-int Kernel::Launch(void *workspace, void* stream) {
+int Kernel::Launch(void *workspace, void *stream) {
   auto &code = kernel_->code_;
   return code.Launch(workspace, stream);
 }
@@ -580,7 +550,7 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 
 int Kernel::EagerMsProfLaunch(void *stream) {
   int kernel_used;
-  const auto &kernels = static_cast<VKernelE*>(kernel_)->GetKernels(kernel_used);
+  const auto &kernels = static_cast<VKernelE *>(kernel_)->GetKernels(kernel_used);
   for (int i = 0; i < kernel_used; ++i) {
     MsProfHelper msprof_helper;
     auto &info = msprof_helper.info_;
@@ -620,12 +590,12 @@ int Kernel::EagerMsProfLaunch(void *stream) {
   return 0;
 }
 
-int Kernel::Launch(const RelocTable &reloc_table, void** inputs, void** outputs, void *workspace, void* stream) {
-  auto loads = reinterpret_cast<NDAccess**>(reloc_table.inputs);
+int Kernel::Launch(const RelocTable &reloc_table, void **inputs, void **outputs, void *workspace, void *stream) {
+  auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
     (*loads++)->Reloc(*inputs++);
   }
-  auto stores = reinterpret_cast<NDAccess**>(reloc_table.outputs);
+  auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
     (*stores++)->Reloc(*outputs++);
   }
@@ -643,38 +613,34 @@ void Kernel::EagerReset(WsAllocFunc ws_alloc, void *user_data) {
 void Kernel::EagerCodeGen(const RelocEntry *reloc_table, size_t reloc_size) {
   ASSERT(kernel_->KType() == KernelType::kEager);
   for (auto reloc = reloc_table; reloc < reloc_table + reloc_size; ++reloc) {
-    static_cast<NDAccess*>(reloc->io)->gm_ = static_cast<uint8_t*>(reloc->addr);
+    static_cast<NDAccess *>(reloc->io)->gm_ = static_cast<uint8_t *>(reloc->addr);
   }
-  auto kernel = static_cast<VKernelE*>(kernel_);
+  auto kernel = static_cast<VKernelE *>(kernel_);
   kernel->VKernelE::CodeGen();
 }
 
 int Kernel::EagerLaunch(void *stream) {
-  auto kernel = static_cast<VKernelE*>(kernel_);
+  auto kernel = static_cast<VKernelE *>(kernel_);
   kernel->Launch(stream);
   return 0;
 }
 
 void Kernel::EagerClear() {
-  auto kernel = static_cast<VKernelE*>(kernel_);
+  auto kernel = static_cast<VKernelE *>(kernel_);
   kernel->Clear();
 }
 
-const char* Kernel::Dump() const {
+const char *Kernel::Dump() const {
   std::string &graph = kernel_->DumpGraph();
   return graph.c_str();
 }
 
-const char* Kernel::Das() const {
+const char *Kernel::Das() const {
   std::string &das = kernel_->DisAssemble();
   return das.c_str();
 }
 
-void SetDeterministic(bool enable) {
-  System::Instance().deterministic_ = enable;
-}
+void SetDeterministic(bool enable) { System::Instance().deterministic_ = enable; }
 
-void SetOnlineTuning(bool enable) {
-  System::Instance().online_tuning_ = enable;
-}
+void SetOnlineTuning(bool enable) { System::Instance().online_tuning_ = enable; }
 }  // namespace dvm

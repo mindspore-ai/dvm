@@ -1133,7 +1133,7 @@ void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
           oss << body_indent;
           helper.Dump(store);
           oss << std::endl;
-	}
+        }
       }
     }
     oss << "}";

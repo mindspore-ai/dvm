@@ -564,6 +564,9 @@ int Kernel::EagerMsProfLaunch(void *stream) {
     info.block_dim = vector_kernel->code_.block_dim_;
     std::ostringstream oss;
     oss << "Dvm";
+    if (vector_kernel->code_.target_ > Code::kTargetVec) {
+      oss << "MatMul";
+    }
     for (auto op : vector_kernel->objects_) {
       if (op->flags_ & OBJ_FLAG_EAGER) {
         if (op->IsLoad()) {

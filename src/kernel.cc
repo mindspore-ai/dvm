@@ -972,6 +972,12 @@ void DumpRefHelper::Dump(NDObject *op) {
       if (op->flags_ & OBJ_FLAG_XHS) {
         oss_ << ", ";
         dump_var(GetInput(static_cast<FlexOp *>(op)->xhs_));
+      } else if (op->obj_id_ == ObjectType::kCubeOp) {
+        auto cube = static_cast<CubeOp *>(op);
+        if (cube->bias_) {
+          oss_ << ", ";
+          dump_var(GetInput(cube->bias_));
+        }
       }
     }
   }

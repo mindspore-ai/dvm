@@ -536,6 +536,37 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 numpy_steps[var_name] = numpy_expr
             else:
                 print(f"Error: variable {param_var_name} not found.")
+        elif operation == 'MatMul':
+            operator_count += 1
+            trans_a, trans_b = scalar_value.split(", ")
+            trans_a = "False" if trans_a == "0" else "True"
+            trans_b = "False" if trans_b == "0" else "True"
+            param_var_name1, _, _ = parse_variable_def(
+                params_list[0], allow_extra=True)
+            param_var_name2, _, _ = parse_variable_def(
+                params_list[1], allow_extra=True)
+            param_var_name1 = resolve_variable(
+                param_var_name1, skip_variables)
+            param_var_name2 = resolve_variable(
+                param_var_name2, skip_variables)
+            param_code_var1 = variable_mapping.get(param_var_name1)
+            param_code_var2 = variable_mapping.get(param_var_name2)
+            param_numpy_expr1 = numpy_steps.get(param_var_name1)
+            param_numpy_expr2 = numpy_steps.get(param_var_name2)
+            if len(params_list) == 2:
+                line = f"{code_var_name} = t.matmul({param_code_var1}, {param_code_var2}, {trans_a}, {trans_b})"
+                numpy_expr = f"np.matmul({param_numpy_expr1}, {param_numpy_expr2}, {trans_a}, {trans_b})"
+            else:
+                param_var_bias, _, _ = parse_variable_def(
+                    params_list[2], allow_extra=True)
+                param_var_bias = resolve_variable(
+                    param_var_bias, skip_variables)
+                param_code_bias = variable_mapping.get(param_var_bias)
+                param_numpy_bias = numpy_steps.get(param_var_bias)
+                line = f"{code_var_name} = t.matmul({param_code_var1}, {param_code_var2}, {trans_a}, {trans_b}, {param_code_bias})"
+                numpy_expr = f"np.matmul({param_numpy_expr1}, {param_numpy_expr2}, {trans_a}, {trans_b}) + {param_numpy_bias}"
+            code_lines.append('    ' + line)
+            numpy_steps[var_name] = numpy_expr
         elif operation == 'Store':
             # Store 操作不计入算子数量
             if params_list:

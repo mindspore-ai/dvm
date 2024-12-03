@@ -1761,7 +1761,12 @@ void CubeOp::Tile(vCubeOp *op) {
   k0_ = op->k0;
 }
 
-void CubeOp::Dump(bool verbose, std::ostringstream &oss) { oss << "MatMul"; }
+void CubeOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "MatMul";
+  if (verbose) {
+    oss << "<" << trans_a_ << ", " << trans_b_ << ">";
+  }
+}
 
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   uint32_t swizzle_cnt = DEFAULT_SWIZZLE_COUNT;

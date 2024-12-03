@@ -117,7 +117,7 @@ class Comm {
   Comm() = default;
   ~Comm();
   bool Init(int rank_id, int rank_size);
-  inline const Communicator *GetImpl() const { return comm_; };
+  inline const Communicator *GetImpl() const { return comm_; }
 
  private:
   Communicator *comm_{nullptr};

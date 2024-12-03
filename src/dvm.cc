@@ -19,6 +19,7 @@
 #include <vector>
 #include "dvm.h"
 #include "kernel.h"
+#include "xkernel.h"
 #include "msprof.h"
 #include "tuning.h"
 #include "comm.h"

@@ -157,3 +157,49 @@ def test_eager_stop_fuse_reduce():
     y7 = t.store_expect(x6, y7_numpy)
     assert(t.run_check())
     t.reset_eager()
+
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b', [
+    [[128, 1024], [1024, 256]],  # no pad
+    [[128, 500], [500, 256]],    # pad a
+    [[128, 1024], [1024, 500]],  # pad b
+    [[256, 34816], [34816, 256]],# split k
+])
+def test_eager_mm(shape_a, shape_b):
+    t = Tester("eager")
+    a = np.random.normal(0, 1, shape_a).astype(np.float16)
+    b = np.random.normal(0, 1, shape_b).astype(np.float16)
+    x0 = t.load(a)
+    x0 = t.binary("Add", x0, 0.01)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.binary("Add", x2, 1.0)
+    expect = np.matmul((a + 0.01).astype(np.float32), b.astype(np.float32)) + 1.0
+    t.store_expect(x3, expect, 2e-3)
+    assert(t.run_check())
+
+def test_eager_mm_bias():
+    t = Tester("eager")
+    a = np.random.normal(0, 1, [256, 512]).astype(np.float16)
+    b = np.random.normal(0, 1, [512, 256]).astype(np.float16)
+    c = np.random.normal(0, 1, [256]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.load(c)
+    x3 = t.matmul(x0, x1, False, False, x2)
+    expect = np.matmul(a.astype(np.float32), b.astype(np.float32)) + c
+    t.store_expect(x3, expect, 2e-3)
+    assert(t.run_check())
+
+def test_eager_mm_bias_fp16():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [256, 512]).astype(np.float32)
+    b = np.random.normal(0, 0.01, [512, 256]).astype(np.float32)
+    c = np.random.normal(0, 0.01, [256]).astype(np.float32)
+    x0 = t.load(a, "bfloat16")
+    x1 = t.load(b, "bfloat16")
+    x2 = t.load(c, "bfloat16")
+    x3 = t.matmul(x0, x1, False, False, x2)
+    expect = np.matmul(a, b) + c
+    t.store_expect(x3, expect, 5e-3)
+    assert(t.run_check())

@@ -315,6 +315,7 @@ class VKernelE : public VKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   std::string &DisAssemble() override;
+  NDObject *AppendCube(CubeOp *mm);
 
   const std::vector<EagerVector *> &GetKernels(int &num) {
     num = kernel_used_;
@@ -347,8 +348,20 @@ class VKernelE : public VKernel {
   static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 
+  void InitObjInfo(NDObject *obj, int area = -1) {
+    SetArea(obj, area);
+    SetStore(obj, nullptr);
+  }
+
+  void InitStoreInfo(NDObject *store, int area = -1) {
+    InitObjInfo(store, area);
+    SetStoreSize(store, store->Size());
+    SetStoreInplace(store, 0);
+  }
+
   void Split(NDObject *root);
   NDObject *Exchange(EagerArea *area, NDObject *input);
+  void CodeGenMix(EagerArea *area, EagerVector *kernel);
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;
   std::vector<EagerVector *> kernels_;
@@ -359,6 +372,7 @@ class VKernelE : public VKernel {
   std::multimap<uint64_t, void *> wss_;
   WsAllocFunc ws_alloc_;
   void *user_data_;
+  friend EagerArea;
 };
 }  // namespace dvm
 #endif  // _DVM_KERNEL_H_

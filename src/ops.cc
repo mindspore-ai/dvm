@@ -1640,30 +1640,17 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObjec
   bias_ = bias;
 }
 
-CubeOp::~CubeOp() {
-  if (lhs_->IsLoad()) {
-    delete lhs_;
-  }
-  if (rhs_->IsLoad()) {
-    delete rhs_;
-  }
-  if (output_->IsStore()) {
-    delete output_;
-  }
-  if (bias_) {
-    delete bias_;
-  }
-}
-
 void CubeOp::InitPadShape() {
-  auto GetPad = [](int64_t pad_size) -> std::vector<int64_t> {
+  auto GetPad = [](int64_t pad_size, ShapeRefData<1> &pad) {
     if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
-      return {};
+      pad.Resize(0);
+      return;
     }
-    return {ALIGN_256 - pad_size % ALIGN_256};
+    pad.Resize(1);
+    pad[0] = ALIGN_256 - pad_size % ALIGN_256;
   };
-  pad_a_ = GetPad(trans_a_ ? m_align_ : k_align_);
-  pad_b_ = GetPad(trans_b_ ? k_align_ : n_align_);
+  GetPad(trans_a_ ? m_align_ : k_align_, pad_a_);
+  GetPad(trans_b_ ? k_align_ : n_align_, pad_b_);
 }
 
 void CubeOp::NormalizeCube() {
@@ -1953,7 +1940,7 @@ void CubeOp::GenTiling(vCubeOp *op) {
     const char *ver = getenv("DVM_MATMUL_TILING");
     tiling_ver = ver != nullptr ? std::stoi(ver) : 0;
   }
-  if (tiling_ver == 2) {
+  if (tiling_ver != 1) {
     TileV2(op);
   } else {
     Tile(op);
@@ -2004,6 +1991,7 @@ void CubeOp::CodeGen(vCubeOp *op) {
     ASSERT(bias_->shape_ref_->size == 1 && (bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16));
     op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
+    op->gm_bias = reinterpret_cast<uint64_t>(static_cast<NDAccess *>(bias_)->gm_);
   }
   if (peer_store_) {
     op->flags |= V_CUBE_FLAG_PEER_STORE;

@@ -406,6 +406,7 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
   if (ktype == kEager) {
     if (auto store = VKernelE::GetStore(input)) {
       store->gm_ = static_cast<uint8_t *>(addr);
+      store->flags_ |= OBJ_FLAG_EAGER;
       return store;
     }
   } else if (ktype == kStaticStages) {
@@ -442,11 +443,14 @@ NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
 }
 
 NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
-  NDObject *obj;
+  CubeOp *obj;
   if (System::Instance().online_tuning_) {
     obj = new TunedMatMul(lhs, rhs, trans_a, trans_b, bias);
   } else {
     obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
+  }
+  if (kernel_->KType() == KernelType::kEager) {
+    return static_cast<VKernelE*>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
   return obj;

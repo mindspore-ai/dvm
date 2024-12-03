@@ -838,54 +838,6 @@ __aicore_inline__ void Power(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   repeat_select_2(xd, ws0, xd, op.repeat, rs, op.ws1);
 }
 
-enum BinLogicType {
-  kBinAnd = 0,
-  kBinOr,
-};
-
-__aicore_inline__ void vBinLogic(__ubuf__ uint16_t *dst, __ubuf__ uint16_t *src0, __ubuf__ uint16_t *src1, uint8_t repeat, uint8_t repeatStride, BinLogicType type) {
-  if (type == kBinAnd) {
-    vand(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride);
-  } else {
-    vor(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride);
-  }
-}
-
-template <BinLogicType type>
-__aicore_inline__ void LogicalBinary(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vBinary op;
-  vBinary::Decode(pc, head, op);
-  uint64_t rs = GetRepeatStride(tile, uint8_t);
-  uint64_t repeat = op.repeat;
-  __ubuf__ uint16_t *xm = (__ubuf__ uint16_t *)(op.xm);
-  __ubuf__ uint16_t *xd = (__ubuf__ uint16_t *)(op.xd);
-  __ubuf__ uint16_t *xn = (__ubuf__ uint16_t *)(op.xn);
-  rs = rs << 1;
-  uint64_t simd_width = rs << 4;
-  if (repeat == 1) {
-    pipe_barrier(PIPE_V);
-    vBinLogic((__ubuf__ uint16_t *)WORKSPACE, xn, xm, 1, rs, type);
-    pipe_barrier(PIPE_V);
-    copy_ubuf_to_ubuf(xd, (__ubuf__ uint16_t *)WORKSPACE, 0, 1, simd_width >> 3, 0, 0);
-  } else {
-    uint64_t odd = repeat & 1;
-    repeat = repeat / 2;
-    for (; repeat > 255; repeat -= 255) {
-      vBinLogic(xd, xn, xm, 255, rs, type);
-      xd += 255 * simd_width;
-      xn += 255 * simd_width;
-      xm += 255 * simd_width;
-    }
-    vBinLogic(xd, xn, xm, repeat, rs, type);
-    if (odd) {
-      xd += repeat * simd_width - simd_width / 2;
-      xn += repeat * simd_width - simd_width / 2;
-      xm += repeat * simd_width - simd_width / 2;
-      vBinLogic(xd, xn, xm, 1, rs, type);
-    }
-  }
-}
-
 template <typename T>
 __aicore_inline__ void BroadcastS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBroadcastS<float> op;

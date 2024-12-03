@@ -176,12 +176,25 @@ class DimArray {
   size_t size_;
 };
 
-struct ShapeWithRef : public ShapeRef {
-  ShapeWithRef() {
+inline std::ostream &operator<<(std::ostream &oss, const DimArray &nd) {
+  oss << "[";
+  if (nd.size() > 0) {
+    for (size_t i = 0; i < nd.size() - 1; ++i) {
+      oss << nd[i] << ",";
+    }
+    oss << nd.back();
+  }
+  oss << "]";
+  return oss;
+}
+
+template <size_t N>
+struct ShapeRefData : public ShapeRef {
+  ShapeRefData() {
     data = shape;
     size = 0;
   }
-  ShapeWithRef &operator=(const ShapeRef &other) {
+  ShapeRefData &operator=(const ShapeRef &other) {
     size = other.size;
     _DimCopy(shape, other.data, size);
     return *this;
@@ -189,8 +202,9 @@ struct ShapeWithRef : public ShapeRef {
   int64_t &operator[](int i) { return shape[i]; }
   void Resize(size_t s) { size = s; }
 
-  int64_t shape[DimArray::kMaxDimSize];
+  int64_t shape[N];
 };
+using ShapeWithRef = ShapeRefData<DimArray::kMaxDimSize>;
 
 template <size_t BLOCK_SIZE, size_t POOL_SIZE>
 class MemPool {
@@ -771,7 +785,7 @@ class CubeOp : public NDObject {
  public:
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
-  ~CubeOp() override;
+
   int Emit(VectorKernel &k) override { return 0; }
   void Dump(bool verbose, std::ostringstream &oss) override;
   void CodeGen(vCubeOp *code);
@@ -814,8 +828,9 @@ class CubeOp : public NDObject {
   bool trans_b_{false};
   bool pingpong_store_{false};
   bool peer_store_{false};
-  std::vector<int64_t> pad_a_;
-  std::vector<int64_t> pad_b_;
+  bool atomic_add_{false};
+  ShapeRefData<1> pad_a_;
+  ShapeRefData<1> pad_b_;
   NDObject *bias_{nullptr};
 
  protected:
@@ -828,7 +843,6 @@ class CubeOp : public NDObject {
 
   size_t offset_a_{0};
   size_t offset_b_{0};
-  bool atomic_add_{false};
   std::vector<int64_t> shape_;
   ShapeRef shape_ref_data_;
 };

@@ -35,6 +35,11 @@ class Code {
     sub_codes_.clear();
     reloc_reuse_.clear();
     reloc_workspaces_.clear();
+    unique_ids_.clear();
+  }
+  void ResetEager(int target) {
+    sub_codes_.clear();
+    target_ = target;
   }
   void Alloc(size_t size);
   void RelocWorkspace(NDAccess *op, int64_t ws_offset);

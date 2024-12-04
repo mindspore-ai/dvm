@@ -167,8 +167,8 @@ def test_eager_stop_fuse_reduce():
 ])
 def test_eager_mm(shape_a, shape_b):
     t = Tester("eager")
-    a = np.random.normal(0, 1, shape_a).astype(np.float16)
-    b = np.random.normal(0, 1, shape_b).astype(np.float16)
+    a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
     x0 = t.load(a)
     x0 = t.binary("Add", x0, 0.01)
     x1 = t.load(b)
@@ -180,9 +180,9 @@ def test_eager_mm(shape_a, shape_b):
 
 def test_eager_mm_bias():
     t = Tester("eager")
-    a = np.random.normal(0, 1, [256, 512]).astype(np.float16)
-    b = np.random.normal(0, 1, [512, 256]).astype(np.float16)
-    c = np.random.normal(0, 1, [256]).astype(np.float16)
+    a = np.random.normal(0, 0.01, [256, 512]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [512, 256]).astype(np.float16)
+    c = np.random.normal(0, 0.01, [256]).astype(np.float16)
     x0 = t.load(a)
     x1 = t.load(b)
     x2 = t.load(c)
@@ -203,3 +203,28 @@ def test_eager_mm_bias_fp16():
     expect = np.matmul(a, b) + c
     t.store_expect(x3, expect, 5e-3)
     assert(t.run_check())
+
+def test_eager_kernel_reuse():
+    ''' 2 vec -> 1 cube -> 1 vec '''
+    t = Tester("eager")
+    # round 1
+    a = np.random.normal(0, 0.1, [256, 2048]).astype(np.float32)
+    x = t.reduce("sum", t.load(a), (0,), True)
+    x = t.binary("Add", x, 0.2)
+    t.store_expect(x, np.sum(a, (0,), keepdims=True) + 0.2)
+    assert(t.run_check())
+    t.reset_eager()
+    # round 2
+    a = np.random.normal(0, 0.01, [256, 512]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [512, 256]).astype(np.float16)
+    x = t.matmul(t.load(a), t.load(b), False, False)
+    t.store_expect(x, np.matmul(a.astype(np.float32), b.astype(np.float32)), 2e-3)
+    assert(t.run_check())
+    t.reset_eager()
+    # round 3
+    a = np.random.normal(0, 0.1, [256, 512]).astype(np.float32)
+    x = t.binary("Add", t.load(a), 0.2)
+    x = t.binary("Add", x, 0.2)
+    t.store_expect(x, a + 0.4)
+    assert(t.run_check())
+    t.reset_eager()

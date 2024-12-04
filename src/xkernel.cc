@@ -699,18 +699,18 @@ class EagerVector : public VectorKernel {
     min_type_ = dom->type_id_;
     next_ = nullptr;
     objects_.clear();
-    code_.Clear();
+    code_.ResetEager(Code::kTargetVec);
     static_ops_.clear();
   }
 
   void CodeGenMix(CubeOp *mm) {
+    code_.ResetEager(Code::kTargetCube);
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
     mm->CodeGen(body);
     body->subtilenum = 0;
     code_.block_dim_ = mm->block_dim_;
-    code_.target_ = Code::kTargetCube;
     code_.data_size_ = size;
     code_.UpdateHead(mm->core_loop_, 0, V_ENTRY_FLAG_MIX);
     next_ = mm;
@@ -721,13 +721,14 @@ class EagerVector : public VectorKernel {
       auto mm = static_cast<CubeOp*>(next_);
       oss << indent << "vgraph() {" << std::endl;
       auto body_indent = indent + "  ";
-      oss << body_indent << "%" << mm->index_ << mm->nd_;
-      oss << " = MatMul(%" << mm->lhs_->index_ << mm->lhs_->nd_;
-      oss << ", %" << mm->rhs_->index_ << mm->rhs_->nd_;
+      oss << body_indent << "%0" << mm->nd_ << " = ";
+      mm->Dump(true, oss);
+      oss << "(%1" << mm->lhs_->nd_;
+      oss << ", %2" << mm->rhs_->nd_;
       if (mm->bias_) {
-        oss << ", %" << mm->bias_->index_ << mm->bias_->nd_;
+        oss << ", %3" << mm->bias_->nd_;
       }
-      oss << std::endl << indent << "}";
+      oss << ")" << std::endl << indent << "}";
       return;
     }
     return VectorKernel::Dump(oss, indent);

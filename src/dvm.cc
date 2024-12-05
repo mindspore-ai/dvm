@@ -517,7 +517,7 @@ uint64_t Kernel::CodeGen() {
 
 int Kernel::Launch(void *workspace, void *stream) {
   auto &code = kernel_->code_;
-  return code.Launch(workspace, stream);
+  return code.RelocLaunch(workspace, stream);
 }
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
@@ -608,7 +608,7 @@ int Kernel::Launch(const RelocTable &reloc_table, void **inputs, void **outputs,
     (*stores++)->Reloc(*outputs++);
   }
   auto &code = kernel_->code_;
-  return code.Launch(workspace, stream);
+  return code.RelocLaunch(workspace, stream);
 }
 
 void Kernel::EagerReset(WsAllocFunc ws_alloc, void *user_data) {

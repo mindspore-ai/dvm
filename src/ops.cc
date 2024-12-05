@@ -641,7 +641,9 @@ int NDStore::Emit(VectorKernel &k) {
       }
       red_op->GenClearKernel(this);
       code.sub_codes_.push_back(&(red_op->clear_kernel_->code_));
-      code.reloc_reuse_.emplace_back(red_op->clear_store_->reloc_addr_, reloc_addr_);
+      if (k.KType() != KernelType::kEager) {
+        code.reloc_reuse_.emplace_back(red_op->clear_store_->reloc_addr_, reloc_addr_);
+      }
       return code_size;
     }
   }

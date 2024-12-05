@@ -38,6 +38,7 @@ class Code {
     unique_ids_.clear();
   }
   void ResetEager(int target) {
+    ASSERT(reloc_reuse_.empty() && reloc_workspaces_.empty() && unique_ids_.empty());
     sub_codes_.clear();
     target_ = target;
   }
@@ -68,7 +69,7 @@ class Code {
     return extern_code_ + data_size_;
   }
 
-  int Launch(void *workspace, void *stream) {
+  int RelocLaunch(void *workspace, void *stream) {
     if (workspace) {
       for (auto &[dst, offset] : reloc_workspaces_) {
         *dst = reinterpret_cast<uint64_t>(static_cast<char *>(workspace) + offset);
@@ -79,6 +80,10 @@ class Code {
         *dst = *src;
       }
     }
+    return Launch(workspace, stream);
+  }
+
+  int Launch(void *workspace, void *stream) {
     if (!sub_codes_.empty()) {
       for (auto a : sub_codes_) {
         auto ret = a->DoLaunch(workspace, stream);

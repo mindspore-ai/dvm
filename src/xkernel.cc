@@ -662,7 +662,7 @@ class CubeOptimizer {
 
 class EagerVector : public VectorKernel {
  public:
-  EagerVector() : VectorKernel(KernelType::kStaticShape) {
+  EagerVector() : VectorKernel(KernelType::kEager) {
     objects_.reserve(64);
     static_ops_.reserve(16);
   }
@@ -691,6 +691,7 @@ class EagerVector : public VectorKernel {
     root_dom_.SetHead(next_);
     NormalizeDomain();
     DoCodeGen(System::Instance().CoreNum());
+    ASSERT(code_.data_size_ <= PARAM_TABLE_LIMIT);
     return 0;
   }
 

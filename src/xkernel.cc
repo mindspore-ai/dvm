@@ -1078,8 +1078,9 @@ uint64_t VKernelE::CodeGen() {
       }
       if (kidx > 1) {
         for (auto op : temp_ops_) {
-          NDAccess *store = static_cast<NDAccess *>(op);
-          wss_.insert({GetStoreSize(store), store->gm_});
+          if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
+            wss_.insert({GetStoreSize(store), store->gm_});
+          }
         }
       }
     }

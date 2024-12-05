@@ -792,6 +792,7 @@ int UnaryOp::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / k.simd_width_;
   ASSERT(size_t(op_type_) < sizeof(unary_id_list) / sizeof(InsnIdTable));
   auto id = unary_id_list[op_type_].ids[type_id_];
+  ASSERT(id != V_NONE);
   return vUnary::Encode(insn_, id, op);
 }
 
@@ -922,6 +923,7 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
   op.scalar = scalar_;
   ASSERT(size_t(op_type_) < sizeof(binarys_id_list) / sizeof(InsnIdTable));
   auto id = binarys_id_list[op_type_].ids[type_id_];
+  ASSERT(id != V_NONE);
   return vBinaryS<T>::Encode(insn_, id, op);
 }
 
@@ -1065,6 +1067,7 @@ int BinaryOp::Emit(VectorKernel &k) {
   op.repeat = strides_.back() / k.simd_width_;
   ASSERT(size_t(op_type_) < sizeof(binary_id_list) / sizeof(InsnIdTable));
   auto id = binary_id_list[op_type_].ids[type_id_];
+  ASSERT(id != V_NONE);
   return vBinary::Encode(insn_, id, op);
 }
 

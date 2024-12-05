@@ -239,3 +239,15 @@ def test_eager_extern_code():
         a = t.binary("Add", a, b)
     t.store_expect(a, ax + 0.01 * 200)
     assert(t.run_check())
+
+def test_eager_workspace_inplace():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.1, [128, 1024]).astype(np.float16)
+    x0 = t.cast(t.load(a), "float32")
+    x1 = t.reduce("sum", x0, (0,), False)
+    x2 = t.cast(x1, "float16")
+    t.store_expect(x2, np.sum(a.astype(np.float32), axis=(0,), keepdims=False).astype(np.float16), 2e-3)
+    b = np.random.normal(0, 0.1, [1, 1024]).astype(np.float32)
+    x3 = t.binary("Mul", t.load(b), x0)
+    t.store_expect(x3, b * a.astype(np.float32))
+    assert(t.run_check())

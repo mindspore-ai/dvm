@@ -130,7 +130,7 @@ class VKernelE : public VKernel {
 
   void Launch(void *stream) {
     for (int i = 0; i < kernel_used_; ++i) {
-      reinterpret_cast<VKernel *>(kernels_[i])->code_.Launch(nullptr, stream);
+      reinterpret_cast<VKernel *>(kernels_[i])->code_.Launch(extern_code_, stream);
     }
   }
 
@@ -173,6 +173,7 @@ class VKernelE : public VKernel {
   std::vector<EagerVector *> kernels_;
   int area_used_{0};
   int kernel_used_{0};
+  void *extern_code_{nullptr};
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> temp_ops_;
   std::multimap<uint64_t, void *> wss_;

@@ -691,7 +691,6 @@ class EagerVector : public VectorKernel {
     root_dom_.SetHead(next_);
     NormalizeDomain();
     DoCodeGen(System::Instance().CoreNum());
-    ASSERT(code_.data_size_ <= PARAM_TABLE_LIMIT);
     return 0;
   }
 
@@ -1038,6 +1037,7 @@ uint64_t VKernelE::CodeGen() {
       kernels_.push_back(new EagerVector());
     }
   }
+  uint64_t extern_code_size = 0;
   while (area_used_ > 0 && kidx > 0) {
     auto area = areas_[--area_used_].second;
     if (area->state_ == EagerArea::kFree) continue;
@@ -1086,9 +1086,15 @@ uint64_t VKernelE::CodeGen() {
     temp_ops_.clear();
     objects_.resize(obj_size);
     (void)kernel->EagerVector::CodeGen();
+    if (uint64_t code_size = kernel->code_.ReserveWorkspace(0); code_size > extern_code_size) {
+      extern_code_size = code_size;
+    }
   }
   wss_.clear();
   area_used_ = 0;
+  if (extern_code_size) {
+    extern_code_ = ws_alloc_(extern_code_size, user_data_);
+  }
   return 0;
 }
 

@@ -228,3 +228,14 @@ def test_eager_kernel_reuse():
     t.store_expect(x, a + 0.4)
     assert(t.run_check())
     t.reset_eager()
+
+def test_eager_extern_code():
+    t = Tester("eager")
+    ax = np.random.normal(0, 0.1, [512, 512]).astype(np.float32)
+    bx = np.full([1, 512], 0.01, np.float32)
+    a = t.load(ax)
+    b = t.load(bx)
+    for i in range(200):
+        a = t.binary("Add", a, b)
+    t.store_expect(a, ax + 0.01 * 200)
+    assert(t.run_check())

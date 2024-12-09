@@ -143,6 +143,8 @@ class VKernelE : public VKernel {
     kernel_used_ = 0;
   }
 
+  void *ExternCode() const { return extern_code_; }
+
   static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
 
  protected:

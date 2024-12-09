@@ -386,7 +386,7 @@ int NDPadStore::Emit(VectorKernel &k) {
   return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op, nullptr);
 }
 
-void NDPadStore::Dump(bool verbose, std::ostringstream &oss) { oss << "PadLoad"; }
+void NDPadStore::Dump(bool verbose, std::ostringstream &oss) { oss << "PadStore"; }
 
 void NDSLoad::AlignProp(PropRange &range) { range.depth = 1; }
 

@@ -1054,33 +1054,31 @@ uint64_t VKernelE::CodeGen() {
       }
     }
     append_ops(kernel, area->objects_);
-    if (kidx > 0) {
-      for (size_t i = obj_size; i < objects_.size(); ++i) {
-        NDAccess *io = static_cast<NDAccess *>(objects_[i]);
-        auto store = GetStore(io);
-        if (store->gm_ == nullptr) {
-          if (auto is =
-                kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
-            store->gm_ = is->gm_;
-            SetStoreInplace(is, 1);
+    for (size_t i = obj_size; i < objects_.size(); ++i) {
+      NDAccess *io = static_cast<NDAccess *>(objects_[i]);
+      auto store = GetStore(io);
+      if (store->gm_ == nullptr) {
+        if (auto is =
+              kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
+          store->gm_ = is->gm_;
+          SetStoreInplace(is, 1);
+        } else {
+          auto size = GetStoreSize(store);
+          if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
+            store->gm_ = static_cast<uint8_t *>(it->second);
+            wss_.erase(it);
+            SetStoreSize(store, it->first);
           } else {
-            auto size = GetStoreSize(store);
-            if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-              store->gm_ = static_cast<uint8_t *>(it->second);
-              wss_.erase(it);
-              SetStoreSize(store, it->first);
-            } else {
-              store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
-            }
+            store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
           }
         }
-        io->gm_ = store->gm_;
       }
-      if (kidx > 1) {
-        for (auto op : temp_ops_) {
-          if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
-            wss_.insert({GetStoreSize(store), store->gm_});
-          }
+      io->gm_ = store->gm_;
+    }
+    if (kidx > 1) {  // kidx 1 is last wss user
+      for (auto op : temp_ops_) {
+        if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
+          wss_.insert({GetStoreSize(store), store->gm_});
         }
       }
     }

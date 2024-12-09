@@ -251,3 +251,17 @@ def test_eager_workspace_inplace():
     x3 = t.binary("Mul", t.load(b), x0)
     t.store_expect(x3, b * a.astype(np.float32))
     assert(t.run_check())
+
+def test_eager_load_reuse():
+    t = Tester("eager")
+    ax = np.random.normal(0, 0.1, [288]).astype(np.float32)
+    bx = np.random.normal(0, 0.1, [1]).astype(np.float32)
+    x0 = t.load(ax)
+    x1 = t.load(bx)
+    x2 = t.binary("Mul", x0, x1)
+    t.store_expect(x2, ax * bx)
+    cx = np.random.normal(0, 0.1, [864, 1152]).astype(np.float32)
+    x3 = t.load(cx)
+    x4 = t.binary("Add", x3, x1)
+    t.store_expect(x4, cx + bx)
+    assert(t.run_check())

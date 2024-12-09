@@ -605,6 +605,26 @@ int NDStore::Emit(VectorKernel &k) {
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
     BuildDimRounds(round_tile_, rounds);
+    if (k.comm_op_ && k.comm_op_->GetObjectType() == kReduceScatter) {
+      // ReduceScatter round store accroding to rank_id
+      vStoreRS op;
+      op.to = reinterpret_cast<uint64_t>(gm_);
+      op.xn = lhs_->xbuf_;
+      op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+      op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+      op.iter_num = strides_.back() / lead_align;
+      op.rank_id = k.comm_op_->comm_->GetRankId();
+      if (tail_dim_ < 0) {
+        op.iter_tail = op.iter_num;
+      } else {
+        ASSERT(op.iter_num > 1);
+        op.iter_tail = op.iter_num / nd_[tail_dim_] * tail_size_;
+      }
+      op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
+      op.round_rank = round_tile_.size();
+      reloc_addr_ = insn_ + vStoreRS::RELOC_OFFSET;
+      return vStoreRS::Encode(insn_, V_STORE_RS, op, rounds);
+    }
     if (lhs_->obj_id_ == kReduce) {
       auto red_op = lhs_->Cast<ReduceOp *>();
       auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
@@ -1638,7 +1658,7 @@ void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
 }
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
-    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b){};
+    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {}
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias)
     : CubeOp(lhs, rhs, trans_a, trans_b) {
@@ -2013,6 +2033,205 @@ void CubeOp::CodeGen(vCubeOp *op) {
   GenTiling(op);
   // std::cout << "result tiling: m0=" << op->m0 << ", n0=" << op->n0 << ", k0=" << op->k0 << ", swizzle=(" <<
   // (op->swizzle >> 16) << ", " << (op->swizzle & 0xfffful) << ")" << std::endl;
+}
+
+ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm)
+    : CommOp(input, comm, ObjectType::kReduceScatter) {
+  add_id_ = binary_id_list[kAdd].ids[type_id_];
+  shape_ref_ = &shape_;
+}
+
+ReduceScatterOp::~ReduceScatterOp() {
+  if (reshape_op_) {
+    delete reshape_op_;
+  }
+}
+
+void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
+  if (reshape_op_) {
+    // recover original lhs_
+    lhs_ = reshape_op_->lhs_;
+    delete reshape_op_;
+    reshape_op_ = nullptr;
+  }
+  const ShapeRef *input_shape_ref = lhs_->shape_ref_;
+  size_t start_idx = lhs_->nd_[lhs_->nd_.size() - 1] != comm_->GetRankSize() ? 1 : 0;
+  shape_.Resize(input_shape_ref->size + start_idx);
+  for (size_t i = 0; i < input_shape_ref->size; ++i) {
+    shape_[i + start_idx] = input_shape_ref->data[i];
+  }
+  if (start_idx == 1) {
+    shape_[0] = comm_->GetRankSize();
+    shape_[1] /= shape_[0];
+    reshape_shape_ = shape_;
+    // eg: 4p, [256, 256] -> [4, 64, 256]
+    reshape_op_ = new ReshapeOp(lhs_, &reshape_shape_);
+    reshape_op_->Normalize(run_ops);
+    run_ops.push_back(reshape_op_);
+    lhs_ = reshape_op_;
+  }
+  nd_ = lhs_->nd_;
+  ASSERT(nd_[nd_.size() - 1] == comm_->GetRankSize());
+  nd_[nd_.size() - 1] = 1;
+  shape_[0] = 1;
+
+  // init CommOp related member
+  xbuf_reserve_ = 2;
+  code_reserve_ = 8 * sizeof(uint64_t) * (comm_->GetRankSize() - 1);
+}
+
+void ReduceScatterOp::FoldProp(PropRange &range) {
+  int state = 0;  // -1 - reduce ; 1 - elemwise, 0 - undetemite
+  int new_depth = 0;
+  for (int i = range.base; i != range.base - range.depth; --i) {
+    if ((state == -1 && nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != nd_[i])) {
+      break;
+    }
+    if (state == 0) {
+      if (nd_[i] > 1)
+        state = 1;
+      else if (lhs_->nd_[i] != nd_[i])
+        state = -1;
+    }
+    new_depth++;
+  }
+  if (state == -1 && range.affine < PropRange::REDUCE) {
+    range.affine = PropRange::REDUCE;
+  }
+  range.depth = new_depth;
+}
+
+void ReduceScatterOp::AlignProp(PropRange &range) {
+  int state = 0;  // -1 - reduce; 1 - elemwise, 0 - undetemite
+  int new_depth = 0;
+  for (int i = 0; i < range.depth; ++i) {
+    if ((state == -1 && nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != nd_[i])) {
+      break;
+    }
+    if (state == 0) {
+      if (nd_[i] > 1)
+        state = 1;
+      else if (lhs_->nd_[i] != nd_[i])
+        state = -1;
+    }
+    new_depth++;
+  }
+  if (state == -1 && range.affine < PropRange::REDUCE) {
+    range.affine = PropRange::REDUCE;
+  }
+  range.depth = new_depth;
+}
+
+void ReduceScatterOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "ReduceScatter";
+  if (lhs_ == reshape_op_) {
+    oss << "WithReshape";
+  }
+}
+
+void ReduceScatterOp::Tile(const TileParam &tp) {
+  bool is_reduce = true;
+  for (int i = tp.start; i <= tp.end; ++i) {
+    if (nd_[i] != 1) {
+      is_reduce = false;
+      break;
+    }
+  }
+  if (is_reduce) {
+    if (round_tile_.size() % 2 == 0) {
+      round_tile_.push_back(tp.num);
+    } else {
+      round_tile_.back() *= tp.num;
+    }
+  } else {
+    if (!round_tile_.empty()) {
+      if (round_tile_.size() % 2 == 0) {
+        round_tile_.back() *= tp.num;
+      } else {
+        round_tile_.push_back(tp.num);
+      }
+    }
+    if (tp.tail > 0) {
+      ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
+      tail_dim_ = tp.start;
+      tail_size_ = tp.tail;
+    }
+  }
+  NDObject::Tile(tp);
+}
+
+int ReduceScatterOp::Emit(VectorKernel &k) {
+  uint64_t rounds[2];
+  ASSERT(!round_tile_.empty());
+  BuildDimRounds(round_tile_, rounds);
+
+  // TODO: support matmul post fusion ReduceScatter
+  auto store_id = mix_ ? vStoreInsnID::V_PEER_STORE_MIX : vStoreInsnID::V_PEER_STORE;
+  auto load_id = mix_ ? vLoadInsnID::V_PEER_LOAD_MIX : vLoadInsnID::V_PEER_LOAD;
+  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  uint64_t forward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event2 = backward_event - 1;
+  int code_size = 0;
+  uint64_t *current_insn{nullptr};
+
+  vPeerDMA p_store;
+  p_store.peer_mem = comm_->GetPeerMemPtr(rank_id);
+  p_store.flag_mem = p_store.peer_mem + PEERMEM_FLAG_OFFSET;
+  p_store.xn = lhs_->xbuf_;
+  p_store.tile_stride = tile_stride_size;
+  p_store.lenburst = GetBlocks(tile_stride);
+  p_store.tail_lenburst = p_store.lenburst;
+  p_store.round_rank = 0;
+  code_size += vPeerDMA::Encode(insn_, store_id, vPipe::V_PIPE_STORE, p_store, nullptr);
+  unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(insn_ + vPeerDMA::UNIQUEID_OFFSET));
+
+  bool is_begin = true;
+  bool is_ping = true;
+  uint64_t rhs = 0;
+  for (int i = 1; i < rank_size; ++i) {
+    rhs = xbufs_[is_ping ? 0 : 1];
+    // PeerLoad
+    vPeerDMA p_load;
+    p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id);
+    p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_FLAG_OFFSET;
+    p_load.xn = rhs;
+    p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
+    p_load.lenburst = GetBlocks(tile_stride);
+    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / nd_[tail_dim_] * tail_size_);
+    p_load.round_rank = 2;
+    p_load.rank_id = rank_id;
+    p_load.event_id = backward_event2;
+    if (!is_begin && rank_size - i > 1) {
+      p_load.set_flag = true;
+    }
+    if (i > 2) {
+      p_load.wait_flag = true;
+    }
+    current_insn = insn_ + code_size;
+    code_size += vPeerDMA::Encode(current_insn, load_id, vPipe::V_PIPE_LOAD, p_load, rounds);
+    unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+
+    vBinary add;
+    add.xd = xbuf_;
+    add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
+    add.xm = rhs;
+    add.repeat = strides_.back() / k.simd_width_;
+    current_insn = insn_ + code_size;
+    code_size += vBinary::Encode(current_insn, add_id_, add);
+    *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+    *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+    is_begin = false;
+    is_ping = !is_ping;
+  }
+
+  tail_insn_ = current_insn;
+
+  return code_size;
 }
 
 AllReduceOp::AllReduceOp(NDObject *input, const Communicator *comm) : CommOp(input, comm, ObjectType::kAllReduce) {

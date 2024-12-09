@@ -743,6 +743,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
   DimArray backward_shape;
   auto type = obj->GetObjectType();
   switch (type) {
+    case kCopy:
     case kUnary:
     case kBinary:
     case kBinaryS:

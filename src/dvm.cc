@@ -443,6 +443,15 @@ NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
   return obj;
 }
 
+NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
+  if (input->IsLoad()) {
+    input = Copy(input);
+  }
+  NDObject *obj = new ReduceScatterOp(input, comm->GetImpl());
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
   CubeOp *obj;
   if (System::Instance().online_tuning_) {

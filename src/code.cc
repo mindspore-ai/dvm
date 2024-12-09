@@ -229,7 +229,7 @@ void DumpPingpongPeerLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("event_id", reinterpret_cast<void *>(p_load.event_id), oss);
   if (op.round_rank > 0) {
     oss << ", ";
-    DumpRounds(op.round_rank, dump_info.insn + vLoad::ROUND_OFFSET, oss);
+    DumpRounds(op.round_rank, dump_info.insn + vPingPongPeerLoad::ROUND_OFFSET, oss);
   }
 }
 
@@ -488,6 +488,25 @@ void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("xn_pad", op.xn_pad, oss);
 }
 
+void DumpStoreRS(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vStoreRS op;
+  vStoreRS::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "store_rs.u8." << op.iter_size << "x" << op.iter_num;
+  oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.iter_tail, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("rank_id", op.rank_id, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vStoreRS::ROUND_OFFSET, oss);
+  }
+}
+
 const char name_peer_load[] = "peer_load";
 const char name_peer_load_mix[] = "peer_load_mix";
 const char name_peer_store[] = "peer_store";
@@ -514,7 +533,7 @@ void DumpPeerDMA(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("set_event_id", reinterpret_cast<void *>(op.event_id), oss);
   if (op.round_rank > 0) {
     oss << ", ";
-    DumpRounds(op.round_rank, dump_info.insn + vDMA::ROUND_OFFSET, oss);
+    DumpRounds(op.round_rank, dump_info.insn + vPeerDMA::ROUND_OFFSET, oss);
   }
 }
 
@@ -540,6 +559,7 @@ std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_SSTORE, &DumpSStore},
+  {V_STORE_RS, &DumpStoreRS},
   {V_PEER_STORE, &DumpPeerDMA<name_peer_store>},
   {V_PEER_STORE_MIX, &DumpPeerDMA<name_peer_store_mix>},
   {V_SLICE_STORE, &DumpSliceStore},

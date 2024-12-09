@@ -1151,6 +1151,24 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
   }
 }
 
+__aicore_inline__ uint64_t RoundUpTileIdxRS(uint64_t tile_idx, uint64_t round_rank, uint64_t rank_id,
+                                            bcodeptr_t rounds) {
+  if (round_rank == 1) {
+    uint64_t r1 = rounds[0];
+    if (tile_idx != rank_id) return -1;
+    return 0;
+  }
+  // round_rank = 1
+  uint64_t r2_r1 = rounds[0];
+  uint64_t r1 = r2_r1 & MASK_32;
+  uint64_t r2 = r2_r1 >> 32;
+  uint64_t rank_size = r1 / r2;
+  uint64_t p2 = tile_idx / r2;
+  if (p2 != rank_id) return -1;
+  uint64_t p1 = tile_idx / r1;
+  return p1 * r2 + tile_idx % r2;
+}
+
 __aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vAtomicCum op;
   vAtomicCum::Decode(pc, head, op);
@@ -1591,6 +1609,25 @@ __aicore_inline__ void WaitBuffFlag(uint64_t flag, __gm__ uint64_t *buff){
   }
 }
 
+__aicore_inline__ void StoreRS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vStoreRS op;
+  vStoreRS::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  tile_idx = RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vStoreRS::ROUND_OFFSET);
+  if (tile_idx == -1) return;
+  if (IsLastTile(tile)) {
+    // TODO: last tile may be from round
+    op.iter_num = op.iter_tail;
+  }
+  __gm__ uint8_t *gm = (__gm__ uint8_t *)op.to + op.tile_stride * tile_idx;
+  if (op.pad_size == 0) {
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
+  } else {
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
+  }
+  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
+}
+
 template <bool MIX>
 __aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   pipe_barrier(PIPE_ALL);
@@ -1599,18 +1636,18 @@ __aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   if (op.lenburst == 0) {
     return;
   }
-  if(op.wait_flag){
-    wait_flag(PIPE_V, PIPE_MTE2, op.event_id);
-  }
-  if(op.set_flag){
-    set_flag(PIPE_V, PIPE_MTE2, op.event_id);
-  }
   uint32_t tile_idx;
   if constexpr (MIX) {
     // pingpong2(2) << 16 | tile_idx(16)
     tile_idx = ((op.pingpong) << 16) | (MixTileIdx(tile) & 0xfffful);
   } else {
     tile_idx = TileIdx(tile);
+  }
+  if (op.wait_flag) {
+    wait_flag(PIPE_V, PIPE_MTE2, op.event_id);
+  }
+  if (op.set_flag) {
+    set_flag(PIPE_V, PIPE_MTE2, op.event_id);
   }
   uint64_t offset_idx = vBlockIdx() * 2 + (op.pingpong & 0x1ul);
   vPeerDMA::PingPongSwitch(pc);
@@ -1620,6 +1657,9 @@ __aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   WaitBuffFlag(sync_flag, flag_mem);
   set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
   wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+  if (op.round_rank && RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == -1) {
+    return;
+  }
   uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
   __gm__ void *gm = (__gm__ uint8_t *)op.peer_mem + op.tile_stride * offset_idx;
   copy_gm_to_ubuf((__ubuf__ void *)op.xn, gm, 0, 1, len_burst, 0, 0);
@@ -1647,7 +1687,8 @@ __aicore_inline__ void PeerStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   copy_ubuf_to_gm(gm, (__ubuf__ void *)op.xn, 0, 1, len_burst, 0, 0);
   set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
   wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
-  *flag_mem = (op.unique_id << 32) | (tile_idx + 1);
+  uint64_t sync_flag = (op.unique_id << 32) | (tile_idx + 1);
+  *flag_mem = sync_flag;
   dcci(flag_mem, 0);
 }
 
@@ -1903,6 +1944,7 @@ DEF_DISP_FUNC(V_STORE_ATOMIC_DETERM, StoreAtomicDeterm(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_STATUS, StoreStatus(pc, head))
 DEF_DISP_FUNC(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_FUNC(V_SLICE_STORE, SliceStore(pc, head, tile))
+DEF_DISP_FUNC(V_STORE_RS, StoreRS(pc, head, tile))
 DEF_DISP_FUNC(V_PEER_STORE, PeerStore<false>(pc, head, tile))
 DEF_DISP_FUNC(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))
 

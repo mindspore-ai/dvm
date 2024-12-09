@@ -14,18 +14,8 @@
 # ============================================================================
 
 import numpy as np
-import os
-import sys
 from dvm.tester import Tester
 import pytest
-
-
-@pytest.fixture(scope="module")
-def comm():
-    from mpi4py import MPI
-
-    yield MPI.COMM_WORLD
-    MPI.Finalize()
 
 
 @pytest.mark.parametrize(
@@ -157,9 +147,6 @@ def test_matmul_allreduce_post(comm, m, k, n):
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    os.environ["DEVICE_ID"] = str(rank)
-    os.environ["RANK_SIZE"] = str(size)
-    print("==== [{}] start".format(rank))
     t = Tester("mix", comm=comm, use_pass_opt=True)
     shape_a = [m, k]
     shape_b = [k, n]
@@ -194,11 +181,7 @@ def test_allreduce_post(comm, shape_size):
     rank = comm.Get_rank()
     size = comm.Get_size()
 
-    os.environ["DEVICE_ID"] = str(rank)
-    os.environ["RANK_SIZE"] = str(size)
-    print("==== [{}] start".format(rank))
     t = Tester(comm=comm, use_pass_opt=True)
-
     inputs = []
     for i in range(size):
         inputs.append(np.random.normal(0.1, 1, [shape_size]).astype(np.float32))
@@ -225,14 +208,9 @@ def test_allreduce_multi_time(comm, shape_size):
     test if unique_id work
     """
     np.random.seed(1)
-    rank = comm.Get_rank()
     size = comm.Get_size()
 
-    os.environ["DEVICE_ID"] = str(rank)
-    os.environ["RANK_SIZE"] = str(size)
-    print("==== [{}] start".format(rank))
     t = Tester(comm=comm)
-
     inputs = []
     for i in range(4):
         inputs.append(np.full([shape_size], i).astype(np.float16))
@@ -254,14 +232,9 @@ def test_matmul_allreduce_multi_time(comm, m, n, k):
     test if unique_id work
     """
     np.random.seed(1)
-    rank = comm.Get_rank()
     size = comm.Get_size()
 
-    os.environ["DEVICE_ID"] = str(rank)
-    os.environ["RANK_SIZE"] = str(size)
-    print("==== [{}] start".format(rank))
     t = Tester("mix", comm=comm)
-
     shape_a = [m, n]
     shape_b = [n, k]
     inputs_a = []

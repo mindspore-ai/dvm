@@ -45,6 +45,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenStore, true},   // SStore
   {kGenStore, true},   // PeerStore
   {kGenStore, true},   // Store
+  {kGenComm, true},    // ReduceScatter
   {kGenComm, true},    // AllReduce
   {kGenSimd1, true},   // Reshape
   {kGenSimd1, true},   // Copy
@@ -515,7 +516,7 @@ void PropDomain::Normalize() {
     }
     NDObject *cand = nullptr;
     auto obj_type = op->GetObjectType();
-    if (op->IsStore() || obj_type == kReduce || obj_type == kElementAny) {
+    if (op->IsStore() || obj_type == kReduce || obj_type == kElementAny || obj_type == kReduceScatter) {
       if (op->lhs_ != dom_) cand = op->lhs_;
     } else if (obj_type == kBroadcastTo) {
       if (op != dom_) cand = op;

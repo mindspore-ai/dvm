@@ -36,6 +36,7 @@ enum ObjectType {
   kStore,
 
   // Comm
+  kReduceScatter,
   kAllReduce,
 
   // Simd
@@ -871,10 +872,32 @@ class CommOp : public NDObject {
   const Communicator *comm_;
 
  protected:
-  uint64_t xbuf_reserve_;  // static
-  uint64_t code_reserve_;
+  uint64_t xbuf_reserve_{0};  // static
+  uint64_t code_reserve_{0};
   CubeOp *cube_op_{nullptr};
   uint32_t xbuf_size_{0};
+};
+
+// Not Support (rank_size, 1)
+class ReduceScatterOp : public CommOp {
+ public:
+  ReduceScatterOp(NDObject *input, const Communicator *comm);
+  ~ReduceScatterOp() override;
+  void FoldProp(PropRange &range) override;
+  void AlignProp(PropRange &range) override;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+  void Tile(const TileParam &tp) override;
+  int Emit(VectorKernel &k) override;
+
+ private:
+  int tail_dim_{-1};
+  int tail_size_{0};
+  ShapeWithRef shape_;
+  vSimdInsnID add_id_;
+  DimArray round_tile_;
+  NDObject *reshape_op_{nullptr};
+  ShapeWithRef reshape_shape_;
 };
 
 // Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore

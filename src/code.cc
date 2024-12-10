@@ -520,17 +520,19 @@ void DumpPeerDMA(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << ".u8.32x" << op.lenburst;
   oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.peer_mem);
   oss << " //";
+  DumpVal("rank_id", op.rank_id, oss);
+  oss << ", ";
   DumpVal("tile_stride", op.tile_stride, oss);
   oss << ", ";
   DumpVal("tail_lenburst", op.tail_lenburst, oss);
   oss << ", ";
   DumpVal("flag_mem", reinterpret_cast<void *>(op.flag_mem), oss);
   oss << ", ";
-  DumpVal("set_flag", reinterpret_cast<void *>(op.set_flag), oss);
+  DumpVal("set_flag", op.set_flag, oss);
   oss << ", ";
-  DumpVal("wait_flag", reinterpret_cast<void *>(op.wait_flag), oss);
+  DumpVal("wait_flag", op.wait_flag, oss);
   oss << ", ";
-  DumpVal("set_event_id", reinterpret_cast<void *>(op.event_id), oss);
+  DumpVal("set_event_id", op.event_id, oss);
   if (op.round_rank > 0) {
     oss << ", ";
     DumpRounds(op.round_rank, dump_info.insn + vPeerDMA::ROUND_OFFSET, oss);

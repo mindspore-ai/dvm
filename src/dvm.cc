@@ -443,6 +443,15 @@ NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
   return obj;
 }
 
+NDObject *Kernel::AllGather(NDObject *input, const Comm *comm) {
+  if (input->IsLoad()) {
+    input = Copy(input);
+  }
+  NDObject *obj = new AllGatherOp(input, comm->GetImpl());
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
   if (input->IsLoad()) {
     input = Copy(input);
@@ -460,7 +469,7 @@ NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_
     obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
   }
   if (kernel_->KType() == KernelType::kEager) {
-    return static_cast<VKernelE*>(kernel_)->AppendCube(obj);
+    return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
   return obj;

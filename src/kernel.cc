@@ -46,6 +46,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenStore, true},   // PeerStore
   {kGenStore, true},   // Store
   {kGenComm, true},    // ReduceScatter
+  {kGenComm, true},    // AllGather
   {kGenComm, true},    // AllReduce
   {kGenSimd1, true},   // Reshape
   {kGenSimd1, true},   // Copy
@@ -1066,7 +1067,7 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
     return;
   }
   auto dump_op = [&oss](NDObject *op) {
-    oss << "%" << op->index_<< op->nd_ << "<" << DTYPE_NAMES[op->type_id_] << ">";
+    oss << "%" << op->index_ << op->nd_ << "<" << DTYPE_NAMES[op->type_id_] << ">";
   };
   oss << indent << "vgraph(tile_num=" << tile_num_ << ", simd_width=" << simd_width_ << ") {" << std::endl;
   std::string body_indent = indent + "  ";

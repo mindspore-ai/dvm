@@ -2179,6 +2179,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
   uint64_t *current_insn{nullptr};
 
   vPeerDMA p_store;
+  p_store.comm_type = CommType::kCommReduceScatter;
   p_store.peer_mem = comm_->GetPeerMemPtr(rank_id);
   p_store.flag_mem = p_store.peer_mem + PEERMEM_FLAG_OFFSET;
   p_store.xn = lhs_->xbuf_;
@@ -2196,6 +2197,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
     rhs = xbufs_[is_ping ? 0 : 1];
     // PeerLoad
     vPeerDMA p_load;
+    p_load.comm_type = CommType::kCommReduceScatter;
     p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id);
     p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_FLAG_OFFSET;
     p_load.xn = rhs;
@@ -2579,9 +2581,136 @@ int AllReduceOp::Emit(VectorKernel &k) {
     }
   }
   tail_insn_ = current_insn;
-  // std::cout << "Allreduce Emit code size: " << code_size << std::endl;
   return code_size;
 }
 
 void AllReduceOp::Dump(bool verbose, std::ostringstream &oss) { oss << "AllReduce"; }
+
+AllGatherOp::AllGatherOp(NDObject *input, const Communicator *comm) : CommOp(input, comm, ObjectType::kAllGather) {
+  shape_ref_ = &shape_;
+}
+
+// input shape: [a, b], AllGather nd: [b, a, r]，AllGather shape: [a * r, b]
+void AllGatherOp::Normalize(std::vector<NDObject *> &run_ops) {
+  auto size = lhs_->shape_ref_->size;
+  shape_.Resize(size);
+  for (size_t i = 0; i < size; i++) {
+    shape_[i] = lhs_->shape_ref_->data[i];
+  }
+  nd_.resize(size + 1);
+  for (size_t i = 0; i < size; i++) {
+    nd_[i] = shape_[size - i - 1];
+  }
+  shape_[0] *= comm_->GetRankSize();
+  nd_[size] = comm_->GetRankSize();
+
+  xbuf_reserve_ = 0;
+  code_reserve_ = 5 * sizeof(uint64_t) * comm_->GetRankSize() + 5;
+  round_tile_.resize(0);
+}
+
+void AllGatherOp::Tile(const TileParam &tp) {
+  if (tp.tail > 0) {
+    // ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
+    tail_dim_ = tp.start;
+    tail_size_ = tp.tail;
+  }
+  NDObject::Tile(tp);
+}
+
+void AllGatherOp::FoldProp(PropRange &range) {
+  int state = 0;  // -1 - broadcast; 1 - elemwise, 0 - undetermined
+  int new_depth = 0;
+  for (int i = range.base; i != range.base - range.depth; --i) {
+    if ((state == -1 && lhs_->nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != nd_[i])) {
+      break;
+    }
+    if (state == 0) {
+      if (lhs_->nd_[i] > 1)
+        state = 1;
+      else if (lhs_->nd_[i] != nd_[i])
+        state = -1;
+    }
+    new_depth++;
+  }
+  if (state == -1 && range.affine < PropRange::BROADCAST) {
+    range.affine = PropRange::BROADCAST;
+  }
+  range.depth = new_depth;
+}
+
+void AllGatherOp::AlignProp(PropRange &range) {
+  int state = 0;  // -1 - broadcast; 1 - elemwise, 0 - undetermined
+  int new_depth = 0;
+  for (int i = 0; i < range.depth; ++i) {
+    if ((state == -1 && lhs_->nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != nd_[i])) {
+      break;
+    }
+    if (state == 0) {
+      if (lhs_->nd_[i] > 1)
+        state = 1;
+      else if (lhs_->nd_[i] != nd_[i])
+        state = -1;
+    }
+    new_depth++;
+  }
+  if (state == -1 && range.affine < PropRange::BROADCAST) {
+    range.affine = PropRange::BROADCAST;
+  }
+  range.depth = new_depth;
+}
+
+int AllGatherOp::Emit(VectorKernel &k) {
+  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  int code_size = 0;
+  uint64_t *current_insn{nullptr};
+  // uint64_t forward_event = System::Instance().EventNum() - 1;
+
+  // TODO: If we do not consider prologue fusion of AllGather, then we can find load in this way.
+  // But if we consider prologue fusion, this is not a general way to get round_tile_ of load.
+  auto load = static_cast<NDLoad *>(this->lhs_->lhs_);
+  round_tile_ = load->round_tile_;
+  uint64_t rounds[2];
+  if (!round_tile_.empty()) {
+    BuildDimRounds(round_tile_, rounds);
+  }
+  vPeerDMA p_store;
+  p_store.comm_type = CommType::kCommAllGather;
+  p_store.peer_mem = comm_->GetPeerMemPtr(rank_id);
+  p_store.flag_mem = p_store.peer_mem + PEERMEM_FLAG_OFFSET;
+  p_store.xn = lhs_->xbuf_;
+  p_store.tile_stride = tile_stride_size;
+  p_store.lenburst = GetBlocks(tile_stride);
+  p_store.tail_lenburst = p_store.lenburst;
+  p_store.round_rank = round_tile_.size();
+  p_store.rank_id = rank_id;
+  code_size += vPeerDMA::Encode(insn_, vStoreInsnID::V_PEER_STORE, vPipe::V_PIPE_STORE, p_store, rounds);
+  unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(insn_ + vPeerDMA::UNIQUEID_OFFSET));
+
+  for (int i = 0; i < rank_size; ++i) {
+    auto ub_addr = xbuf_;
+    // PeerLoad
+    vPeerDMA p_load;
+    p_load.comm_type = CommType::kCommAllGather;
+    p_load.peer_mem = comm_->GetPeerMemPtr(i);
+    p_load.flag_mem = comm_->GetPeerMemPtr(i) + PEERMEM_FLAG_OFFSET;
+    p_load.rank_id = i;
+    p_load.xn = ub_addr;
+    p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
+    p_load.lenburst = GetBlocks(tile_stride);
+    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / nd_[tail_dim_] * tail_size_);
+    p_load.round_rank = round_tile_.size();
+    p_load.event_id = 0;
+    current_insn = insn_ + code_size;
+    code_size += vPeerDMA::Encode(current_insn, vLoadInsnID::V_PEER_LOAD, vPipe::V_PIPE_LOAD, p_load, rounds);
+    unique_ids_ptr_->emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+  }
+  tail_insn_ = current_insn;
+  return code_size;
+}
+
+void AllGatherOp::Dump(bool verbose, std::ostringstream &oss) { oss << "AllGather"; }
 }  // namespace dvm

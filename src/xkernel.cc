@@ -34,7 +34,7 @@ MixKernel::~MixKernel() {
       delete out;
     }
     if (auto bias = cube_op_->bias_; bias != nullptr) {
-     delete bias;
+      delete bias;
     }
     delete cube_op_;
   }
@@ -571,7 +571,7 @@ class CubeOptimizer {
  public:
   CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InitPadShape(); }
 
-  bool AlignA(std::vector<NDObject*> &ops) {
+  bool AlignA(std::vector<NDObject *> &ops) {
     if (!dom_->pad_a_.size) {
       return false;
     }
@@ -579,7 +579,7 @@ class CubeOptimizer {
     return true;
   }
 
-  bool AlignB(std::vector<NDObject*> &ops) {
+  bool AlignB(std::vector<NDObject *> &ops) {
     if (!dom_->pad_b_.size) {
       return false;
     }
@@ -587,7 +587,7 @@ class CubeOptimizer {
     return true;
   }
 
-  bool CastBias(std::vector<NDObject*> &ops) {
+  bool CastBias(std::vector<NDObject *> &ops) {
     if (dom_->bias_ == nullptr || dom_->bias_->type_id_ != kBFloat16) {
       return false;
     }
@@ -605,7 +605,7 @@ class CubeOptimizer {
     return true;
   }
 
-  bool SplitK(std::vector<NDObject*> &ops) {
+  bool SplitK(std::vector<NDObject *> &ops) {
     if (dom_->k_real_ <= MAX_K) {
       return false;
     }
@@ -636,7 +636,7 @@ class CubeOptimizer {
   }
 
  protected:
-  void AlignInput(NDObject* &input, ShapeRef *align_shape, std::vector<NDObject*> &ops) {
+  void AlignInput(NDObject *&input, ShapeRef *align_shape, std::vector<NDObject *> &ops) {
     NDObject *op = input;
     if (op->IsLoad()) {
       op = new CopyOp(op);
@@ -707,7 +707,7 @@ class EagerVector : public VectorKernel {
     code_.ResetEager(Code::kTargetCube);
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
-    vCubeOp *body = reinterpret_cast<vCubeOp*>(code_.data_ + code_.HeadSize());
+    vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
     mm->CodeGen(body);
     body->subtilenum = 0;
     code_.block_dim_ = mm->block_dim_;
@@ -718,7 +718,7 @@ class EagerVector : public VectorKernel {
 
   void Dump(std::ostringstream &oss, const std::string &indent) {
     if (next_ && next_->obj_id_ == ObjectType::kCubeOp) {
-      auto mm = static_cast<CubeOp*>(next_);
+      auto mm = static_cast<CubeOp *>(next_);
       oss << indent << "vgraph() {" << std::endl;
       auto body_indent = indent + "  ";
       oss << body_indent << "%0" << mm->nd_ << " = ";
@@ -781,7 +781,7 @@ class EagerArea {
     return true;
   }
 
-  static EagerArea* Assign(VKernelE *k, size_t aid) {
+  static EagerArea *Assign(VKernelE *k, size_t aid) {
     EagerArea *area;
     auto &pool = k->areas_;
     if (aid == pool.size()) {
@@ -924,7 +924,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   mm->flags_ |= OBJ_FLAG_EAGER;
   mm->NormalizeCube();
   CubeOptimizer opt(mm);
-  auto prepare_input = [this](bool is_stuff, NDObject* &input) {
+  auto prepare_input = [this](bool is_stuff, NDObject *&input) {
     if (is_stuff) {
       for (auto op : temp_ops_) {
         InitObjInfo(op);
@@ -953,7 +953,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
     prepare_input(opt.CastBias(temp_ops_), mm->bias_);
   }
   auto output = new NDStore(nullptr, mm);
-  output ->Normalize(temp_ops_);
+  output->Normalize(temp_ops_);
   objects_.push_back(output);
   mm->output_ = output;
   NDObject *ret = mm;
@@ -983,28 +983,28 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
 }
 
 void VKernelE::CodeGenMix(EagerArea *area, EagerVector *kernel) {
-  auto mm = static_cast<CubeOp*>(area->dom_);
+  auto mm = static_cast<CubeOp *>(area->dom_);
   auto alloc_input = [this](NDAccess *input) {
     auto store = GetStore(input);
-    if (store->gm_ == nullptr) { // TODO: abstract common func
+    if (store->gm_ == nullptr) {  // TODO: abstract common func
       auto size = GetStoreSize(store);
       if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-        store->gm_ = static_cast<uint8_t*>(it->second);
+        store->gm_ = static_cast<uint8_t *>(it->second);
         wss_.erase(it);
         SetStoreSize(store, it->first);
       } else {
-        store->gm_ = static_cast<uint8_t*>(ws_alloc_(size, user_data_));
+        store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
       }
     }
     input->gm_ = store->gm_;
   };
-  if (auto io = static_cast<NDAccess*>(mm->lhs_); io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->lhs_); io->gm_ == nullptr) {
     alloc_input(io);
   }
-  if (auto io = static_cast<NDAccess*>(mm->rhs_); io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->rhs_); io->gm_ == nullptr) {
     alloc_input(io);
   }
-  if (auto io = static_cast<NDAccess*>(mm->bias_); io && io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->gm_ == nullptr) {
     alloc_input(io);
   }
   if (!mm->atomic_add_) {

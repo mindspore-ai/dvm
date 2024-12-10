@@ -35,7 +35,9 @@ class Communicator {
   virtual ~Communicator();
   bool Init();
 
-  const std::vector<uint8_t *> GetPeerMemPtrs() const { return std::vector<uint8_t *>(peer_mem_, peer_mem_ + 8); }
+  const std::vector<uint8_t *> GetPeerMemPtrs() const {
+    return std::vector<uint8_t *>(peer_mem_, peer_mem_ + MAX_RANK_SIZE);
+  }
   uint8_t *GetPeerMemPtr(size_t i) const { return peer_mem_[i % rank_size_]; };
   const int GetRankId() const { return rank_id_; }
   const int GetRankSize() const { return rank_size_; }

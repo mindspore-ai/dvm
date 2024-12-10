@@ -90,6 +90,9 @@ class Code {
         if (ret != RT_ERROR_NONE) return ret;
       }
     }
+    // std::ostringstream oss;
+    // this->DisAssemble(oss);
+    // std::cout << oss.str() << std::endl;
     return DoLaunch(workspace, stream);
   }
 

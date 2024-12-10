@@ -37,6 +37,7 @@ enum ObjectType {
 
   // Comm
   kReduceScatter,
+  kAllGather,
   kAllReduce,
 
   // Simd
@@ -918,6 +919,27 @@ class AllReduceOp : public CommOp {
 
  private:
   vSimdInsnID add_id_;
+};
+
+class AllGatherOp : public CommOp {
+ public:
+  AllGatherOp(NDObject *input, const Communicator *comm);
+  ~AllGatherOp() = default;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void AlignProp(PropRange &range) override;
+  void FoldProp(PropRange &range) override;
+  void Tile(const TileParam &tp) override;
+  int Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  DimArray round_tile_;
+
+ protected:
+  int tail_dim_{-1};
+  int tail_size_{0};
+
+ private:
+  ShapeWithRef shape_;
 };
 
 class NDSStore : public NDStore {

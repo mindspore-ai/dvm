@@ -1151,6 +1151,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
   }
 }
 
+// skip some tile indices in peerload for reducescatter
 __aicore_inline__ uint64_t RoundUpTileIdxRS(uint64_t tile_idx, uint64_t round_rank, uint64_t rank_id,
                                             bcodeptr_t rounds) {
   if (round_rank == 1) {
@@ -1167,6 +1168,16 @@ __aicore_inline__ uint64_t RoundUpTileIdxRS(uint64_t tile_idx, uint64_t round_ra
   if (p2 != rank_id) return -1;
   uint64_t p1 = tile_idx / r1;
   return p1 * r2 + tile_idx % r2;
+}
+
+// skip some tile indices in peerload for allgather
+__aicore_inline__ uint64_t RoundUpTileIdxAG(uint64_t tile_idx, uint64_t round_rank, uint64_t rank_id,
+                                            bcodeptr_t rounds) {
+  uint64_t r2_r1 = rounds[0];
+  uint64_t r2 = r2_r1 >> 32;
+  uint64_t p2 = tile_idx / r2;
+  if (p2 != rank_id) return -1;
+  return tile_idx;
 }
 
 __aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1657,8 +1668,13 @@ __aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   WaitBuffFlag(sync_flag, flag_mem);
   set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
   wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
-  if (op.round_rank && RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == -1) {
-    return;
+  if (op.round_rank) {
+    if (op.comm_type == CommType::kCommReduceScatter && RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == -1) {
+      return;
+    }
+    if (op.comm_type == CommType::kCommAllGather && RoundUpTileIdxAG(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == -1) {
+      return;
+    }
   }
   uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
   __gm__ void *gm = (__gm__ uint8_t *)op.peer_mem + op.tile_stride * offset_idx;

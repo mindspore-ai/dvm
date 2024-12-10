@@ -154,6 +154,12 @@ enum vSimdInsnID {
   V_NONE,
 };
 
+enum CommType {
+  kCommAllReduce = 0,
+  kCommReduceScatter,
+  kCommAllGather,
+};
+
 // head(simd):
 //  ID(16) << 48 | ext(26) << 22 | b_wait_event(3) << 19 | b_set_event(3) << 16 | wait_event(3) << 13 | set_event(3) <<
 //  10 | len(3) << 7 | back_wait(1) << 6 | back_set(1) << 5 | wait_flag(1) << 4 | set_flag(1) << 3 | bar_flag(1) << 2 |
@@ -1331,54 +1337,21 @@ struct vCubeOp {
   }
 };
 
-// peer memory -> ub
-struct vAllGatherLoad {
-  uint64_t xn{0};  // addr on ubuf
-  uint64_t tile_stride{0};
-  uint64_t lenburst{0};
-  uint64_t tail_lenburst{0};
-  uint32_t rank_size{0};
-  uint32_t rank_id{0};
-  uint64_t data_size_per_rank{0};
-  uint64_t peer_mem[8] = {};  // peer memory addr
-
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vAllGatherLoad &op) {
-    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.lenburst = pc[1] & 0xfffful;
-    op.tail_lenburst = (pc[1] >> 16) & 0xfffful;
-    op.tile_stride = (pc[1] >> 32) & 0xfffffffful;
-    op.rank_id = pc[2] & 0xfffffffful;
-    op.rank_size = (pc[2] >> 32) & 0xfffffffful;
-    op.data_size_per_rank = pc[3];
-    for (size_t i = 0; i < 8; i++) {
-      op.peer_mem[i] = pc[4 + i];
-    }
-  }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vAllGatherLoad &op) {
-    uint64_t size = 12;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
-    pc[1] = op.tile_stride << 32 | op.tail_lenburst << 16 | op.lenburst;
-    pc[2] = static_cast<uint64_t>(op.rank_size) << 32 | op.rank_id;
-    pc[3] = op.data_size_per_rank;
-    for (size_t i = 0; i < 8; i++) {
-      pc[4 + i] = op.peer_mem[i];
-    }
-    return size;
-  }
-};
-
+// peer memory <-> ub
 struct vPeerDMA {
   enum { ROUND_OFFSET = 5 };
   enum { UNIQUEID_OFFSET = 4 };
   __gm__ uint8_t *peer_mem;
   __gm__ uint8_t *flag_mem;  // used to do softsync
+  uint64_t rank_id{0};       // used to skip execute
+  uint64_t comm_type{0};     // CommType
   uint64_t xn;
   uint64_t tile_stride;
   uint64_t lenburst;
   uint64_t tail_lenburst;
   uint64_t round_rank;
   uint64_t unique_id;
-  uint64_t rank_id{0};  // used to skip execute
+
   uint64_t pingpong;
   uint64_t event_id{0};
   bool set_flag{false};
@@ -1387,8 +1360,8 @@ struct vPeerDMA {
   // pc[1]: peer_mem
   // pc[2]: tile_stride(32) << 32 | tail_lenburst(16) << 16 | lenburst(16)
   // pc[3]: flag_mem
-  // pc[4]: rank_id(4) << 39 | pingpong(2) << 37 | wait_flag(1) << 36 | set_flag(1) << 35 | event_id(3) << 32 |
-  //        unique_id(32)
+  // pc[4]: comm_type(2) << 43 | rank_id(4) << 39 | pingpong(2) << 37 | wait_flag(1) << 36 | set_flag(1) << 35 |
+  //        event_id(3) << 32 | unique_id(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vPeerDMA &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     op.round_rank = (head >> (V_M_HEAD_EXT_OFFSET + 20)) & 0xful;
@@ -1404,6 +1377,7 @@ struct vPeerDMA {
     op.wait_flag = (pc[4] >> 36) & 0x1ul;
     op.pingpong = (pc[4] >> 37) & 0x3ul;
     op.rank_id = (pc[4] >> 39) & 0xful;
+    op.comm_type = (pc[4] >> 43) & 0x3ul;
   }
   __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) {
     auto &data = pc[4];
@@ -1418,7 +1392,7 @@ struct vPeerDMA {
     pc[1] = reinterpret_cast<uint64_t>(op.peer_mem);
     pc[2] = op.tile_stride << 32 | op.tail_lenburst << 16 | op.lenburst;
     pc[3] = reinterpret_cast<uint64_t>(op.flag_mem);
-    pc[4] = op.rank_id << 39 | op.event_id << 32 | 0x1ul;
+    pc[4] = op.comm_type << 43 | op.rank_id << 39 | op.event_id << 32 | 0x1ul;
     if (op.set_flag) {
       pc[4] |= 0x1ul << 35;
     }

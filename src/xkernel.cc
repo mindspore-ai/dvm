@@ -1105,7 +1105,6 @@ class EagerDumpRef : public DumpRefHelper {
       if (input->IsLoad()) {
         auto acc = VKernelE::GetStore(input);
         if (acc) {
-          if (idx_map_.count(acc)) return acc;
           input = acc->lhs_;
           continue;
         }

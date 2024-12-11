@@ -704,6 +704,8 @@ class EagerVector : public VectorKernel {
   }
 
   void CodeGenMix(CubeOp *mm) {
+    objects_.clear();
+    static_ops_.clear();
     code_.ResetEager(Code::kTargetCube);
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);

@@ -444,26 +444,12 @@ NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
 }
 
 NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
-  CubeOp *obj;
-  if (System::Instance().online_tuning_) {
-    obj = new TunedMatMul(lhs, rhs, trans_a, trans_b, bias);
-  } else {
-    obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
-  }
+  CubeOp *obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
   if (kernel_->KType() == KernelType::kEager) {
     return static_cast<VKernelE*>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
   return obj;
-}
-
-void Kernel::Reserve(size_t size) {
-  auto ktype = kernel_->KType();
-  if (ktype == KernelType::kStaticParallel) {
-    static_cast<VKernelP *>(kernel_)->Reserve(size);
-  } else {
-    static_cast<VectorKernel *>(kernel_)->Reserve(size);
-  }
 }
 
 int Kernel::ParallelNext() {
@@ -652,5 +638,16 @@ const char *Kernel::Das() const {
 
 void SetDeterministic(bool enable) { System::Instance().deterministic_ = enable; }
 
-void SetOnlineTuning(bool enable) { System::Instance().online_tuning_ = enable; }
+void SetOnlineTuning(bool enable) {
+  auto &sys = System::Instance();
+  if (enable) {
+    sys.online_tuner_ = new OnlineCubeTuner();
+    sys.lazy_tuner_ = new LazyCubeTuner();
+  } else {
+    delete sys.online_tuner_;
+    delete sys.lazy_tuner_;
+    sys.online_tuner_ = nullptr;
+    sys.lazy_tuner_ = nullptr;
+  }
+}
 }  // namespace dvm

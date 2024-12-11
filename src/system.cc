@@ -22,6 +22,7 @@
 #endif
 #include "system.h"
 #include "code.h"
+#include "tuning.h"
 
 // rts_runtime
 #if defined(__cplusplus)
@@ -168,5 +169,14 @@ System::System() {
 #else
   get_c2c_addr_func_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(handle, "rtGetC2cCtrlAddr"));
 #endif
+}
+
+System::~System() {
+  if (online_tuner_) {
+    delete online_tuner_;
+  }
+  if (lazy_tuner_) {
+    delete lazy_tuner_;
+  }
 }
 }  // namespace dvm

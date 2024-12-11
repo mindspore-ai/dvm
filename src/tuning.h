@@ -22,6 +22,9 @@
 
 namespace dvm {
 struct TuningInfo {
+  TuningInfo() = default;
+  TuningInfo(int64_t m0_, int64_t n0_, int64_t k0_, uint32_t swizzle_, uint32_t core_loop_, uint32_t block_dim_)
+   : m0(m0_), n0(n0_), k0(k0_), swizzle(swizzle_), core_loop(core_loop_), block_dim(block_dim_) {}
   int64_t m0{0};
   int64_t n0{0};
   int64_t k0{0};
@@ -30,35 +33,73 @@ struct TuningInfo {
   uint32_t block_dim{0};
 };
 
-class ManualMatMul : public CubeOp {
+enum TunerType { kOnlineTuner = 0, kLazyTuner, kUnknownTuner };
+class CubeTuner {
  public:
-  using CubeOp::CubeOp;
-  void SetTiling(const TuningInfo &info);
-  void GenTiling(vCubeOp *op) override {
-    op->m0 = m0_;
-    op->n0 = n0_;
-    op->k0 = k0_;
-    op->swizzle = swizzle_;
-  };
-  uint32_t swizzle_{0};
-};
+  using Key = std::pair<uint64_t, uint64_t>;
 
-class TunedMatMul : public CubeOp {
- public:
-  using CubeOp::CubeOp;
-  void GenTiling(vCubeOp *op) override;
-  void TileV3(vCubeOp *op);
-  void Tuning(const TuningInfo &parameter);
-  static std::map<std::pair<uint64_t, uint64_t>, TuningInfo> &GetTuningTable() {
-    static std::map<std::pair<uint64_t, uint64_t>, TuningInfo> table;
+  CubeTuner(TunerType type) : type_(type) {}
+  virtual ~CubeTuner();
+  virtual void GenTile(CubeOp *op, vCubeOp *code) = 0;
+  TunerType Type() const { return type_; }
+
+  static std::map<Key, TuningInfo> &CacheTable() {
+    static std::map<Key, TuningInfo> table;
     return table;
   }
 
- private:
+  Key GenKey(CubeOp *op, vCubeOp *code) {
+    uint64_t key_batch = (uint64_t)code->batch_a0 << 48 | (uint64_t)code->batch_a1 << 32 | code->batch_b0 << 16 | code->batch_b1;
+    uint64_t key_shape = op->m_real_ << 44 | op->n_real_ << 24 | op->k_real_ << 2;
+    if (op->type_id_ == dvm::kFloat32) key_shape |= 4ul;
+    if (op->trans_a_) key_shape |= 2ul;
+    if (op->trans_b_) key_shape |= 1ul;
+    return std::make_pair(key_batch, key_shape);
+  }
+
+ protected:
+  TunerType type_;
+};
+
+class OnlineCubeTuner : public CubeTuner {
+ public:
+  OnlineCubeTuner() : CubeTuner(kOnlineTuner) {}
+  void GenTile(CubeOp *op, vCubeOp *code) override;
+
+ protected:
+  void TileV3(CubeOp *mm, vCubeOp *op);
+  void Tuning(const TuningInfo &parameter);
+
   float best_time_{1e6};
   Kernel *kernel_{nullptr};
-  ManualMatMul *matmul_{nullptr};
   TuningInfo best_tuning_;
+};
+
+class LazyCubeTuner : public CubeTuner {
+ public:
+  LazyCubeTuner() : CubeTuner(kLazyTuner) {}
+  ~LazyCubeTuner() override;
+
+  void GenTile(CubeOp *op, vCubeOp *code) override;
+  int Launch(CubeOp *op, Code &code, void *stream);
+
+ protected:
+  struct Context {
+    ~Context() {
+      for (auto info : space) {
+        if (info) delete info;
+      }
+    }
+    std::vector<TuningInfo *> space;
+    float best_time;
+    int best_idx{-1};
+    int next_idx{0};
+    int gen_cnt{0};
+    int run_cnt{0};
+  };
+
+  void BuildSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space);
+  std::map<Key, Context *> context_;
 };
 }  // namespace dvm
 #endif  // _DVM_TUNING_H_

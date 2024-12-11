@@ -129,7 +129,6 @@ class Kernel {
   ~Kernel();
 
   void Reset(KernelType type);
-  void Reserve(size_t size);
   int ParallelNext();
 
   NDObject *Load(void *addr, ShapeRef *shape, DType type);

@@ -298,14 +298,14 @@ def test_tuning_matmul(shape_a, shape_b):
     np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     np_b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
     expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
+    Tester.set_online_tuning(True)
     t = Tester("mix")
-    t.set_online_tuning(True)
     mat_a = t.load(np_a)
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, False)
     t.store_expect(res, expect)
     assert (t.run_check())
-    t.set_online_tuning(False)
+    Tester.set_online_tuning(False)
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [

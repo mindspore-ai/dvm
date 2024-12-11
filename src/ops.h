@@ -781,6 +781,7 @@ class AtomicCumOp : public WrapOp {
   const DimArray *round_tile_;
 };
 
+class CubeTuner;
 class CubeOp : public NDObject {
  public:
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
@@ -788,11 +789,11 @@ class CubeOp : public NDObject {
 
   int Emit(VectorKernel &k) override { return 0; }
   void Dump(bool verbose, std::ostringstream &oss) override;
-  void CodeGen(vCubeOp *code);
+  void CodeGen(vCubeOp *code, CubeTuner *tuner);
   void NormalizeCube();
   void NormalizeOutput();
   void InitPadShape();
-  virtual void GenTiling(vCubeOp *code);
+  void GenTiling(vCubeOp *code);
 
   uint64_t PostFusionWorkSpace() const {
     uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];

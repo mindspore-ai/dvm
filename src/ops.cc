@@ -24,6 +24,7 @@
 #include "ops.h"
 #include "kernel.h"
 #include "comm.h"
+#include "tuning.h"
 
 namespace dvm {
 namespace {
@@ -97,20 +98,6 @@ static const vSimdInsnID cast_id_list[][kTypeEnd] = {
   {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
   {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
 };
-
-inline __attribute__((always_inline)) uint32_t RoundUp(uint32_t num, uint32_t rnd) {
-  if (rnd == 0) {
-    return 0;
-  }
-  return (num + rnd - 1) / rnd * rnd;
-}
-
-inline __attribute__((always_inline)) uint32_t RoundDown(uint32_t num, uint32_t rnd) {
-  if (rnd == 0) {
-    return 0;
-  }
-  return num / rnd * rnd;
-}
 
 inline uint64_t DMAConfig(uint64_t sid, uint64_t nBurst, uint64_t lenBurst, uint64_t srcStride, uint64_t dstStride) {
   return dstStride << 48 | srcStride << 32 | lenBurst << 16 | nBurst << 4 | sid;
@@ -1771,7 +1758,7 @@ void CubeOp::Tile(vCubeOp *op) {
   auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_ping_pong_num = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
-  op->k0 = k0_max < cubeBlockSize ? RoundDown(k0_max, kBlockSize) : RoundDown(k0_max, cubeBlockSize);
+  op->k0 = k0_max < cubeBlockSize ? RoundDown<uint32_t>(k0_max, kBlockSize) : RoundDown<uint32_t>(k0_max, cubeBlockSize);
   if (op->k0 > CONST_512) {
     op->k0 = RoundDown(op->k0, CONST_512);
   }
@@ -1897,9 +1884,9 @@ void CubeOp::TileV2(vCubeOp *op) {
   auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
   float mincost = 3.125f;
-  uint32_t round_m = RoundUp(m_align_, BLOCK_SIZE);
-  uint32_t round_n = RoundUp(n_align_, BLOCK_SIZE);
-  uint32_t round_k = RoundUp(k_align_, BLOCK_SIZE);
+  uint32_t round_m = RoundUp<uint32_t>(m_align_, BLOCK_SIZE);
+  uint32_t round_n = RoundUp<uint32_t>(n_align_, BLOCK_SIZE);
+  uint32_t round_k = RoundUp<uint32_t>(k_align_, BLOCK_SIZE);
   auto tile_select = [&](uint32_t x, uint32_t y) {
     // 1. get m0, n0, k0
     uint32_t m0, n0, k0;
@@ -1908,7 +1895,7 @@ void CubeOp::TileV2(vCubeOp *op) {
       n0 = y;
       if (k0 > round_k || n0 > round_n) return;
       uint64_t mx = std::min(l0c_max / n0, (l1_max - k0 * n0) / k0);
-      m0 = RoundDown(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
+      m0 = RoundDown<uint32_t>(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * n0 < l1_max) && (m0 > 0));
       if (m0 > round_m) m0 = round_m;
     } else if (!trans_b_) {  // trans_a && !trans_b_
@@ -1916,7 +1903,7 @@ void CubeOp::TileV2(vCubeOp *op) {
       n0 = y;
       if (m0 > round_m || n0 > round_n) return;
       uint64_t kx = l1_max / (m0 + n0);
-      k0 = RoundDown(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
+      k0 = RoundDown<uint32_t>(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       if (m0 * n0 > l0c_max || k0 == 0) return;
       if (k0 > round_k) k0 = round_k;
     } else {  // trans_a && trans_b_
@@ -1924,7 +1911,7 @@ void CubeOp::TileV2(vCubeOp *op) {
       m0 = y;
       if (k0 > round_k || m0 > round_m) return;
       uint64_t nx = std::min(l0c_max / m0, (l1_max - k0 * m0) / k0);
-      n0 = RoundDown(nx, nx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
+      n0 = RoundDown<uint32_t>(nx, nx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * m0 < l1_max) && (n0 > 0));
       if (n0 > round_n) n0 = round_n;
     }
@@ -1983,7 +1970,7 @@ void CubeOp::GenTiling(vCubeOp *op) {
   }
 }
 
-void CubeOp::CodeGen(vCubeOp *op) {
+void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->m_align = m_align_;
   op->n_align = n_align_;
   op->k_align = k_align_;
@@ -2030,7 +2017,11 @@ void CubeOp::CodeGen(vCubeOp *op) {
   auto dtype = lhs_->type_id_;
   ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
   op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
-  GenTiling(op);
+  if (tuner) {
+    tuner->GenTile(this, op);
+  } else {
+    GenTiling(op);
+  }
   // std::cout << "result tiling: m0=" << op->m0 << ", n0=" << op->n0 << ", k0=" << op->k0 << ", swizzle=(" <<
   // (op->swizzle >> 16) << ", " << (op->swizzle & 0xfffful) << ")" << std::endl;
 }

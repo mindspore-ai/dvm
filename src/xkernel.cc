@@ -18,6 +18,7 @@
 #include <cstring>
 #include "xkernel.h"
 #include "comm.h"
+#include "tuning.h"
 
 namespace dvm {
 constexpr int64_t MAX_K = 1 << 15;
@@ -257,7 +258,7 @@ uint64_t MixKernel::BiasBF16CodeGen() {
 uint64_t MixKernel::AlignCodeGen() {
   size_t size = code_.HeadSize() + sizeof(vCubeOp);
   vCubeOp cube_code;
-  cube_op_->CodeGen(&cube_code);
+  cube_op_->CodeGen(&cube_code, tuner_);
   code_.block_dim_ = cube_op_->block_dim_;
   cube_code.subtilenum = 0;
   uint64_t head_flags = V_ENTRY_FLAG_MIX;
@@ -708,7 +709,7 @@ class EagerVector : public VectorKernel {
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
-    mm->CodeGen(body);
+    mm->CodeGen(body, System::Instance().lazy_tuner_);
     body->subtilenum = 0;
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
@@ -1155,5 +1156,10 @@ std::string &VKernelE::DisAssemble() {
   }
   dump_str_ = oss.str();
   return dump_str_;
+}
+
+void VKernelE::TunerLaunch(EagerVector *kernel, void *stream) {
+  auto tuner = static_cast<LazyCubeTuner *>(System::Instance().lazy_tuner_);
+  tuner->Launch(static_cast<CubeOp *>(kernel->next_), kernel->code_, stream);
 }
 }  // namespace dvm

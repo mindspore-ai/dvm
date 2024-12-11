@@ -264,4 +264,23 @@ def test_eager_load_reuse():
     x3 = t.load(cx)
     x4 = t.binary("Add", x3, x1)
     t.store_expect(x4, cx + bx)
+    x5 = t.binary("Add", x2, 0.1)
+    t.store_expect(x5, ax * bx + 0.1)
     assert(t.run_check())
+
+def test_eager_lazy_tuner():
+    Tester.set_online_tuning(True)
+    t = Tester("eager")
+    shape = [4096, 4096]
+    a = np.random.normal(0, 0.01, shape).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape).astype(np.float16)
+    expect = np.matmul(a.astype(np.float32), b.astype(np.float32))
+    for i in range(3):
+        x0 = t.load(a)
+        x1 = t.load(b)
+        x2 = t.matmul(x0, x1, False, False)
+        t.store_expect(x2, expect, 1e-3)
+        t.run_check()
+        t.reset_eager()
+    Tester.set_online_tuning(False)
+

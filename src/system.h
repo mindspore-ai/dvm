@@ -69,6 +69,7 @@ enum SocType {
   kSocUnknow,
 };
 
+class CubeTuner;
 class System {
  public:
   static System &Instance() {
@@ -76,6 +77,7 @@ class System {
     return obj;
   }
 
+  ~System();
   AiCoreArch Arch() const { return arch_; }
   uint64_t LocalMemSize() const { return local_mem_size_; }
   uint64_t UbWorkspaceSize() const { return ub_workspace_size_; }
@@ -94,7 +96,8 @@ class System {
 
   uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
   bool deterministic_{false};
-  bool online_tuning_{false};
+  CubeTuner *online_tuner_{nullptr};
+  CubeTuner *lazy_tuner_{nullptr};
 
  private:
   System();
@@ -118,5 +121,26 @@ constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kTypeEnd];
 
+template <typename T>
+static inline __attribute__((always_inline)) T CeilDiv(T a, T b) {
+  ASSERT(b != 0);
+  return (a - 1) / b + 1;
+}
+
+template <typename T>
+static inline __attribute__((always_inline)) T RoundUp(T num, T rnd) {
+  if (rnd == 0) {
+    return 0;
+  }
+  return (num + rnd - 1) / rnd * rnd;
+}
+
+template <typename T>
+static inline __attribute__((always_inline)) T RoundDown(T num, T rnd) {
+  if (rnd == 0) {
+    return 0;
+  }
+  return num / rnd * rnd;
+}
 }  // namespace dvm
 #endif  // _DVM_SYSTEM_H_

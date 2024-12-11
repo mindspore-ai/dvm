@@ -25,12 +25,13 @@
 namespace dvm {
 class MixKernel : public VKernel {
  public:
-  MixKernel() : VKernel(KernelType::kStaticMix) {}
+  MixKernel() : VKernel(KernelType::kStaticMix), tuner_(System::Instance().online_tuner_) {}
   ~MixKernel() override;
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void SetTuner(CubeTuner *tuner) { tuner_ = tuner; }
 
  protected:
   void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
@@ -44,6 +45,7 @@ class MixKernel : public VKernel {
   NDAccess *sload_{nullptr};
 
   Kernel *stage_kernel_{nullptr};
+  CubeTuner *tuner_;
 };
 
 class StagesKernel : public VKernel {
@@ -130,7 +132,12 @@ class VKernelE : public VKernel {
 
   void Launch(void *stream) {
     for (int i = 0; i < kernel_used_; ++i) {
-      reinterpret_cast<VKernel *>(kernels_[i])->code_.Launch(extern_code_, stream);
+      auto &code = reinterpret_cast<VKernel *>(kernels_[i])->code_;
+      if (code.target_ == Code::kTargetCube && System::Instance().lazy_tuner_) {
+        TunerLaunch(kernels_[i], stream);
+      } else {
+        code.Launch(extern_code_, stream);
+      }
     }
   }
 
@@ -170,6 +177,7 @@ class VKernelE : public VKernel {
   void Split(NDObject *root);
   NDObject *Exchange(EagerArea *area, NDObject *input);
   void CodeGenMix(EagerArea *area, EagerVector *kernel);
+  void TunerLaunch(EagerVector *kernel, void *stream);
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;
   std::vector<EagerVector *> kernels_;

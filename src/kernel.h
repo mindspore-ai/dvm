@@ -25,11 +25,6 @@
 #include "pass.h"
 
 namespace dvm {
-template <typename T>
-static inline T CeilDiv(T a, T b) {
-  return (a - 1) / b + 1;
-}
-
 class VectorKernel;
 class PropDomainBuilder;
 class PropDomain {
@@ -114,11 +109,6 @@ class VectorKernel : public VKernel {
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   void CollectMetrics(Metrics &metrics) const;
-
-  void Reserve(size_t size) {
-    build_ops_.reserve(size);
-    objects_.reserve(size * 2);
-  }
 
   void SetTile(int start, int end, int64_t num) { tiles_.emplace_back(DimTile{start, end, num}); }
   int MaxType() const { return max_type_; }
@@ -207,8 +197,6 @@ class VKernelP : public VKernel {
     EXCEPTION_IF(children_.size() > 8, "total sub-kernels of parallel kernel exceed limit(8)");
   }
   void Append(NDObject *obj) override;
-  void Reserve(size_t size) { children_.back()->Reserve(size); }
-
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 

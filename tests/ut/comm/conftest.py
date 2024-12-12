@@ -14,10 +14,9 @@
 # ============================================================================
 import pytest
 
-
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="session", autouse=True)
 def comm():
-    from mpi4py import MPI
-
-    yield MPI.COMM_WORLD
-    MPI.Finalize()
+    from dvm.tester import Tester
+    Tester.fork()
+    yield
+    Tester.join()

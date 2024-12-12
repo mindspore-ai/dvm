@@ -14,6 +14,10 @@
  * limitations under the License.
  */
 
+#include <unistd.h>
+#include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <algorithm>
 #include <memory>
 #include <fstream>
@@ -35,7 +39,8 @@
   } while (0)
 
 namespace dvm {
-static int64_t GetTimeX() {
+namespace {
+int64_t GetTimeX() {
   struct timeval tv;
   gettimeofday(&tv, nullptr);
   return tv.tv_sec * 1000000 + tv.tv_usec;
@@ -60,19 +65,6 @@ std::string GetBufferFormat(const DType type) {
   return formats[type];
 }
 
-DType GetTypeID(py::buffer_info &info) {
-  if (info.format == py::format_descriptor<float>::format()) {
-    return DType::kFloat32;
-  } else if (info.format == py::format_descriptor<int32_t>::format()) {
-    return DType::kInt32;
-  } else if (info.format == py::format_descriptor<bool>::format()) {
-    return DType::kBool;
-  } else if (info.itemsize == 2) {
-    return DType::kFloat16;
-  }
-  return DType::kFloat32;
-}
-
 std::vector<int64_t> GetVector(const py::object &shape) {
   py::list shape_list = py::cast<py::list>(shape);
   size_t size = shape_list.size();
@@ -93,12 +85,12 @@ std::pair<bool, T> GetScalar(const py::object &obj) {
   return {false, (T)0};
 }
 
-static std::unordered_map<std::string, KernelType> kernel_type_map = {
+std::unordered_map<std::string, KernelType> kernel_type_map = {
   {"", kStaticShape},  {"static", kStaticShape},      {"dyn", kDynShape},
   {"mix", kStaticMix}, {"parallel", kStaticParallel}, {"stages", kStaticStages},
   {"eager", kEager}};
 
-static void *WsAllocCallback(uint64_t size, void *user_data) {
+void *WsAllocCallback(uint64_t size, void *user_data) {
   void *dev_addr = nullptr;
   ASCEND_CALL(aclrtMalloc(&dev_addr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
   ASSERT(user_data);
@@ -106,14 +98,23 @@ static void *WsAllocCallback(uint64_t size, void *user_data) {
   return dev_addr;
 }
 
+struct MpCtx {
+  pid_t pids[32];
+  int rank_size{1};
+  int rank_id{0};
+  int shmid{0};
+  volatile int64_t *bars{nullptr};
+  Comm comm;
+};
+MpCtx g_mpc;
+} // end namespace
+
 std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
 
 void ShapeRefPy::Update(const py::object &shape) {
   shape_ = GetVector(shape);
   *shape_ref_ = shape_;
 }
-
-Comm KernelPy::comm_;
 
 KernelPy::KernelPy(int dev_id, const std::string &type_str) {
   auto it = kernel_type_map.find(type_str);
@@ -317,19 +318,19 @@ py::object KernelPy::ElementAny(const py::object &input) {
 
 py::object KernelPy::AllReduce(const py::object &input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.AllReduce(input_obj, &comm_);
+  auto op = kernel_.AllReduce(input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::ReduceScatter(const py::object &input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.ReduceScatter(input_obj, &comm_);
+  auto op = kernel_.ReduceScatter(input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::AllGather(const py::object &input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.AllGather(input_obj, &comm_);
+  auto op = kernel_.AllGather(input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -469,12 +470,6 @@ py::object KernelPy::DisAssemble() {
 py::object KernelPy::DumpGraph() {
   std::string data = kernel_.GetImpl()->DumpGraph();
   return py::cast(data);
-}
-
-void KernelPy::InitComm(int rank_id, int rank_size) {
-  if (comm_.GetImpl() == nullptr) {
-    comm_.Init(rank_id, rank_size);
-  }
 }
 
 void KernelPy::Run() {
@@ -652,6 +647,63 @@ void KernelPy::ResetEager() {
   shape_vec_.clear();
 }
 
+void KernelPy::Fork(const py::object &dev_ids) {
+  std::vector<int64_t> ids = GetVector(dev_ids);
+  int size = ids.size();
+  ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
+  g_mpc.rank_size = size;
+  g_mpc.shmid = ::shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0600) ;
+  for (int i = 1; i < size; ++i) {
+    g_mpc.rank_id = i;
+    auto pid = ::fork();
+    ASSERT(pid >= 0);
+    if (pid == 0) {
+      goto INIT_COMM;
+    }
+    g_mpc.pids[i - 1] = pid;
+  }
+  g_mpc.rank_id = 0;
+INIT_COMM:
+  int rank_id = g_mpc.rank_id;
+  std::cout << "[init rank]: rank=" << rank_id << ", dev_id=" << ids[g_mpc.rank_id] << std::endl;
+  g_mpc.bars = (int64_t *)shmat(g_mpc.shmid, nullptr, 0) ;
+  g_mpc.bars[rank_id] = 0;
+  ASCEND_CALL(aclrtSetDevice(ids[rank_id]));
+  g_mpc.comm.Init(rank_id, size);
+}
+
+void KernelPy::Join() {
+  // TODO: free g_mpc.comm
+  ::shmdt((void *)(g_mpc.bars));
+  if (g_mpc.rank_id > 0) {
+    ::exit(0);
+  }
+  for (int i = 0; i < g_mpc.rank_size - 1; ++i) {
+    ::wait(nullptr);
+  }
+  shmctl(g_mpc.shmid, IPC_RMID, nullptr);
+}
+
+void KernelPy::Barrier() {
+  if (g_mpc.rank_size == 1) {
+    auto cur_cnt = g_mpc.bars[g_mpc.rank_id] + 1;
+    g_mpc.bars[g_mpc.rank_id] = cur_cnt;
+    for (int i = 0; i < g_mpc.rank_size; ++i) {
+      while (g_mpc.bars[i] != cur_cnt) {
+        sleep(1);
+      }
+    }
+  }
+}
+
+int KernelPy::RankId() {
+  return g_mpc.rank_id;
+}
+
+int KernelPy::RankSize() {
+  return g_mpc.rank_size;
+}
+
 class DevicePy {
  public:
   static std::string Arch() {
@@ -715,9 +767,13 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("perf", &KernelPy::Perf, "perf test")
     .def("run", &KernelPy::Run, "run kernel")
-    .def("init_comm", &KernelPy::InitComm, "init communicatior")
     .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
-    .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning");
+    .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning")
+    .def_static("fork", &KernelPy::Fork, "fork process")
+    .def_static("join", &KernelPy::Join, "join process")
+    .def_static("barrier", &KernelPy::Barrier, "barrier process")
+    .def_static("rank_id", &KernelPy::RankId, "get current rank id")
+    .def_static("rank_size", &KernelPy::RankSize, "get current rank size");
 
   (void)py::class_<DevicePy, std::shared_ptr<DevicePy>>(m, "Device")
     .def_static("arch", &DevicePy::Arch, "Get system architecture")

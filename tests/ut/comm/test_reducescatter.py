@@ -32,13 +32,13 @@ def reducescatter(arrs, rank_id=None):
 @pytest.mark.parametrize(
     "shape", [[4, 256], [4, 16384], [4, 32, 256], [4, 1278487], [32, 256]]
 )
-def test_reducescatter(comm, shape):
+def test_reducescatter(shape):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
     if shape[0] < size:
         shape[0] = size
-    t = Tester(comm=comm, use_pass_opt=True)
+    t = Tester(use_pass_opt=True)
     inputs = []
     for i in range(size):
         inputs.append(np.random.normal(0.1, 1, shape).astype(np.float32))

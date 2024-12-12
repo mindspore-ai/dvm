@@ -22,12 +22,12 @@ import pytest
     "shape_size",
     [32, 9, 156, 129, 640, 6400, 64232, 3123, 343535, 222, 21313, 22, 23445, 129, 130],
 )
-def test_allreduce(comm, shape_size):
+def test_allreduce(shape_size):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
 
-    t = Tester(comm=comm)
+    t = Tester()
     inputs = []
     for i in range(size):
         inputs.append(np.random.normal(0.1, 1, [shape_size]).astype(np.float16))
@@ -45,12 +45,12 @@ def test_allreduce(comm, shape_size):
 
 
 @pytest.mark.parametrize("shape_size", [104857612])
-def test_allreduce_big_shape(comm, shape_size):
+def test_allreduce_big_shape(shape_size):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
 
-    t = Tester(comm=comm)
+    t = Tester()
     inputs = []
     for i in range(size):
         inputs.append(np.random.normal(0.1, 1, [shape_size]).astype(np.float16))
@@ -68,12 +68,12 @@ def test_allreduce_big_shape(comm, shape_size):
 @pytest.mark.parametrize("m", [16384, 32])
 @pytest.mark.parametrize("k", [512])
 @pytest.mark.parametrize("n", [6400, 22])
-def test_matmul_allreduce(comm, m, k, n):
+def test_matmul_allreduce(m, k, n):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
 
-    t = Tester("mix", comm=comm)
+    t = Tester("mix")
     shape_a = [m, k]
     shape_b = [k, n]
 
@@ -102,12 +102,12 @@ def test_matmul_allreduce(comm, m, k, n):
 @pytest.mark.parametrize("m", [4096, 64])
 @pytest.mark.parametrize("k", [256])
 @pytest.mark.parametrize("n", [16384, 256])
-def test_matmul_allreduce_indirect(comm, m, k, n):
+def test_matmul_allreduce_indirect(m, k, n):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
 
-    t = Tester("mix", comm=comm, use_pass_opt=True)
+    t = Tester("mix", use_pass_opt=True)
     shape_a = [m, k]
     shape_b = [k, n]
 
@@ -142,12 +142,12 @@ def test_matmul_allreduce_indirect(comm, m, k, n):
 @pytest.mark.parametrize("m", [4096])
 @pytest.mark.parametrize("k", [256])
 @pytest.mark.parametrize("n", [4096])
-def test_matmul_allreduce_post(comm, m, k, n):
+def test_matmul_allreduce_post(m, k, n):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
 
-    t = Tester("mix", comm=comm, use_pass_opt=True)
+    t = Tester("mix", use_pass_opt=True)
     shape_a = [m, k]
     shape_b = [k, n]
 
@@ -176,12 +176,12 @@ def test_matmul_allreduce_post(comm, m, k, n):
 
 
 @pytest.mark.parametrize("shape_size", [5120 * 5120])
-def test_allreduce_post(comm, shape_size):
+def test_allreduce_post(shape_size):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
 
-    t = Tester(comm=comm, use_pass_opt=True)
+    t = Tester(use_pass_opt=True)
     inputs = []
     for i in range(size):
         inputs.append(np.random.normal(0.1, 1, [shape_size]).astype(np.float32))
@@ -203,14 +203,14 @@ def test_allreduce_post(comm, shape_size):
 
 
 @pytest.mark.parametrize("shape_size", [5120])
-def test_allreduce_multi_time(comm, shape_size):
+def test_allreduce_multi_time(shape_size):
     """
     test if unique_id work
     """
     np.random.seed(1)
-    size = comm.Get_size()
+    size = Tester.rank_size()
 
-    t = Tester(comm=comm)
+    t = Tester()
     inputs = []
     for i in range(4):
         inputs.append(np.full([shape_size], i).astype(np.float16))
@@ -227,14 +227,14 @@ def test_allreduce_multi_time(comm, shape_size):
 @pytest.mark.parametrize("m", [256])
 @pytest.mark.parametrize("k", [256])
 @pytest.mark.parametrize("n", [256])
-def test_matmul_allreduce_multi_time(comm, m, n, k):
+def test_matmul_allreduce_multi_time(m, n, k):
     """
     test if unique_id work
     """
     np.random.seed(1)
-    size = comm.Get_size()
+    size = Tester.rank_size()
 
-    t = Tester("mix", comm=comm)
+    t = Tester("mix")
     shape_a = [m, n]
     shape_b = [n, k]
     inputs_a = []

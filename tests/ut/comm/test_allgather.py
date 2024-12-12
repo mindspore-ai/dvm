@@ -19,11 +19,11 @@ import pytest
 @pytest.mark.parametrize(
     "shape", [[4, 256], [4, 16384], [4, 32, 256], [4, 1278487], [32, 256]]
 )
-def test_allgather(comm, shape):
+def test_allgather(shape):
     np.random.seed(1)
-    rank = comm.Get_rank()
-    size = comm.Get_size()
-    t = Tester(comm=comm)
+    rank = Tester.rank_id()
+    size = Tester.rank_size()
+    t = Tester()
     inputs = []
     for i in range(size):
         inputs.append((np.random.random(shape)).astype(np.float16))

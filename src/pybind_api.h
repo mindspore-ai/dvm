@@ -107,7 +107,6 @@ class KernelPy {
   void ClearStoreMemory(const py::object &store);
   void Tile(int start, int end, int64_t num);
   void CodeGen(const py::object &pass_names);
-  void InitComm(int rank_id, int rank_size);
   void Run();
 
   py::object DisAssemble();
@@ -116,6 +115,12 @@ class KernelPy {
 
   static void SetDeterm(bool enable) { SetDeterministic(enable); }
   static void SetTuning(bool enable) { SetOnlineTuning(enable); }
+
+  static void Fork(const py::object &dev_ids);
+  static void Join();
+  static void Barrier();
+  static int RankId();
+  static int RankSize();
 
   static std::string Arch() {
     static const char *soc_names[] = {"AscendC220"};
@@ -154,7 +159,6 @@ class KernelPy {
 
   int dev_id_{0};
   void *workspace_{nullptr};
-  static Comm comm_;
 };
 }  // namespace dvm
 #endif  // _DVM_PYBIND_API_H_

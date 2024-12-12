@@ -183,11 +183,11 @@ class Tester(Kernel):
 
     @staticmethod
     def fork(ids = None):
-        if ids == None:
-            ids = []
-            sids = os.getenv("DEVICE_IDS").split(",")
-            for s in sids:
-                ids.append(int(s))
-        assert(len(ids) > 0)
-        Kernel.fork(ids)
-        os.environ["DEVICE_ID"] = str(ids[Kernel.rank_id()])
+        if ids:
+            rank_size = len(ids)
+            os.environ["ASCEND_RT_VISIBLE_DEVICE"] = ",".join([str(i) for i in ids])
+        else:
+            ids_str = os.environ["ASCEND_RT_VISIBLE_DEVICE"]
+            rank_size = len(ids_str.split(","))
+        Kernel.fork(rank_size)
+        os.environ["DEVICE_ID"] = str(Kernel.rank_id())

@@ -647,9 +647,7 @@ void KernelPy::ResetEager() {
   shape_vec_.clear();
 }
 
-void KernelPy::Fork(const py::object &dev_ids) {
-  std::vector<int64_t> ids = GetVector(dev_ids);
-  int size = ids.size();
+void KernelPy::Fork(int size) {
   ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
   g_mpc.rank_size = size;
   g_mpc.shmid = ::shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0600) ;
@@ -665,10 +663,9 @@ void KernelPy::Fork(const py::object &dev_ids) {
   g_mpc.rank_id = 0;
 INIT_COMM:
   int rank_id = g_mpc.rank_id;
-  std::cout << "[init rank]: rank=" << rank_id << ", dev_id=" << ids[g_mpc.rank_id] << std::endl;
   g_mpc.bars = (int64_t *)shmat(g_mpc.shmid, nullptr, 0) ;
   g_mpc.bars[rank_id] = 0;
-  ASCEND_CALL(aclrtSetDevice(ids[rank_id]));
+  ASCEND_CALL(aclrtSetDevice(rank_id));
   g_mpc.comm.Init(rank_id, size);
 }
 

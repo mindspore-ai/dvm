@@ -116,7 +116,7 @@ class KernelPy {
   static void SetDeterm(bool enable) { SetDeterministic(enable); }
   static void SetTuning(bool enable) { SetOnlineTuning(enable); }
 
-  static void Fork(const py::object &dev_ids);
+  static void Fork(int size);
   static void Join();
   static void Barrier();
   static int RankId();

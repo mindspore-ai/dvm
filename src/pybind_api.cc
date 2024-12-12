@@ -542,20 +542,6 @@ py::object KernelPy::Perf() {
 #endif
 }
 
-py::object KernelPy::Measure() {
-  if (kernel_.GetImpl()->KType() == KernelType::kStaticParallel) {
-    return py::none();
-  }
-  Metrics met;
-  VectorKernel *base_kernel = static_cast<VectorKernel *>(kernel_.GetImpl());
-  base_kernel->CollectMetrics(met);
-  py::dict ret = py::dict();
-  ret["core_usage"] = py::float_(met.core_usage);
-  ret["simd_usage"] = py::float_(met.simd_usage);
-  ret["mem_usage"] = py::float_(met.mem_usage);
-  return ret;
-}
-
 void KernelPy::Input(const py::object &load, const py::object &array) {
   auto op = static_cast<NDAccess *>(load.cast<NDOpPyPtr>()->Get());
   auto it = loads_.find(op);
@@ -728,7 +714,6 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("perf", &KernelPy::Perf, "perf test")
-    .def("measure", &KernelPy::Measure, "measure metrics")
     .def("run", &KernelPy::Run, "run kernel")
     .def("init_comm", &KernelPy::InitComm, "init communicatior")
     .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")

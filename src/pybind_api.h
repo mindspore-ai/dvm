@@ -112,11 +112,9 @@ class KernelPy {
 
   py::object DisAssemble();
   py::object DumpGraph();
-  py::object Measure();
   py::object Perf();
 
   static void SetDeterm(bool enable) { SetDeterministic(enable); }
-
   static void SetTuning(bool enable) { SetOnlineTuning(enable); }
 
   static std::string Arch() {

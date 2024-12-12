@@ -78,6 +78,8 @@ class System {
   }
 
   ~System();
+
+  // hardware config
   AiCoreArch Arch() const { return arch_; }
   uint64_t LocalMemSize() const { return local_mem_size_; }
   uint64_t UbWorkspaceSize() const { return ub_workspace_size_; }
@@ -88,16 +90,29 @@ class System {
     return core_type == kVector ? vector_core_num_ : cube_core_num_;
   }
   uint64_t EventNum() const { return event_num_; }
-  SocType SocName() { return soc_name_; }
+  SocType SocName() const { return soc_name_; }
 
-  rtError_t (*launch_func_)(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize, rtSmDesc_t *smDesc,
-                            rtStream_t stm);
-  rtError_t (*get_c2c_addr_func_)(uint64_t *, uint32_t *){nullptr};
-
-  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
+  // features config
   bool deterministic_{false};
   CubeTuner *online_tuner_{nullptr};
   CubeTuner *lazy_tuner_{nullptr};
+
+  // runtime api
+  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
+  rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize, rtStream_t stm) const {
+    return rt_kernel_launch_(stubFunc, blockDim, args, argsSize, nullptr, stm);
+  }
+  rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
+  void InitCommApi();
+  rtError_t rtIpcSetMemoryName(const void *ptr, uint64_t byteCount, char *name, uint32_t len) const {
+    return rt_ipc_set_memory_name_(ptr, byteCount, name, len);
+  }
+  rtError_t rtIpcOpenMemory(void **ptr, const char *name) const { return rt_ipc_open_memory_(ptr, name); }
+  rtError_t rtSetIpcMemPid(const char *name, int32_t pid[], int num) const { return rt_set_ipc_mem_pid_(name, pid, num); }
+  rtError_t rtDeviceGetBareTGrid(uint32_t *pid) const { return rt_device_get_bare_t_grid_(pid); }
+  rtError_t rtGetPairDevicesInfo(uint32_t devId, uint32_t otherDevId, int32_t infoType, int64_t *val) const {
+    return rt_get_pair_devices_info_(devId, otherDevId, infoType, val);
+  }
 
  private:
   System();
@@ -111,13 +126,21 @@ class System {
   uint64_t vector_core_num_;
   uint64_t cube_core_num_;
   SocType soc_name_{kSocUnknow};
+
+  void *rt_handle_;
+  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm){nullptr};
+  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
+  rtError_t (*rt_ipc_set_memory_name_)(const void *ptr, uint64_t byteCount, char *name, uint32_t len){nullptr};
+  rtError_t (*rt_ipc_open_memory_)(void **ptr, const char *name){nullptr};
+  rtError_t (*rt_set_ipc_mem_pid_)(const char *name, int32_t pid[], int num){nullptr};
+  rtError_t (*rt_device_get_bare_t_grid_)(uint32_t *pid){nullptr};
+  rtError_t (*rt_get_pair_devices_info_)(uint32_t devId, uint32_t otherDevId, int32_t infoType, int64_t *val){nullptr};
 };
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;
 constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 
-// {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kTypeEnd];
 

@@ -1072,7 +1072,7 @@ int Code::LaunchEx(void *workspace, void *stream) {
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(data_) + 1)};
   auto stub_func = System::Instance().StubFunc(target_);
-  return System::Instance().launch_func_(stub_func, block_dim_, args, sizeof(args), nullptr, stream);
+  return System::Instance().rtKernelLaunch(stub_func, block_dim_, args, sizeof(args), stream);
 #endif
 }
 }  // namespace dvm

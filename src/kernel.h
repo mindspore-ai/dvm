@@ -95,12 +95,6 @@ class VKernel {
   std::string dump_str_;
 };
 
-struct Metrics {
-  float mem_usage{0.0f};   // total_use_ub / ub_mem_size
-  float core_usage{0.0f};  // load * tile_num / (per_core_load * core_num)
-  float simd_usage{0.0f};  // tiled_shape_size / (repeat_num * max_simd_width)
-};
-
 class CodeGenHelper;
 class VectorKernel : public VKernel {
  public:
@@ -108,7 +102,6 @@ class VectorKernel : public VKernel {
   virtual ~VectorKernel();
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
-  void CollectMetrics(Metrics &metrics) const;
 
   void SetTile(int start, int end, int64_t num) { tiles_.emplace_back(DimTile{start, end, num}); }
   int MaxType() const { return max_type_; }

@@ -1101,28 +1101,6 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
-void VectorKernel::CollectMetrics(Metrics &metrics) const {
-  ASSERT(code_.data_ != nullptr);
-  uint64_t max_xbuf_ = 0;
-  for (auto op : objects_) {
-    if (op->xbuf_ > max_xbuf_) {
-      max_xbuf_ = op->xbuf_;
-    }
-  }
-  NDObject *dom = root_dom_.DomObject();
-  metrics.mem_usage =
-    float(max_xbuf_ + dom->strides_.back() * ITEM_SIZE[max_type_]) / float(System::Instance().LocalMemSize()) -
-    ReserveCodeSize();
-  uint64_t tile_per_block = CeilDiv(tile_num_, static_cast<uint64_t>(code_.block_dim_));
-  metrics.core_usage = float(tile_num_) / float(tile_per_block * System::Instance().CoreNum());
-  uint64_t tiled_shape_size = 1;
-  for (size_t i = 0; i < dom->nd_.size(); ++i) {
-    tiled_shape_size *= dom->nd_[i];
-  }
-  metrics.simd_usage =
-    float(tiled_shape_size) / float(dom->strides_.back() / simd_width_ * ITEM_SIMD_WIDTH_MAX[max_type_]);
-}
-
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
 #define OP_GEN_S(op)   \
   do {                 \

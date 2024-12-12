@@ -35,7 +35,7 @@
 
 namespace dvm {
 namespace {
-const std::string DEFAULT_SOCKET_IP = "127.0.0.1";
+const char *DEFAULT_SOCKET_IP = "127.0.0.1";
 constexpr uint16_t DEFAULT_SOCKET_PORT = 10069;  // TODO: check whether mindspore use this port
 const uint16_t MAX_BACK_LOG = 65535;
 
@@ -342,31 +342,7 @@ bool SocketChannel::ServerRecvSend(const uint8_t *send_buf, size_t send_size, ui
 int Communicator::communicator_id_ = -1;
 
 Communicator::Communicator(int rank_id, int rank_size) : inited_(false), rank_id_(rank_id), rank_size_(rank_size) {
-  void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
-  rt_ipc_set_memory_name_ = reinterpret_cast<decltype(rt_ipc_set_memory_name_)>(dlsym(handle, "rtIpcSetMemoryName"));
-  EXCEPTION_IF(rt_ipc_set_memory_name_ == nullptr, "load rt_ipc_set_memory_name_ symbol failed");
-  rt_ipc_open_memory_ = reinterpret_cast<decltype(rt_ipc_open_memory_)>(dlsym(handle, "rtIpcOpenMemory"));
-  EXCEPTION_IF(rt_ipc_open_memory_ == nullptr, "load rt_ipc_open_memory_ symbol failed");
-  rt_set_ipc_mem_pid_ = reinterpret_cast<decltype(rt_set_ipc_mem_pid_)>(dlsym(handle, "rtSetIpcMemPid"));
-  EXCEPTION_IF(rt_set_ipc_mem_pid_ == nullptr, "load rt_set_ipc_mem_pid_ symbol failed");
-  rt_set_ipc_memory_super_pod_pid_ =
-    reinterpret_cast<decltype(rt_set_ipc_memory_super_pod_pid_)>(dlsym(handle, "rtSetIpcMemorySuperPodPid"));
-  EXCEPTION_IF(rt_set_ipc_memory_super_pod_pid_ == nullptr, "load rt_set_ipc_memory_super_pod_pid_ symbol failed");
-  rt_device_get_bare_t_grid_ =
-    reinterpret_cast<decltype(rt_device_get_bare_t_grid_)>(dlsym(handle, "rtDeviceGetBareTgid"));
-  EXCEPTION_IF(rt_device_get_bare_t_grid_ == nullptr, "load rt_device_get_bare_t_grid_ symbol failed");
-  rt_get_pair_devices_info_ =
-    reinterpret_cast<decltype(rt_get_pair_devices_info_)>(dlsym(handle, "rtGetPairDevicesInfo"));
-  EXCEPTION_IF(rt_get_pair_devices_info_ == nullptr, "load rt_get_pair_devices_info_ symbol failed");
-  rt_get_soc_version_ = reinterpret_cast<decltype(rt_get_soc_version_)>(dlsym(handle, "rtGetSocVersion"));
-  EXCEPTION_IF(rt_get_soc_version_ == nullptr, "load rt_get_soc_version_ symbol failed");
-  rt_mem_prefetch_to_device_ =
-    reinterpret_cast<decltype(rt_mem_prefetch_to_device_)>(dlsym(handle, "rtMemPrefetchToDevice"));
-  EXCEPTION_IF(rt_mem_prefetch_to_device_ == nullptr, "load rt_mem_prefetch_to_device_ symbol failed");
-  rt_get_device_info_ = reinterpret_cast<decltype(rt_get_device_info_)>(dlsym(handle, "rtGetDeviceInfo"));
-  EXCEPTION_IF(rt_get_device_info_ == nullptr, "load rt_get_device_info_ symbol failed");
-
+  System::Instance().InitCommApi();
   communicator_id_++;
   socket_channel_ = new SocketChannel(rank_id_, rank_size_, communicator_id_);
   std::cout << "[" << rank_id_ << "] " << "load functions success" << std::endl;
@@ -401,7 +377,7 @@ void Communicator::CollectDev() {
 }
 
 void Communicator::CollectPid(std::vector<uint32_t> &pids) {
-  if (rt_device_get_bare_t_grid_(&pids[rank_id_]) != ACL_SUCCESS) {
+  if (System::Instance().rtDeviceGetBareTGrid(&pids[rank_id_]) != ACL_SUCCESS) {
     DvmException(rank_id_, "DeviceGetBareTgid failed");
   }
   bool ret = socket_channel_->AllGather(&pids[rank_id_], sizeof(pids[rank_id_]), pids.data());
@@ -411,7 +387,7 @@ void Communicator::CollectPid(std::vector<uint32_t> &pids) {
 }
 
 void Communicator::SetMemName(char *name) {
-  if (rt_ipc_set_memory_name_(peer_mem_[rank_id_], MAX_BUFFER_BYTES, name, IPC_NAME_SIZE) != ACL_SUCCESS) {
+  if (System::Instance().rtIpcSetMemoryName(peer_mem_[rank_id_], MAX_BUFFER_BYTES, name, IPC_NAME_SIZE) != ACL_SUCCESS) {
     DvmException(rank_id_, "rtIpcSetMemoryName failed");
   }
 }
@@ -422,7 +398,7 @@ void Communicator::SetIpcMemPid(const char *name, const std::vector<uint32_t> &p
       continue;
     }
     int32_t pid_int32 = pids[i];
-    if (rt_set_ipc_mem_pid_(name, &pid_int32, 1) != ACL_SUCCESS) {
+    if (System::Instance().rtSetIpcMemPid(name, &pid_int32, 1) != ACL_SUCCESS) {
       DvmException(rank_id_, "rtSetIpcMemPid failed");
     }
   }
@@ -442,7 +418,7 @@ void Communicator::OpenIpcMem(const char names[MAX_RANK_SIZE][IPC_NAME_SIZE]) {
     if (i == rank_id_) {
       continue;
     }
-    int ret = rt_ipc_open_memory_(reinterpret_cast<void **>(&peer_mem_[i]), names[i]);
+    int ret = System::Instance().rtIpcOpenMemory(reinterpret_cast<void **>(&peer_mem_[i]), names[i]);
     if (ret != ACL_SUCCESS) {
       std::stringstream oss;
       oss << "Open peer memory " << i << " failed, error code: " << ret;
@@ -457,7 +433,7 @@ void Communicator::InitCommon() {
       continue;
     }
     int64_t value = 0;
-    if (rt_get_pair_devices_info_(rank_id_, i, 0, &value) != 0) {
+    if (System::Instance().rtGetPairDevicesInfo(rank_id_, i, 0, &value) != 0) {
       std::stringstream oss;
       oss << "no connection between " << rank_id_ << " and " << i;
       DvmException(rank_id_, oss.str().c_str());

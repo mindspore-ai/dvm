@@ -55,7 +55,7 @@ extern const unsigned char g_vkernel_c220_bin[];
 extern unsigned int g_vkernel_c220_bin_len;
 
 namespace dvm {
-
+// {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
 const char *DTYPE_NAMES[dvm::kTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32"};
 
@@ -123,20 +123,20 @@ System::System() {
 #ifdef VK_SIM_MODEL
   auto rt_binary_register = rtDevBinaryRegister;
   auto rt_function_register = rtFunctionRegister;
-  launch_func_ = rtKernelLaunch;
+  rt_kernel_launch_ = rtKernelLaunch;
 #else
-  void *handle = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(handle == nullptr, "Load libruntime.so failed");
+  rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
+  EXCEPTION_IF(rt_handle_ == nullptr, "Load libruntime.so failed");
   auto rt_binary_register =
-    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(handle, "rtDevBinaryRegister"));
+    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(rt_handle_, "rtDevBinaryRegister"));
   EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
   auto rt_function_register =
     reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
-      dlsym(handle, "rtFunctionRegister"));
+      dlsym(rt_handle_, "rtFunctionRegister"));
   EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
-  launch_func_ = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
-    dlsym(handle, "rtKernelLaunch"));
-  EXCEPTION_IF(launch_func_ == nullptr, "load rt_kernel_launch symbol failed");
+  rt_kernel_launch_ = reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
+    dlsym(rt_handle_, "rtKernelLaunch"));
+  EXCEPTION_IF(rt_kernel_launch_ == nullptr, "load rt_kernel_launch symbol failed");
 #endif
   rtError_t err;
   void *module = nullptr;
@@ -165,9 +165,9 @@ System::System() {
   err = rt_function_register(module, stub_func, "vmain", "vmain", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 #ifdef VK_SIM_MODEL
-  get_c2c_addr_func_ = rtGetC2cCtrlAddr;
+  rt_get_c2c_addr_= rtGetC2cCtrlAddr;
 #else
-  get_c2c_addr_func_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(handle, "rtGetC2cCtrlAddr"));
+  rt_get_c2c_addr_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(rt_handle_, "rtGetC2cCtrlAddr"));
 #endif
 }
 
@@ -178,5 +178,24 @@ System::~System() {
   if (lazy_tuner_) {
     delete lazy_tuner_;
   }
+  dlclose(rt_handle_);
+}
+
+void System::InitCommApi() {
+  if (rt_ipc_set_memory_name_ != nullptr) {
+    return;
+  }
+  rt_ipc_set_memory_name_ = reinterpret_cast<decltype(rt_ipc_set_memory_name_)>(dlsym(rt_handle_, "rtIpcSetMemoryName"));
+  EXCEPTION_IF(rt_ipc_set_memory_name_ == nullptr, "load rt_ipc_set_memory_name_ symbol failed");
+  rt_ipc_open_memory_ = reinterpret_cast<decltype(rt_ipc_open_memory_)>(dlsym(rt_handle_, "rtIpcOpenMemory"));
+  EXCEPTION_IF(rt_ipc_open_memory_ == nullptr, "load rt_ipc_open_memory_ symbol failed");
+  rt_set_ipc_mem_pid_ = reinterpret_cast<decltype(rt_set_ipc_mem_pid_)>(dlsym(rt_handle_, "rtSetIpcMemPid"));
+  EXCEPTION_IF(rt_set_ipc_mem_pid_ == nullptr, "load rt_set_ipc_mem_pid_ symbol failed");
+  rt_device_get_bare_t_grid_ =
+    reinterpret_cast<decltype(rt_device_get_bare_t_grid_)>(dlsym(rt_handle_, "rtDeviceGetBareTgid"));
+  EXCEPTION_IF(rt_device_get_bare_t_grid_ == nullptr, "load rt_device_get_bare_t_grid_ symbol failed");
+  rt_get_pair_devices_info_ =
+    reinterpret_cast<decltype(rt_get_pair_devices_info_)>(dlsym(rt_handle_, "rtGetPairDevicesInfo"));
+  EXCEPTION_IF(rt_get_pair_devices_info_ == nullptr, "load rt_get_pair_devices_info_ symbol failed");
 }
 }  // namespace dvm

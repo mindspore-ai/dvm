@@ -21,8 +21,6 @@
 
 #include "isa.h"
 
-typedef int32_t rtError_t;
-
 namespace dvm {
 constexpr size_t MAX_RANK_SIZE = 8;
 constexpr size_t MAX_BUFFER_BYTES = 204 * 1024 * 1024;  // 204MB
@@ -32,7 +30,7 @@ class SocketChannel;
 class Communicator {
  public:
   Communicator(int rank_id, int rank_size);
-  virtual ~Communicator();
+  ~Communicator();
   bool Init();
 
   const std::vector<uint8_t *> GetPeerMemPtrs() const {
@@ -43,16 +41,6 @@ class Communicator {
   const int GetRankSize() const { return rank_size_; }
 
  private:
-  rtError_t (*rt_ipc_set_memory_name_)(const void *ptr, uint64_t byteCount, char *name, uint32_t len);
-  rtError_t (*rt_ipc_open_memory_)(void **ptr, const char *name);
-  rtError_t (*rt_set_ipc_mem_pid_)(const char *name, int32_t pid[], int num);
-  rtError_t (*rt_set_ipc_memory_super_pod_pid_)(const char *name, uint32_t sdid, int32_t pid[], int32_t num);  // 910C
-  rtError_t (*rt_device_get_bare_t_grid_)(uint32_t *pid);
-  rtError_t (*rt_get_pair_devices_info_)(uint32_t devId, uint32_t otherDevId, int32_t infoType, int64_t *val);
-  rtError_t (*rt_get_soc_version_)(char *ver, const uint32_t maxLen);
-  rtError_t (*rt_mem_prefetch_to_device_)(void *ptr, uint64_t size, int32_t deviceId);
-  rtError_t (*rt_get_device_info_)(uint32_t deviceId, int32_t moduleType, int32_t infoType, int64_t *val);
-
   /**
    * @brief Collect all the device ids
    */

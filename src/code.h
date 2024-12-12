@@ -123,11 +123,11 @@ class Code {
     }
     if (target_ == kTargetMix) {
       uint32_t ffts_len;
-      auto ret = System::Instance().get_c2c_addr_func_(reinterpret_cast<uint64_t *>(data_), &ffts_len);
+      auto ret = System::Instance().rtGetC2cCtrlAddr(reinterpret_cast<uint64_t *>(data_), &ffts_len);
       if (ret != RT_ERROR_NONE) return ret;
     }
     uint8_t *stub_func = System::Instance().StubFunc(target_);
-    return System::Instance().launch_func_(stub_func, block_dim_, data_, data_size_, nullptr, stream);
+    return System::Instance().rtKernelLaunch(stub_func, block_dim_, data_, data_size_, stream);
   }
   int LaunchEx(void *workspace, void *stream);
 

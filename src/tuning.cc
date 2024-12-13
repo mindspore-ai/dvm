@@ -213,26 +213,36 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
     auto ctx_it = context_.find(key);
     if (ctx_it == context_.end()) {
       ctx = new Context();
-      BuildSpace(op, code, ctx->space);
+      BuildTileSpace(op, code, ctx->tile_space);
       context_[key] = ctx;
     } else {
       ctx = ctx_it->second;
     }
-    int space_size = ctx->space.size();
+    auto &current_space = ctx->tuning_stage == kTileTuning ? ctx->tile_space : ctx->swizzle_space;
+    int space_size = current_space.size();
     constexpr int repeat = 2;
+    int cur_idx = ctx->best_idx >= 0 ? ctx->best_idx : 0;
     if (ctx->gen_cnt == space_size * repeat) {
-      int cur_idx = ctx->best_idx >= 0 ? ctx->best_idx : 0;
-      if (ctx->gen_cnt == ctx->run_cnt) {
-        auto it = tuning_table.emplace(key, *ctx->space[cur_idx]);
+      if (ctx->gen_cnt != ctx->run_cnt) {
+        info = current_space[cur_idx];
+      } else if (ctx->tuning_stage == kSwizzleTuning) {
+        auto it = tuning_table.emplace(key, *ctx->swizzle_space[cur_idx]);
         info = &it.first->second;
         context_.erase(key);
         delete ctx;
-      } else {
-        info = ctx->space[cur_idx];
+      } else { // ctx->tuning_stage == kSwizzleTuning
+        BuildSwizzleSpace(code, ctx->tile_space[cur_idx], ctx->swizzle_space);
+        ctx->tuning_stage = kSwizzleTuning;
+        ctx->run_cnt = 0;
+        ctx->best_idx = 0;
+        ctx->next_idx = 1;
+        ctx->gen_cnt = 1;
+        space_idx = 0;
+        info = ctx->swizzle_space[space_idx];
       }
     } else {
       space_idx = ctx->next_idx;
-      info = ctx->space[space_idx];
+      info = current_space[space_idx];
       ctx->next_idx = (space_idx + 1) % space_size;
       ctx->gen_cnt++;
     }
@@ -276,7 +286,7 @@ int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
   return 0;
 }
 
-void LazyCubeTuner::BuildSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space) {
+void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
   auto bias_size = op->bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[op->lhs_->type_id_];
@@ -294,15 +304,13 @@ void LazyCubeTuner::BuildSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo
     // 2. get core_loop, block_dim
     uint32_t m_loop = CeilDiv(code->m_real, m0);
     uint32_t n_loop = CeilDiv(code->n_real, n0);
-    uint32_t core_loop = m_loop * n_loop * std::max(code->batch_a0, code->batch_b0) * std::max(code->batch_a1, code->batch_b1);
+    uint32_t core_loop =
+      m_loop * n_loop * std::max(code->batch_a0, code->batch_b0) * std::max(code->batch_a1, code->batch_b1);
     block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
-    for (uint32_t cnt = std::min(block_dim, m_loop); cnt >= 1; --cnt) {
-      space.push_back(new TuningInfo(m0, n0, k0, cnt, core_loop, block_dim));
-    }
-    for (uint32_t cnt = std::min(block_dim, n_loop); cnt >= 1; --cnt) {
-      space.push_back(new TuningInfo(m0, n0, k0, 1u << 16 | cnt, core_loop, block_dim));
-    }
+    uint32_t cnt = 7;
+    space.push_back(new TuningInfo(m0, n0, k0, cnt, core_loop, block_dim));
+    space.push_back(new TuningInfo(m0, n0, k0, 1u << 16 | cnt, core_loop, block_dim));
   };
   uint32_t align_max = 512 / ITEM_SIZE[op->lhs_->type_id_];
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
@@ -316,6 +324,19 @@ void LazyCubeTuner::BuildSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo
         return;
       }
     }
+  }
+}
+
+void LazyCubeTuner::BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std::vector<TuningInfo *> &space) {
+  uint32_t m_loop = CeilDiv(code->m_real, (uint32_t)best_tile->m0);
+  uint32_t n_loop = CeilDiv(code->n_real, (uint32_t)best_tile->n0);
+  for (uint32_t cnt = std::min(best_tile->block_dim, m_loop); cnt >= 1; --cnt) {
+    space.push_back(
+      new TuningInfo(best_tile->m0, best_tile->n0, best_tile->k0, cnt, best_tile->core_loop, best_tile->block_dim));
+  }
+  for (uint32_t cnt = std::min(best_tile->block_dim, n_loop); cnt >= 1; --cnt) {
+    space.push_back(new TuningInfo(best_tile->m0, best_tile->n0, best_tile->k0, 1u << 16 | cnt, best_tile->core_loop,
+                                   best_tile->block_dim));
   }
 }
 }  // namespace dvm

@@ -84,21 +84,28 @@ class LazyCubeTuner : public CubeTuner {
   int Launch(CubeOp *op, Code &code, void *stream);
 
  protected:
+  enum TuningStage { kTileTuning = 0, kSwizzleTuning };
   struct Context {
     ~Context() {
-      for (auto info : space) {
+      for (auto info : tile_space) {
+        if (info) delete info;
+      }
+      for (auto info : swizzle_space) {
         if (info) delete info;
       }
     }
-    std::vector<TuningInfo *> space;
+    std::vector<TuningInfo *> tile_space;
+    std::vector<TuningInfo *> swizzle_space;
     float best_time;
     int best_idx{-1};
     int next_idx{0};
     int gen_cnt{0};
     int run_cnt{0};
+    TuningStage tuning_stage{kTileTuning};
   };
 
-  void BuildSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space);
+  void BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space);
+  void BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std::vector<TuningInfo *> &space);
   std::map<Key, Context *> context_;
 };
 }  // namespace dvm

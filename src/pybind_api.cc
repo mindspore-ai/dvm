@@ -682,7 +682,7 @@ void KernelPy::Join() {
 }
 
 void KernelPy::Barrier() {
-  if (g_mpc.rank_size == 1) {
+  if (g_mpc.rank_size > 1) {
     auto cur_cnt = g_mpc.bars[g_mpc.rank_id] + 1;
     g_mpc.bars[g_mpc.rank_id] = cur_cnt;
     for (int i = 0; i < g_mpc.rank_size; ++i) {

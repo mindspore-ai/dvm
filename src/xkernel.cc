@@ -120,20 +120,20 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
 uint64_t MixKernel::UnAlignCodeGen() {
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
-  ShapeRef *pad_shape_ref[2] = {&cube_op_->pad_a_, &cube_op_->pad_b_};
+  int64_t pad_size[2] = {cube_op_->pad_a_, cube_op_->pad_b_};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
   for (size_t i = 0; i < 2; i++) {
-    if (pad_shape_ref[i]->size) {
+    if (pad_size[i]) {
       stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
       pad_inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
       auto load = stage_kernel_->Copy(pad_inputs[i]);
-      inputs[i] = stage_kernel_->StagePadStore(load, pad_shape_ref[i]);
+      inputs[i] = stage_kernel_->StagePadStore(load, pad_size[i]);
     }
   }
   stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
   for (size_t i = 0; i < 2; i++) {
-    if (pad_shape_ref[i]->size) {
+    if (pad_size[i]) {
       inputs[i] = stage_kernel_->StageLoad(inputs[i]);
     } else {
       inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
@@ -361,7 +361,7 @@ uint64_t MixKernel::CodeGen() {
   if (cube_op_->bias_ && cube_op_->bias_->type_id_ == kBFloat16) {
     return BiasBF16CodeGen();
   }
-  if (cube_op_->pad_a_.size || cube_op_->pad_b_.size) {
+  if (cube_op_->pad_a_ || cube_op_->pad_b_) {
     return UnAlignCodeGen();
   }
   if (cube_op_->k_real_ > MAX_K) {
@@ -573,18 +573,18 @@ class CubeOptimizer {
   CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InitPadShape(); }
 
   bool AlignA(std::vector<NDObject *> &ops) {
-    if (!dom_->pad_a_.size) {
+    if (dom_->pad_a_ == 0) {
       return false;
     }
-    AlignInput(dom_->lhs_, &dom_->pad_a_, ops);
+    AlignInput(dom_->lhs_, dom_->pad_a_, ops);
     return true;
   }
 
   bool AlignB(std::vector<NDObject *> &ops) {
-    if (!dom_->pad_b_.size) {
+    if (dom_->pad_b_ == 0) {
       return false;
     }
-    AlignInput(dom_->rhs_, &dom_->pad_b_, ops);
+    AlignInput(dom_->rhs_, dom_->pad_b_, ops);
     return true;
   }
 
@@ -637,7 +637,7 @@ class CubeOptimizer {
   }
 
  protected:
-  void AlignInput(NDObject *&input, ShapeRef *align_shape, std::vector<NDObject *> &ops) {
+  void AlignInput(NDObject *&input, int64_t align_shape, std::vector<NDObject *> &ops) {
     NDObject *op = input;
     if (op->IsLoad()) {
       op = new CopyOp(op);

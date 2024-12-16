@@ -330,12 +330,10 @@ void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   auto size = lhs_->shape_ref_->size;
   shape_.Resize(size);
-  for (size_t i = 0; i < pad_shape_->size; i++) {
-    shape_[size - 1 - i] = lhs_->shape_ref_->data[size - 1 - i] + pad_shape_->data[pad_shape_->size - 1 - i];
+  for (size_t i = 0; i < size; i++) {
+    shape_[i] = lhs_->shape_ref_->data[i];
   }
-  for (size_t i = pad_shape_->size; i < size; i++) {
-    shape_[size - 1 - i] = lhs_->shape_ref_->data[size - 1 - i];
-  }
+  shape_[size - 1] += pad_size_;
   nd_ = lhs_->nd_;
 }
 
@@ -352,15 +350,13 @@ int NDPadStore::Emit(VectorKernel &k) {
   op.xn = lhs_->xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_[lead_dim_];
-  op.src_m = shape_ref_->data[size - 2];
+  op.slice_k = op.slice_m = 1;
+  op.src_m = 1;
   op.src_n = shape_ref_->data[size - 1];
-
-  op.slice_m = lhs_->shape_ref_->data[size - 2];
-  op.slice_n = lhs_->shape_ref_->data[size - 1];
-  op.slice_k = 1;
-  for (size_t i = 0; i + 2 < size; i++) {
-    op.slice_k *= shape_ref_->data[i];
+  for (size_t i = 0; i + 1 < size; i++) {
+    op.src_m *= shape_ref_->data[i];
   }
+  op.slice_n = lhs_->shape_ref_->data[size - 1];
   op.type_size = ITEM_SIZE[type_id_];
   op.offset = 0;
   op.one_flag = 0;
@@ -1653,13 +1649,11 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObjec
 }
 
 void CubeOp::InitPadShape() {
-  auto GetPad = [](int64_t pad_size, ShapeRefData<1> &pad) {
+  auto GetPad = [](int64_t pad_size, int64_t &pad) {
     if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
-      pad.Resize(0);
       return;
     }
-    pad.Resize(1);
-    pad[0] = ALIGN_256 - pad_size % ALIGN_256;
+    pad = ALIGN_256 - pad_size % ALIGN_256;
   };
   GetPad(trans_a_ ? m_align_ : k_align_, pad_a_);
   GetPad(trans_b_ ? k_align_ : n_align_, pad_b_);

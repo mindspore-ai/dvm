@@ -429,11 +429,11 @@ class NDStore : public NDAccess {
 
 class NDPadStore : public NDAccess {
  public:
-  NDPadStore(NDObject *src, ShapeRef *pad_shape)
-      : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_shape_(pad_shape) {
+  NDPadStore(NDObject *src, int64_t pad_size)
+      : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_size_(pad_size) {
     shape_ref_ = &shape_;
   }
-  NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) { gm_ = dst; }
+  NDPadStore(uint8_t *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { gm_ = dst; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
@@ -443,7 +443,7 @@ class NDPadStore : public NDAccess {
 
  private:
   ShapeWithRef shape_;
-  ShapeRef *pad_shape_;
+  int64_t pad_size_;
 };
 
 class FlexOp : public NDObject {
@@ -826,14 +826,14 @@ class CubeOp : public NDObject {
   int64_t m0_{0};
   int64_t n0_{0};
   int64_t k0_{0};
+  int64_t pad_a_{0};
+  int64_t pad_b_{0};
   int32_t rank_size_{0};
   bool trans_a_{false};
   bool trans_b_{false};
   bool pingpong_store_{false};
   bool peer_store_{false};
   bool atomic_add_{false};
-  ShapeRefData<1> pad_a_;
-  ShapeRefData<1> pad_b_;
   NDObject *bias_{nullptr};
 
  protected:

@@ -44,7 +44,8 @@ def test_matmul_split_k(m, n, k, trans):
     [[1, 1, 256, 256], [3, 4, 256, 256]],  # same dim, broadcast A
     [[3, 4, 256, 256], [1, 4, 256, 256]],  # same dim, broadcast B
     [[3, 4, 256, 256], [256, 256]],        # differnet dim, broadcast B
-    [[1, 4, 256, 256], [3, 1, 256, 256]]   # broadcast both A and B
+    [[1, 4, 256, 256], [3, 1, 256, 256]],   # broadcast both A and B
+    [[4, 1, 10, 256], [256, 256]],
 ])
 def test_batchmatmul(shape_a, shape_b):
     t = Tester("mix")
@@ -61,6 +62,7 @@ def test_batchmatmul(shape_a, shape_b):
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[4, 1, 256, 256], [1, 8, 256, 256]],
     [[768, 1024], [1024, 10240]],
+    [[4, 10, 1, 256], [256, 256]],
 ])
 def test_matmul_post_fusion(shape_a, shape_b):
     t = Tester("mix")

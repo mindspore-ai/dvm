@@ -834,6 +834,7 @@ class CubeOp : public NDObject {
   bool pingpong_store_{false};
   bool peer_store_{false};
   bool atomic_add_{false};
+  bool batch_fold_{false};
   NDObject *bias_{nullptr};
 
  protected:

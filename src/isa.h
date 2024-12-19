@@ -20,13 +20,11 @@
 #include <stdint.h>
 
 #ifdef _CCE_KERNEL_
-#define INSN_ATTR __attribute__((device_immutable))
 #define __aicore_inline__ static inline[aicore]
 #define __bcode__ __gm__
 #define bcodeptr_t __bcode__ uint64_t *__restrict__
 #else
 #define __gm__
-#define INSN_ATTR
 #define __bcode__
 #define __aicore_inline__ static inline
 #define bcodeptr_t uint64_t *
@@ -41,7 +39,6 @@ enum vPipe {
 
 enum vLoadInsnID {
   V_LOAD = 0,
-  V_LOAD_2,
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
   V_SLOAD,
@@ -54,7 +51,6 @@ enum vLoadInsnID {
 
 enum vStoreInsnID {
   V_STORE = 0,
-  V_STORE_2,
   V_STORE_ATOMIC,
   V_STORE_ATOMIC_DETERM,
   V_STORE_STATUS,
@@ -731,40 +727,6 @@ struct vReshape {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
     pc[1] = op.xd_pad << 56 | op.xn_pad << 48 | op.dup_size << 32 | op.xd_lead << 16 | op.xn_lead;
-    return size;
-  }
-};
-
-struct vDMA {
-  enum { ROUND_OFFSET = 3 };
-  enum { RELOC_OFFSET = 1 };
-  __gm__ uint8_t *gm;
-  uint64_t xn;
-  uint64_t tile_stride;
-  uint64_t lenburst;
-  uint64_t tail_lenburst;
-  uint64_t round_rank;
-  // pc[0]: round_rank(4) << 20 | xn(18)
-  // pc[1]: gm
-  // pc[2]: tile_stride(32) << 32 | tail_lenburst(16) << 16 | lenburst(16)
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vDMA &op) {
-    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.round_rank = (head >> (V_M_HEAD_EXT_OFFSET + 20)) & 0xful;
-    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
-    uint64_t data = pc[2];
-    op.lenburst = data & 0xfffful;
-    op.tail_lenburst = (data >> 16) & 0xfffful;
-    op.tile_stride = data >> 32;
-  }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vDMA &op, const uint64_t *rounds) {
-    uint64_t round_size = (op.round_rank + 1) / 2;
-    uint64_t size = vDMA::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.round_rank << 20 | op.xn, size, pipe);
-    pc[1] = reinterpret_cast<uint64_t>(op.gm);
-    pc[2] = op.tile_stride << 32 | op.tail_lenburst << 16 | op.lenburst;
-    for (uint64_t i = 0; i < round_size; ++i) {
-      pc[vDMA::ROUND_OFFSET + i] = rounds[i];
-    }
     return size;
   }
 };

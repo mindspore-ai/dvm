@@ -289,29 +289,17 @@ int NDLoad::Emit(VectorKernel &k) {
   }
   int64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  if (lead_align == nd_[lead_dim_] || lead_align == strides_.back()) {
-    vDMA op;
-    op.gm = gm_;
-    op.xn = xbuf_;
-    op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
-    op.lenburst = GetBlocks(src_tile_stride_);
-    op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(src_tile_stride_ / nd_[tail_dim_] * tail_size_);
-    op.round_rank = round_tile_.size();
-    reloc_addr_ = insn_ + vDMA::RELOC_OFFSET;
-    return vDMA::Encode(insn_, vLoadInsnID::V_LOAD, vPipe::V_PIPE_LOAD, op, rounds);
-  } else {  // align
-    vLoad op;
-    op.from = gm_;
-    op.xn = xbuf_;
-    op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
-    op.body_iter = strides_.back() / lead_align;
-    op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
-    op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
-    op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-    op.round_rank = round_tile_.size();
-    reloc_addr_ = insn_ + vLoad::RELOC_OFFSET;
-    return vLoad::Encode(insn_, vLoadInsnID::V_LOAD_2, op, rounds);
-  }
+  vLoad op;
+  op.from = gm_;
+  op.xn = xbuf_;
+  op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
+  op.body_iter = strides_.back() / lead_align;
+  op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+  op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+  op.round_rank = round_tile_.size();
+  reloc_addr_ = insn_ + vLoad::RELOC_OFFSET;
+  return vLoad::Encode(insn_, vLoadInsnID::V_LOAD, op, rounds);
 }
 
 void NDLoad::Normalize(std::vector<NDObject *> &run_ops) {
@@ -654,54 +642,42 @@ int NDStore::Emit(VectorKernel &k) {
       return code_size;
     }
   }
-  if (lead_align == static_cast<uint64_t>(lhs_->nd_[lhs_->lead_dim_])) {
-    vDMA op;
-    op.gm = gm_;
-    op.xn = lhs_->xbuf_;
-    op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
-    op.lenburst = GetBlocks(dst_tile_stride_);
-    op.tail_lenburst = tail_dim_ < 0 ? op.lenburst : GetBlocks(dst_tile_stride_ / nd_[tail_dim_] * tail_size_);
-    op.round_rank = round_tile_.size();
-    reloc_addr_ = insn_ + vDMA::RELOC_OFFSET;
-    return vDMA::Encode(insn_, vStoreInsnID::V_STORE, vPipe::V_PIPE_STORE, op, rounds);
-  } else {
-    vStore op;
-    uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
-    uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
-    uint64_t body_iter = strides_.back() / lead_align;
-    uint64_t lead_tiling, tail_iter;
-    if (lhs_->RealObjType() == ObjectType::kRemovePad) {
-      if (tail_dim_ < 0) {
-        iter_size *= body_iter;
-        tail_iter = iter_size;
-      } else if (body_iter == 1) {
-        tail_iter = tail_size_ * ITEM_SIZE[type_id_];
-      } else {
-        tail_iter = body_iter / nd_[tail_dim_] * tail_size_ * iter_size;
-        iter_size *= body_iter;
-      }
-      lead_tiling = 1;
-      body_iter = 1;
-      pad_size = 0;
+  vStore op;
+  uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
+  uint64_t body_iter = strides_.back() / lead_align;
+  uint64_t lead_tiling, tail_iter;
+  if (lhs_->RealObjType() == ObjectType::kRemovePad) {
+    if (tail_dim_ < 0) {
+      iter_size *= body_iter;
+      tail_iter = iter_size;
     } else if (body_iter == 1) {
-      lead_tiling = 1;
-      tail_iter = tail_dim_ < 0 ? iter_size : tail_size_ * ITEM_SIZE[type_id_];
+      tail_iter = tail_size_ * ITEM_SIZE[type_id_];
     } else {
-      lead_tiling = 0;
-      tail_iter = tail_dim_ < 0 ? body_iter : body_iter / nd_[tail_dim_] * tail_size_;
+      tail_iter = body_iter / nd_[tail_dim_] * tail_size_ * iter_size;
+      iter_size *= body_iter;
     }
-    op.xn = lhs_->xbuf_;
-    op.to = reinterpret_cast<uint64_t>(gm_);
-    op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
-    op.iter_num = body_iter;
-    op.iter_tail = tail_iter;
-    op.iter_size = iter_size;
-    op.pad_size = pad_size;
-    op.round_rank = round_tile_.size();
-    op.lead_tiling = lead_tiling;
-    reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
-    return vStore::Encode(insn_, vStoreInsnID::V_STORE_2, op, rounds);
+    lead_tiling = 1;
+    body_iter = 1;
+    pad_size = 0;
+  } else if (body_iter == 1) {
+    lead_tiling = 1;
+    tail_iter = tail_dim_ < 0 ? iter_size : tail_size_ * ITEM_SIZE[type_id_];
+  } else {
+    lead_tiling = 0;
+    tail_iter = tail_dim_ < 0 ? body_iter : body_iter / nd_[tail_dim_] * tail_size_;
   }
+  op.xn = lhs_->xbuf_;
+  op.to = reinterpret_cast<uint64_t>(gm_);
+  op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
+  op.iter_num = body_iter;
+  op.iter_tail = tail_iter;
+  op.iter_size = iter_size;
+  op.pad_size = pad_size;
+  op.round_rank = round_tile_.size();
+  op.lead_tiling = lead_tiling;
+  reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
+  return vStore::Encode(insn_, vStoreInsnID::V_STORE, op, rounds);
 }
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }

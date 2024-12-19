@@ -66,21 +66,6 @@ void DumpRounds(uint64_t rank, uint64_t *rounds, std::ostringstream &oss) {
   oss << ")";
 }
 
-void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vDMA op;
-  vDMA::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "load.u8.32x" << op.lenburst;
-  oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.gm);
-  oss << " //";
-  DumpVal("tile_stride", op.tile_stride, oss);
-  oss << ", ";
-  DumpVal("tail_lenburst", op.tail_lenburst, oss);
-  if (op.round_rank > 0) {
-    oss << ", ";
-    DumpRounds(op.round_rank, dump_info.insn + vDMA::ROUND_OFFSET, oss);
-  }
-}
-
 void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSLoad op;
   vSLoad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -154,25 +139,10 @@ void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "exit 0"; }
 
-void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vDMA op;
-  vDMA::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "store.u8.32x" << op.lenburst;
-  oss << " " << reinterpret_cast<void *>(op.gm) << ", " << reinterpret_cast<void *>(op.xn);
-  oss << " //";
-  DumpVal("tile_stride", op.tile_stride, oss);
-  oss << ", ";
-  DumpVal("tail_lenburst", op.tail_lenburst, oss);
-  if (op.round_rank > 0) {
-    oss << ", ";
-    DumpRounds(op.round_rank, dump_info.insn + vDMA::ROUND_OFFSET, oss);
-  }
-}
-
-void DumpLoad2(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vLoad op;
   vLoad::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "load2.u8." << op.iter_size << "x" << op.body_iter;
+  oss << "load.u8." << op.iter_size << "x" << op.body_iter;
   oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from);
   oss << " //";
   DumpVal("tile_stride", op.tile_stride, oss);
@@ -233,10 +203,10 @@ void DumpPingpongPeerLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-void DumpStore2(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStore op;
   vStore::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "store2.u8." << op.iter_size << "x" << op.iter_num;
+  oss << "store.u8." << op.iter_size << "x" << op.iter_num;
   oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
   oss << " //";
   DumpVal("tile_stride", op.tile_stride, oss);
@@ -543,7 +513,6 @@ using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 
 std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_LOAD, &DumpLoad},
-  {V_LOAD_2, &DumpLoad2},
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
   {V_SLOAD, &DumpSLoad},
@@ -556,7 +525,6 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
 
 std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE, &DumpStore},
-  {V_STORE_2, &DumpStore2},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
   {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
   {V_STORE_STATUS, &DumpStoreStatus},

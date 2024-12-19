@@ -1248,6 +1248,10 @@ int VectorKernel::Analyze() {
 class PropDomainBuilder {
  public:
   void Build(const std::vector<NDObject *> &objects, RootDomain &root) {
+    for (auto op : objects) {
+      op->pd_next_ = nullptr;
+      SetHead(op, nullptr);
+    }
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
       NDObject *op = *it;
       if (GetHead(op) == nullptr) {

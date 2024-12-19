@@ -27,7 +27,6 @@
 #include "acl/acl_rt.h"
 #include "kernel.h"
 #include "pybind_api.h"
-#include "bf16.h"
 
 #define ASCEND_CALL(func)                                                                               \
   do {                                                                                                  \
@@ -40,6 +39,31 @@
 
 namespace dvm {
 namespace {
+inline void F32ToBF16(float *input, uint16_t *output, uint32_t size) {
+  while (size-- != 0) {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    memcpy(output, input, 2);
+#else
+    memcpy(output, (char *)input + 2, 2);
+#endif
+    input++;
+    output++;
+  }
+}
+
+inline void BF16ToF32(uint16_t *input, float *output, uint32_t size) {
+  memset(output, 0, size * 4);
+  while (size-- != 0) {
+#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    memcpy(output, input, 2);
+#else
+    memcpy((char *)output + 2, input, 2);
+#endif
+    input++;
+    output++;
+  }
+}
+
 int64_t GetTimeX() {
   struct timeval tv;
   gettimeofday(&tv, nullptr);

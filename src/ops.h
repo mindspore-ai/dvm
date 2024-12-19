@@ -315,8 +315,8 @@ class NDObject {
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_;
-  ShapeRef *shape_ref_{nullptr};
-  NDObject *pd_next_{nullptr};  // PropDomain next
+  ShapeRef *shape_ref_;
+  NDObject *pd_next_;  // PropDomain next
   ObjectType obj_id_;
   DType type_id_;
   int lead_dim_;

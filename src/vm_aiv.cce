@@ -1197,21 +1197,6 @@ __aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, op.repeat * rs, 0, 0);
 }
 
-static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vDMA op;
-  vDMA::Decode(pc, head, op);
-  uint64_t tile_idx = TileIdx(tile);
-  if (op.round_rank) {
-    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET);
-    if (tile_idx == -1) {
-      return;
-    }
-  }
-  uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
-  __gm__ void* gm = (__gm__ uint8_t*)op.gm + op.tile_stride * tile_idx;
-  copy_gm_to_ubuf((__ubuf__ void*)op.xn, gm, 0, 1, len_burst, 0, 0);
-}
-
 static inline [aicore] void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                         uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                         uint64_t pad_size, uint64_t type_size) {
@@ -1396,23 +1381,7 @@ __aicore_inline__ void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   SetVectorMask(simd_width);
 }
 
-static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vDMA op;
-  vDMA::Decode(pc, head, op);
-  uint64_t tile_idx = TileIdx(tile);
-  if (op.round_rank > 0) {
-    tile_idx = RoundUpTileIdx<kRoundCacheStore>(tile, tile_idx, op.round_rank, pc + vDMA::ROUND_OFFSET);
-    if (tile_idx == -1) {
-      return;
-    }
-  }
-  __gm__ void* gm = (__gm__ uint8_t*)op.gm + op.tile_stride * tile_idx;
-  uint64_t len_burst = IsLastTile(tile) ? op.tail_lenburst : op.lenburst;
-  copy_ubuf_to_gm(gm, (__ubuf__ void*)op.xn, 0, 1, len_burst, 0, 0);
-  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + (len_burst << 5) - 31); // max 31 overflow
-}
-
-static inline [aicore] void Load2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vLoad op;
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
@@ -1448,7 +1417,7 @@ static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t 
   copy_gm_to_ubuf_align_b8(dst, src, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
 }
 
-static inline [aicore] void Store2(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStore op;
   vStore::Decode(pc, head, op);
   uint64_t iter_body = op.iter_num;
@@ -1923,7 +1892,6 @@ TILE_LOOP:
   extern "C" __noinline__[aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
 
 DEF_DISP_FUNC(V_LOAD, Load(pc, head, tile))
-DEF_DISP_FUNC(V_LOAD_2, Load2(pc, head, tile))
 DEF_DISP_FUNC(V_LOAD_DUMMY, void(0))
 DEF_DISP_FUNC(V_SLICE_LOAD, SliceLoad(pc, head, tile))
 DEF_DISP_FUNC(V_SLOAD, SLoad(pc, head, tile))
@@ -1933,7 +1901,6 @@ DEF_DISP_FUNC(V_PEER_LOAD, PeerLoad<false>(pc, head, tile))
 DEF_DISP_FUNC(V_PEER_LOAD_MIX, PeerLoad<true>(pc, head, tile))
 
 DEF_DISP_FUNC(V_STORE, Store(pc, head, tile))
-DEF_DISP_FUNC(V_STORE_2, Store2(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_ATOMIC_DETERM, StoreAtomicDeterm(pc, head, tile))
 DEF_DISP_FUNC(V_STORE_STATUS, StoreStatus(pc, head))

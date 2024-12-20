@@ -617,6 +617,7 @@ class CubeOptimizer {
     size_t k_tail = dom_->k_real_ % k_stride ? dom_->k_real_ % k_stride : k_stride;
     size_t offset_a = 0;
     size_t offset_b = 0;
+    dom_->output_->type_id_ = DType::kFloat32;
     for (size_t i = 0; i < split_num - 1; ++i) {
       auto op = new CubeOp(dom_->lhs_, dom_->rhs_, dom_->trans_a_, dom_->trans_b_, i == 0 ? dom_->bias_ : nullptr);
       op->NormalizeCube();

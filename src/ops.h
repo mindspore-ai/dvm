@@ -32,7 +32,6 @@ enum ObjectType {
   // Store
   kPadStore,
   kSStore,
-  kPeerStore,
   kStore,
 
   // Comm

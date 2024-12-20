@@ -43,7 +43,6 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenLoad, true},    // Load
   {kGenStore, false},  // PadStore
   {kGenStore, true},   // SStore
-  {kGenStore, true},   // PeerStore
   {kGenStore, true},   // Store
   {kGenComm, true},    // ReduceScatter
   {kGenComm, true},    // AllGather

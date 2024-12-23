@@ -428,7 +428,7 @@ int NDSLoad::Emit(VectorKernel &k) {
     op.src_n = cube_op_->n_real_;
     op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
     op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
-    if(cube_op_->batch_fold_){
+    if (cube_op_->batch_fold_) {
       op.flags = 0;
     } else {
       size_t shape_size = shape_ref_->size;
@@ -2006,8 +2006,9 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   } else {
     GenTiling(op);
   }
-  // std::cout << "result tiling: m0=" << op->m0 << ", n0=" << op->n0 << ", k0=" << op->k0 << ", swizzle=(" <<
-  // (op->swizzle >> 16) << ", " << (op->swizzle & 0xfffful) << ")" << std::endl;
+  op->m_loop = CeilDiv(op->m_real, op->m0);
+  op->n_loop = CeilDiv(op->n_real, op->n0);
+  op->k_loop = CeilDiv(op->k_real, op->k0);
 }
 
 ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm)

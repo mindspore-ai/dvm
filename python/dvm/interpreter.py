@@ -317,34 +317,25 @@ def parse_and_generate_code(block, idx, occurrence_count):
         elif operation == 'Broadcast':
             # 处理 Broadcast 操作
             operator_count += 1  # 增加算子计数
-            shape_ref = variable_shapes.get(var_name)
-            if not shape_ref:
-                # 记录 Broadcast 的输入变量，用于后续替换
-                param_var_name, _, _ = parse_variable_def(
-                    params_list[0], allow_extra=True)
-                # 解析参数变量的最终映射
-                param_var_name_resolved = resolve_variable(
-                    param_var_name, skip_variables)
-                skip_variables[var_name] = param_var_name_resolved
-                numpy_steps[var_name] = numpy_steps.get(
-                    param_var_name_resolved)
-                variable_mapping[var_name] = variable_mapping.get(
-                    param_var_name_resolved)
+            shape_ref = variable_shapes.get(var_name, [])
+            param_var_name, _, _ = parse_variable_def(
+                params_list[0], allow_extra=True)
+            param_var_name = resolve_variable(
+                param_var_name, skip_variables)
+            param_code_var = variable_mapping.get(param_var_name)
+            param_numpy_expr = numpy_steps.get(param_var_name)
+            if param_code_var and param_numpy_expr:
+                line = f"{code_var_name} = t.broadcast({param_code_var}, {shape_ref})"
+                code_lines.append('    ' + line)
+                numpy_expr = f"np.broadcast_to({param_numpy_expr}, {shape_ref})"
+                numpy_steps[var_name] = numpy_expr
             else:
-                param_var_name, _, _ = parse_variable_def(
-                    params_list[0], allow_extra=True)
-                param_var_name = resolve_variable(
-                    param_var_name, skip_variables)
-                param_code_var = variable_mapping.get(param_var_name)
-                param_numpy_expr = numpy_steps.get(param_var_name)
-                if param_code_var and param_numpy_expr:
-                    line = f"{code_var_name} = t.broadcast({param_code_var}, {shape_ref})"
-                    code_lines.append('    ' + line)
-                    numpy_expr = f"np.broadcast_to({param_numpy_expr}, {shape_ref})"
-                    numpy_steps[var_name] = numpy_expr
-                else:
-                    print(f"Error: variable {param_var_name} not found.")
+                print(f"Error: variable {param_var_name} not found.")
         elif operation in ['Add', 'Sub', 'Mul', 'Div', 'Power', 'Maximum', 'Minimum', 'Compare', 'LogicalOr', 'LogicalAnd']:
+            if operation == "Compare":
+                operation = "Less"
+            if operation == "Power":
+                operation = "Pow"
             operator_count += 1  # 增加算子计数
             if len(params_list) == 2:
                 # 二元操作，两个参数
@@ -361,10 +352,6 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 param_numpy_expr1 = numpy_steps.get(param_var_name1)
                 param_numpy_expr2 = numpy_steps.get(param_var_name2)
                 if param_code_var1 and param_code_var2 and param_numpy_expr1 and param_numpy_expr2:
-                    if operation == "Compare":
-                        operation = "Less"
-                    if operation == "Power":
-                        operation = "Pow"
                     line = f"{code_var_name} = t.binary('{operation}', {param_code_var1}, {param_code_var2})"
                     code_lines.append('    ' + line)
                     numpy_op_map = {
@@ -407,6 +394,8 @@ def parse_and_generate_code(block, idx, occurrence_count):
                         'Mul': 'np.multiply',
                         'Maximum': 'np.maximum',
                         'Minimum': 'np.minimum',
+                        'Div': 'np.divide',
+                        'Less': 'np.less',
                     }
                     numpy_op = numpy_op_map.get(operation, 'np.add')
                     numpy_expr = f"{numpy_op}({param_numpy_expr}, {scalar_value})"
@@ -424,17 +413,13 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 i += 1
                 continue
             # 获取目标形状
-            shape_ref = variable_shapes.get(var_name)
-            if not shape_ref:
-                print(f"Error: Shape for variable {var_name} not found.")
-                i += 1
-                continue
+            shape_ref = variable_shapes.get(var_name, [])
             # 生成代码
             line = f"{code_var_name} = {scalar_value}"
             code_lines.append('    ' + line)
             numpy_expr = f"np.full({shape_ref}, {scalar_value}, dtype=np.{var_type})"
             numpy_steps[var_name] = numpy_expr
-        elif operation in ['Abs', 'Neg', 'Exp', 'Log', 'Sqrt', 'Reciprocal','IsFinite', 'LogicalNot']:
+        elif operation in ['Abs', 'Neg', 'Exp', 'Log', 'Sqrt', 'Reciprocal', 'IsFinite', 'LogicalNot']:
             operator_count += 1  # 增加算子计数
             if len(params_list) < 1:
                 print(f"{operation} operation缺少参数: {line}")
@@ -479,7 +464,8 @@ def parse_and_generate_code(block, idx, occurrence_count):
             if param_code_var and param_numpy_expr and target_var_type:
                 line = f"{code_var_name} = t.cast({param_code_var}, \"{target_var_type}\")"
                 code_lines.append('    ' + line)
-                numpy_expr = f"{param_numpy_expr}.astype(np.{target_var_type})"
+                np_target_var_type = "bool_" if target_var_type == "bool" else target_var_type
+                numpy_expr = f"{param_numpy_expr}.astype(np.{np_target_var_type})"
                 numpy_steps[var_name] = numpy_expr
             else:
                 print(
@@ -525,7 +511,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
                         print(f"Reduce not aixs")
                         i += 1
                         continue
-                        
+
                 # 生成代码
                 line = f"{code_var_name} = t.reduce('sum', {param_code_var}, {axis}, {keepdims})"
                 code_lines.append('    ' + line)
@@ -553,9 +539,14 @@ def parse_and_generate_code(block, idx, occurrence_count):
             param_code_var2 = variable_mapping.get(param_var_name2)
             param_numpy_expr1 = numpy_steps.get(param_var_name1)
             param_numpy_expr2 = numpy_steps.get(param_var_name2)
+            if trans_a == "True":
+                param_numpy_expr1 = f"{param_numpy_expr1}.swapaxes(-1,2)"
+            if trans_b == "True":
+                param_numpy_expr2 = f"{param_numpy_expr2}.swapaxes(-1,2)"
+
             if len(params_list) == 2:
                 line = f"{code_var_name} = t.matmul({param_code_var1}, {param_code_var2}, {trans_a}, {trans_b})"
-                numpy_expr = f"np.matmul({param_numpy_expr1}, {param_numpy_expr2}, {trans_a}, {trans_b})"
+                numpy_expr = f"np.matmul({param_numpy_expr1}.astype(np.float32), {param_numpy_expr2}.astype(np.float32)).astype(np.float16)"
             else:
                 param_var_bias, _, _ = parse_variable_def(
                     params_list[2], allow_extra=True)
@@ -564,7 +555,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 param_code_bias = variable_mapping.get(param_var_bias)
                 param_numpy_bias = numpy_steps.get(param_var_bias)
                 line = f"{code_var_name} = t.matmul({param_code_var1}, {param_code_var2}, {trans_a}, {trans_b}, {param_code_bias})"
-                numpy_expr = f"np.matmul({param_numpy_expr1}, {param_numpy_expr2}, {trans_a}, {trans_b}) + {param_numpy_bias}"
+                numpy_expr = f"np.matmul({param_numpy_expr1}.astype(np.float32), {param_numpy_expr2}.astype(np.float32)).astype(np.float16) + {param_numpy_bias}"
             code_lines.append('    ' + line)
             numpy_steps[var_name] = numpy_expr
         elif operation == 'Store':

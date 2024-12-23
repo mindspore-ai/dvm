@@ -1226,6 +1226,7 @@ struct vCubeOp {
   uint32_t rank_size{0};
   uint32_t m_real, n_real, k_real;
   uint32_t m_align, n_align, k_align;
+  uint32_t m_loop, n_loop, k_loop;
   // shape_a: [batch_a0, batch_a1, m, k], shape_b: [batch_b0, batch_b1, k, n]
   uint32_t batch_a0, batch_a1, batch_b0, batch_b1;
   uint32_t m0, n0, k0;
@@ -1252,47 +1253,43 @@ struct vCubeOp {
     int64_t midx, nidx;
     uint64_t swizzle_dir = op->swizzle >> 16;
     uint64_t swizzle_cnt = op->swizzle & 0xffff;
-    uint64_t m_loop = (op->m_real + op->m0 - 1) / op->m0;
-    uint64_t n_loop = (op->n_real + op->n0 - 1) / op->n0;
-    TileMap(block_tile, m_loop, n_loop, swizzle_dir, swizzle_cnt, midx, nidx);
+    TileMap(block_tile, op->m_loop, op->n_loop, swizzle_dir, swizzle_cnt, midx, nidx);
     int64_t m_end = op->m_real / op->m0;
     int64_t n_end = op->n_real / op->n0;
     uint64_t tile_flag = (midx == m_end) << 1 | (nidx == n_end);
     midx *= op->m0;
     nidx *= op->n0;
-    uint64_t batch_offset = block_tile / (m_loop * n_loop) * op->n_real * op->m_real;
+    uint64_t batch_offset = block_tile / (op->m_loop * op->n_loop) * op->n_real * op->m_real;
     return tile_flag << V_GROUP_OFFSET_SIZE | (midx * op->n_real + nidx + batch_offset);
   }
 
-  __aicore_inline__ void TileMap(uint32_t tile, uint64_t m_loop, uint64_t n_loop, uint64_t swizzle_dir,
+  __aicore_inline__ void TileMap(uint32_t tile, uint32_t m_loop, uint32_t n_loop, uint64_t swizzle_dir,
                                  uint64_t swizzle_cnt, int64_t &midx, int64_t &nidx) {
     tile = tile % (m_loop * n_loop);
     if (swizzle_dir == 0) {
-      uint32_t tile_block_loop = (m_loop + swizzle_cnt - 1) / swizzle_cnt;
       uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);
       uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * n_loop);
 
       uint32_t n_row = swizzle_cnt;
-      if (tile_block_idx == tile_block_loop - 1) {
+      if (m_loop < (tile_block_idx + 1) * swizzle_cnt) {
         n_row = m_loop - swizzle_cnt * tile_block_idx;
       }
-      midx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_row;
       nidx = in_tile_block_idx / n_row;
-      if (tile_block_idx % 2 != 0) {
+      midx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_row * nidx;
+      if (tile_block_idx & 1) {
         nidx = n_loop - nidx - 1;
       }
     } else {
-      uint32_t tile_block_loop = (n_loop + swizzle_cnt - 1) / swizzle_cnt;
       uint32_t tile_block_idx = tile / (swizzle_cnt * m_loop);
       uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * m_loop);
 
       uint32_t n_col = swizzle_cnt;
-      if (tile_block_idx == tile_block_loop - 1) {
+      if (n_loop < (tile_block_idx + 1) * swizzle_cnt) {
         n_col = n_loop - swizzle_cnt * tile_block_idx;
       }
       midx = in_tile_block_idx / n_col;
-      nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx % n_col;
-      if (tile_block_idx % 2 != 0) {
+      nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_col * midx;
+      if (tile_block_idx & 1) {
         midx = m_loop - midx - 1;
       }
     }

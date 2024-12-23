@@ -352,8 +352,6 @@ class CodeGenHelper {
   int GenWrapOp(WrapOp *op) {
     int anti_num = 0;
     NDObject *anti_ops[FlexOp::kWsMax + 2];
-    int free_wss_num = 0;
-    int free_wss[FlexOp::kWsMax + 1];
     if (op->xbuf_ == 0) {
       NDObject *anti = nullptr;
       op->xbuf_ = AllocDynXBuf(op, &anti);
@@ -367,10 +365,12 @@ class CodeGenHelper {
       if (op->reuse_dep_) anti_ops[anti_num++] = kernel_.objects_[op->reuse_dep_];
     } else {
       NDObject *anti = nullptr;
-      free_wss[free_wss_num++] = op->inner_xbuf_ = AllocDynXBuf(op, &anti);
+      op->inner_xbuf_ = AllocDynXBuf(op, &anti);
       if (anti) anti_ops[anti_num++] = anti;
     }
     if (op->inner_->flags_ & OBJ_FLAG_WORKSPACE) {
+      int free_wss_num = 0;
+      int free_wss[FlexOp::kWsMax + 1];
       FlexOp *inner = static_cast<FlexOp *>(op->inner_);
       ASSERT(inner->ws_num_ <= FlexOp::kWsMax);
       ASSERT(!(inner->flags_ & OBJ_FLAG_WRAP));
@@ -379,11 +379,12 @@ class CodeGenHelper {
         free_wss[free_wss_num++] = inner->wss_[i] = AllocDynXBuf(op, &anti);
         if (anti) anti_ops[anti_num++] = anti;
       }
+      for (int i = 0; i < free_wss_num; ++i) {
+        free_xbuf_.emplace(free_wss[i], op);
+      }
     }
+    free_xbuf_.emplace(op->inner_xbuf_, op);
     int size = GenFlexOpCommon(op, anti_ops, anti_num);
-    for (int i = 0; i < free_wss_num; ++i) {
-      free_xbuf_.emplace(free_wss[i], op);
-    }
     return size;
   }
 

@@ -441,13 +441,17 @@ int NDSLoad::Emit(VectorKernel &k) {
     op.pad_size = lead_align - nd_[lead_dim_];
     op.slice_m = cube_op_->m0_;
     op.slice_n = cube_op_->n0_;
-    size_t shape_size = shape_ref_->size;
     op.src_n = cube_op_->n_real_;
     op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
     op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
-    auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] == 1;
-    auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] == 1;
-    op.flags = broadcast_m << 1 | broadcast_n;
+    if (cube_op_->batch_fold_) {
+      op.flags = 0;
+    } else {
+      size_t shape_size = shape_ref_->size;
+      auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] != cube_op_->m_real_;
+      auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] != cube_op_->n_real_;
+      op.flags = broadcast_m << 1 | broadcast_n;
+    }
     op.type_size = ITEM_SIZE[type_id_];
     reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
     return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);
@@ -944,7 +948,7 @@ int CompareScalarOp::Emit(VectorKernel &k) {
 }
 
 void CompareScalarOp::Dump(bool verbose, std::ostringstream &oss) {
-  oss << "CompareS";
+  oss << "Compare";
   if (verbose) {
     oss << "<" << cmp_op_ << ", " << scalar_ << ">";
   }
@@ -1625,7 +1629,7 @@ void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
 }
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
-    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b){};
+    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {};
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias)
     : CubeOp(lhs, rhs, trans_a, trans_b) {
@@ -1738,7 +1742,8 @@ void CubeOp::Tile(vCubeOp *op) {
   auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_ping_pong_num = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
-  op->k0 = k0_max < cubeBlockSize ? RoundDown<uint32_t>(k0_max, kBlockSize) : RoundDown<uint32_t>(k0_max, cubeBlockSize);
+  op->k0 =
+    k0_max < cubeBlockSize ? RoundDown<uint32_t>(k0_max, kBlockSize) : RoundDown<uint32_t>(k0_max, cubeBlockSize);
   if (op->k0 > CONST_512) {
     op->k0 = RoundDown(op->k0, CONST_512);
   }
@@ -1977,6 +1982,15 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
     op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
   } else {
     ASSERT(0);  // TODO: pre fusion
+  }
+  if (!trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2) {
+    auto batch_fold = op->batch_a1 * op->batch_a0;
+    op->batch_a1 = 1;
+    op->batch_a0 = 1;
+    op->m_align = m_align_ *= batch_fold;
+    op->m_real = m_real_ *= batch_fold;
+    op->a_size *= batch_fold;
+    batch_fold_ = true;
   }
   auto c = static_cast<NDAccess *>(output_);
   op->gm_c = reinterpret_cast<uint64_t>(c->gm_);

@@ -831,6 +831,7 @@ class CubeOp : public NDObject {
   bool atomic_add_{false};
   ShapeRefData<1> pad_a_;
   ShapeRefData<1> pad_b_;
+  bool batch_fold_{false};
   NDObject *bias_{nullptr};
 
  protected:

@@ -266,6 +266,13 @@ uint64_t MixKernel::AlignCodeGen() {
   NDAccess *inplace_store = nullptr;
   if (post_fusion_) {
     post_fusion_->Normalize();
+    if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
+      for (auto op : post_fusion_->objects_) {
+        ASSERT(op->nd_.prod() == cube_op_->output_->nd_.prod());
+        op->nd_[1] = cube_op_->m_real_;
+        op->nd_.resize(2);
+      }
+    }
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
     post_fusion_->NormalizeDomain();

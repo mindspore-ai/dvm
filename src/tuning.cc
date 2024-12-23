@@ -65,21 +65,20 @@ void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
     ASCEND_CALL(aclrtMalloc(&dev_M_, op->lhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     ASCEND_CALL(aclrtMalloc(&dev_N_, op->rhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     ASCEND_CALL(aclrtMalloc(&dev_O_, op->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    kernel_ = new Kernel();
-    kernel_->Reset(kStaticMix);
-    auto m_input = kernel_->Load(dev_M_, op->lhs_->shape_ref_, DType::kFloat16);
-    auto n_input = kernel_->Load(dev_N_, op->rhs_->shape_ref_, DType::kFloat16);
+    TuneData td;
+    td.kernel.Reset(kStaticMix);
+    auto m_input = td.kernel.Load(dev_M_, op->lhs_->shape_ref_, DType::kFloat16);
+    auto n_input = td.kernel.Load(dev_N_, op->rhs_->shape_ref_, DType::kFloat16);
     auto matmul = new CubeOp(m_input, n_input, op->trans_a_, op->trans_b_);
     if (op->type_id_ == dvm::kFloat32) matmul->SetOutFp32(false);
-    kernel_->GetImpl()->Append(matmul);
+    td.kernel.GetImpl()->Append(matmul);
     matmul->SetRealShape(op->m_real_, op->n_real_, op->k_real_, 0, 0);
-    (void)kernel_->Store(dev_O_, matmul);
-    TileV3(op, code);
-    best_tuning = best_tuning_;
+    (void)td.kernel.Store(dev_O_, matmul);
+    TileV3(td, op, code);
+    best_tuning = td.best_para;
     aclrtFree(dev_M_);
     aclrtFree(dev_N_);
     aclrtFree(dev_O_);
-    delete kernel_;
   }
   code->m0 = op->m0_ = best_tuning.m0;
   code->n0 = op->n0_ = best_tuning.n0;
@@ -90,7 +89,7 @@ void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
 #endif
 }
 
-void OnlineCubeTuner::TileV3(CubeOp *mm, vCubeOp *op) {
+void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
   auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
   auto bias_size = mm->bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[mm->lhs_->type_id_];
@@ -135,11 +134,11 @@ void OnlineCubeTuner::TileV3(CubeOp *mm, vCubeOp *op) {
     // 3. select swizzle
     for (uint32_t cnt = std::min(block_dim, m_loop); cnt >= 1; --cnt) {
       auto swizzle = cnt;
-      Tuning({m0, n0, k0, swizzle, core_loop, block_dim});
+      Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
     for (uint32_t cnt = std::min(block_dim, n_loop); cnt >= 1; --cnt) {
       auto swizzle = 1u << 16 | cnt;
-      Tuning({m0, n0, k0, swizzle, core_loop, block_dim});
+      Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
   };
   uint32_t align_max = 512 / ITEM_SIZE[mm->lhs_->type_id_];
@@ -156,11 +155,11 @@ void OnlineCubeTuner::TileV3(CubeOp *mm, vCubeOp *op) {
   }
 }
 
-void OnlineCubeTuner::Tuning(const TuningInfo &parameter) {
+void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
 #ifndef VK_SIM_MODEL
   ManualCubeTuner tuner(parameter);
-  static_cast<MixKernel *>(kernel_->GetImpl())->SetTuner(&tuner);
-  kernel_->CodeGen();
+  static_cast<MixKernel *>(td.kernel.GetImpl())->SetTuner(&tuner);
+  td.kernel.CodeGen();
   float min_us = 1e6;
   float max_us = 0.0f;
   float total_us = 0.0f;
@@ -170,7 +169,7 @@ void OnlineCubeTuner::Tuning(const TuningInfo &parameter) {
   uint32_t test_num = 10;
   for (uint32_t i = 0; i < test_num; i++) {
     ASCEND_CALL(aclrtRecordEvent(start, nullptr));
-    ASCEND_CALL(kernel_->Launch(nullptr, nullptr));
+    ASCEND_CALL(td.kernel.Launch(nullptr, nullptr));
     ASCEND_CALL(aclrtRecordEvent(end, nullptr));
     ASCEND_CALL(aclrtSynchronizeStream(nullptr));
     float time_us = 0.0f;
@@ -187,9 +186,9 @@ void OnlineCubeTuner::Tuning(const TuningInfo &parameter) {
   ASCEND_CALL(aclrtDestroyEvent(start));
   ASCEND_CALL(aclrtDestroyEvent(end));
   auto mean_time = (total_us - min_us - max_us) / (test_num - 2);
-  if (mean_time < best_time_) {
-    best_time_ = mean_time;
-    best_tuning_ = parameter;
+  if (mean_time < td.best_time) {
+    td.best_time = mean_time;
+    td.best_para = parameter;
   }
 #endif
 }

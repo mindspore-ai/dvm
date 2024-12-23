@@ -67,12 +67,13 @@ class OnlineCubeTuner : public CubeTuner {
   void GenTile(CubeOp *op, vCubeOp *code) override;
 
  protected:
-  void TileV3(CubeOp *mm, vCubeOp *op);
-  void Tuning(const TuningInfo &parameter);
-
-  float best_time_{1e6};
-  Kernel *kernel_{nullptr};
-  TuningInfo best_tuning_;
+  struct TuneData {
+    float best_time{1e6};
+    TuningInfo best_para;
+    Kernel kernel;
+  };
+  void TileV3(TuneData &td, CubeOp *mm, vCubeOp *op);
+  void Tuning(TuneData &td, const TuningInfo &parameter);
 };
 
 class LazyCubeTuner : public CubeTuner {

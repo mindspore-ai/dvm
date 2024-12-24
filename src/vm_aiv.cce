@@ -787,18 +787,40 @@ static inline[aicore] void IsFinite(bcodeptr_t pc, uint64_t head, uint64_t tile)
 
 __aicore_inline__ void _PowerProc(__ubuf__ float *xd, __ubuf__ float *xm, __ubuf__ float *xn, __ubuf__ float *ws0,
                                   __ubuf__ uint8_t *ws1, uint8_t repeat, uint64_t rs) {
-  vcmpvs_ne(ws1, xm, (float)0, repeat, 1, 1, rs, rs);
-  vMuls(ws0, xm, (float)0.5, repeat, rs);
-  pipe_barrier(PIPE_V);
+  // x^y = e^{yln{abs{x}}}
   vAbs(xd, xn, repeat, rs);
   pipe_barrier(PIPE_V);
   vLn(xd, xd, repeat, rs);
-  vFloor(ws0, repeat, rs);
   pipe_barrier(PIPE_V);
   vMul(xd, xd, xm, repeat, rs);
-  vMuls(ws0, ws0, (float)2.0, repeat, rs);
   pipe_barrier(PIPE_V);
   vExp(xd, xd, repeat, rs);
+
+  // Check 0^0
+  set_cmpmask((__ubuf__ void *)(WORKSPACE));
+  pipe_barrier(PIPE_V);
+  vcmpvs_ne(ws1, xm, (float)0, repeat, 1, 1, rs, rs);
+  pipe_barrier(PIPE_V);
+  vsel(xd, xd, ws1, repeat, 1, 1, 1, rs, rs, 0, 1);
+  pipe_barrier(PIPE_V);
+
+  // Check negative^{decimal}
+  vconv_f322s32z((__ubuf__ int32_t *)ws0, xm, repeat, 1, 1, rs, rs);
+  pipe_barrier(PIPE_V);
+  vconv_s322f32(ws0, (__ubuf__ int32_t *)ws0, repeat, 1, 1, rs, rs);
+  pipe_barrier(PIPE_V);
+  vcmpv_eq((__ubuf__ uint8_t *)ws1, ws0, xm, repeat, 1, 1, 1, rs, rs, rs);
+  set_cmpmask((__ubuf__ void *)(WORKSPACE + 256));
+
+  // Constructing the odd-even case
+  vMuls(ws0, xm, (float)0.5, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vFloor(ws0, repeat, rs);
+  pipe_barrier(PIPE_V);
+  vsel(ws0, ws0, ws1, repeat, 1, 1, 1, rs, rs, 0, 1);
+  pipe_barrier(PIPE_V);
+  vMuls(ws0, ws0, (float)2.0, repeat, rs);
+  pipe_barrier(PIPE_V);
   vSub(ws0, xm, ws0, repeat, rs);
   pipe_barrier(PIPE_V);
   vMuls(ws0, ws0, (float)2.0, repeat, rs);
@@ -807,8 +829,7 @@ __aicore_inline__ void _PowerProc(__ubuf__ float *xd, __ubuf__ float *xm, __ubuf
   pipe_barrier(PIPE_V);
   vMul(ws0, ws0, xd, repeat, rs);
   pipe_barrier(PIPE_V);
-  vsel(xd, xd, ws1, repeat, 1, 1, 1, rs, rs, 0, 1);
-  pipe_barrier(PIPE_V);
+
   vcmpvs_lt(ws1, xn, (float)0, repeat, 1, 1, rs, rs);
 }
 
@@ -827,12 +848,12 @@ __aicore_inline__ void Power(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t ws1_stride = 0;
   pipe_barrier(PIPE_V);
   vDup((__ubuf__ float *)(WORKSPACE), (float)1.0, 1, rs);
-  pipe_barrier(PIPE_V);
-  set_cmpmask((__ubuf__ void *)(WORKSPACE));
+  vDup((__ubuf__ float *)(WORKSPACE + 256), 0.0f / 0.0f, 1, rs);
+
   for (; repeat > 255; repeat -= 255) {
     _PowerProc(xd + stride, xm + stride, xn + stride, ws0 + stride, ws1 + ws1_stride, 255, rs);
     stride += 255 * simd_width;
-    ws1_stride += 255 * 256 / sizeof(float);
+    ws1_stride += 255 * 32 * rs;
   }
   _PowerProc(xd + stride, xm + stride, xn + stride, ws0 + stride, ws1 + ws1_stride, repeat, rs);
   repeat_select_2(xd, ws0, xd, op.repeat, rs, op.ws1);

@@ -1977,10 +1977,12 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
     auto batch_fold = op->batch_a1 * op->batch_a0;
     op->batch_a1 = 1;
     op->batch_a0 = 1;
-    op->m_align = m_align_ *= batch_fold;
-    op->m_real = m_real_ *= batch_fold;
-    op->a_size *= batch_fold;
-    batch_fold_ = true;
+    if (!batch_fold_) {
+      op->m_align = m_align_ *= batch_fold;
+      op->m_real = m_real_ *= batch_fold;
+      op->a_size *= batch_fold;
+      batch_fold_ = true;
+    }
   }
   auto c = static_cast<NDAccess *>(output_);
   op->gm_c = reinterpret_cast<uint64_t>(c->gm_);

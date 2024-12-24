@@ -72,7 +72,7 @@ void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
     auto matmul = new CubeOp(m_input, n_input, op->trans_a_, op->trans_b_);
     if (op->type_id_ == dvm::kFloat32) matmul->SetOutFp32(false);
     td.kernel.GetImpl()->Append(matmul);
-    matmul->SetRealShape(op->m_real_, op->n_real_, op->k_real_, 0, 0);
+    matmul->SetRealShape(op->nd_[1], op->nd_[0], op->k_real_, 0, 0); // in batch fold m_real != op->nd_[1]
     (void)td.kernel.Store(dev_O_, matmul);
     TileV3(td, op, code);
     best_tuning = td.best_para;

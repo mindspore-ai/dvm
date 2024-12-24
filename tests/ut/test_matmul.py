@@ -295,6 +295,7 @@ def test_sync_out_limit():
     [[211, 211], [211, 230]],      # unalign
     [[2, 4, 256, 256], [2, 4, 256, 256]],       # batchmatmul
     [[256, 256], [256, 256]],    # same shape
+    [[256, 1, 1000], [1000, 256]],    # batch fold
 ])
 def test_tuning_matmul(shape_a, shape_b):
     np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)

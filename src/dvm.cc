@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <cmath>
 #include <vector>
+#include <cstring>
 #include "dvm.h"
 #include "kernel.h"
 #include "xkernel.h"
@@ -36,6 +37,120 @@ static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
   kMuls,   kDivs,      kBinarySOpEnd, kMaximums,   kMinimums, kBinarySOpEnd,  kBinarySOpEnd,
 };
 
+union Union32 {
+  uint32_t u;
+  float f;
+};
+
+float ToFloat32(const Float16 &f16) {
+  static constexpr uint16_t value_mask = 0x7fff;
+  constexpr uint32_t mu_value = 113 << 23;
+  Union32 magic;
+  magic.u = mu_value;
+  constexpr uint32_t exponent_adjust = ((127 - 15) << 23);
+  constexpr uint32_t inf_extra_exp_adjust = ((128 - 16) << 23);
+  constexpr uint32_t zero_extra_exp_adjust = (1 << 23);
+  constexpr uint32_t sign_mask = 0x8000;
+  constexpr unsigned int shifted_exp = (0x7c00 << 13);  // Exponent mask after shift.
+  constexpr unsigned int exponent_bits = 13;
+  constexpr unsigned int sign_bit_shift = 16;
+  // Exponent/mantissa bits.
+  Union32 f32;
+  f32.u = (static_cast<uint32_t>(f16.int_value() & value_mask) << exponent_bits);
+  // Just the exponent.
+  unsigned int exp = (shifted_exp & f32.u);
+  f32.u += exponent_adjust;
+  // Handle exponent special cases.
+  if (exp == shifted_exp) {
+    // Inf/NaN, extra exp adjust.
+    f32.u += inf_extra_exp_adjust;
+  } else if (exp == 0) {
+    // Zero/Denormal, extra exp adjust and renormalize.
+    f32.u += zero_extra_exp_adjust;
+    f32.f -= magic.f;
+  }
+  // Set sign bit.
+  f32.u |= ((f16.int_value() & sign_mask) << sign_bit_shift);
+  return f32.f;
+}
+
+uint16_t EncoderFP16(float f32) {
+  static constexpr uint16_t nan_value = 0x7e00;
+  static constexpr uint16_t inf_value = 0x7c00;
+  constexpr uint32_t magic = {113 << 23};
+  constexpr uint32_t f32infty_value = 255 << 23;
+  Union32 f32infty;
+  f32infty.u = f32infty_value;
+  constexpr uint32_t f16max_value = (127 + 16) << 23;
+  Union32 f16max;
+  f16max.u = f16max_value;
+  constexpr uint32_t denorm_magic_value = ((127 - 15) + (23 - 10) + 1) << 23;
+  Union32 denorm_magic;
+  denorm_magic.u = denorm_magic_value;
+  constexpr unsigned int exponent_bits = 13;
+  constexpr unsigned int sign_bit_shift = 16;
+  constexpr unsigned int sign_mask = 0x80000000u;
+  constexpr uint32_t rouding_bias_part1 = (static_cast<unsigned int>(15 - 127) << 23) + 0xfff;
+
+  Union32 f;
+  f.f = f32;
+  unsigned int sign = f.u & sign_mask;
+  f.u ^= sign;
+  uint16_t result = 0;
+
+  // NOTE all the integer compares in this function can be safely
+  // compiled into signed compares since all operands are below
+  // 0x80000000. Important if you want fast straight SSE2 code
+  // (since there's no unsigned PCMPGTD).
+  if (f.u >= f16max.u) {
+    // Result is Inf or NaN (all exponent bits set).
+    result = (f.u > f32infty.u) ? nan_value : inf_value;
+  } else if (f.u < magic) {
+    // (De)normalized number or zero; resulting FP16 is subnormal or zero.
+    // Use a magic value to align our 10 mantissa bits at the bottom of
+    // the float. as long as FP addition is round-to-nearest-even this
+    // just works.
+    f.f += denorm_magic.f;
+    // And one integer subtract of the bias later, we have our final float!
+    result = static_cast<uint16_t>(f.u - denorm_magic.u);
+  } else {
+    // Resulting mantissa is odd.
+    unsigned int mant_odd = (f.u >> exponent_bits) & 1;
+    // Update exponent, rounding bias part 1;
+    f.u += rouding_bias_part1;
+    // Rounding bias part 2;
+    f.u += mant_odd;
+    // Take the bits!
+    result = static_cast<uint16_t>(f.u >> exponent_bits);
+  }
+  // Set sign bit.
+  result |= static_cast<uint16_t>(sign >> sign_bit_shift);
+  return result;
+}
+
+float ToFloat32(const BFloat16 &bf16) {
+  float f32 = 0;
+  uint32_t f32_tmp = bf16.int_value();
+  f32_tmp <<= 16;
+  memcpy(&f32, &f32_tmp, sizeof(f32_tmp));
+  return f32;
+}
+
+uint16_t EncoderBF16(float f32) {
+  static constexpr uint16_t nan_value = 0x7fc0;
+  if (std::isnan(f32)) {
+    return nan_value;
+  } else {
+    union {
+      uint32_t U32;
+      float F32;
+    };
+    F32 = f32;
+    uint32_t rounding_bias = ((U32 >> 16) & 1) + UINT32_C(0x7FFF);
+    return static_cast<uint16_t>((U32 + rounding_bias) >> 16);
+  }
+}
+
 template <typename T>
 bool isInteger(const T &value) {
   if constexpr (std::is_integral<T>::value) {
@@ -48,7 +163,7 @@ bool isInteger(const T &value) {
 
 template <typename T>
 NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
-  int64_t iter_num = std::abs(static_cast<int64_t>(value));
+  int32_t iter_num = std::abs(static_cast<int32_t>(value));
   if (iter_num == 0) {
     return kernel->Broadcast(static_cast<T>(1), obj->shape_ref_, obj->type_id_, false);
   }
@@ -66,11 +181,31 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
       iter_num >>= 1;
     }
   }
-  if (value < 0) {
+  if (value < T(0)) {
     res = kernel->Unary(UnaryOpType::kReciprocal, res);
   }
   return res;
 }
+
+inline Float16 operator/(const Float16 &a, const Float16 &b) {
+  return Float16(static_cast<float>(a) / static_cast<float>(b));
+}
+inline Float16 operator-(const Float16 &a) {
+  constexpr uint16_t sign_mask = 0x8000;
+  return Float16(a.int_value() ^ sign_mask);
+}
+inline bool operator>(const Float16 &a, const Float16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
+inline bool operator<(const Float16 &a, const Float16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
+
+inline BFloat16 operator/(const BFloat16 &a, const BFloat16 &b) {
+  return BFloat16(static_cast<float>(a) / static_cast<float>(b));
+}
+inline BFloat16 operator-(const BFloat16 &a) {
+  constexpr uint16_t sign_mask = 0x8000;
+  return BFloat16(a.int_value() ^ sign_mask);
+}
+inline bool operator>(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
+inline bool operator<(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
 
 template <typename T, bool rhs_val>
 NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
@@ -90,7 +225,7 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
     case BinaryOpType::kLessEqual:
     case BinaryOpType::kGreaterEqual:
     case BinaryOpType::kLess: {
-      if constexpr (std::is_same<T, float>::value) {
+      if constexpr (!std::is_same<T, int32_t>::value) {
         auto obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
         vkernel->Append(obj);
         return obj;
@@ -100,12 +235,13 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
     case BinaryOpType::kPow: {
       if (rhs_val) {
         if (isInteger(val)) return PowS(kernel, input, val);
-      } else if (val > 0) {
+      } else if (val > T(0)) {
         if (input->type_id_ != kFloat32) {
-          auto result = GetBinaryS<float, false>(kernel, BinaryOpType::kPow, (float)val, kernel->Cast(input, kFloat32));
+          auto result = GetBinaryS<float, false>(kernel, BinaryOpType::kPow, static_cast<float>(val),
+                                                 kernel->Cast(input, kFloat32));
           return kernel->Cast(result, input->type_id_);
         }
-        auto tmp = GetBinaryS<float, true>(kernel, BinaryOpType::kMul, std::log((float)val), input);
+        auto tmp = GetBinaryS<float, true>(kernel, BinaryOpType::kMul, std::log(static_cast<float>(val)), input);
         return kernel->Unary(UnaryOpType::kExp, tmp);
       }
       return nullptr;
@@ -114,13 +250,13 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
       if (rhs_val) {
         return GetBinaryS<T, true>(kernel, BinaryOpType::kAdd, -val, input);
       } else {
-        auto neg_input = GetBinaryS<T, true>(kernel, BinaryOpType::kMul, static_cast<T>(-1.0), input);
+        auto neg_input = GetBinaryS<T, true>(kernel, BinaryOpType::kMul, static_cast<T>(-1), input);
         return GetBinaryS<T, true>(kernel, BinaryOpType::kAdd, val, neg_input);
       }
     }
     case BinaryOpType::kDiv: {
       if (rhs_val) {
-        return GetBinaryS<T, true>(kernel, BinaryOpType::kMul, static_cast<T>(1.0 / val), input);
+        return GetBinaryS<T, true>(kernel, BinaryOpType::kMul, T(1) / val, input);
       } else {
         auto obj = new BinaryScalarOp<T>(lhs_val_binary_map[op_type], input, val);
         vkernel->Append(obj);
@@ -132,6 +268,16 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
   }
 }
 }  // namespace
+
+Float16::Float16(const float &v) : Float16(EncoderFP16(v)) {}
+Float16::Float16(const int32_t &v) : Float16(static_cast<float>(v)) {}
+Float16::operator float() const { return ToFloat32(*this); }
+Float16::operator int32_t() const { return static_cast<int32_t>(ToFloat32(*this)); }
+
+BFloat16::BFloat16(const float &v) : BFloat16(EncoderBF16(v)) {}
+BFloat16::BFloat16(const int32_t &v) : BFloat16(static_cast<float>(v)) {}
+BFloat16::operator float() const { return ToFloat32(*this); }
+BFloat16::operator int32_t() const { return static_cast<int32_t>(ToFloat32(*this)); }
 
 Comm::~Comm() {
   if (comm_) delete comm_;
@@ -207,10 +353,8 @@ NDObject *Kernel::Unary(int op_type, NDObject *input) {
   if (op_type == UnaryOpType::kLogicalNot) {
     if (input->type_id_ == kBool) {
       return Cast(Binary(BinaryOpType::kSub, 1.0f, Cast(input, kFloat16)), kBool);
-    } else if (input->type_id_ == kInt32) {
-      return Binary(BinaryOpType::kSub, 1, input);
     } else {
-      return Binary(BinaryOpType::kSub, 1.0f, input);
+      return Binary(BinaryOpType::kSub, 1, input);
     }
   }
   if (op_type == UnaryOpType::kReciprocal) {
@@ -300,8 +444,12 @@ NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
 
 template NDObject *Kernel::Binary<float>(int op_type, NDObject *lhs, float val);
 template NDObject *Kernel::Binary<int32_t>(int op_type, NDObject *lhs, int32_t val);
+template NDObject *Kernel::Binary<Float16>(int op_type, NDObject *lhs, Float16 val);
+template NDObject *Kernel::Binary<BFloat16>(int op_type, NDObject *lhs, BFloat16 val);
 template NDObject *Kernel::Binary<float>(int op_type, float val, NDObject *rhs);
 template NDObject *Kernel::Binary<int32_t>(int op_type, int32_t val, NDObject *rhs);
+template NDObject *Kernel::Binary<Float16>(int op_type, Float16 val, NDObject *rhs);
+template NDObject *Kernel::Binary<BFloat16>(int op_type, BFloat16 val, NDObject *rhs);
 
 NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   if (cond->type_id_ != lhs->type_id_) {
@@ -328,11 +476,7 @@ NDObject *Kernel::Cast(NDObject *input, DType type) {
     if (input->type_id_ == kBFloat16) {
       input = Cast(input, kFloat32);
     }
-    if (input->type_id_ == kInt32) {
-      input = Binary(BinaryOpType::kNotEqual, input, 0);
-    } else {
-      input = Binary(BinaryOpType::kNotEqual, input, 0.0f);
-    }
+    input = Binary(BinaryOpType::kNotEqual, input, 0);
   }
   auto stuff_type = g_cast_staff_type[input->type_id_][type];
   while (stuff_type != -1) {
@@ -371,6 +515,8 @@ NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load)
 
 template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DType type, bool dummy_load);
 template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DType type, bool dummy_load);
+template NDObject *Kernel::Broadcast<Float16>(Float16 val, ShapeRef *shape, DType type, bool dummy_load);
+template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, ShapeRef *shape, DType type, bool dummy_load);
 
 NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
   if (input->type_id_ == DType::kBool) {

@@ -94,7 +94,7 @@ enum vSimdInsnID {
   V_CLR_PAD,
   V_ELEMENT_ANY,
   V_BROADCAST_X_B16,
-  V_BROADCAST_S_FP16,
+  V_BROADCAST_S_B16,
   V_SQRT_FP16,
   V_ABS_FP16,
   V_LOG_FP16,
@@ -121,7 +121,6 @@ enum vSimdInsnID {
   V_ISFINITE_FP16,
   V_CAST_BOOL_TO_FP16,
   V_BROADCAST_X_B32,
-  V_BROADCAST_S_INT32,
   V_ADD_INT32,
   V_SUB_INT32,
   V_MUL_INT32,
@@ -241,16 +240,6 @@ __aicore_inline__ void vClrBitRange(uint64_t &x, uint64_t offset, uint64_t len) 
 }
 
 template <typename T>
-__aicore_inline__ uint32_t EncodeScalar(T scalar) {
-  union Scalar {
-    T val;
-    uint32_t encode;
-  } data;
-  data.val = scalar;
-  return data.encode;
-}
-
-template <typename T>
 __aicore_inline__ T DecodeScalar(__bcode__ uint32_t *scalr_offset) {
   return *(__bcode__ T *)(scalr_offset);
 }
@@ -327,25 +316,27 @@ struct vRemovePad {
   }
 };
 
-template <typename T>
 struct vBinaryS {
   uint64_t xn;
   uint64_t xd;
   uint64_t repeat;
-  T scalar;
+  uint64_t scalar;
   // pc[0]: xn
   // pc[1]: scalar(32) << 32 | c_xd(13) << 16 | repeat(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBinaryS &op) {
     uint32_t data = *((__bcode__ uint32_t *)pc + 2);
     op.repeat = data & 0xffffu;
     op.xd = vDeCompactX(data >> 16);
-    op.scalar = DecodeScalar<T>((__bcode__ uint32_t *)pc + 3);
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+  }
+  template <typename T>
+  __aicore_inline__ T GetScalar(bcodeptr_t pc) {
+    return DecodeScalar<T>((__bcode__ uint32_t *)pc + 3);
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryS &op) {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
-    pc[1] = (uint64_t)EncodeScalar(op.scalar) << 32 | vCompactX(op.xd) << 16 | op.repeat;
+    pc[1] = op.scalar << 32 | vCompactX(op.xd) << 16 | op.repeat;
     return size;
   }
 };
@@ -443,7 +434,7 @@ struct vCompareS {
   uint64_t ws;
   uint64_t type;
   uint64_t repeat;
-  float scalar;
+  uint64_t scalar;
   // pc[0]: op(4) << 18 | xn(18)
   // pc[1]: repeat(16) << 48 | ws(18) << 18 | xd(18)
   // pc[2]: scalar
@@ -454,33 +445,36 @@ struct vCompareS {
     op.xd = data & V_X_MASK;
     op.ws = (data >> 18) & V_X_MASK;
     op.repeat = data >> 48;
-    op.scalar = DecodeScalar<float>((__bcode__ uint32_t *)pc + 4);
+  }
+  template <typename T>
+  __aicore_inline__ T GetScalar(bcodeptr_t pc) {
+    return DecodeScalar<T>((__bcode__ uint32_t *)pc + 4);
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCompareS &op) {
     uint64_t size = 3;
     pc[0] = vMakeHead(id, op.type << 18 | op.xn, size, V_PIPE_SIMD);
     pc[1] = op.repeat << 48 | op.ws << 18 | op.xd;
-    pc[2] = EncodeScalar(op.scalar);
+    pc[2] = op.scalar;
     return size;
   }
 };
 
-template <typename T>
 struct vBroadcastS {
   uint64_t xd;
   uint64_t repeat;
-  T scalar;
+  uint64_t scalar;
   // pc[0]: xd
   // pc[1]: val << 32 | repeat
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastS &op) {
-    op.repeat = *((__bcode__ uint32_t *)pc + 2);
-    op.scalar = DecodeScalar<T>((__bcode__ uint32_t *)pc + 3);
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.repeat = data & 0xfffffffful;
+    op.scalar = (data >> 32) & 0xfffffffful;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastS &op) {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
-    pc[1] = (uint64_t)EncodeScalar(op.scalar) << 32 | op.repeat;
+    pc[1] = op.scalar << 32 | op.repeat;
     return size;
   }
 };

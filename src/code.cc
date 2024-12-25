@@ -301,10 +301,11 @@ void DumpRemovePad(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 template <typename T = float>
 void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vBinaryS<T> op;
-  vBinaryS<T>::Decode(dump_info.insn, *dump_info.insn, op);
+  vBinaryS op;
+  vBinaryS::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
-  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << ", " << op.scalar;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << ", "
+      << vBinaryS::GetScalar<T>(dump_info.insn);
 }
 
 void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -360,10 +361,9 @@ void DumpCompareS(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
 }
 
-template <typename T = float>
 void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vBroadcastS<T> op;
-  vBroadcastS<T>::Decode(dump_info.insn, *dump_info.insn, op);
+  vBroadcastS op;
+  vBroadcastS::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op.scalar;
 }
@@ -540,9 +540,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_BROADCAST_X_B32, {&DumpBroadcastX, "BroadcastX", "b32"}},
   {V_BROADCAST_X_B16, {&DumpBroadcastX, "BroadcastX", "b16"}},
   {V_BROADCAST_Y, {&DumpBroadcastY, "BroadcastY", "u8"}},
-  {V_BROADCAST_S, {&DumpBroadcastS, "BroadcastS", "fp32"}},
-  {V_BROADCAST_S_FP16, {&DumpBroadcastS, "BroadcastS", "fp16"}},
-  {V_BROADCAST_S_INT32, {&DumpBroadcastS<int32_t>, "BroadcastS", "int32"}},
+  {V_BROADCAST_S, {&DumpBroadcastS, "BroadcastS", "b32"}},
+  {V_BROADCAST_S_B16, {&DumpBroadcastS, "BroadcastS", "b16"}},
   {V_SQRT, {&DumpUnary, "Sqrt", "fp32"}},
   {V_SQRT_FP16, {&DumpUnary, "Sqrt", "fp16"}},
   {V_ABS, {&DumpUnary, "Abs", "fp32"}},
@@ -573,18 +572,18 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CAST_BF16_TO_FP32, {&DumpUnary, "CastBF16", "fp32"}},
   {V_CAST_BF16_TO_INT32, {&DumpUnary, "CastBF16", "int32"}},
   {V_ADDS, {&DumpBinaryS, "Adds", "fp32"}},
-  {V_ADDS_FP16, {&DumpBinaryS, "Adds", "fp16"}},
+  {V_ADDS_FP16, {&DumpBinaryS<Float16>, "Adds", "fp16"}},
   {V_ADDS_INT32, {&DumpBinaryS<int32_t>, "Adds", "int32"}},
   {V_MULS, {&DumpBinaryS, "Muls", "fp32"}},
-  {V_MULS_FP16, {&DumpBinaryS, "Muls", "fp16"}},
+  {V_MULS_FP16, {&DumpBinaryS<Float16>, "Muls", "fp16"}},
   {V_SDIV, {&DumpBinaryS, "SDiv", "fp32"}},
-  {V_SDIV_FP16, {&DumpBinaryS, "Divs", "fp16"}},
+  {V_SDIV_FP16, {&DumpBinaryS<Float16>, "Divs", "fp16"}},
   {V_MULS_INT32, {&DumpBinaryS<int32_t>, "Muls", "int32"}},
   {V_MAXS, {&DumpBinaryS, "Maximums", "fp32"}},
-  {V_MAXS_FP16, {&DumpBinaryS, "Maximums", "fp16"}},
+  {V_MAXS_FP16, {&DumpBinaryS<Float16>, "Maximums", "fp16"}},
   {V_MAXS_INT32, {&DumpBinaryS<int32_t>, "Maximums", "int32"}},
   {V_MINS, {&DumpBinaryS, "Minimums", "fp32"}},
-  {V_MINS_FP16, {&DumpBinaryS, "Maximums", "fp16"}},
+  {V_MINS_FP16, {&DumpBinaryS<Float16>, "Maximums", "fp16"}},
   {V_MINS_INT32, {&DumpBinaryS<int32_t>, "Maximums", "int32"}},
   {V_ADD, {&DumpBinary, "Add", "fp32"}},
   {V_ADD_FP16, {&DumpBinary, "Add", "fp16"}},

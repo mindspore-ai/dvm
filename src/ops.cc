@@ -103,6 +103,32 @@ inline uint64_t DMAConfig(uint64_t sid, uint64_t nBurst, uint64_t lenBurst, uint
   return dstStride << 48 | srcStride << 32 | lenBurst << 16 | nBurst << 4 | sid;
 }
 
+template <typename T>
+inline uint32_t EncodeScalar(T scalar) {
+  union Scalar {
+    T val;
+    uint32_t encode;
+  } data;
+  data.val = scalar;
+  return data.encode;
+}
+
+template <typename T>
+inline uint32_t EncodeScalar(T scalar, DType type) {
+  switch (type) {
+    case kFloat16:
+      return static_cast<Float16>(static_cast<float>(scalar)).int_value();
+    case kBFloat16:
+      return static_cast<BFloat16>(static_cast<float>(scalar)).int_value();
+    case kFloat32:
+      return EncodeScalar(static_cast<float>(scalar));
+    case kInt32:
+      return EncodeScalar(static_cast<int32_t>(scalar));
+    default:
+      return 0;
+  }
+}
+
 int EmitCopy(bcodeptr_t insn, uint64_t xd, uint64_t xn, uint64_t bytes) {
   vCopy op;
   op.xd = xd;
@@ -204,6 +230,28 @@ void BuildDimRounds(const DimArray &round_tile, uint64_t rounds[]) {
   }
 }
 }  // namespace
+
+std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape) {
+  oss << "[";
+  for (size_t i = 0; i < shape.size; i++) {
+    if (i) {
+      oss << ",";
+    }
+    oss << shape.data[i];
+  }
+  oss << "]";
+  return oss;
+}
+
+std::ostream &operator<<(std::ostream &oss, const Float16 &scalar) {
+  oss << static_cast<float>(scalar);
+  return oss;
+}
+
+std::ostream &operator<<(std::ostream &oss, const BFloat16 &scalar) {
+  oss << static_cast<float>(scalar);
+  return oss;
+}
 
 MemPool<512, 8192> NDObject::mem_pool_;
 
@@ -899,15 +947,15 @@ BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
 
 template <typename T>
 int BinaryScalarOp<T>::Emit(VectorKernel &k) {
-  vBinaryS<T> op;
+  vBinaryS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  op.scalar = scalar_;
+  op.scalar = EncodeScalar(scalar_, type_id_);
   ASSERT(size_t(op_type_) < sizeof(binarys_id_list) / sizeof(InsnIdTable));
   auto id = binarys_id_list[op_type_].ids[type_id_];
   ASSERT(id != V_NONE);
-  return vBinaryS<T>::Encode(insn_, id, op);
+  return vBinaryS::Encode(insn_, id, op);
 }
 
 template <typename T>
@@ -920,31 +968,40 @@ void BinaryScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
 
 template class BinaryScalarOp<float>;
 template class BinaryScalarOp<int32_t>;
+template class BinaryScalarOp<Float16>;
+template class BinaryScalarOp<BFloat16>;
 
-CompareScalarOp::CompareScalarOp(int op_type, NDObject *input, float scalar)
+template <typename T>
+CompareScalarOp<T>::CompareScalarOp(int op_type, NDObject *input, T scalar)
     : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
   ws_num_ = 1;
   cmp_op_ = op_type;
   shape_ref_ = input->shape_ref_;
 }
 
-int CompareScalarOp::Emit(VectorKernel &k) {
+template <typename T>
+int CompareScalarOp<T>::Emit(VectorKernel &k) {
   vCompareS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  op.scalar = scalar_;
+  op.scalar = EncodeScalar(scalar_, type_id_);
   op.ws = wss_[0];
   op.type = cmp_op_;
   return vCompareS::Encode(insn_, type_id_ == kFloat32 ? V_CMPS : V_CMPS_FP16, op);
 }
 
-void CompareScalarOp::Dump(bool verbose, std::ostringstream &oss) {
+template <typename T>
+void CompareScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
   oss << "CompareS";
   if (verbose) {
     oss << "<" << cmp_op_ << ", " << scalar_ << ">";
   }
 }
+
+template class CompareScalarOp<float>;
+template class CompareScalarOp<Float16>;
+template class CompareScalarOp<BFloat16>;
 
 _BinaryNormalizer::~_BinaryNormalizer() {
   for (auto op : lhs_stuff_ops_) {
@@ -1321,13 +1378,11 @@ void BroadcastScalarOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
 
 template <typename T>
 int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
-  vBroadcastS<T> op;
-  const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_S_FP16, V_NONE, V_BROADCAST_S, V_BROADCAST_S_INT32};
-  op.scalar = scalar_;
+  vBroadcastS op;
+  op.scalar = EncodeScalar(scalar_, type_id_);
   op.xd = xbuf_;
   op.repeat = strides_.back() / k.simd_width_;
-  ASSERT(id_list[type_id_] != V_NONE);
-  return vBroadcastS<T>::Encode(insn_, id_list[type_id_], op);
+  return vBroadcastS::Encode(insn_, ITEM_SIZE[type_id_] == sizeof(uint32_t) ? V_BROADCAST_S : V_BROADCAST_S_B16, op);
 }
 
 template <typename T>
@@ -1340,6 +1395,8 @@ void BroadcastScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
 
 template class BroadcastScalarOp<float>;
 template class BroadcastScalarOp<int32_t>;
+template class BroadcastScalarOp<Float16>;
+template class BroadcastScalarOp<BFloat16>;
 
 void _ReduceOp::FoldProp(PropRange &range) {
   int state = 0;  // -1 - reduce ; 1 - elemwise, 0 - undetemite

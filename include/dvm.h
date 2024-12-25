@@ -96,6 +96,32 @@ struct ShapeRef {
   size_t size;
 };
 
+class Float16 {
+ public:
+  explicit Float16(const uint16_t &v) : value_(v) {}
+  explicit Float16(const float &v);
+  explicit Float16(const int32_t &v);
+  explicit operator float() const;
+  explicit operator int32_t() const;
+  uint16_t int_value() const { return value_; }
+
+ private:
+  uint16_t value_;
+};
+
+class BFloat16 {
+ public:
+  explicit BFloat16(const uint16_t &v) : value_(v) {}
+  explicit BFloat16(const float &v);
+  explicit BFloat16(const int32_t &v);
+  explicit operator float() const;
+  explicit operator int32_t() const;
+  uint16_t int_value() const { return value_; }
+
+ private:
+  uint16_t value_;
+};
+
 struct RelocTable {
   NDObject **inputs;
   size_t inputs_size;

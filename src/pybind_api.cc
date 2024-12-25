@@ -41,26 +41,13 @@ namespace dvm {
 namespace {
 inline void F32ToBF16(float *input, uint16_t *output, uint32_t size) {
   while (size-- != 0) {
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    memcpy(output, input, 2);
-#else
-    memcpy(output, (char *)input + 2, 2);
-#endif
-    input++;
-    output++;
+    *output++ = BFloat16(*input++).int_value();
   }
 }
 
 inline void BF16ToF32(uint16_t *input, float *output, uint32_t size) {
-  memset(output, 0, size * 4);
   while (size-- != 0) {
-#if __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
-    memcpy(output, input, 2);
-#else
-    memcpy((char *)output + 2, input, 2);
-#endif
-    input++;
-    output++;
+    *output++ = static_cast<float>(BFloat16(*input++));
   }
 }
 
@@ -131,7 +118,7 @@ struct MpCtx {
   Comm comm;
 };
 MpCtx g_mpc;
-} // end namespace
+}  // end namespace
 
 std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
 
@@ -674,7 +661,7 @@ void KernelPy::ResetEager() {
 void KernelPy::Fork(int size) {
   ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
   g_mpc.rank_size = size;
-  g_mpc.shmid = ::shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0600) ;
+  g_mpc.shmid = ::shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0600);
   for (int i = 1; i < size; ++i) {
     g_mpc.rank_id = i;
     auto pid = ::fork();
@@ -687,7 +674,7 @@ void KernelPy::Fork(int size) {
   g_mpc.rank_id = 0;
 INIT_COMM:
   int rank_id = g_mpc.rank_id;
-  g_mpc.bars = (int64_t *)shmat(g_mpc.shmid, nullptr, 0) ;
+  g_mpc.bars = (int64_t *)shmat(g_mpc.shmid, nullptr, 0);
   g_mpc.bars[rank_id] = 0;
   ASCEND_CALL(aclrtSetDevice(rank_id));
   g_mpc.comm.Init(rank_id, size);
@@ -717,13 +704,9 @@ void KernelPy::Barrier() {
   }
 }
 
-int KernelPy::RankId() {
-  return g_mpc.rank_id;
-}
+int KernelPy::RankId() { return g_mpc.rank_id; }
 
-int KernelPy::RankSize() {
-  return g_mpc.rank_size;
-}
+int KernelPy::RankSize() { return g_mpc.rank_size; }
 
 class DevicePy {
  public:

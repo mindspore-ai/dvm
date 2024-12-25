@@ -82,17 +82,9 @@ struct PropRange {
   int64_t space;
 };
 
-inline std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape) {
-  oss << "[";
-  for (size_t i = 0; i < shape.size; i++) {
-    if (i) {
-      oss << ",";
-    }
-    oss << shape.data[i];
-  }
-  oss << "]";
-  return oss;
-}
+std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape);
+std::ostream &operator<<(std::ostream &oss, const Float16 &scalar);
+std::ostream &operator<<(std::ostream &oss, const BFloat16 &scalar);
 
 static inline void _DimCopy(int64_t *dst, const int64_t *src, size_t size) {
   switch (size) {
@@ -596,16 +588,17 @@ class BinaryScalarOp : public NDObject {
   T scalar_;
 };
 
+template <typename T>
 class CompareScalarOp : public FlexOp {
  public:
-  CompareScalarOp(int op_type, NDObject *input, float scalar);
+  CompareScalarOp(int op_type, NDObject *input, T scalar);
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
   int cmp_op_;
-  float scalar_;
+  T scalar_;
 };
 
 class _BinaryNormalizer {

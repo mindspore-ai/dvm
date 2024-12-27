@@ -183,3 +183,16 @@ def test_reduce_insert_accumulate(in_shape, dims):
     t.store_expect(y, res, 1e-4)
     t.set_passes("InsertAtomicCum")
     assert (t.run_check())
+
+def test_reduce_insert_accumulate_rank_3():
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [32, 12, 1, 1]).astype(np.float32)
+    x = t.load(a)
+    x = t.broadcast(x, [32, 12, 111, 111])
+    x = t.binary("Add",x,0.1)
+    y = t.reduce("sum", x, [0, 2, 3], False)
+    expect = np.sum(np.broadcast_to(a, [32, 12, 111, 111])+0.1, axis=(0, 2, 3), keepdims=False)
+    t.store_expect(y, expect)
+    t.store(x)
+    t.set_passes("InsertAtomicCum")
+    assert(t.run_check())

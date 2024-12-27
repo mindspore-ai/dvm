@@ -1151,7 +1151,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     } else if (mode == kRoundCacheStore) {
       return (tile_idx < p0 * r1 + r2 * r3) && (p3 * r3 == p2) ? p1 + p3 : -1;
     } else if (mode == kRoundCacheStoreAtomic) {
-      return p3 * r3 + r3 - 1 == tile_idx || IsEndTile(tile) ? p1 + p3 : -1;
+      return p3 * r3 + r3 - 1 == p2 || IsEndTile(tile) ? p1 + p3 : -1;
     } else {
       return p1 + p3;
     }

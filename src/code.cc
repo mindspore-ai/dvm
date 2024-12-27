@@ -344,6 +344,7 @@ void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
 }
 
+template <typename T>
 void DumpCompareS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vCompareS op;
   vCompareS::Decode(dump_info.insn, *dump_info.insn, op);
@@ -355,7 +356,7 @@ void DumpCompareS(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
   oss << dump_info.simd_width << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
-  oss << ", " << op.scalar << " //";
+  oss << ", " << vCompareS::GetScalar<T>(dump_info.insn) << " //";
   DumpVal("cmp_type", cmp_op, oss);
   oss << ", ";
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
@@ -605,8 +606,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_POW, {&DumpBinaryWS, "Pow", "fp32"}},
   {V_CMP, {&DumpCompare, "Compare", "fp32"}},
   {V_CMP_FP16, {&DumpCompare, "Compare", "fp16"}},
-  {V_CMPS, {&DumpCompareS, "CompareS", "fp32"}},
-  {V_CMPS_FP16, {&DumpCompareS, "CompareS", "fp16"}},
+  {V_CMPS, {&DumpCompareS<float>, "CompareS", "fp32"}},
+  {V_CMPS_FP16, {&DumpCompareS<Float16>, "CompareS", "fp16"}},
   {V_SEL, {&DumpSelect, "Select", "fp32"}},
   {V_SEL_FP16, {&DumpSelect, "Select", "fp16"}},
   {V_SEL_INT32, {&DumpSelect, "Select", "int32"}},

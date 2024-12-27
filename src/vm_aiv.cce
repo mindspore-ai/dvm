@@ -1047,21 +1047,6 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   repeat_select_2(xd, xn, xm, op.repeat, rs, op.ws);
 }
 
-__aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vSelect op;
-  vSelect::Decode(pc, head, op);
-  uint64_t rs = GetRepeatStride(tile, int32_t);
-  __ubuf__ float *xm = (__ubuf__ float *)(op.xm);
-  __ubuf__ int32_t *cond = (__ubuf__ int32_t *)(op.cond);
-  __ubuf__ float *xd = (__ubuf__ float *)(op.xd);
-  __ubuf__ float *xn = (__ubuf__ float *)(op.xn);
-  __ubuf__ uint8_t *ws = (__ubuf__ uint8_t*)(op.ws);
-  repeat_vconv_s322f32(xd, cond, op.repeat, 1, 1, rs, rs);
-  pipe_barrier(PIPE_V);
-  repeat_vcmpvs_ne(ws, xd, (float)0, op.repeat, 1, 1, rs, rs);
-  repeat_select_2(xd, xn, xm, op.repeat, rs, op.ws);
-}
-
 static inline [aicore] void Copy(bcodeptr_t pc, uint64_t head) {
   vCopy op;
   vCopy::Decode(pc, head, op);
@@ -1995,7 +1980,7 @@ DEF_DISP_FUNC(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t))
 DEF_DISP_FUNC(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t))
 DEF_DISP_FUNC(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t))
 DEF_DISP_FUNC(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t))
-DEF_DISP_FUNC(V_SEL_INT32, Select_Int(pc, head, tile))
+DEF_DISP_FUNC(V_SEL_INT32, Select<float>(pc, head, tile))
 DEF_DISP_FUNC(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0);CAST(pc, vconv_deq, head, tile, int32_t, half);)
 DEF_DISP_FUNC(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float))
 

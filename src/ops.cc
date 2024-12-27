@@ -1000,6 +1000,7 @@ void CompareScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
 }
 
 template class CompareScalarOp<float>;
+template class CompareScalarOp<int32_t>;
 template class CompareScalarOp<Float16>;
 template class CompareScalarOp<BFloat16>;
 

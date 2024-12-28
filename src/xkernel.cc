@@ -25,6 +25,7 @@ constexpr int64_t MAX_K = 1 << 15;
 
 MixKernel::~MixKernel() {
   if (cube_op_) {
+    // TODO: remove check
     if (auto lhs = cube_op_->lhs_; lhs->IsLoad()) {
       delete lhs;
     }
@@ -61,19 +62,10 @@ void MixKernel::Append(NDObject *obj) {
     if (post_fusion_ == nullptr) {
       post_fusion_ = new VKernelS();
     }
-    if (obj->IsComm() && obj->lhs_ == cube_op_) {
-      cube_op_->peer_store_ = true;
-      cube_op_->pingpong_store_ = true;
-      cube_op_->rank_size_ = static_cast<CommOp *>(obj)->comm_->GetRankSize();
-    }
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
-          auto sload = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
-          if (cube_op_->peer_store_) {
-            sload->pingpong_load_ = true;
-          }
-          sload_ = sload;
+          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;
@@ -147,7 +139,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
     EmplacePostFusion(sload_, matmul_op);
   }
   NDAccess *real_out{nullptr};
-  if (cube_op_->output_ != sload_) {
+  if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
     real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
@@ -198,7 +190,7 @@ uint64_t MixKernel::SplitKCodeGen() {
     EmplacePostFusion(sload_, matmul_fp16);
   }
   NDAccess *real_out{nullptr};
-  if (cube_op_->output_ != sload_) {
+  if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
     real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_fp16));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
@@ -209,11 +201,11 @@ uint64_t MixKernel::SplitKCodeGen() {
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
   src_lhs->reloc_addr_ = split_lhs[0]->reloc_addr_;
   src_rhs->reloc_addr_ = split_rhs[0]->reloc_addr_;
-  code_.reloc_workspaces_.emplace(code_.reloc_workspaces_.begin(), split_out[0]->reloc_addr_, stage_workspace_size);
+  code_.BindWorkspace(split_out[0], stage_workspace_size);
   for (size_t i = 1; i < split_num; i++) {
-    code_.reloc_reuse_.emplace_back(split_lhs[i]->reloc_addr_, src_lhs->reloc_addr_);
-    code_.reloc_reuse_.emplace_back(split_rhs[i]->reloc_addr_, src_rhs->reloc_addr_);
-    code_.reloc_workspaces_.emplace(code_.reloc_workspaces_.begin(), split_out[i]->reloc_addr_, stage_workspace_size);
+    code_.BindOpFast(split_lhs[i], src_lhs);
+    code_.BindOpFast(split_rhs[i], src_rhs);
+    code_.BindWorkspace(split_out[i], stage_workspace_size);
   }
   if (real_out) {
     cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
@@ -237,7 +229,7 @@ uint64_t MixKernel::BiasBF16CodeGen() {
     EmplacePostFusion(sload_, matmul_op);
   }
   NDAccess *real_out{nullptr};
-  if (cube_op_->output_ != sload_) {
+  if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
     real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
@@ -264,11 +256,12 @@ uint64_t MixKernel::AlignCodeGen() {
   uint64_t head_flags = V_ENTRY_FLAG_MIX;
   uint64_t head_simd = 0;
   NDAccess *inplace_store = nullptr;
+  bool peer_store = false;
   if (post_fusion_) {
     post_fusion_->Normalize();
     if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
       for (auto op : post_fusion_->objects_) {
-        ASSERT(op->nd_.prod() == cube_op_->output_->nd_.prod());
+        ASSERT(op->nd_.prod() == sload_->nd_.prod());
         op->nd_[1] = cube_op_->m_real_;
         op->nd_.resize(2);
       }
@@ -276,10 +269,18 @@ uint64_t MixKernel::AlignCodeGen() {
     post_fusion_->Optimize();
     post_fusion_->BuildDomain(post_fusion_->objects_);
     post_fusion_->NormalizeDomain();
-    if (cube_op_->output_ == sload_ && !cube_op_->peer_store_) {
+    if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
+      cube_op_->pingpong_store_ = true;
+      static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
+      cube_code.rank_size = comm->comm_->GetRankSize();
+      cube_code.flags |= V_CUBE_FLAG_PEER_STORE;
+      cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
+      peer_store = true;
+    } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
       inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr);
       if (inplace_store == nullptr) {
         cube_op_->pingpong_store_ = true;
+        static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
         cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
       }
     }
@@ -291,17 +292,17 @@ uint64_t MixKernel::AlignCodeGen() {
       } else if (op->IsComm()) {
         auto comm = static_cast<CommOp *>(op);
         comm->mix_ = true;
-        if (cube_op_->peer_store_) {
+        if (peer_store) {
           static_cast<CommOp *>(op)->SetCubeOp(cube_op_);
         }
       }
     }
-    auto m = cube_op_->output_->nd_[1];
-    auto n = cube_op_->output_->nd_[0];
+    auto m = sload_->nd_[1];
+    auto n = sload_->nd_[0];
     post_fusion_->root_dom_.GroupTile(1, m, cube_code.m0);
     post_fusion_->root_dom_.GroupTile(0, n, cube_code.n0);
-    for (size_t i = 2; i < cube_op_->output_->nd_.size(); i++) {
-      post_fusion_->root_dom_.GroupTile(i, cube_op_->output_->nd_[i], 1);
+    for (size_t i = 2; i < sload_->nd_.size(); i++) {
+      post_fusion_->root_dom_.GroupTile(i, sload_->nd_[i], 1);
     }
     post_fusion_->NormalizeDomain();
     post_fusion_->DoCodeGen(2);
@@ -318,11 +319,6 @@ uint64_t MixKernel::AlignCodeGen() {
   code_.Alloc(size);
   code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
   std::memcpy(code_.data_ + code_.HeadSize(), &cube_code, sizeof(vCubeOp));
-  // record vCubeOp's unique_id address
-  if (cube_op_->peer_store_) {
-    auto distance = reinterpret_cast<uint8_t *>(&cube_code.unique_id) - reinterpret_cast<uint8_t *>(&cube_code);
-    code_.unique_ids_.push_back(reinterpret_cast<uint32_t *>(code_.data_ + code_.HeadSize() + distance));
-  }
   // only support post fusion
   vCubeOp *link_cube = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
   static_cast<NDAccess *>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
@@ -330,39 +326,39 @@ uint64_t MixKernel::AlignCodeGen() {
   if (cube_op_->bias_) {
     static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = &link_cube->gm_bias;
   }
-  if (!post_fusion_) {
-    cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
-    return 0;
-  }
-  std::vector<NDAccess *> ios;
-  for (auto op : post_fusion_->objects_) {
-    if (!op->IsSimd()) ios.push_back(static_cast<NDAccess *>(op));
-  }
-  code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
-  if (inplace_store) {
-    code_.reloc_reuse_.emplace_back(&link_cube->gm_c, inplace_store->reloc_addr_);
-    code_.reloc_reuse_.emplace_back(cube_op_->output_->reloc_addr_, inplace_store->reloc_addr_);
-    return 0;
-  } else if (cube_op_->output_->IsStore()) {
-    cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
-    code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
-    return 0;
-  } else if (cube_op_->peer_store_) {
-    const auto comm = post_fusion_->comm_op_->comm_;
-    link_cube->gm_c = reinterpret_cast<uint64_t>(comm->GetPeerMemPtr(comm->GetRankId()));
-    code_.reloc_reuse_.emplace_back(sload_->reloc_addr_, &link_cube->gm_c);
-    return 0;
-  } else {
-    code_.reloc_workspaces_.emplace_back(&link_cube->gm_c, 0);
-    code_.reloc_reuse_.emplace_back(cube_op_->output_->reloc_addr_, &link_cube->gm_c);
-    return cube_op_->PostFusionWorkSpace();
+  cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
+  if (post_fusion_) {
+    std::vector<NDAccess *> ios;
+    for (auto op : post_fusion_->objects_) {
+      if (!op->IsSimd()) ios.push_back(static_cast<NDAccess *>(op));
+    }
+    code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
+    if (inplace_store) {
+      code_.BindOpFast(cube_op_->output_, inplace_store);
+      code_.BindOpFast(sload_, inplace_store);
+    } else if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+      code_.BindOpFast(sload_, cube_op_->output_);
+    } else if (peer_store) {
+      // record vCubeOp's unique_id address
+      auto distance = reinterpret_cast<uint8_t *>(&cube_code.unique_id) - reinterpret_cast<uint8_t *>(&cube_code);
+      code_.unique_ids_.push_back(reinterpret_cast<uint32_t *>(code_.data_ + code_.HeadSize() + distance));
+      const auto comm = post_fusion_->comm_op_->comm_;
+      link_cube->gm_c = reinterpret_cast<uint64_t>(comm->GetPeerMemPtr(comm->GetRankId()));
+      code_.BindOpFast(sload_, cube_op_->output_);
+    } else {
+      code_.BindWorkspace(cube_op_->output_, 0);
+      code_.BindWorkspace(sload_, 0);
+      return cube_op_->PostFusionWorkSpace();
+    }
   }
   return 0;
 }
 
 uint64_t MixKernel::CodeGen() {
-  if (sload_ && cube_op_->output_ == nullptr) {
-    cube_op_->output_ = sload_;
+  if (cube_op_->output_ == nullptr) {
+    auto output = new NDStore(nullptr, cube_op_);
+    output->SetFlag(OBJ_FLAG_STAGE_IO);
+    cube_op_->output_ = output;
   }
   cube_op_->InitPadShape();
   if (cube_op_->bias_ && cube_op_->bias_->type_id_ == kBFloat16) {
@@ -421,28 +417,17 @@ uint64_t StagesKernel::CodeGen() {
   uint64_t ws_size = AllocWorkspace();
   for (auto s : stages_) {
     auto &code = s->kernel->code_;
-    if (!code.reloc_workspaces_.empty()) {
-      for (auto &[dst, offset] : code.reloc_workspaces_) {
-        code_.reloc_workspaces_.emplace_back(dst, offset + s->ws_offset);
-      }
-      code.reloc_workspaces_.clear();
-    }
-    if (!code.reloc_reuse_.empty()) {
-      for (auto &r : code.reloc_reuse_) {
-        code_.reloc_reuse_.emplace_back(r);
-      }
-      code.reloc_reuse_.clear();
-    }
+    code_.CombineBinds(code, s->ws_offset);
     for (auto op : s->ios) {
-      if (!op->is_stage_) continue;
+      if (!op->CheckFlag(OBJ_FLAG_STAGE_IO)) continue;
       if (op->IsStore()) {
         if (op->xbuf_ == STAGE_FLAG_REUSE) {
-          code_.RelocReuse(op, GetOutputReuse(op));
+          code_.BindOp(op, GetOutputReuse(op));
         } else {
-          code_.RelocWorkspace(op, GetWorkspace(op));
+          code_.BindWorkspace(op, GetWorkspace(op));
         }
       } else {
-        code_.RelocReuse(op, GetStageStore(op));
+        code_.BindOp(op, GetStageStore(op));
       }
     }
     if (!code.sub_codes_.empty()) {
@@ -490,14 +475,14 @@ uint64_t StagesKernel::AllocWorkspace() {
     auto stage = *it;
     // stage buffer gen
     for (auto io : stage->ios) {
-      if (io->IsLoad() && io->is_stage_) {
+      if (io->IsLoad() && io->CheckFlag(OBJ_FLAG_STAGE_IO)) {
         auto store = GetStageStore(io);
-        if (!store->is_stage_ || lives.find(store) != lives.end()) continue;
+        if (!store->CheckFlag(OBJ_FLAG_STAGE_IO) || lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == kStaticShape) {  // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
           auto inplace_out = static_cast<VectorKernel *>(stage->kernel)
                                ->FindInplaceStore(io, [&lives, &inplace_stage](NDAccess *op) -> bool {
-                                 if (!op->is_stage_ || op->xbuf_ == STAGE_FLAG_REUSE) {
+                                 if (!op->CheckFlag(OBJ_FLAG_STAGE_IO) || op->xbuf_ == STAGE_FLAG_REUSE) {
                                    return true;
                                  }
                                  if (inplace_stage == nullptr && lives[op] >= 0) {
@@ -507,7 +492,7 @@ uint64_t StagesKernel::AllocWorkspace() {
                                });
           if (inplace_out) {
             store->xbuf_ = STAGE_FLAG_REUSE;
-            SetOutputReuse(store, inplace_out->is_stage_ ? GetOutputReuse(inplace_out) : inplace_out);
+            SetOutputReuse(store, inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO) ? GetOutputReuse(inplace_out) : inplace_out);
             lives[store] = -1;
             continue;
           }
@@ -539,7 +524,7 @@ uint64_t StagesKernel::AllocWorkspace() {
     }
     // stage buffer kill
     for (auto io : stage->ios) {
-      if (io->IsStore() && io->is_stage_) {
+      if (io->IsStore() && io->CheckFlag(OBJ_FLAG_STAGE_IO)) {
         auto live_it = lives.find(io);
         if (live_it->second >= 0) {
           groups[live_it->second].live = false;
@@ -835,7 +820,7 @@ NDObject *VKernelE::Exchange(EagerArea *area, NDObject *input) {
   NDAccess *load;
   if (input->IsLoad()) {
     auto ac = static_cast<NDAccess *>(input);
-    load = new NDLoad(ac->gm_, ac->shape_ref_, ac->type_id_);
+    load = new NDLoad(ac->addr_.gm, ac->shape_ref_, ac->type_id_);
     SetStore(load, input);
     load->Normalize(area->objects_);
   } else {
@@ -997,29 +982,29 @@ void VKernelE::CodeGenMix(EagerArea *area, EagerVector *kernel) {
   auto mm = static_cast<CubeOp *>(area->dom_);
   auto alloc_input = [this](NDAccess *input) {
     auto store = GetStore(input);
-    if (store->gm_ == nullptr) {  // TODO: abstract common func
+    if (store->addr_.gm == nullptr) {  // TODO: abstract common func
       auto size = GetStoreSize(store);
       if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-        store->gm_ = static_cast<uint8_t *>(it->second);
+        store->addr_.gm = it->second;
         wss_.erase(it);
         SetStoreSize(store, it->first);
       } else {
-        store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
+        store->addr_.gm = ws_alloc_(size, user_data_);
       }
     }
-    input->gm_ = store->gm_;
+    input->addr_.gm = store->addr_.gm;
   };
-  if (auto io = static_cast<NDAccess *>(mm->lhs_); io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->lhs_); io->addr_.gm == nullptr) {
     alloc_input(io);
   }
-  if (auto io = static_cast<NDAccess *>(mm->rhs_); io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->rhs_); io->addr_.gm == nullptr) {
     alloc_input(io);
   }
-  if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->addr_.gm == nullptr) {
     alloc_input(io);
   }
   if (!mm->atomic_add_) {
-    wss_.insert({GetStoreSize(mm->output_), mm->output_->gm_});
+    wss_.insert({GetStoreSize(mm->output_), mm->output_->addr_.gm});
   }
   kernel->CodeGenMix(mm);
 }
@@ -1068,28 +1053,28 @@ uint64_t VKernelE::CodeGen() {
     for (size_t i = obj_size; i < objects_.size(); ++i) {
       NDAccess *io = static_cast<NDAccess *>(objects_[i]);
       auto store = GetStore(io);
-      if (store->gm_ == nullptr) {
+      if (store->addr_.gm == nullptr) {
         if (auto is =
               kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
-          store->gm_ = is->gm_;
+          store->addr_.gm = is->addr_.gm;
           SetStoreInplace(is, 1);
         } else {
           auto size = GetStoreSize(store);
           if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-            store->gm_ = static_cast<uint8_t *>(it->second);
+            store->addr_.gm = it->second;
             wss_.erase(it);
             SetStoreSize(store, it->first);
           } else {
-            store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
+            store->addr_.gm = ws_alloc_(size, user_data_);
           }
         }
       }
-      io->gm_ = store->gm_;
+      io->addr_.gm = store->addr_.gm;
     }
     if (kidx > 1) {  // kidx 1 is last wss user
       for (auto op : temp_ops_) {
         if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
-          wss_.insert({GetStoreSize(store), store->gm_});
+          wss_.insert({GetStoreSize(store), store->addr_.gm});
         }
       }
     }

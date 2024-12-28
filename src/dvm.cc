@@ -323,23 +323,23 @@ NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
   }
   NDObject *obj;
   if (ktype == kStaticMix) {
-    obj = new NDSLoad(static_cast<uint8_t *>(addr), shape, type);
+    obj = new NDSLoad(addr, shape, type);
   } else {
-    obj = new NDLoad(static_cast<uint8_t *>(addr), shape, type);
+    obj = new NDLoad(addr, shape, type);
   }
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject *Kernel::SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DType type) {
-  auto obj = new NDSliceLoad(static_cast<uint8_t *>(addr), shape, start, size, type);
+  auto obj = new NDSliceLoad(addr, shape, start, size, type);
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step,
                                    DType type) {
-  auto obj = new NDStridedSliceLoad(static_cast<uint8_t *>(addr), shape, start, end, step, type);
+  auto obj = new NDStridedSliceLoad(addr, shape, start, end, step, type);
   kernel_->Append(obj);
   return obj;
 }
@@ -552,7 +552,7 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
   auto ktype = kernel_->KType();
   if (ktype == kEager) {
     if (auto store = VKernelE::GetStore(input)) {
-      store->gm_ = static_cast<uint8_t *>(addr);
+      store->addr_.gm = addr;
       store->flags_ |= OBJ_FLAG_EAGER;
       return store;
     }
@@ -561,9 +561,9 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
   }
   NDObject *obj;
   if (ktype == kStaticMix) {
-    obj = new NDSStore(static_cast<uint8_t *>(addr), input);
+    obj = new NDSStore(addr, input);
   } else {
-    obj = new NDStore(static_cast<uint8_t *>(addr), input);
+    obj = new NDStore(addr, input);
   }
   kernel_->Append(obj);
   return obj;
@@ -574,8 +574,7 @@ NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
   if (ktype == kStaticStages) {
     ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
-  NDObject *obj;
-  obj = new NDPadStore(static_cast<uint8_t *>(addr), input, pad_size);
+  NDObject *obj = new NDPadStore(addr, input, pad_size);
   kernel_->Append(obj);
   return obj;
 }
@@ -667,7 +666,8 @@ uint64_t Kernel::CodeGen() {
 
 int Kernel::Launch(void *workspace, void *stream) {
   auto &code = kernel_->code_;
-  return code.RelocLaunch(workspace, stream);
+  code.RelocBinds(workspace);
+  return code.Launch(workspace, stream);
 }
 
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
@@ -760,7 +760,8 @@ int Kernel::Launch(const RelocTable &reloc_table, void **inputs, void **outputs,
     (*stores++)->Reloc(*outputs++);
   }
   auto &code = kernel_->code_;
-  return code.RelocLaunch(workspace, stream);
+  code.RelocBinds(workspace);
+  return code.Launch(workspace, stream);
 }
 
 void Kernel::EagerReset(WsAllocFunc ws_alloc, void *user_data) {
@@ -773,7 +774,7 @@ void Kernel::EagerReset(WsAllocFunc ws_alloc, void *user_data) {
 void Kernel::EagerCodeGen(const RelocEntry *reloc_table, size_t reloc_size) {
   ASSERT(kernel_->KType() == KernelType::kEager);
   for (auto reloc = reloc_table; reloc < reloc_table + reloc_size; ++reloc) {
-    static_cast<NDAccess *>(reloc->io)->gm_ = static_cast<uint8_t *>(reloc->addr);
+    static_cast<NDAccess *>(reloc->io)->addr_.gm = reloc->addr;
   }
   auto kernel = static_cast<VKernelE *>(kernel_);
   kernel->VKernelE::CodeGen();

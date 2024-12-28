@@ -20,6 +20,7 @@
 #include <atomic>
 #include "isa.h"
 #include "system.h"
+#include "ops.h"
 
 namespace dvm {
 class NDAccess;
@@ -33,18 +34,15 @@ class Code {
   ~Code();
   void Clear() {
     sub_codes_.clear();
-    reloc_reuse_.clear();
-    reloc_workspaces_.clear();
     unique_ids_.clear();
+    bind_wss_ = nullptr;
+    bind_ops_ = nullptr;
   }
   void ResetEager(int target) {
-    ASSERT(reloc_reuse_.empty() && reloc_workspaces_.empty() && unique_ids_.empty());
-    sub_codes_.clear();
     target_ = target;
+    Clear();
   }
   void Alloc(size_t size);
-  void RelocWorkspace(NDAccess *op, int64_t ws_offset);
-  void RelocReuse(NDAccess *op, NDAccess *reuse);
   void MoveCode(Code &other);
 
   void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags) {
@@ -69,20 +67,6 @@ class Code {
     return extern_code_ + data_size_;
   }
 
-  int RelocLaunch(void *workspace, void *stream) {
-    if (workspace) {
-      for (auto &[dst, offset] : reloc_workspaces_) {
-        *dst = reinterpret_cast<uint64_t>(static_cast<char *>(workspace) + offset);
-      }
-    }
-    if (!reloc_reuse_.empty()) {
-      for (auto &[dst, src] : reloc_reuse_) {
-        *dst = *src;
-      }
-    }
-    return Launch(workspace, stream);
-  }
-
   int Launch(void *workspace, void *stream) {
     if (!sub_codes_.empty()) {
       for (auto a : sub_codes_) {
@@ -99,14 +83,33 @@ class Code {
   void LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess *> &ios, uint64_t ws_base);
   void DisAssemble(std::ostringstream &oss);
 
+  void RelocBinds(void *workspace) {
+    for (auto op = bind_wss_; op != nullptr; op = op->bind_list_) {
+      op->Reloc(static_cast<char *>(workspace) + op->addr_.ws);
+    }
+    for (auto op = bind_ops_; op != nullptr; op = op->bind_list_) {
+      op->Reloc(reinterpret_cast<void *>(*op->addr_.op->reloc_addr_));
+    }
+  }
+  void BindWorkspace(NDAccess *op, uint64_t offset) {
+    op->addr_.ws = offset;
+    InsertBind(bind_wss_, op);
+  }
+  void BindOpFast(NDAccess *op, NDAccess *target) {
+    op->addr_.op = target;
+    InsertBind(bind_ops_, op);
+  }
+  void BindOp(NDAccess *op, NDAccess *target);
+  void CombineBinds(const Code &code, uint64_t ws_base);
+
   unsigned char *data_{nullptr};
   uint32_t data_size_{0};
   uint32_t block_dim_{0};
   int target_{0};
   int extern_code_{-1};
+  NDAccess *bind_wss_{nullptr};
+  NDAccess *bind_ops_{nullptr};
   std::vector<Code *> sub_codes_;
-  std::vector<std::pair<uint64_t *, uint64_t>> reloc_workspaces_;
-  std::vector<std::pair<uint64_t *, uint64_t *>> reloc_reuse_;
   std::vector<uint32_t *> unique_ids_;  // used to ensure softsync work, not affected by last kernel
   size_t mem_size_{0};
 
@@ -130,6 +133,16 @@ class Code {
     return System::Instance().rtKernelLaunch(stub_func, block_dim_, data_, data_size_, stream);
   }
   int LaunchEx(void *workspace, void *stream);
+
+  void InsertBind(NDAccess* &pos, NDAccess *op) {
+#ifdef DEBUG
+    for (auto x = pos; x != nullptr; x = x->bind_list_) {
+      ASSERT(x != op);
+    }
+#endif
+    op->bind_list_ = pos;
+    pos = op;
+  }
 
   static std::atomic<uint32_t> unique_id_;  // each kernel has a unique id
 };

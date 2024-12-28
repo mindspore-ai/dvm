@@ -21,7 +21,7 @@
 #include <vector>
 #include <mutex>
 #include "isa.h"
-#include "code.h"
+#include "system.h"
 
 namespace dvm {
 enum ObjectType {
@@ -250,6 +250,7 @@ class VectorKernel;
 #define OBJ_FLAG_XHS (2u << 16)
 #define OBJ_FLAG_WRAP (4u << 16)
 #define OBJ_FLAG_EAGER (8u << 16)
+#define OBJ_FLAG_STAGE_IO (16u << 16)
 
 class NDObject {
  public:
@@ -288,6 +289,8 @@ class NDObject {
   bool IsComm() const { return obj_id_ > kStore && obj_id_ <= kAllReduce; }
   // Comm op is considered a simd op, remember use !IsComm() to exclude comm op
   bool IsSimd() const { return obj_id_ > kStore; }
+  void SetFlag(uint32_t mask) { flags_ |= mask; }
+  bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
 
   template <typename T>
   inline T Cast();
@@ -322,16 +325,21 @@ class NDObject {
 
 class NDAccess : public NDObject {
  public:
-  NDAccess(uint8_t *gm, NDObject *lhs, DType type_id, ObjectType obj_id)
-      : NDObject(lhs, nullptr, type_id, obj_id), gm_(gm) {}
+  NDAccess(void *gm, NDObject *lhs, DType type_id, ObjectType obj_id)
+      : NDObject(lhs, nullptr, type_id, obj_id), addr_({gm}) {}
   void Reloc(void *dst) {
     if (reloc_addr_) {
       *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
     }
   }
-  uint8_t *gm_;
+  union {
+    void *gm;
+    uint64_t ws;
+    NDAccess *op;
+    uint64_t data;
+  } addr_; // NOTICE: bind after codegen
   uint64_t *reloc_addr_{nullptr};
-  bool is_stage_{false};
+  NDAccess *bind_list_{nullptr};
 };
 
 class NDLoadDummy : public NDAccess {
@@ -352,7 +360,7 @@ class NDLoadDummy : public NDAccess {
 
 class NDLoad : public NDAccess {
  public:
-  NDLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32)
+  NDLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32)
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
   }
@@ -368,7 +376,7 @@ class NDLoad : public NDAccess {
 
 class NDSliceLoad : public NDLoad {
  public:
-  NDSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
+  NDSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
       : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {}
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
@@ -385,7 +393,7 @@ class NDSliceLoad : public NDLoad {
 
 class NDStridedSliceLoad : public NDSliceLoad {
  public:
-  NDStridedSliceLoad(uint8_t *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
+  NDStridedSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
                      DType type_id = kFloat32)
       : NDSliceLoad(src, src_ref, start_ref, nullptr, type_id), end_ref_(end_ref), step_ref_(step_ref) {
     shape_ref_ = &shape_;
@@ -403,7 +411,7 @@ class NDStridedSliceLoad : public NDSliceLoad {
 class NDStore : public NDAccess {
  public:
   NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) { shape_ref_ = src->shape_ref_; }
-  NDStore(uint8_t *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
+  NDStore(void *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
@@ -424,7 +432,7 @@ class NDPadStore : public NDAccess {
       : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_size_(pad_size) {
     shape_ref_ = &shape_;
   }
-  NDPadStore(uint8_t *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { gm_ = dst; }
+  NDPadStore(void *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { addr_.gm = dst; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
@@ -820,11 +828,9 @@ class CubeOp : public NDObject {
   int64_t k0_{0};
   int64_t pad_a_{0};
   int64_t pad_b_{0};
-  int32_t rank_size_{0};
   bool trans_a_{false};
   bool trans_b_{false};
   bool pingpong_store_{false};
-  bool peer_store_{false};
   bool atomic_add_{false};
   bool batch_fold_{false};
   NDObject *bias_{nullptr};
@@ -860,7 +866,6 @@ class CommOp : public NDObject {
   std::vector<uint64_t> xbufs_;
   std::vector<uint64_t> forward_events_;
   std::vector<uint64_t> backward_events_;
-  std::vector<uint32_t *> *unique_ids_ptr_;
   uint64_t *lhs_simd_{nullptr};       // the simd instruction after lhs_(now only AllReudce has)
   uint64_t *backsync_load_{nullptr};  // the load which need bacysync from the simd after comm op
   bool mix_{false};
@@ -939,7 +944,7 @@ class AllGatherOp : public CommOp {
 class NDSStore : public NDStore {
  public:
   NDSStore(NDObject *src) : NDStore(src) { obj_id_ = kSStore; }
-  NDSStore(uint8_t *dst, NDObject *src) : NDStore(dst, src) { obj_id_ = kSStore; }
+  NDSStore(void *dst, NDObject *src) : NDStore(dst, src) { obj_id_ = kSStore; }
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;

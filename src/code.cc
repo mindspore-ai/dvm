@@ -14,12 +14,10 @@
  * limitations under the License.
  */
 
-#include <atomic>
 #include <unordered_map>
 #include <vector>
 #include <cstring>
 #include "code.h"
-#include "ops.h"
 
 #ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
@@ -934,8 +932,8 @@ Code::~Code() {
 Code &Code::operator=(Code &&other) {
   MoveCode(other);
   sub_codes_ = std::move(other.sub_codes_);
-  reloc_workspaces_ = std::move(other.reloc_workspaces_);
-  reloc_reuse_ = std::move(other.reloc_reuse_);
+  bind_wss_ = other.bind_wss_;
+  bind_ops_ = other.bind_ops_;
   return *this;
 }
 
@@ -989,20 +987,7 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
   for (auto a : ios) {
     a->reloc_addr_ = a->reloc_addr_ - old_base + new_base;
   }
-  if (!code.reloc_workspaces_.empty()) {
-    for (auto &[dst, offset] : code.reloc_workspaces_) {
-      reloc_workspaces_.emplace_back(dst - old_base + new_base, offset + ws_offset);
-    }
-  }
-  if (!code.reloc_reuse_.empty()) {
-    for (auto &[old_dst, old_src] : code.reloc_reuse_) {
-      uint64_t *src = old_src - old_base + new_base;
-      uint64_t *dst = old_dst >= old_base && old_dst < reinterpret_cast<uint64_t *>(code.data_ + code.data_size_)
-                        ? old_dst - old_base + new_base
-                        : old_dst;
-      reloc_reuse_.emplace_back(dst, src);
-    }
-  }
+  CombineBinds(code, ws_offset);
   if (!code.unique_ids_.empty()) {
     auto distance = (data_ + offset) - (code.data_ + HeadSize());
     for (auto unique_id_addr : code.unique_ids_) {
@@ -1016,19 +1001,32 @@ void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAcces
   }
 }
 
-void Code::RelocReuse(NDAccess *op, NDAccess *reuse) {
-  auto reloc_addr = op->reloc_addr_;
-  for (auto it = reloc_reuse_.begin(); it != reloc_reuse_.end(); ++it) {
-    if (it->second == reloc_addr) {
-      reloc_reuse_.emplace(it, reloc_addr, reuse->reloc_addr_);
+void Code::BindOp(NDAccess *op, NDAccess *target) {
+  op->addr_.op = target;
+  for (auto x = bind_ops_; x != nullptr; x = x->bind_list_) {
+    if (x == op->addr_.op) {
+      InsertBind(x->bind_list_, op);
       return;
     }
   }
-  reloc_reuse_.emplace_back(reloc_addr, reuse->reloc_addr_);
+  InsertBind(bind_ops_, op);
 }
 
-void Code::RelocWorkspace(NDAccess *op, int64_t ws_offset) {
-  reloc_workspaces_.emplace_back(op->reloc_addr_, ws_offset);
+void Code::CombineBinds(const Code &code, uint64_t ws_base) {
+  if (auto op = code.bind_wss_) {
+    for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
+      BindWorkspace(op, op->addr_.ws + ws_base);
+      op = next;
+    }
+    BindWorkspace(op, op->addr_.ws + ws_base);
+  }
+  if (auto op = code.bind_ops_) {
+    for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
+      BindOp(op, op->addr_.op);
+      op = next;
+    }
+    BindOp(op, op->addr_.op);
+  }
 }
 
 int Code::LaunchEx(void *workspace, void *stream) {

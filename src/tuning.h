@@ -19,6 +19,7 @@
 #include <map>
 #include "dvm.h"
 #include "ops.h"
+#include "code.h"
 
 namespace dvm {
 struct TuningInfo {

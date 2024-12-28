@@ -181,7 +181,6 @@ class CodeGenHelper {
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.emplace(op->lhs_->xbuf_, op);
           }
-          static_cast<CommOp *>(op)->unique_ids_ptr_ = &code.unique_ids_;
           auto code_size = op->Emit(kernel_);
           code_ptr += code_size;
           if (static_cast<CommOp *>(op)->StoreLhs()) {

@@ -74,13 +74,13 @@ class StagesKernel : public VKernel {
   }
 
   void StageStore(NDAccess *store) {
-    store->is_stage_ = true;
+    store->SetFlag(OBJ_FLAG_STAGE_IO);
     stages_.back()->kernel->Append(store);
     stages_.back()->ios.push_back(store);
   }
 
   void StageLoad(NDAccess *load, NDAccess *store) {
-    load->is_stage_ = true;
+    load->SetFlag(OBJ_FLAG_STAGE_IO);
     SetStageStore(load, store);
     stages_.back()->kernel->Append(load);
     stages_.back()->ios.push_back(load);
@@ -93,12 +93,12 @@ class StagesKernel : public VKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  static void SetWorkspace(NDAccess *op, int64_t offset) { op->gm_ = reinterpret_cast<uint8_t *>(offset); }
-  static int64_t GetWorkspace(NDAccess *op) { return reinterpret_cast<int64_t>(op->gm_); }
-  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->gm_ = reinterpret_cast<uint8_t *>(store); }
-  static NDAccess *GetOutputReuse(NDAccess *op) { return reinterpret_cast<NDAccess *>(op->gm_); }
-  static void SetStageStore(NDAccess *op, NDAccess *store) { op->gm_ = reinterpret_cast<uint8_t *>(store); }
-  static NDAccess *GetStageStore(NDAccess *op) { return reinterpret_cast<NDAccess *>(op->gm_); }
+  static void SetWorkspace(NDAccess *op, int64_t offset) { op->addr_.ws = offset; }
+  static int64_t GetWorkspace(NDAccess *op) { return op->addr_.ws; }
+  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->addr_.op = store; }
+  static NDAccess *GetOutputReuse(NDAccess *op) { return op->addr_.op; }
+  static void SetStageStore(NDAccess *op, NDAccess *store) { op->addr_.op = store; }
+  static NDAccess *GetStageStore(NDAccess *op) { return op->addr_.op; }
 
   uint64_t AllocWorkspace();
 

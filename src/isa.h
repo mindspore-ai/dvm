@@ -727,7 +727,7 @@ struct vReshape {
 
 struct vSLoad {
   enum { RELOC_OFFSET = 1 };
-  __gm__ uint8_t *gm;
+  __gm__ void *gm;
   uint64_t xn;
   uint64_t tile_stride;
   uint64_t src_n;
@@ -744,7 +744,7 @@ struct vSLoad {
   // pc[3]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | op.flags(4) << 4 | type_size(4)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSLoad &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
+    op.gm = reinterpret_cast<__gm__ void *>(pc[1]);
     uint64_t data = pc[2];
     op.src_n = (data >> 8) & 0xfffffful;
     op.slice_m = (data >> 32) & 0xfffful;
@@ -770,7 +770,7 @@ struct vSLoad {
 
 struct vSStore {
   enum { RELOC_OFFSET = 1 };
-  __gm__ uint8_t *gm;
+  __gm__ void *gm;
   uint64_t xn;
   uint64_t tile_stride;
   uint64_t src_n;
@@ -786,7 +786,7 @@ struct vSStore {
   // pc[2]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | type_size(4)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSStore &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
+    op.gm = reinterpret_cast<__gm__ void *>(pc[1]);
     uint64_t data = pc[2];
     op.src_n = (data >> 8) & 0xfffffful;
     op.slice_m = (data >> 32) & 0xfffful;
@@ -812,7 +812,7 @@ struct vSStore {
 struct vSliceSL {
   enum { ROUND_OFFSET = 5 };
   enum { RELOC_OFFSET = 1 };
-  __gm__ uint8_t *gm;
+  __gm__ void *gm;
   uint64_t xn;
   uint64_t tile_stride;
   uint64_t src_m;
@@ -833,7 +833,7 @@ struct vSliceSL {
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSliceSL &op) {
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + 13, 18);
     op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13));
-    op.gm = reinterpret_cast<__gm__ uint8_t *>(pc[1]);
+    op.gm = reinterpret_cast<__gm__ void *>(pc[1]);
     uint64_t data = pc[2];
     op.type_size = data & 0xful;
     op.src_n = (data >> 4) & 0xffffful;

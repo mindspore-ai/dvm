@@ -25,19 +25,10 @@ constexpr int64_t MAX_K = 1 << 15;
 
 MixKernel::~MixKernel() {
   if (cube_op_) {
-    // TODO: remove check
-    if (auto lhs = cube_op_->lhs_; lhs->IsLoad()) {
-      delete lhs;
-    }
-    if (auto rhs = cube_op_->rhs_; rhs->IsLoad()) {
-      delete rhs;
-    }
-    if (auto out = cube_op_->output_; out->IsStore()) {
-      delete out;
-    }
-    if (auto bias = cube_op_->bias_; bias != nullptr) {
-      delete bias;
-    }
+    delete cube_op_->lhs_;
+    delete cube_op_->rhs_;
+    delete cube_op_->output_;
+    if (cube_op_->bias_) delete cube_op_->bias_;
     delete cube_op_;
   }
   if (post_fusion_) delete post_fusion_;
@@ -248,110 +239,93 @@ uint64_t MixKernel::BiasBF16CodeGen() {
 }
 
 uint64_t MixKernel::AlignCodeGen() {
-  size_t size = code_.HeadSize() + sizeof(vCubeOp);
-  vCubeOp cube_code;
-  cube_op_->CodeGen(&cube_code, tuner_);
-  code_.block_dim_ = cube_op_->block_dim_;
-  cube_code.subtilenum = 0;
-  uint64_t head_flags = V_ENTRY_FLAG_MIX;
-  uint64_t head_simd = 0;
-  NDAccess *inplace_store = nullptr;
-  bool peer_store = false;
+  size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
+  size_t post_reserve = 0;
   if (post_fusion_) {
     post_fusion_->Normalize();
-    if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
-      for (auto op : post_fusion_->objects_) {
-        ASSERT(op->nd_.prod() == sload_->nd_.prod());
-        op->nd_[1] = cube_op_->m_real_;
-        op->nd_.resize(2);
-      }
-    }
-    post_fusion_->Optimize();
-    post_fusion_->BuildDomain(post_fusion_->objects_);
-    post_fusion_->NormalizeDomain();
-    if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
-      cube_op_->pingpong_store_ = true;
-      static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
-      cube_code.rank_size = comm->comm_->GetRankSize();
-      cube_code.flags |= V_CUBE_FLAG_PEER_STORE;
-      cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      peer_store = true;
-    } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-      inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr);
-      if (inplace_store == nullptr) {
-        cube_op_->pingpong_store_ = true;
-        static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
-        cube_code.flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      }
-    }
-    for (auto op : post_fusion_->objects_) {
-      if (op->IsLoad()) {
-        static_cast<NDSLoad *>(op)->SetCubeOp(cube_op_);
-      } else if (op->IsStore()) {
-        static_cast<NDSStore *>(op)->SetCubeOp(cube_op_);
-      } else if (op->IsComm()) {
-        auto comm = static_cast<CommOp *>(op);
-        comm->mix_ = true;
-        if (peer_store) {
-          static_cast<CommOp *>(op)->SetCubeOp(cube_op_);
-        }
-      }
-    }
-    auto m = sload_->nd_[1];
-    auto n = sload_->nd_[0];
-    post_fusion_->root_dom_.GroupTile(1, m, cube_code.m0);
-    post_fusion_->root_dom_.GroupTile(0, n, cube_code.n0);
-    for (size_t i = 2; i < sload_->nd_.size(); i++) {
-      post_fusion_->root_dom_.GroupTile(i, sload_->nd_[i], 1);
-    }
-    post_fusion_->NormalizeDomain();
-    post_fusion_->DoCodeGen(2);
-    size += post_fusion_->code_.data_size_;
-    uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
-    uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
-    cube_code.subtilenum = subtile_1 << 32 | subtile_0;
-    cube_code.flags |= V_CUBE_FLAG_GROUP_SET;
-    head_flags |= V_ENTRY_FLAG_PRE_WAIT;
-    head_simd = post_fusion_->simd_width_;
+    post_reserve = post_fusion_->ReserveCodeSize();
   }
-  code_.target_ = post_fusion_ ? Code::kTargetMix : Code::kTargetCube;
-  code_.data_size_ = size;
-  code_.Alloc(size);
-  code_.UpdateHead(cube_op_->core_loop_, head_simd, head_flags);
-  std::memcpy(code_.data_ + code_.HeadSize(), &cube_code, sizeof(vCubeOp));
-  // only support post fusion
-  vCubeOp *link_cube = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
-  static_cast<NDAccess *>(cube_op_->lhs_)->reloc_addr_ = &link_cube->gm_a;
-  static_cast<NDAccess *>(cube_op_->rhs_)->reloc_addr_ = &link_cube->gm_b;
+  code_.Alloc(head_reserve + post_reserve);
+  vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
+  cube_op_->CodeGen(cube_code, tuner_);
+  cube_code->subtilenum = 0;
+  static_cast<NDAccess *>(cube_op_->lhs_)->reloc_addr_ = &cube_code->gm_a;
+  static_cast<NDAccess *>(cube_op_->rhs_)->reloc_addr_ = &cube_code->gm_b;
   if (cube_op_->bias_) {
-    static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = &link_cube->gm_bias;
+    static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = &cube_code->gm_bias;
   }
-  cube_op_->output_->reloc_addr_ = &link_cube->gm_c;
-  if (post_fusion_) {
-    std::vector<NDAccess *> ios;
+  cube_op_->output_->reloc_addr_ = &cube_code->gm_c;
+  code_.block_dim_ = cube_op_->block_dim_;
+  if (!post_fusion_) {
+    code_.data_size_ = head_reserve;
+    code_.target_ = Code::kTargetMix;
+    code_.UpdateHead(cube_op_->core_loop_, 0, V_ENTRY_FLAG_MIX);
+    return 0;
+  }
+  if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
     for (auto op : post_fusion_->objects_) {
-      if (!op->IsSimd()) ios.push_back(static_cast<NDAccess *>(op));
+      ASSERT(op->nd_.prod() == sload_->nd_.prod());
+      op->nd_[1] = cube_op_->m_real_;
+      op->nd_.resize(2);
     }
-    code_.LinkBody(code_.HeadSize() + sizeof(vCubeOp), post_fusion_->code_, ios, 0);
-    if (inplace_store) {
+  }
+  for (auto op : post_fusion_->objects_) {
+    if (op->IsLoad()) {
+      static_cast<NDSLoad *>(op)->SetCubeOp(cube_op_);
+    } else if (op->IsStore()) {
+      static_cast<NDSStore *>(op)->SetCubeOp(cube_op_);
+    } else if (op->IsComm()) {
+      auto comm = static_cast<CommOp *>(op);
+      comm->mix_ = true;
+      if (comm->lhs_ == sload_) {
+        static_cast<CommOp *>(op)->SetCubeOp(cube_op_);
+      }
+    }
+  }
+  post_fusion_->Optimize();
+  post_fusion_->BuildDomain(post_fusion_->objects_);
+  post_fusion_->NormalizeDomain();
+  uint64_t ws_size = 0;
+  if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
+    cube_op_->pingpong_store_ = true;
+    static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
+    cube_code->rank_size = comm->comm_->GetRankSize();
+    cube_code->flags |= V_CUBE_FLAG_PEER_STORE;
+    cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
+    code_.unique_ids_.push_back(&cube_code->unique_id); // record vCubeOp's unique_id address
+    cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
+    code_.BindOpFast(sload_, cube_op_->output_);
+  } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+    if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
       code_.BindOpFast(cube_op_->output_, inplace_store);
       code_.BindOpFast(sload_, inplace_store);
-    } else if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-      code_.BindOpFast(sload_, cube_op_->output_);
-    } else if (peer_store) {
-      // record vCubeOp's unique_id address
-      auto distance = reinterpret_cast<uint8_t *>(&cube_code.unique_id) - reinterpret_cast<uint8_t *>(&cube_code);
-      code_.unique_ids_.push_back(reinterpret_cast<uint32_t *>(code_.data_ + code_.HeadSize() + distance));
-      const auto comm = post_fusion_->comm_op_->comm_;
-      link_cube->gm_c = reinterpret_cast<uint64_t>(comm->GetPeerMemPtr(comm->GetRankId()));
-      code_.BindOpFast(sload_, cube_op_->output_);
     } else {
+      cube_op_->pingpong_store_ = true;
+      static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
+      cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
       code_.BindWorkspace(cube_op_->output_, 0);
       code_.BindWorkspace(sload_, 0);
-      return cube_op_->PostFusionWorkSpace();
+      ws_size = cube_op_->PostFusionWorkSpace();
     }
+  } else {
+    code_.BindOpFast(sload_, cube_op_->output_);
   }
-  return 0;
+  post_fusion_->root_dom_.GroupTile(1, sload_->nd_[1], cube_code->m0);
+  post_fusion_->root_dom_.GroupTile(0, sload_->nd_[0], cube_code->n0);
+  for (size_t i = 2; i < sload_->nd_.size(); i++) {
+    post_fusion_->root_dom_.GroupTile(i, sload_->nd_[i], 1);
+  }
+  post_fusion_->NormalizeDomain();
+  auto code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
+  uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
+  uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
+  cube_code->subtilenum = subtile_1 << 32 | subtile_0;
+  cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
+  code_.data_size_ = code_end - code_.data_;
+  code_.target_ = Code::kTargetMix;
+  code_.UpdateHead(cube_op_->core_loop_, post_fusion_->simd_width_, V_ENTRY_FLAG_MIX | V_ENTRY_FLAG_PRE_WAIT);
+  code_.Combine(post_fusion_->code_, 0);
+  return ws_size;
 }
 
 uint64_t MixKernel::CodeGen() {
@@ -417,7 +391,7 @@ uint64_t StagesKernel::CodeGen() {
   uint64_t ws_size = AllocWorkspace();
   for (auto s : stages_) {
     auto &code = s->kernel->code_;
-    code_.CombineBinds(code, s->ws_offset);
+    code_.Combine(code, s->ws_offset);
     for (auto op : s->ios) {
       if (!op->CheckFlag(OBJ_FLAG_STAGE_IO)) continue;
       if (op->IsStore()) {
@@ -429,12 +403,6 @@ uint64_t StagesKernel::CodeGen() {
       } else {
         code_.BindOp(op, GetStageStore(op));
       }
-    }
-    if (!code.sub_codes_.empty()) {
-      for (auto a : code.sub_codes_) {
-        code_.sub_codes_.push_back(a);
-      }
-      code.sub_codes_.clear();
     }
     if (s != stages_.back()) {
       code_.sub_codes_.push_back(&code);

@@ -78,12 +78,9 @@ class CodeGenHelper {
       : forward_event_num_(System::Instance().EventNum()),
         backward_event_num_(System::Instance().EventNum()),
         kernel_(kernel) {}
-  bool Generate() {
-    auto &code = kernel_.code_;
-    auto code_reserved = kernel_.ReserveCodeSize();
-    code.Alloc(code_reserved + code.HeadSize());
-    uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code.data_ + code.HeadSize());
-    static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserved;
+  uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
+    uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
+    static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserve;
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
@@ -195,10 +192,7 @@ class CodeGenHelper {
     }  // end for op
     *code_ptr++ = vMakeHead(vLoadInsnID::V_LOAD_NONE, 0, 0, V_PIPE_LOAD);
     BackwardSync();
-    code.data_size_ = reinterpret_cast<uint8_t *>(code_ptr) - code.data_;
-    ASSERT(code.data_size_ <= code_reserved + code.HeadSize());
-    code.UpdateHead(kernel_.tile_num_, simd_width, 0);
-    return true;
+    return reinterpret_cast<uint8_t *>(code_ptr);
   }
 
  private:
@@ -1005,7 +999,7 @@ VectorKernel::~VectorKernel() {
   }
 }
 
-void VectorKernel::DoCodeGen(uint64_t core_limit) {
+uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve) {
   int peak_live = Analyze();
   int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);  // max tile_size for each op
@@ -1049,7 +1043,9 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
   // codegen
   CodeGenHelper helper(*this);
   helper.xbuf_size_ = best_repeat * simd_width_ * ITEM_SIZE[max_type_];
-  helper.Generate();
+  auto code_end = helper.Generate(code_ptr, code_reserve);
+  ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
+  return code_end;
 }
 
 void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
@@ -1525,6 +1521,10 @@ VKernelP::~VKernelP() {
 void VKernelP::Append(NDObject *obj) { children_.back()->Append(obj); }
 
 uint64_t VKernelP::CodeGen() {
+  uint64_t core_num = System::Instance().CoreNum();
+  uint64_t summaries_offset = code_.HeadSize();
+  uint64_t child_offset = summaries_offset + RoundUp(core_num * sizeof(uint64_t), 32ul);
+  uint64_t code_reserve = child_offset;
   auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
   uint64_t total_workload = 0;
   for (auto k : children_) {
@@ -1532,54 +1532,40 @@ uint64_t VKernelP::CodeGen() {
     k->BuildDomain(k->objects_);
     k->NormalizeDomain();
     total_workload += WorkLoad(k);
+    code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);
   }
   std::sort(children_.begin(), children_.end(),
             [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
-  uint64_t core_num = System::Instance().CoreNum();
+  code_.Alloc(code_reserve);
+  uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + summaries_offset);
+  uint64_t summary_idx = 0;
+  code_.block_dim_ = 0;
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
     auto workload = WorkLoad(k);
     // If workload is inbalanced, make sure that each workload occupies at least one core
     uint64_t core_limit = std::max(core_num * workload / total_workload, 1ul);
-    k->DoCodeGen(core_limit);
+    auto &code = k->code_;
+    auto code_begin = code_.data_ + child_offset;
+    uint64_t code_size = k->DoCodeGen(core_limit, code_begin, k->ReserveCodeSize()) - code_begin;
     total_workload -= workload;
-    core_num -= k->code_.block_dim_;
-  }
-  code_.block_dim_ = 0;
-  uint64_t code_size = 0;
-  for (auto c : children_) {
-    code_.block_dim_ += c->code_.block_dim_;
-    code_size += ((c->code_.data_size_ - c->code_.HeadSize() + 31) >> 5) << 5;
-  }
-  uint64_t summary_size = ((code_.block_dim_ * sizeof(uint64_t) + 31) >> 5) << 5;
-  code_.data_size_ = code_.HeadSize() + summary_size + code_size;
-  code_.Alloc(code_.data_size_);
-  uint64_t offset = summary_size;
-  uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + code_.HeadSize());
-  uint64_t summary_idx = 0;
-  for (size_t k = 0; k < children_.size(); ++k) {
-    Code &code = children_[k]->code_;
-    auto tile_num = children_[k]->tile_num_;
-    ASSERT(tile_num <= 0xffffful);
+    core_num -= code.block_dim_;
+    code_.block_dim_ += code.block_dim_;
     // summary
-    uint64_t lenburst = (code.data_size_ - code.HeadSize() + 31) / 32;
-    uint64_t summary = lenburst << 58 | (offset >> 5) << 49 | children_[k]->simd_width_ << 41;
-    uint64_t tile_per_block = (tile_num - 1) / code.block_dim_ + 1;
+    uint64_t lenburst = CeilDiv(code_size, 32ul);
+    uint64_t summary = lenburst << 58 | ((child_offset - code.HeadSize())>> 5) << 49 | k->simd_width_ << 41;
+    uint64_t tile_per_block = (k->tile_num_ - 1) / code.block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code.block_dim_ - 1; ++i) {
       summaries[summary_idx++] = summary | tile_per_block << 20 | start_idx;
       start_idx += tile_per_block;
     }
-    summaries[summary_idx++] = summary | (tile_num - start_idx) << 20 | start_idx | 1ul << 40;
-    // data
-    std::vector<NDAccess *> ios;
-    for (auto op : children_[k]->objects_) {
-      if (!op->IsSimd()) ios.push_back(static_cast<NDAccess *>(op));
-    }
-    code_.LinkBody(code_.HeadSize() + offset, code, ios, 0);
-    offset += ((code.data_size_ - code.HeadSize() + 31) >> 5) << 5;
+    summaries[summary_idx++] = summary | (k->tile_num_ - start_idx) << 20 | start_idx | 1ul << 40;
+    child_offset += RoundUp<uint64_t>(code_size, 32ul);
+    code_.Combine(code, 0);
   }
-  code_.UpdateParallelHead();
+  code_.data_size_ = child_offset;
+  code_.UpdateHead(code_.block_dim_, 0, V_ENTRY_FLAG_PARALLEL);
   return 0;
 }
 

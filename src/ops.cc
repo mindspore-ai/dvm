@@ -2012,22 +2012,14 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->b_size = rhs_->nd_[0] * rhs_->nd_[1];
   op->offset_a = offset_a_;
   op->offset_b = offset_b_;
-  if (lhs_->IsLoad()) {
-    auto a = static_cast<NDAccess *>(lhs_);
-    op->gm_a = a->addr_.data;
-    op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
-    op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
-  } else {
-    ASSERT(0);  // TODO: pre fusion
-  }
-  if (rhs_->IsLoad()) {
-    auto b = static_cast<NDAccess *>(rhs_);
-    op->gm_b = b->addr_.data;
-    op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
-    op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
-  } else {
-    ASSERT(0);  // TODO: pre fusion
-  }
+  auto a = static_cast<NDAccess *>(lhs_);
+  op->gm_a = a->addr_.data;
+  op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
+  op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
+  auto b = static_cast<NDAccess *>(rhs_);
+  op->gm_b = b->addr_.data;
+  op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
+  op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
   if (!trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2) {
     auto batch_fold = op->batch_a1 * op->batch_a0;
     op->batch_a1 = 1;

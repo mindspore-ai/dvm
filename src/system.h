@@ -165,5 +165,8 @@ static inline __attribute__((always_inline)) T RoundDown(T num, T rnd) {
   }
   return num / rnd * rnd;
 }
+
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
 }  // namespace dvm
 #endif  // _DVM_SYSTEM_H_

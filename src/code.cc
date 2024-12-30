@@ -943,7 +943,6 @@ void Code::MoveCode(Code &other) {
   data_size_ = other.data_size_;
   block_dim_ = other.block_dim_;
   target_ = other.target_;
-  extern_code_ = other.extern_code_;
   mem_size_ = other.mem_size_;
 
   other.data_ = nullptr;
@@ -980,18 +979,24 @@ void Code::Alloc(size_t size) {
 
 void Code::DisAssemble(std::ostringstream &oss) { DisAssembler(oss).Run(this, "vmain"); }
 
-void Code::LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess *> &ios, uint64_t ws_offset) {
-  std::memcpy(data_ + offset, code.data_ + HeadSize(), code.data_size_ - HeadSize());
-  uint64_t *new_base = reinterpret_cast<uint64_t *>(data_ + offset);
-  uint64_t *old_base = reinterpret_cast<uint64_t *>(code.data_ + HeadSize());
-  for (auto a : ios) {
-    a->reloc_addr_ = a->reloc_addr_ - old_base + new_base;
+void Code::Combine(const Code &code, uint64_t ws_base) {
+  if (auto op = code.bind_wss_) {
+    for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
+      BindWorkspace(op, op->addr_.ws + ws_base);
+      op = next;
+    }
+    BindWorkspace(op, op->addr_.ws + ws_base);
   }
-  CombineBinds(code, ws_offset);
+  if (auto op = code.bind_ops_) {
+    for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
+      BindOp(op, op->addr_.op);
+      op = next;
+    }
+    BindOp(op, op->addr_.op);
+  }
   if (!code.unique_ids_.empty()) {
-    auto distance = (data_ + offset) - (code.data_ + HeadSize());
-    for (auto unique_id_addr : code.unique_ids_) {
-      unique_ids_.push_back(reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(unique_id_addr) + distance));
+    for (auto id: code.unique_ids_) {
+      unique_ids_.push_back(id);
     }
   }
   if (!code.sub_codes_.empty()) {
@@ -1012,33 +1017,26 @@ void Code::BindOp(NDAccess *op, NDAccess *target) {
   InsertBind(bind_ops_, op);
 }
 
-void Code::CombineBinds(const Code &code, uint64_t ws_base) {
-  if (auto op = code.bind_wss_) {
-    for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
-      BindWorkspace(op, op->addr_.ws + ws_base);
-      op = next;
-    }
-    BindWorkspace(op, op->addr_.ws + ws_base);
-  }
-  if (auto op = code.bind_ops_) {
-    for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
-      BindOp(op, op->addr_.op);
-      op = next;
-    }
-    BindOp(op, op->addr_.op);
-  }
-}
-
 int Code::LaunchEx(void *workspace, void *stream) {
 #ifdef VK_SIM_MODEL
   return -1;
 #else
-  auto data_dev = reinterpret_cast<uint8_t *>(workspace) + extern_code_;
+  auto data_dev = reinterpret_cast<uint8_t *>(workspace);
   auto ret = aclrtMemcpyAsync(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(data_) + 1)};
   auto stub_func = System::Instance().StubFunc(target_);
   return System::Instance().rtKernelLaunch(stub_func, block_dim_, args, sizeof(args), stream);
 #endif
+}
+
+uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
+  uint64_t *head = reinterpret_cast<uint64_t *>(data_);
+  head[1] |= V_ENTRY_FLAG_EXTERN_CODE;
+  auto offset = RoundUp<uint64_t>(data_size_, 512);
+  for (auto op = bind_wss_; op != nullptr; op = op->bind_list_) {
+    op->addr_.ws += offset;
+  }
+  return workspace_size + offset;
 }
 }  // namespace dvm

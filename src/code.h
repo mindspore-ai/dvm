@@ -51,20 +51,11 @@ class Code {
     head[1] = tile_num << V_ENTRY_TILE_NUM_OFFSET | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET |
               (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET | flags;
   }
-  void UpdateParallelHead() { UpdateHead(block_dim_, 0, V_ENTRY_FLAG_PARALLEL); }
 
-  uint64_t HeadSize() const { return sizeof(uint64_t) * 2; }  // ffts + entry
+  static constexpr uint64_t HeadSize() { return sizeof(uint64_t) * 2; }  // ffts + entry
 
   uint64_t ReserveWorkspace(uint64_t workspace_size) {
-    if (data_size_ <= PARAM_TABLE_LIMIT) {
-      extern_code_ = -1;
-      return workspace_size;
-    }
-    uint64_t *head = reinterpret_cast<uint64_t *>(data_);
-    head[1] |= V_ENTRY_FLAG_EXTERN_CODE;
-    const uint64_t align = 512;
-    extern_code_ = (workspace_size + align) & ~(align - 1);
-    return extern_code_ + data_size_;
+    return data_size_ <= PARAM_TABLE_LIMIT ? workspace_size : ReserveCodeSpace(workspace_size);
   }
 
   int Launch(void *workspace, void *stream) {
@@ -80,7 +71,7 @@ class Code {
     return DoLaunch(workspace, stream);
   }
 
-  void LinkBody(uint64_t offset, const Code &code, const std::vector<NDAccess *> &ios, uint64_t ws_base);
+  void Combine(const Code &code, uint64_t ws_base);
   void DisAssemble(std::ostringstream &oss);
 
   void RelocBinds(void *workspace) {
@@ -100,13 +91,11 @@ class Code {
     InsertBind(bind_ops_, op);
   }
   void BindOp(NDAccess *op, NDAccess *target);
-  void CombineBinds(const Code &code, uint64_t ws_base);
 
   unsigned char *data_{nullptr};
   uint32_t data_size_{0};
   uint32_t block_dim_{0};
   int target_{0};
-  int extern_code_{-1};
   NDAccess *bind_wss_{nullptr};
   NDAccess *bind_ops_{nullptr};
   std::vector<Code *> sub_codes_;
@@ -121,7 +110,7 @@ class Code {
         *id = cur_id;
       }
     }
-    if (extern_code_ >= 0) {
+    if (unlikely(data_size_ > PARAM_TABLE_LIMIT)) {
       return LaunchEx(workspace, stream);
     }
     if (target_ == kTargetMix) {
@@ -133,6 +122,7 @@ class Code {
     return System::Instance().rtKernelLaunch(stub_func, block_dim_, data_, data_size_, stream);
   }
   int LaunchEx(void *workspace, void *stream);
+  uint64_t ReserveCodeSpace(uint64_t workspace_size);
 
   void InsertBind(NDAccess* &pos, NDAccess *op) {
 #ifdef DEBUG

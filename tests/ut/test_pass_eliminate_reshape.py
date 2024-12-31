@@ -189,3 +189,13 @@ def test_remove_pad_multi_user():
     t.store_expect(y2, e2, 1e-2)
     t.set_passes("InsertRemovePad")
     assert(t.run_check())
+
+def test_reduce_lead_dim():
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [128, 1]).astype(np.float32)
+    x = t.load(a)
+    x = t.reshape(x, [1, 128])
+    y = t.reduce("sum", x, [1], True)
+    t.store_expect(y, np.sum(a, (0,), keepdims=True))
+    t.set_passes("EliminateReshape")
+    assert(t.run_check())

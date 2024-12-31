@@ -173,3 +173,13 @@ def test_unalign_broadcast():
     t.set_passes("EliminateReshape")
     t.store_expect(x5, 0.06)
     assert(t.run_check())
+
+def test_reduce_lead_dim():
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [128, 1]).astype(np.float32)
+    x = t.load(a)
+    x = t.reshape(x, [1, 128])
+    y = t.reduce("sum", x, [1], True)
+    t.store_expect(y, np.sum(a, (0,), keepdims=True))
+    t.set_passes("EliminateReshape")
+    assert(t.run_check())

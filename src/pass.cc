@@ -853,10 +853,14 @@ void CleanUpReduce(NDObject *obj) {
   auto &output_axis = obj->nd_;
   ASSERT(input_axis.size() == output_axis.size());
   size_t i = 0;
+  while (i < input_axis.size() && input_axis[i] == 1) {
+    ++i;
+  }
+  size_t lead_dim = i;
   while (i < input_axis.size() && input_axis[i] == output_axis[i]) {
     ++i;
   }
-  int start = i;
+  int start = i == lead_dim ? 0 : i;
   while (i < input_axis.size() && input_axis[i] != output_axis[i]) {
     ++i;
   }

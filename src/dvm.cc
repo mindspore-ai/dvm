@@ -380,27 +380,17 @@ NDObject *Kernel::Binary(int op_type, NDObject *lhs, NDObject *rhs) {
     return cast3;
   }
   if (op_type < V_CMP_ALL && lhs->type_id_ == kInt32) {
-    if (op_type == kEqual || op_type == kNotEqual) {
-      auto sub = Binary(BinaryOpType::kSub, rhs, lhs);
-      auto abs = Binary(BinaryOpType::kMaximum, sub, Binary(BinaryOpType::kMul, sub, -1));
-      auto min = Binary(BinaryOpType::kMinimum, abs, 1);
-      if (op_type == kEqual) {
-        return Binary(BinaryOpType::kSub, 1, min);
-      }
-      return min;
-    } else {
-      NDObject *sub;
-      if (op_type == kGreaterEqual || op_type == kGreater) {
-        sub = Binary(BinaryOpType::kSub, lhs, rhs);
-      } else {
-        sub = Binary(BinaryOpType::kSub, rhs, lhs);
-      }
-      if (op_type == kLessEqual || op_type == kGreaterEqual) {
-        sub = Binary(BinaryOpType::kAdd, sub, 1);
-      }
-      auto ret = Binary(BinaryOpType::kMinimum, sub, 1);
-      ret = Binary(BinaryOpType::kMaximum, ret, 0);
-      return ret;
+    switch (op_type) {
+      case kGreaterEqual:
+        return Binary(BinaryOpType::kEqual, Binary(BinaryOpType::kMaximum, lhs, rhs), lhs);
+      case kLess:
+        return Binary(BinaryOpType::kNotEqual, Binary(BinaryOpType::kMaximum, lhs, rhs), lhs);
+      case kLessEqual:
+        return Binary(BinaryOpType::kEqual, Binary(BinaryOpType::kMinimum, lhs, rhs), lhs);
+      case kGreater:
+        return Binary(BinaryOpType::kNotEqual, Binary(BinaryOpType::kMinimum, lhs, rhs), lhs);
+      default:
+        break;
     }
   }
   NDObject *obj;

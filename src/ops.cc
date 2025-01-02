@@ -61,8 +61,8 @@ static const InsnIdTable unary_id_list[kUnaryOpEnd] = {
 
 static const InsnIdTable binary_id_list[] = {
   // must keep consistent order with BinaryOpType
-  {"Equal", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
-  {"NotEqual", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
+  {"Equal", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_CMP_INT32}},
+  {"NotEqual", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_CMP_INT32}},
   {"Greater", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
   {"GreaterEqual", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
   {"Less", {V_NONE, V_CMP_FP16, V_NONE, V_CMP, V_NONE}},
@@ -1134,7 +1134,9 @@ int CompareOp::Emit(VectorKernel &k) {
   op.type = cmp_op_;
   op.ws = wss_[0];
   op.repeat = strides_.back() / k.simd_width_;
-  return vCompare::Encode(insn_, type_id_ == kFloat32 ? V_CMP : V_CMP_FP16, op);
+  auto id = binary_id_list[cmp_op_].ids[type_id_];
+  ASSERT(id != V_NONE);
+  return vCompare::Encode(insn_, id, op);
 }
 
 void CompareOp::Dump(bool verbose, std::ostringstream &oss) {

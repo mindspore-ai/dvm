@@ -616,6 +616,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_POW, {&DumpBinaryWS, "Pow", "fp32"}},
   {V_CMP, {&DumpCompare, "Compare", "fp32"}},
   {V_CMP_FP16, {&DumpCompare, "Compare", "fp16"}},
+  {V_CMP_INT32, {&DumpCompare, "Compare", "int32"}},
   {V_CMPS, {&DumpCompareS, "CompareS", "fp32"}},
   {V_CMPS_FP16, {&DumpCompareS, "CompareS", "fp16"}},
   {V_SEL, {&DumpSelect, "Select", "fp32"}},

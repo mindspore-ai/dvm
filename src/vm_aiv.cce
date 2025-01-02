@@ -289,7 +289,7 @@ __aicore_inline__ void repeat_vcadd(__ubuf__ float *dst, __ubuf__ float *src, ui
 }
 
 template <typename T>
-__aicore_inline__ void repeat_select_2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint8_t repeat,
+__aicore_inline__ void repeat_select_2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint16_t repeat,
                                        uint8_t repeatStride, uint64_t cond_addr) {
   __ubuf__ uint32_t *wk = (__ubuf__ uint32_t *)(WORKSPACE);
   uint64_t simd_width = TYPE_SHIFT(T) * repeatStride;
@@ -447,6 +447,7 @@ DELCARE_UNARYS(vector_dup, uint16_t)
 DELCARE_UNARYS(vector_dup, uint32_t)
 
 DELCARE_CAST(vconv_s322f32, float, int32_t)
+DELCARE_CAST(vconv_f322s32z, int32_t, float)
 DELCARE_CAST(vconv_f322f16, half, float)
 DELCARE_CAST(vconv_s162f16, half, int16_t)
 DELCARE_CAST(vconv_f162s16r, int16_t, half)
@@ -486,6 +487,7 @@ DELCARE_CMPS(vcmpvs_gt, half)
 
 DELCARE_CMP(vcmpv_ne, float)
 DELCARE_CMP(vcmpv_ne, half)
+DELCARE_CMP(vcmpv_eq, int32_t)
 DELCARE_CMP(vcmpv_eq, float)
 DELCARE_CMP(vcmpv_eq, half)
 DELCARE_CMP(vcmpv_le, float)
@@ -698,6 +700,37 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     CMP_DISPATCH(V_CMP_LE, vcmpv_le);
     default: break;
   }
+}
+
+__aicore_inline__ void CompareInt(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vCompare op;
+  vCompare::Decode(pc, head, op);
+  __ubuf__ float *xd = (__ubuf__ float *)(op.xd);
+  __ubuf__ int32_t *xm = (__ubuf__ int32_t *)(op.xm);
+  __ubuf__ int32_t *xn = (__ubuf__ int32_t *)(op.xn);
+  __ubuf__ uint8_t *ws = (__ubuf__ uint8_t *)(op.ws);
+  uint64_t simd_width = TileSimdWidth(tile);
+  uint64_t rs = simd_width >> SIMD_WIDTH_SHIFT(xd);
+  uint64_t repeat = op.repeat;
+  repeat_vcmpv_eq(ws, xn, xm, op.repeat, 1, 1, 1, rs, rs, rs);
+  pipe_barrier(PIPE_V);
+  if (op.type == V_CMP_NE) {
+    vDup((__ubuf__ float *)WORKSPACE, (float)1.0, 1, rs);
+    vDup((__ubuf__ float *)(WORKSPACE + 256), (float)0.0, 1, rs);
+  } else {
+    vDup((__ubuf__ float *)WORKSPACE, (float)0.0, 1, rs);
+    vDup((__ubuf__ float *)(WORKSPACE + 256), (float)1.0, 1, rs);
+  }
+  pipe_barrier(PIPE_V);
+  set_cmpmask((__ubuf__ void *)(WORKSPACE));
+  for (; repeat > 255; op.repeat -= 255) {
+    vsel(xd, (__ubuf__ float *)(WORKSPACE + 256), ws, 255, 1, 1, 1, rs, 0, rs, 1);
+    xd += 255 * simd_width;
+    ws += 255 * 32 * rs;
+  }
+  vsel(xd, (__ubuf__ float *)(WORKSPACE + 256), ws, op.repeat, 1, 1, 1, rs, 0, rs, 1);
+  pipe_barrier(PIPE_V);
+  repeat_vconv_f322s32z((__ubuf__ int32_t *)xd, xd, repeat, 1, 1, rs, rs);
 }
 
 template <typename T>
@@ -1052,21 +1085,6 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
   __ubuf__ uint8_t *ws = (__ubuf__ uint8_t*)(op.ws);
   repeat_vcmpvs_ne(ws, cond, (T)0, op.repeat, 1, 1, rs, rs);
-  repeat_select_2(xd, xn, xm, op.repeat, rs, op.ws);
-}
-
-__aicore_inline__ void Select_Int(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vSelect op;
-  vSelect::Decode(pc, head, op);
-  uint64_t rs = GetRepeatStride(tile, int32_t);
-  __ubuf__ float *xm = (__ubuf__ float *)(op.xm);
-  __ubuf__ int32_t *cond = (__ubuf__ int32_t *)(op.cond);
-  __ubuf__ float *xd = (__ubuf__ float *)(op.xd);
-  __ubuf__ float *xn = (__ubuf__ float *)(op.xn);
-  __ubuf__ uint8_t *ws = (__ubuf__ uint8_t*)(op.ws);
-  repeat_vconv_s322f32(xd, cond, op.repeat, 1, 1, rs, rs);
-  pipe_barrier(PIPE_V);
-  repeat_vcmpvs_ne(ws, xd, (float)0, op.repeat, 1, 1, rs, rs);
   repeat_select_2(xd, xn, xm, op.repeat, rs, op.ws);
 }
 
@@ -2000,7 +2018,8 @@ DEF_DISP_FUNC(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t))
 DEF_DISP_FUNC(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t))
 DEF_DISP_FUNC(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t))
 DEF_DISP_FUNC(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t))
-DEF_DISP_FUNC(V_SEL_INT32, Select_Int(pc, head, tile))
+DEF_DISP_FUNC(V_CMP_INT32, CompareInt(pc, head, tile))
+DEF_DISP_FUNC(V_SEL_INT32, Select<float>(pc, head, tile))
 DEF_DISP_FUNC(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0);CAST(pc, vconv_deq, head, tile, int32_t, half);)
 DEF_DISP_FUNC(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float))
 

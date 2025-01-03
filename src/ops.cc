@@ -35,6 +35,8 @@ constexpr uint32_t CUBE_BLOCK_SIZE = 256;
 constexpr uint32_t CONST_512 = 512;
 constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
 constexpr uint32_t MAX_BIAS_SIZE = 1024;
+constexpr int64_t MAX_SPLIT_K = 20480;
+constexpr int64_t MIN_SPLIT_K = 4096;
 constexpr int64_t ALIGN_256 = 256;
 constexpr int64_t ALIGN_128 = 128;
 constexpr int64_t ALIGN_32 = 32;
@@ -1686,15 +1688,27 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObjec
   bias_ = bias;
 }
 
-void CubeOp::InitPadShape() {
-  auto GetPad = [](int64_t pad_size, int64_t &pad) {
+void CubeOp::InferCubeConfig() {
+  auto GetPad = [this](int64_t pad_size, int64_t &pad) {
     if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
       return;
     }
     pad = ALIGN_256 - pad_size % ALIGN_256;
+    tactics_.enable_pad = true;
   };
-  GetPad(trans_a_ ? m_align_ : k_align_, pad_a_);
-  GetPad(trans_b_ ? k_align_ : n_align_, pad_b_);
+  GetPad(trans_a_ ? m_align_ : k_align_, tactics_.lhs_pad_size);
+  GetPad(trans_b_ ? k_align_ : n_align_, tactics_.rhs_pad_size);
+
+  int64_t k_stride = System::Instance().L2Size() / (m_real_ + n_real_) / 2;
+  if ((k_stride << 1) < k_real_ && k_real_ > MAX_SPLIT_K) {
+    tactics_.enable_splitk = true;
+    tactics_.k_stride = std::min(k_stride / ALIGN_256 * ALIGN_256, MAX_SPLIT_K);
+    tactics_.k_stride = std::max(tactics_.k_stride, MIN_SPLIT_K);
+  }
+
+  if (bias_ && bias_->type_id_ == kBFloat16) {
+    tactics_.enable_bias_cast = true;
+  }
 }
 
 void CubeOp::NormalizeCube() {

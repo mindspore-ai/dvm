@@ -337,7 +337,7 @@ class NDAccess : public NDObject {
     uint64_t ws;
     NDAccess *op;
     uint64_t data;
-  } addr_; // NOTICE: bind after codegen
+  } addr_;  // NOTICE: bind after codegen
   uint64_t *reloc_addr_{nullptr};
   NDAccess *bind_list_{nullptr};
 };
@@ -786,6 +786,16 @@ class AtomicCumOp : public WrapOp {
 class CubeTuner;
 class CubeOp : public NDObject {
  public:
+  struct Tactics {
+    bool enable_splitk{false};
+    bool enable_pad{false};
+    bool enable_bias_cast{false};
+
+    int64_t k_stride;
+    int64_t lhs_pad_size{0};
+    int64_t rhs_pad_size{0};
+  };
+
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
 
@@ -794,7 +804,7 @@ class CubeOp : public NDObject {
   void CodeGen(vCubeOp *code, CubeTuner *tuner);
   void NormalizeCube();
   void NormalizeOutput();
-  void InitPadShape();
+  void InferCubeConfig();
   void GenTiling(vCubeOp *code);
 
   uint64_t PostFusionWorkSpace() const {
@@ -826,14 +836,13 @@ class CubeOp : public NDObject {
   int64_t m0_{0};
   int64_t n0_{0};
   int64_t k0_{0};
-  int64_t pad_a_{0};
-  int64_t pad_b_{0};
   bool trans_a_{false};
   bool trans_b_{false};
   bool pingpong_store_{false};
   bool atomic_add_{false};
   bool batch_fold_{false};
   NDObject *bias_{nullptr};
+  Tactics tactics_;
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);

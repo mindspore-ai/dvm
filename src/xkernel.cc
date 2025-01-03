@@ -21,8 +21,6 @@
 #include "tuning.h"
 
 namespace dvm {
-constexpr int64_t MAX_K = 1 << 15;
-
 MixKernel::~MixKernel() {
   if (cube_op_) {
     delete cube_op_->lhs_;
@@ -103,7 +101,7 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
 uint64_t MixKernel::UnAlignCodeGen() {
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
-  int64_t pad_size[2] = {cube_op_->pad_a_, cube_op_->pad_b_};
+  int64_t pad_size[2] = {cube_op_->tactics_.lhs_pad_size, cube_op_->tactics_.rhs_pad_size};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
   for (size_t i = 0; i < 2; i++) {
@@ -148,7 +146,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
 }
 
 uint64_t MixKernel::SplitKCodeGen() {
-  size_t k_stride = MAX_K >> 1;
+  size_t k_stride = cube_op_->tactics_.k_stride;
   auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
   size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
 
@@ -292,7 +290,7 @@ uint64_t MixKernel::AlignCodeGen() {
     cube_code->rank_size = comm->comm_->GetRankSize();
     cube_code->flags |= V_CUBE_FLAG_PEER_STORE;
     cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-    code_.unique_ids_.push_back(&cube_code->unique_id); // record vCubeOp's unique_id address
+    code_.unique_ids_.push_back(&cube_code->unique_id);  // record vCubeOp's unique_id address
     cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
     code_.BindOpFast(sload_, cube_op_->output_);
   } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
@@ -334,14 +332,14 @@ uint64_t MixKernel::CodeGen() {
     output->SetFlag(OBJ_FLAG_STAGE_IO);
     cube_op_->output_ = output;
   }
-  cube_op_->InitPadShape();
-  if (cube_op_->bias_ && cube_op_->bias_->type_id_ == kBFloat16) {
+  cube_op_->InferCubeConfig();
+  if (cube_op_->tactics_.enable_bias_cast) {
     return BiasBF16CodeGen();
   }
-  if (cube_op_->pad_a_ || cube_op_->pad_b_) {
+  if (cube_op_->tactics_.enable_pad) {
     return UnAlignCodeGen();
   }
-  if (cube_op_->k_real_ > MAX_K) {
+  if (cube_op_->tactics_.enable_splitk) {
     return SplitKCodeGen();
   }
   return AlignCodeGen();
@@ -460,7 +458,8 @@ uint64_t StagesKernel::AllocWorkspace() {
                                });
           if (inplace_out) {
             store->xbuf_ = STAGE_FLAG_REUSE;
-            SetOutputReuse(store, inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO) ? GetOutputReuse(inplace_out) : inplace_out);
+            SetOutputReuse(store,
+                           inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO) ? GetOutputReuse(inplace_out) : inplace_out);
             lives[store] = -1;
             continue;
           }
@@ -530,21 +529,21 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 
 class CubeOptimizer {
  public:
-  CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InitPadShape(); }
+  CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
 
   bool AlignA(std::vector<NDObject *> &ops) {
-    if (dom_->pad_a_ == 0) {
+    if (dom_->tactics_.lhs_pad_size == 0) {
       return false;
     }
-    AlignInput(dom_->lhs_, dom_->pad_a_, ops);
+    AlignInput(dom_->lhs_, dom_->tactics_.lhs_pad_size, ops);
     return true;
   }
 
   bool AlignB(std::vector<NDObject *> &ops) {
-    if (dom_->pad_b_ == 0) {
+    if (dom_->tactics_.rhs_pad_size == 0) {
       return false;
     }
-    AlignInput(dom_->rhs_, dom_->pad_b_, ops);
+    AlignInput(dom_->rhs_, dom_->tactics_.rhs_pad_size, ops);
     return true;
   }
 
@@ -567,12 +566,12 @@ class CubeOptimizer {
   }
 
   bool SplitK(std::vector<NDObject *> &ops) {
-    if (dom_->k_real_ <= MAX_K) {
+    if (!dom_->tactics_.enable_splitk) {
       return false;
     }
     auto load = new NDLoad(nullptr, dom_->shape_ref_, kFloat32);
     auto cast = new CastOp(load, dom_->type_id_);
-    size_t k_stride = MAX_K >> 1;
+    size_t k_stride = dom_->tactics_.k_stride;
     auto split_num = CeilDiv(static_cast<size_t>(dom_->k_real_), k_stride);
     size_t k_tail = dom_->k_real_ % k_stride ? dom_->k_real_ % k_stride : k_stride;
     size_t offset_a = 0;

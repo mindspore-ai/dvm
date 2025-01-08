@@ -367,10 +367,9 @@ void Communicator::InitMem() {
 }
 
 void Communicator::CollectDev() {
-  dev_list_.resize(rank_size_);
   (void)aclrtGetDevice(&dev_id_);
   // get other rank dev id, put into dev_list_
-  bool ret = socket_channel_->AllGather(&dev_id_, sizeof(dev_id_), dev_list_.data());
+  bool ret = socket_channel_->AllGather(&dev_id_, sizeof(dev_id_), &dev_list_);
   if (!ret) {
     DvmException(rank_id_, "Collect device info failed");
   }

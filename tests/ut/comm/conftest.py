@@ -16,7 +16,6 @@ import pytest
 
 @pytest.fixture(scope="session", autouse=True)
 def comm():
-    from dvm.tester import Tester
-    Tester.fork()
-    yield
-    Tester.join()
+    from dvm.tester import CommScope
+    with CommScope():
+        yield

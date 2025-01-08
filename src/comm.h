@@ -33,9 +33,6 @@ class Communicator {
   ~Communicator();
   bool Init();
 
-  const std::vector<uint8_t *> GetPeerMemPtrs() const {
-    return std::vector<uint8_t *>(peer_mem_, peer_mem_ + MAX_RANK_SIZE);
-  }
   uint8_t *GetPeerMemPtr(size_t i) const { return peer_mem_[i % rank_size_]; };
   const int GetRankId() const { return rank_id_; }
   const int GetRankSize() const { return rank_size_; }
@@ -101,7 +98,7 @@ class Communicator {
   int dev_id_;  // local device id, if all the npus are on the same
   uint8_t *peer_mem_[MAX_RANK_SIZE] = {};
   SocketChannel *socket_channel_;
-  std::vector<int> dev_list_ = {};
+  int dev_list_[MAX_RANK_SIZE];
 };
 }  // namespace dvm
 

@@ -181,13 +181,29 @@ class Tester(Kernel):
         self.is_codegen = False
         self.expects = []
 
-    @staticmethod
-    def fork(ids = None):
-        if ids:
-            rank_size = len(ids)
-            os.environ["ASCEND_RT_VISIBLE_DEVICE"] = ",".join([str(i) for i in ids])
+class CommScope:
+    """
+    Create an comm domain scope.
+
+    Examples:
+        >>> from dvm.tester import CommScope, Tester
+        >>> with CommScope(0, 1, 2, 3):
+        >>>     t = Tester()
+        >>>     ...
+    """
+    def __init__(self, *ids):
+        self.ids = ids
+
+    def __enter__(self):
+        if self.ids:
+            rank_size = len(self.ids)
+            os.environ["ASCEND_RT_VISIBLE_DEVICE"] = ",".join([str(i) for i in self.ids])
         else:
             ids_str = os.environ["ASCEND_RT_VISIBLE_DEVICE"]
             rank_size = len(ids_str.split(","))
         Kernel.fork(rank_size)
         os.environ["DEVICE_ID"] = str(Kernel.rank_id())
+        return Kernel
+
+    def __exit__(self, type, value, trace):
+        Kernel.join()

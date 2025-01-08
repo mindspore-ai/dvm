@@ -25,13 +25,13 @@ constexpr int64_t MAX_K = 1 << 15;
 
 MixKernel::~MixKernel() {
   if (cube_op_) {
-    if (auto lhs = cube_op_->lhs_; lhs->IsLoad()) {
+    if (auto lhs = cube_op_->lhs_; lhs != nullptr && lhs->IsLoad()) {
       delete lhs;
     }
-    if (auto rhs = cube_op_->rhs_; rhs->IsLoad()) {
+    if (auto rhs = cube_op_->rhs_; rhs != nullptr && rhs->IsLoad()) {
       delete rhs;
     }
-    if (auto out = cube_op_->output_; out->IsStore()) {
+    if (auto out = cube_op_->output_; out != nullptr && out->IsStore()) {
       delete out;
     }
     if (auto bias = cube_op_->bias_; bias != nullptr) {

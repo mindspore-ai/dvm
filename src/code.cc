@@ -933,6 +933,7 @@ Code::~Code() {
 Code &Code::operator=(Code &&other) {
   MoveCode(other);
   sub_codes_ = std::move(other.sub_codes_);
+  unique_ids_ = std::move(other.unique_ids_);
   bind_wss_ = other.bind_wss_;
   bind_ops_ = other.bind_ops_;
   return *this;

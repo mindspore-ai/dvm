@@ -197,9 +197,9 @@ class CommScope:
     def __enter__(self):
         if self.ids:
             rank_size = len(self.ids)
-            os.environ["ASCEND_RT_VISIBLE_DEVICE"] = ",".join([str(i) for i in self.ids])
+            os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ",".join([str(i) for i in self.ids])
         else:
-            ids_str = os.environ["ASCEND_RT_VISIBLE_DEVICE"]
+            ids_str = os.environ["ASCEND_RT_VISIBLE_DEVICES"]
             rank_size = len(ids_str.split(","))
         Kernel.fork(rank_size)
         os.environ["DEVICE_ID"] = str(Kernel.rank_id())

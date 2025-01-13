@@ -2642,7 +2642,7 @@ void AllGatherOp::Normalize(std::vector<NDObject *> &run_ops) {
   nd_[size] = comm_->GetRankSize();
 
   xbuf_reserve_ = 0;
-  code_reserve_ = 5 * sizeof(uint64_t) * comm_->GetRankSize() + 5;
+  code_reserve_ = 5 * sizeof(uint64_t) * (comm_->GetRankSize() + 1);
   round_tile_.resize(0);
 }
 

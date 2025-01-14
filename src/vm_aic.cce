@@ -230,7 +230,7 @@ class MatMul {
                                        int64_t m_actual, 
                                        int64_t n_actual,
                                        int64_t k0_actual) {
-    bool special_handle_req = (m_real != 1 && m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
+    bool special_handle_req = (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
     mad(
       c,
       a,

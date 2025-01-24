@@ -27,6 +27,7 @@ namespace dvm {
 enum ObjectType {
   // Load
   kLoadDummy = 0,
+  kSLoad,
   kLoad,
 
   // Store
@@ -967,7 +968,9 @@ class NDSStore : public NDStore {
 
 class NDSLoad : public NDLoad {
  public:
-  using NDLoad::NDLoad;
+  NDSLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32) : NDLoad(src, shape_ref, type_id) {
+    obj_id_ = kSLoad;
+  }
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;

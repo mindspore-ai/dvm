@@ -183,3 +183,19 @@ def test_reduce_lead_dim():
     t.store_expect(y, np.sum(a, (0,), keepdims=True))
     t.set_passes("EliminateReshape")
     assert(t.run_check())
+
+@pytest.mark.mix
+def test_matmul_post_fusion_forward():
+    t = Tester("mix",use_pass_opt=True)
+    shape_a = [10200, 3072]
+    shape_b = [3072, 3072]
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    e = t.reshape(c, (2, 5100, 48, 64))
+    expect = np.reshape(np_c,(2, 5100, 48, 64))
+    t.store_expect(e, np.reshape(expect,(2, 5100, 48, 64)), 2e-3)
+    assert (t.run_check())

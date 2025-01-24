@@ -40,6 +40,7 @@ struct NDObjectAttr {
 
 static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenLoad, true},    // LoadDummy
+  {kGenLoad, true},    // SLoad
   {kGenLoad, true},    // Load
   {kGenStore, false},  // PadStore
   {kGenStore, true},   // SStore

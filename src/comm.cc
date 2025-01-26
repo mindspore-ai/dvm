@@ -51,7 +51,8 @@ enum TopologyType : int64_t {
 
 void DvmException(int rank_id, const char *error_str) {
   std::ostringstream oss;
-  oss << "[" << rank_id << "]" << "DVM EXCEPTION. reason: " << error_str;
+  oss << "[" << rank_id << "]"
+      << "DVM EXCEPTION. reason: " << error_str;
   throw std::runtime_error(oss.str());
 }
 }  // namespace
@@ -342,23 +343,39 @@ bool SocketChannel::ServerRecvSend(const uint8_t *send_buf, size_t send_size, ui
 int Communicator::communicator_id_ = -1;
 
 Communicator::Communicator(int rank_id, int rank_size) : inited_(false), rank_id_(rank_id), rank_size_(rank_size) {
-  System::Instance().InitCommApi();
   communicator_id_++;
   socket_channel_ = new SocketChannel(rank_id_, rank_size_, communicator_id_);
-  std::cout << "[" << rank_id_ << "] " << "load functions success" << std::endl;
 }
 
 Communicator::~Communicator() {
-  FreeCommMem(peer_mem_[rank_id_]);
+  FreeCommMem();
   delete socket_channel_;
 }
 
 void Communicator::InitMem() {
-  auto ret = aclrtMalloc((void **)&peer_mem_[rank_id_], MAX_BUFFER_BYTES, ACL_MEM_MALLOC_HUGE_FIRST);
+  // step 1: reserve virtual memory address
+  auto ret = aclrtReserveMemAddress((void **)&peer_mem_[rank_id_], MAX_BUFFER_BYTES, 0, nullptr, 1);
   if (ret != ACL_SUCCESS) {
-    DvmException(rank_id_, "malloc shared mem failed");
+    DvmException(rank_id_, "reserve virtual memory failed");
   }
-
+  // step 2: malloc physical meomry
+  aclrtPhysicalMemProp mem_property;
+  mem_property.handleType = ACL_MEM_HANDLE_TYPE_NONE;
+  mem_property.allocationType = ACL_MEM_ALLOCATION_TYPE_PINNED;
+  mem_property.memAttr = ACL_HBM_MEM_HUGE;
+  mem_property.location.id = rank_id_;
+  mem_property.location.type = ACL_MEM_LOCATION_TYPE_DEVICE;
+  mem_property.reserve = 0;
+  ret = aclrtMallocPhysical(&physical_mem_handle_, MAX_BUFFER_BYTES, &mem_property, 0);
+  if (ret != ACL_SUCCESS) {
+    DvmException(rank_id_, "malloc physical memory failed");
+  }
+  // step 3: map virtual memory addr to physic memory addr
+  ret = aclrtMapMem(reinterpret_cast<void *>(peer_mem_[rank_id_]), MAX_BUFFER_BYTES, 0, physical_mem_handle_, 0);
+  if (ret != ACL_SUCCESS) {
+    DvmException(rank_id_, "map virtual memory addr to physical memory addr failed");
+  }
+  // step 4: clear memory. NOTICE: peer memory is ONLY cleared here
   ret = aclrtMemset(peer_mem_[rank_id_], MAX_BUFFER_BYTES, 0, MAX_BUFFER_BYTES);
   if (ret != ACL_SUCCESS) {
     DvmException(rank_id_, "memset shared mem falied");
@@ -375,8 +392,8 @@ void Communicator::CollectDev() {
   }
 }
 
-void Communicator::CollectPid(std::vector<uint32_t> &pids) {
-  if (System::Instance().rtDeviceGetBareTGrid(&pids[rank_id_]) != ACL_SUCCESS) {
+void Communicator::CollectPid(std::vector<int32_t> &pids) {
+  if (aclrtDeviceGetBareTgid(&pids[rank_id_]) != ACL_SUCCESS) {
     DvmException(rank_id_, "DeviceGetBareTgid failed");
   }
   bool ret = socket_channel_->AllGather(&pids[rank_id_], sizeof(pids[rank_id_]), pids.data());
@@ -385,43 +402,46 @@ void Communicator::CollectPid(std::vector<uint32_t> &pids) {
   }
 }
 
-void Communicator::SetMemName(char *name) {
-  if (System::Instance().rtIpcSetMemoryName(peer_mem_[rank_id_], MAX_BUFFER_BYTES, name, IPC_NAME_SIZE) != ACL_SUCCESS) {
-    DvmException(rank_id_, "rtIpcSetMemoryName failed");
+void Communicator::CollectShareableHandle() {
+  if (aclrtMemExportToShareableHandle(physical_mem_handle_, ACL_MEM_HANDLE_TYPE_NONE, 0, &peer_mem_handle_[rank_id_]) !=
+      ACL_SUCCESS) {
+    DvmException(rank_id_, "aclrtMemExportToShareableHandle failed");
   }
-}
-
-void Communicator::SetIpcMemPid(const char *name, const std::vector<uint32_t> &pids) {
-  for (int i = 0; i < rank_size_; i++) {
-    if (rank_id_ == i) {
-      continue;
-    }
-    int32_t pid_int32 = pids[i];
-    if (System::Instance().rtSetIpcMemPid(name, &pid_int32, 1) != ACL_SUCCESS) {
-      DvmException(rank_id_, "rtSetIpcMemPid failed");
-    }
-  }
-}
-
-void Communicator::CollectName(const char *name, char names[MAX_RANK_SIZE][IPC_NAME_SIZE]) {
-  bool ret = socket_channel_->AllGather(name, IPC_NAME_SIZE, names);
+  bool ret =
+    socket_channel_->AllGather(&peer_mem_handle_[rank_id_], sizeof(peer_mem_handle_[rank_id_]), peer_mem_handle_);
   if (!ret) {
     DvmException(rank_id_, "Collect name failed");
   }
 }
 
-void Communicator::OpenIpcMem(const char names[MAX_RANK_SIZE][IPC_NAME_SIZE]) {
+void Communicator::SetPidToShareableHandle(std::vector<int32_t> &pids) {
+  for (int i = 0; i < rank_size_; i++) {
+    if (i == rank_id_) {
+      continue;
+    }
+    // 01/26/2025: At present, each call of this interface can only add one pid to white list.
+    if (aclrtMemSetPidToShareableHandle(peer_mem_handle_[rank_id_], &pids[i], 1) != ACL_SUCCESS) {
+      DvmException(rank_id_, "aclrtMemSetPidToShareableHandle failed");
+    }
+  }
+}
+
+void Communicator::OpenIpcMem() {
   static std::mutex mut;
   std::lock_guard<std::mutex> lock(mut);
   for (int i = 0; i < rank_size_; i++) {
     if (i == rank_id_) {
       continue;
     }
-    int ret = System::Instance().rtIpcOpenMemory(reinterpret_cast<void **>(&peer_mem_[i]), names[i]);
-    if (ret != ACL_SUCCESS) {
-      std::stringstream oss;
-      oss << "Open peer memory " << i << " failed, error code: " << ret;
-      DvmException(rank_id_, oss.str().c_str());
+    aclrtDrvMemHandle handle;
+    if (aclrtMemImportFromShareableHandle(peer_mem_handle_[i], rank_id_, &handle) != ACL_SUCCESS) {
+      DvmException(rank_id_, "aclrtMemImportFromShareableHandle failed");
+    }
+    if (aclrtReserveMemAddress((void **)&peer_mem_[i], MAX_BUFFER_BYTES, 0, nullptr, 1) != ACL_SUCCESS) {
+      DvmException(rank_id_, "reserve virtual memory failed");
+    }
+    if (aclrtMapMem(reinterpret_cast<void *>(peer_mem_[i]), MAX_BUFFER_BYTES, 0, handle, 0) != ACL_SUCCESS) {
+      DvmException(rank_id_, "map virtual memory addr to physical memory addr failed");
     }
   }
 }
@@ -431,8 +451,9 @@ void Communicator::InitCommon() {
     if (static_cast<size_t>(rank_id_) == i) {
       continue;
     }
-    int64_t value = 0;
-    if (System::Instance().rtGetPairDevicesInfo(rank_id_, i, 0, &value) != 0) {
+    int32_t value = 0;
+    aclrtDeviceCanAccessPeer(&value, rank_id_, i);
+    if (value != 1) {
       std::stringstream oss;
       oss << "no connection between " << rank_id_ << " and " << i;
       DvmException(rank_id_, oss.str().c_str());
@@ -448,35 +469,36 @@ void Communicator::InitCommon() {
 void Communicator::InitCommMem() {
   InitMem();
 
-  std::vector<uint32_t> pids(MAX_RANK_SIZE);
+  std::vector<int32_t> pids(MAX_RANK_SIZE);
   CollectPid(pids);
 
-  char name[IPC_NAME_SIZE] = {};
-  SetMemName(name);
+  CollectShareableHandle();
 
-  SetIpcMemPid(name, pids);
-  char names[MAX_RANK_SIZE][IPC_NAME_SIZE] = {};
-  CollectName(name, names);
+  SetPidToShareableHandle(pids);
+
+  OpenIpcMem();
   // For debug
   for (int i = 0; i < rank_size_; ++i) {
-    std::cout << "[" << rank_id_ << "] " << "rank " << i << " mem name: " << names[i] << std::endl;
-  }
-  OpenIpcMem(names);
-  // For debug
-  for (int i = 0; i < rank_size_; ++i) {
-    std::cout << "[" << rank_id_ << "] " << "peer_mem_ " << i << " addr: " << reinterpret_cast<void *>(peer_mem_[i])
-              << std::endl;
+    std::cout << "[" << rank_id_ << "] "
+              << "peer_mem_ " << i << " addr: " << reinterpret_cast<void *>(peer_mem_[i]) << std::endl;
   }
 }
 
-void Communicator::FreeCommMem(uint8_t *&mem) {
-  if (mem != nullptr) {
-    auto ret = aclrtFree(reinterpret_cast<void *>(mem));
-    if (ret != ACL_SUCCESS) {
-      DvmException(rank_id_, "aclrtFree failed");
+void Communicator::FreeCommMem() {
+  for (size_t i = 0; i < static_cast<size_t>(rank_size_); i++) {
+    // step 1: unmap virtual memory address and physical memory space
+    if (aclrtUnmapMem(reinterpret_cast<void *>(peer_mem_[i])) != ACL_SUCCESS) {
+      DvmException(rank_id_, "aclrtUnmapMem failed");
+    }
+    // step 2: release virtual memory address
+    if (aclrtReleaseMemAddress(reinterpret_cast<void *>(peer_mem_[i])) != ACL_SUCCESS) {
+      DvmException(rank_id_, "aclrtReleaseMemAddress failed");
     }
   }
-  mem = nullptr;
+  // step 3: free physical memory. For each device, it only frees the physical memory allocated by itself
+  if (aclrtFreePhysical(physical_mem_handle_) != ACL_SUCCESS) {
+    DvmException(rank_id_, "aclrtFreePhysical failed");
+  }
 }
 
 bool Communicator::Init() {

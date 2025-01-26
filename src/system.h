@@ -99,20 +99,11 @@ class System {
 
   // runtime api
   uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
-  rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize, rtStream_t stm) const {
+  rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
+                           rtStream_t stm) const {
     return rt_kernel_launch_(stubFunc, blockDim, args, argsSize, nullptr, stm);
   }
   rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
-  void InitCommApi();
-  rtError_t rtIpcSetMemoryName(const void *ptr, uint64_t byteCount, char *name, uint32_t len) const {
-    return rt_ipc_set_memory_name_(ptr, byteCount, name, len);
-  }
-  rtError_t rtIpcOpenMemory(void **ptr, const char *name) const { return rt_ipc_open_memory_(ptr, name); }
-  rtError_t rtSetIpcMemPid(const char *name, int32_t pid[], int num) const { return rt_set_ipc_mem_pid_(name, pid, num); }
-  rtError_t rtDeviceGetBareTGrid(uint32_t *pid) const { return rt_device_get_bare_t_grid_(pid); }
-  rtError_t rtGetPairDevicesInfo(uint32_t devId, uint32_t otherDevId, int32_t infoType, int64_t *val) const {
-    return rt_get_pair_devices_info_(devId, otherDevId, infoType, val);
-  }
 
  private:
   System();
@@ -128,13 +119,9 @@ class System {
   SocType soc_name_{kSocUnknow};
 
   void *rt_handle_;
-  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm){nullptr};
+  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm,
+                                 rtStream_t stm){nullptr};
   rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
-  rtError_t (*rt_ipc_set_memory_name_)(const void *ptr, uint64_t byteCount, char *name, uint32_t len){nullptr};
-  rtError_t (*rt_ipc_open_memory_)(void **ptr, const char *name){nullptr};
-  rtError_t (*rt_set_ipc_mem_pid_)(const char *name, int32_t pid[], int num){nullptr};
-  rtError_t (*rt_device_get_bare_t_grid_)(uint32_t *pid){nullptr};
-  rtError_t (*rt_get_pair_devices_info_)(uint32_t devId, uint32_t otherDevId, int32_t infoType, int64_t *val){nullptr};
 };
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;

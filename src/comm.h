@@ -20,6 +20,7 @@
 #include <vector>
 
 #include "isa.h"
+#include "acl/acl_rt.h"
 
 namespace dvm {
 constexpr size_t MAX_RANK_SIZE = 8;
@@ -48,31 +49,21 @@ class Communicator {
    * @param pids a reference to the vector which stores pid. After calling this method, this variable in each process
    * will get all pids of the current task
    */
-  void CollectPid(std::vector<uint32_t> &pids);
+  void CollectPid(std::vector<int32_t> &pids);
   /**
-   * @brief Collect all the peer memory names
-   * @param name the name of peer memory which is allocated by the current process
-   * @param names a buffer of names. After calling this method, this variable in each process will get all peer memory
-   * names of the current task
+   * @brief Collect all the shareable handles
    */
-  void CollectName(const char *name, char names[MAX_RANK_SIZE][IPC_NAME_SIZE]);
+  void CollectShareableHandle();
   /**
-   * @brief Set name of peer memory which is allocated by the current process
-   * @param name a buffer of name. After calling this method, this buffer will be filled by the name returned by runtime
-   * interface
+   * @brief set white list for shareable handle. Only processes that have pids on the white list can access this peer
+   * mem
    */
-  void SetMemName(char *name);
-  /**
-   * @brief For each peer memory, add all pids of the current task to a white list
-   * @param name the name of peer memory which is allocated by the current process
-   * @param pids all pids of the current task
-   */
-  void SetIpcMemPid(const char *name, const std::vector<uint32_t> &pids);
+  void SetPidToShareableHandle(std::vector<int32_t> &pids);
   /**
    * @brief Enable each process to visit all the peer memories allocated by other process
    * @param names names of all the peer memories
    */
-  void OpenIpcMem(const char names[MAX_RANK_SIZE][IPC_NAME_SIZE]);
+  void OpenIpcMem();
   /**
    * @brief Malloc peer memory and clear it. Each process only process the peer memory of npu which it occupies
    */
@@ -87,16 +78,17 @@ class Communicator {
   void InitCommMem();
   /**
    * @brief Free peer memory. Each process only process the peer memory of npu which it occupies
-   * @param mem the memory needs to be freed
    */
-  void FreeCommMem(uint8_t *&mem);
+  void FreeCommMem();
 
   bool inited_;
   int rank_id_;    // global rank id
   int rank_size_;  // global rank size
   static int communicator_id_;
-  int dev_id_;  // local device id, if all the npus are on the same
-  uint8_t *peer_mem_[MAX_RANK_SIZE] = {};
+  int dev_id_;                                    // local device id, if all the npus are on the same
+  aclrtDrvMemHandle physical_mem_handle_;         // physical memory handle of current device
+  uint8_t *peer_mem_[MAX_RANK_SIZE] = {};         // virtual memory addr of peer memory
+  uint64_t peer_mem_handle_[MAX_RANK_SIZE] = {};  // shareable memory handle of peer memory
   SocketChannel *socket_channel_;
   int dev_list_[MAX_RANK_SIZE];
 };

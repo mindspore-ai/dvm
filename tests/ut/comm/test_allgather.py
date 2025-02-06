@@ -16,20 +16,19 @@ import numpy as np
 from dvm.tester import Tester
 import pytest
 
+
 @pytest.mark.parametrize(
     "shape", [[4, 256], [4, 16384], [4, 32, 256], [4, 1278487], [32, 256]]
 )
-def test_allgather(shape):
+def test_allgather(comm, rank, size, shape):
     np.random.seed(1)
-    rank = Tester.rank_id()
-    size = Tester.rank_size()
-    t = Tester()
+    t = Tester(comm=comm)
     inputs = []
-    for i in range(size):
+    for _ in range(size):
         inputs.append((np.random.random(shape)).astype(np.float16))
     expect = np.concatenate(inputs, axis=0)
 
     x1 = t.load(inputs[rank])
     x2 = t.allgather(x1)
     t.store_expect(x2, expect, 0.01)
-    assert(t.run_check())
+    assert t.run_check()

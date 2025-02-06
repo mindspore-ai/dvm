@@ -108,6 +108,7 @@ class KernelPy {
   void Tile(int start, int end, int64_t num);
   void CodeGen(const py::object &pass_names);
   void Run();
+  void InitComm(int rank_id, int rank_size);
 
   py::object DisAssemble();
   py::object DumpGraph();

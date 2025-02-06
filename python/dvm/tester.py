@@ -19,6 +19,7 @@ import inspect
 import numpy as np
 from ._dvm_py import Kernel, ShapeRef
 
+
 class PerformanceResult:
     def __init__(self, results):
         self.min = results[0]
@@ -27,7 +28,11 @@ class PerformanceResult:
 
     def __repr__(self):
         return "fun_min_max_avg(us): {}  {}  {}  {}".format(
-            sys._getframe(1).f_code.co_name, round(self.min, 2), round(self.max, 2), round(self.mean, 2))
+            sys._getframe(1).f_code.co_name,
+            round(self.min, 2),
+            round(self.max, 2),
+            round(self.mean, 2),
+        )
 
     def __str__(self):
         return (
@@ -36,15 +41,23 @@ class PerformanceResult:
             f"{self.min:<15.4f} {self.max:<15.4f} {self.mean:<15.4f}\n"
         )
 
+
 class Tester(Kernel):
     __test__ = False
-    def __init__(self, ker_type="", use_pass_opt=False):
+
+    def __init__(self, ker_type="", use_pass_opt=False, comm=None):
+        if comm:
+            os.environ["DEVICE_ID"] = str(comm.Get_rank())
+            os.environ["RANK_SIZE"] = str(comm.Get_size())
+        self.comm = comm
         dev_id = int(os.getenv("DEVICE_ID"))
         Kernel.__init__(self, dev_id, ker_type)
         self.is_dyn = ker_type == "dyn"
         self.is_codegen = False
-        self.expects = [] # [(op, expect, eps)]
+        self.expects = []  # [(op, expect, eps)]
         self.passes = None if use_pass_opt else []
+        if comm:
+            self.init_comm(comm.Get_rank(), comm.Get_size())
 
     def load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
@@ -99,7 +112,7 @@ class Tester(Kernel):
             print(self.dump())
         self.codegen()
         Kernel.run(self)
-        Kernel.barrier()
+        self.barrier()
         if verbose:
             print("******* after tiling *******")
             print(self.dump())
@@ -116,10 +129,10 @@ class Tester(Kernel):
             out = out.flatten()
             if isinstance(expect, np.ndarray):
                 expect = expect.flatten()
-            error_ranges = [] # [(start, end),]
+            error_ranges = []  # [(start, end),]
             print("******* first {} error data *******".format(max_error))
             print("idx: expect output")
-            start, end = -1,-1
+            start, end = -1, -1
             for i in range(out.shape[0]):
                 exp = expect[i] if isinstance(expect, np.ndarray) else expect
                 if not np.isclose(out[i], exp, rtol=eps, atol=eps):
@@ -133,10 +146,11 @@ class Tester(Kernel):
                     error_ranges.append([start, end])
                     start, end = -1, -1
             if start >= 0:
-                error_ranges.append([start, out.shape[0]-1])
+                error_ranges.append([start, out.shape[0] - 1])
             print("********* error data ranges **********")
             for i in error_ranges:
                 print("[{}, {}]: {}".format(i[0], i[1], i[1] - i[0] + 1))
+
         out = self.output(store)
         if store.dtype() == "bfloat16":
             out = Kernel.convert_from_bf16(self, out)
@@ -181,6 +195,13 @@ class Tester(Kernel):
         self.is_codegen = False
         self.expects = []
 
+    def barrier(self):
+        if self.comm:
+            self.comm.Barrier()
+        else:
+            Kernel.barrier()
+
+
 class CommScope:
     """
     Create an comm domain scope.
@@ -191,13 +212,16 @@ class CommScope:
         >>>     t = Tester()
         >>>     ...
     """
+
     def __init__(self, *ids):
         self.ids = ids
 
     def __enter__(self):
         if self.ids:
             rank_size = len(self.ids)
-            os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ",".join([str(i) for i in self.ids])
+            os.environ["ASCEND_RT_VISIBLE_DEVICES"] = ",".join(
+                [str(i) for i in self.ids]
+            )
         else:
             ids_str = os.environ["ASCEND_RT_VISIBLE_DEVICES"]
             rank_size = len(ids_str.split(","))

@@ -483,6 +483,12 @@ py::object KernelPy::DumpGraph() {
   return py::cast(data);
 }
 
+void KernelPy::InitComm(int rank_id, int rank_size) {
+  if (g_mpc.comm.GetImpl() == nullptr) {
+    g_mpc.comm.Init(rank_id, rank_size);
+  }
+}
+
 void KernelPy::Run() {
   if (kernel_.GetImpl()->KType() == kEager) {
     kernel_.EagerLaunch(nullptr);
@@ -771,6 +777,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("perf", &KernelPy::Perf, "perf test")
     .def("run", &KernelPy::Run, "run kernel")
+    .def("init_comm", &KernelPy::InitComm, "init communicatior")
     .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
     .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning")
     .def_static("fork", &KernelPy::Fork, "fork process")

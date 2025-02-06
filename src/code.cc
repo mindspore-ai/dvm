@@ -135,8 +135,6 @@ void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("one_flag", op.one_flag, oss);
 }
 
-void DumpLoadExit(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "exit 0"; }
-
 void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vLoad op;
   vLoad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -510,7 +508,7 @@ void DumpPeerDMA(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 
-std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
+std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_LOAD, &DumpLoad},
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
@@ -519,10 +517,6 @@ std::unordered_map<uint64_t, DumpFunc *> load_dump_func_table = {
   {V_PINGPONG_PEER_LOAD, &DumpPingpongPeerLoad},
   {V_PEER_LOAD, &DumpPeerDMA<name_peer_load>},
   {V_PEER_LOAD_MIX, &DumpPeerDMA<name_peer_load_mix>},
-  {V_LOAD_NONE, &DumpLoadExit},
-};
-
-std::unordered_map<uint64_t, DumpFunc *> store_dump_func_table = {
   {V_STORE, &DumpStore},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
   {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
@@ -647,28 +641,19 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
       oss << "Unknown insn: ";
       DumpVal("id", id, oss);
     }
-  } else if (head & (1ul << V_HEAD_LOAD_FLAG_OFFSET)) {
-    uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
-    offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
-    DumpInfo info{insn, ext, simd_width};
-    id = convert_id(g_load_func_offset, V_LOAD_NONE, id);
-    if (load_dump_func_table.find(id) != load_dump_func_table.end()) {
-      load_dump_func_table[id](info, oss);
-    } else {
-      oss << "Unknown insn: ";
-      DumpVal("id", id, oss);
-    }
   } else {
     uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
     offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
     DumpInfo info{insn, ext, simd_width};
-    id = convert_id(g_store_func_offset, V_STORE_NONE, id);
-    if (store_dump_func_table.find(id) != store_dump_func_table.end()) {
-      store_dump_func_table[id](info, oss);
+    id = convert_id(g_access_func_offset, V_ACCESS_NONE, id);
+    if (acc_dump_func_table.find(id) != acc_dump_func_table.end()) {
+      acc_dump_func_table[id](info, oss);
 #ifdef DEBUG
-      uint64_t debug_size = *(insn + (((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) - 1));
-      oss << ", ";
-      DumpVal("dbg_size", debug_size, oss);
+      if (id >= V_STORE) {
+        uint64_t debug_size = *(insn + (((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) - 1));
+        oss << ", ";
+        DumpVal("dbg_size", debug_size, oss);
+      }
 #endif
     } else {
       oss << "Unknown insn: ";
@@ -685,14 +670,13 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
   uint64_t insn_idx = 0;
   while (insn < insn_end) {
     auto head = *insn;
+    if (head == 0) break;
     oss << indent << insn_idx << ": ";
     insn_idx++;
     auto offset = DumpInsn(insn, simd_width, oss);
     oss << "\n";
-    if (offset == 0) break;
     insn = insn + offset;
     oss << indent << "    {";
-    bool load_flag = bool(head & (1ul << V_HEAD_LOAD_FLAG_OFFSET));
     if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
       oss << "simd";
       if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
@@ -710,7 +694,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
       if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
         oss << ", simd_load_sync(set, " << int((head >> V_HEAD_B_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
       }
-    } else if (load_flag) {
+    } else if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) < V_STORE) {
       oss << "load";
       if (head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) {
         oss << ", load_simd_sync(set, " << int((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";

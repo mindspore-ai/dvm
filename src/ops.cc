@@ -349,7 +349,7 @@ int NDLoad::Emit(VectorKernel &k) {
   op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = round_tile_.size();
   reloc_addr_ = insn_ + vLoad::RELOC_OFFSET;
-  return vLoad::Encode(insn_, vLoadInsnID::V_LOAD, op, rounds);
+  return vLoad::Encode(insn_, vAccInsnID::V_LOAD, op, rounds);
 }
 
 void NDLoad::Normalize(std::vector<NDObject *> &run_ops) {
@@ -404,7 +404,7 @@ int NDPadStore::Emit(VectorKernel &k) {
   }
   op.round_rank = 0;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
-  return vSliceSL::Encode(insn_, vStoreInsnID::V_SLICE_STORE, V_PIPE_STORE, op, nullptr);
+  return vSliceSL::Encode(insn_, vAccInsnID::V_SLICE_STORE, V_PIPE_STORE, op, nullptr);
 }
 
 void NDPadStore::Dump(bool verbose, std::ostringstream &oss) { oss << "PadStore"; }
@@ -442,7 +442,7 @@ int NDSStore::Emit(VectorKernel &k) {  // TODO: broadcast
   op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
   op.type_size = ITEM_SIZE[type_id_];
   reloc_addr_ = insn_ + vSStore::RELOC_OFFSET;
-  return vSStore::Encode(insn_, vStoreInsnID::V_SSTORE, op);
+  return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op);
   ;
 }
 
@@ -466,7 +466,7 @@ int NDSLoad::Emit(VectorKernel &k) {
     op.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
     op.round_rank = round_tile_.size();
     reloc_addr_ = insn_ + vPingPongLoad::RELOC_OFFSET;
-    return vPingPongLoad::Encode(insn_, vLoadInsnID::V_PINGPONG_LOAD, op, rounds);
+    return vPingPongLoad::Encode(insn_, vAccInsnID::V_PINGPONG_LOAD, op, rounds);
   } else {
     vSLoad op;
     op.gm = addr_.gm;
@@ -488,7 +488,7 @@ int NDSLoad::Emit(VectorKernel &k) {
     }
     op.type_size = ITEM_SIZE[type_id_];
     reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
-    return vSLoad::Encode(insn_, vLoadInsnID::V_SLOAD, op);
+    return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op);
   }
 }
 
@@ -555,7 +555,7 @@ int NDSliceLoad::Emit(VectorKernel &k) {
   op.offset = reloc_offset;
   op.one_flag = 0;
   reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
-  return vSliceSL::Encode(insn_, vLoadInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op, rounds);
+  return vSliceSL::Encode(insn_, vAccInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op, rounds);
 }
 
 void NDSliceLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "SliceLoad"; }
@@ -725,7 +725,7 @@ int NDStore::Emit(VectorKernel &k) {
   op.round_rank = round_tile_.size();
   op.lead_tiling = lead_tiling;
   reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
-  return vStore::Encode(insn_, vStoreInsnID::V_STORE, op, rounds);
+  return vStore::Encode(insn_, vAccInsnID::V_STORE, op, rounds);
 }
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }
@@ -2203,8 +2203,8 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
   BuildDimRounds(round_tile_, rounds);
 
   // TODO: support matmul post fusion ReduceScatter
-  auto store_id = mix_ ? vStoreInsnID::V_PEER_STORE_MIX : vStoreInsnID::V_PEER_STORE;
-  auto load_id = mix_ ? vLoadInsnID::V_PEER_LOAD_MIX : vLoadInsnID::V_PEER_LOAD;
+  auto store_id = mix_ ? vAccInsnID::V_PEER_STORE_MIX : vAccInsnID::V_PEER_STORE;
+  auto load_id = mix_ ? vAccInsnID::V_PEER_LOAD_MIX : vAccInsnID::V_PEER_LOAD;
   uint64_t tile_stride = strides_.back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
@@ -2348,7 +2348,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       pp_load.round_rank = 0;
       ppp_load.peer_mem_offset = rank_id * per_rank_load_offset;
       current_insn = insn_ + code_size;
-      code_size += vPingPongPeerLoad::Encode(current_insn, vLoadInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
+      code_size += vPingPongPeerLoad::Encode(current_insn, vAccInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
       k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
       if (is_begin && rank_size > 2) {
@@ -2383,7 +2383,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
     p_store.tail_lenburst = p_store.lenburst;
     p_store.round_rank = 0;
     current_insn = insn_ + code_size;
-    code_size += vPeerDMA::Encode(current_insn, vStoreInsnID::V_PEER_STORE_MIX, vPipe::V_PIPE_STORE, p_store, nullptr);
+    code_size += vPeerDMA::Encode(current_insn, vAccInsnID::V_PEER_STORE_MIX, vPipe::V_PIPE_STORE, p_store, nullptr);
     k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
     *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | forward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
     *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | backward_event << V_M_HEAD_SET_EVENT_OFFSET;
@@ -2404,7 +2404,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       if (i == 1) {
         backsync_load_ = current_insn;
       }
-      code_size += vPeerDMA::Encode(current_insn, vLoadInsnID::V_PEER_LOAD_MIX, vPipe::V_PIPE_LOAD, p_load, nullptr);
+      code_size += vPeerDMA::Encode(current_insn, vAccInsnID::V_PEER_LOAD_MIX, vPipe::V_PIPE_LOAD, p_load, nullptr);
       k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
     }
   } else {
@@ -2436,7 +2436,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
         ppp_load.wait_flag = true;
       }
       current_insn = insn_ + code_size;
-      code_size += vPingPongPeerLoad::Encode(current_insn, vLoadInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
+      code_size += vPingPongPeerLoad::Encode(current_insn, vAccInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
       k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
       if (is_begin && rank_size > 2) {
@@ -2469,8 +2469,8 @@ int AllReduceOp::Emit(VectorKernel &k) {
   if (cube_op_ != nullptr) {
     return MatmulEmit(k);
   }
-  auto store_id = mix_ ? vStoreInsnID::V_PEER_STORE_MIX : vStoreInsnID::V_PEER_STORE;
-  auto load_id = mix_ ? vLoadInsnID::V_PEER_LOAD_MIX : vLoadInsnID::V_PEER_LOAD;
+  auto store_id = mix_ ? vAccInsnID::V_PEER_STORE_MIX : vAccInsnID::V_PEER_STORE;
+  auto load_id = mix_ ? vAccInsnID::V_PEER_LOAD_MIX : vAccInsnID::V_PEER_LOAD;
   uint64_t tile_stride = strides_.back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
@@ -2724,7 +2724,7 @@ int AllGatherOp::Emit(VectorKernel &k) {
   p_store.tail_lenburst = p_store.lenburst;
   p_store.round_rank = round_tile_.size();
   p_store.rank_id = rank_id;
-  code_size += vPeerDMA::Encode(insn_, vStoreInsnID::V_PEER_STORE, vPipe::V_PIPE_STORE, p_store, rounds);
+  code_size += vPeerDMA::Encode(insn_, vAccInsnID::V_PEER_STORE, vPipe::V_PIPE_STORE, p_store, rounds);
   k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(insn_ + vPeerDMA::UNIQUEID_OFFSET));
 
   for (int i = 0; i < rank_size; ++i) {
@@ -2742,7 +2742,7 @@ int AllGatherOp::Emit(VectorKernel &k) {
     p_load.round_rank = round_tile_.size();
     p_load.event_id = 0;
     current_insn = insn_ + code_size;
-    code_size += vPeerDMA::Encode(current_insn, vLoadInsnID::V_PEER_LOAD, vPipe::V_PIPE_LOAD, p_load, rounds);
+    code_size += vPeerDMA::Encode(current_insn, vAccInsnID::V_PEER_LOAD, vPipe::V_PIPE_LOAD, p_load, rounds);
     k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
   }
   tail_insn_ = current_insn;

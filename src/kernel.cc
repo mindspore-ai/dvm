@@ -191,7 +191,7 @@ class CodeGenHelper {
           break;
       }  // end switch
     }  // end for op
-    *code_ptr++ = vMakeHead(vLoadInsnID::V_LOAD_NONE, 0, 0, V_PIPE_LOAD);
+    *code_ptr++ = 0;
     BackwardSync();
     return reinterpret_cast<uint8_t *>(code_ptr);
   }

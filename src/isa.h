@@ -37,7 +37,7 @@ enum vPipe {
   V_PIPE_ALL,
 };
 
-enum vLoadInsnID {
+enum vAccInsnID {
   V_LOAD = 0,
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
@@ -46,11 +46,7 @@ enum vLoadInsnID {
   V_PINGPONG_PEER_LOAD,
   V_PEER_LOAD,
   V_PEER_LOAD_MIX,
-  V_LOAD_NONE,
-};
-
-enum vStoreInsnID {
-  V_STORE = 0,
+  V_STORE,
   V_STORE_ATOMIC,
   V_STORE_ATOMIC_DETERM,
   V_STORE_STATUS,
@@ -59,7 +55,7 @@ enum vStoreInsnID {
   V_STORE_RS,  // For ReduceScatter
   V_PEER_STORE,
   V_PEER_STORE_MIX,
-  V_STORE_NONE,
+  V_ACCESS_NONE,
 };
 
 enum vSimdInsnID {
@@ -159,14 +155,13 @@ enum CommType {
 // head(simd):
 //  ID(16) << 48 | ext(26) << 22 | b_wait_event(3) << 19 | b_set_event(3) << 16 | wait_event(3) << 13 | set_event(3) <<
 //  10 | len(3) << 7 | back_wait(1) << 6 | back_set(1) << 5 | wait_flag(1) << 4 | set_flag(1) << 3 | bar_flag(1) << 2 |
-//  LOAD_FLAG(1) << 1 | SIMD_FLAG(1)
+//  reserved(1) << 1 | SIMD_FLAG(1)
 // head(load/store):
 //  ID(16) << 48 | ext(34) << 14 | wait_event(3) << 11 | set_event(3) << 8 | len(4) << 4 |
-//  wait_flag(1) << 3 | set_flag(1) << 2 | LOAD_FLAG(1) << 1 | SIMD_FLAG(1)
+//  wait_flag(1) << 3 | set_flag(1) << 2 | reserved(1) << 1 | SIMD_FLAG(1)
 
 // common area
 #define V_HEAD_SIMD_FLAG_OFFSET 0
-#define V_HEAD_LOAD_FLAG_OFFSET 1
 #define V_HEAD_ID_OFFSET 48
 #define V_HEAD_ID_MASK 0xfffful
 #define V_HEAD_EVENT_MASK 0x7ul
@@ -215,17 +210,13 @@ enum CommType {
 
 #ifndef _CCE_KERNEL_
 extern const uint64_t g_simd_func_offset[];
-extern const uint64_t g_load_func_offset[];
-extern const uint64_t g_store_func_offset[];
+extern const uint64_t g_access_func_offset[];
 __aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
   if (pipe == V_PIPE_SIMD) {
     return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | g_simd_func_offset[id] << V_HEAD_ID_OFFSET |
            1 << V_HEAD_SIMD_FLAG_OFFSET;
-  } else if (pipe == V_PIPE_LOAD) {
-    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_load_func_offset[id] << V_HEAD_ID_OFFSET |
-           1 << V_HEAD_LOAD_FLAG_OFFSET;
   } else {
-    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_store_func_offset[id] << V_HEAD_ID_OFFSET;
+    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_access_func_offset[id] << V_HEAD_ID_OFFSET;
   }
 }
 #else

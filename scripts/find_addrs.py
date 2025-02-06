@@ -55,31 +55,6 @@ if __name__ == '__main__':
     # Get arguments
     isa_file = sys.argv[1]
 
-    load_pipe, store_pipe, simd_pipe = 0, 1, 2
-    pipe_names = ("load", "store", "simd")
-    insn_names = ([], [], [])
-
-    # Extract all SIMD instructions from the isa file
-    with open(isa_file, 'r') as isa_file:
-        cur_pipe = -1
-        for line in isa_file:
-            if cur_pipe == -1:
-                if line.startswith('enum vSimdInsnID'):
-                    cur_pipe = simd_pipe
-                elif line.startswith('enum vLoadInsnID'):
-                    cur_pipe = load_pipe
-                elif line.startswith('enum vStoreInsnID'):
-                    cur_pipe = store_pipe
-            else:
-                stripped_line = line.strip()
-                if not stripped_line.startswith("//"):
-                    ins_name = extract_instruction_name(stripped_line)
-                    if ins_name != None:
-                        if ins_name.endswith("_NONE"):
-                            cur_pipe = -1
-                        else:
-                            insn_names[cur_pipe].append(ins_name)
-
     # Process symbol table to find function addresses
     try:
         function_address_map = {}
@@ -94,15 +69,32 @@ if __name__ == '__main__':
     except EOFError:
         pass
 
-    # Ensure all instructions have been mapped
-    total_insn_num = len(insn_names[0]) + len(insn_names[1]) + len(insn_names[2])
-    if len(function_address_map) != total_insn_num:
-        raise ValueError("Mismatch between function addresses and instructions: {} : {}".format(
-            len(function_address_map), total_insn_num))
-
-    for i in range(3):
-        # Output function addresses
-        print('extern const unsigned long int g_{}_func_offset[] = {{'.format(pipe_names[i]))
-        for ins_name in insn_names[i]:
-            print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
-        print('0\n};')
+    in_insn, pipe_cnt = False, 0
+    with open(isa_file, 'r') as isa_file:
+        for line in isa_file:
+            if not in_insn:
+                if line.startswith('enum vAccInsnID'):
+                    print('extern const unsigned long int g_access_func_offset[] = {')
+                    in_insn = True
+                    pipe_cnt += 1
+                elif line.startswith('enum vSimdInsnID'):
+                    print('extern const unsigned long int g_simd_func_offset[] = {')
+                    in_insn = True
+                    pipe_cnt += 1
+            else:
+                stripped_line = line.strip()
+                if not stripped_line.startswith("//"):
+                    ins_name = extract_instruction_name(stripped_line)
+                    if ins_name != None:
+                        if ins_name.endswith("_NONE"):
+                            in_insn = False
+                            print('0\n};')
+                            if pipe_cnt == 2:
+                                break
+                        else:
+                            offset = function_address_map.get(ins_name, None)
+                            if offset == None:
+                                raise ValueError("Cannot find function for instruction: {}".format(ins_name))
+                            print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
+    if pipe_cnt < 2:
+        raise ValueError("Some pipe not found")

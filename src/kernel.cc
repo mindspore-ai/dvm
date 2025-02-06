@@ -1566,7 +1566,7 @@ uint64_t VKernelP::CodeGen() {
     code_.Combine(code, 0);
   }
   code_.data_size_ = child_offset;
-  code_.UpdateHead(code_.block_dim_, 0, V_ENTRY_FLAG_PARALLEL);
+  code_.UpdateVP();
   return 0;
 }
 

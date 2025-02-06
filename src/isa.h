@@ -1361,21 +1361,42 @@ struct vPeerDMA {
 };
 
 // [entry]
-// tilenum(32) << 32 | simd_width(8) << 24 | code_size_8B(12) << 12 |
-// ---(1) << 6 | next_stage(1) << 5 | extern_code(1) << 4 | mix(1) << 3 | parallel(1) << 2 | ---(1) << 1 | pre_wait(1)
-#define V_ENTRY_FLAG_PRE_WAIT 1
-#define V_ENTRY_FLAG_PARALLEL 4
-#define V_ENTRY_FLAG_MIX 8
-#define V_ENTRY_FLAG_EXTERN_CODE 16
-#define V_ENTRY_FLAG_NEXT_STAGE 32
+// common:
+//  data(36) << 28 | simd_width(8) << 20 | code_size_8B(12) << 8 | next_stage(reserve: 1) << 5 | extern_code(1) << 4 | pre_wait(1) << 3 | type(3)
+// data:
+//  mix/cube: group_num(32) << 32 | reserved(4) << 28 | common(28)
+//  parallel: block_sum(16) << 48 | reserved(20) << 28 | common(28)
+//  vector:   block_tile(24) << 40 | block_tail(6) << 34 | block_num(6) << 28 | common(28)
 
-#define V_ENTRY_CODE_SIZE_OFFSET 12
-#define V_ENTRY_SIMD_WIDTH_OFFSET 24
-#define V_ENTRY_TILE_NUM_OFFSET 32
+#define V_ENTRY_TYPE_V                0
+#define V_ENTRY_TYPE_VP               1  // vector parallel
+#define V_ENTRY_TYPE_C                2
+#define V_ENTRY_TYPE_MIX              3
 
-#define V_ENTRY_CODE_SIZE_BITS 12
-#define V_ENTRY_SIMD_WIDTH_BITS 8
-#define V_ENTRY_TILE_NUM_BITS 32
+#define V_ENTRY_MASK_TYPE           7ul
+#define V_ENTRY_FLAG_PRE_WAIT         8
+#define V_ENTRY_FLAG_EXTERN_CODE     16
+#define V_ENTRY_FLAG_NEXT_STAGE      32
+#define V_ENTRY_CODE_SIZE_OFFSET      8
+#define V_ENTRY_CODE_SIZE_BITS       12
+#define V_ENTRY_SIMD_WIDTH_OFFSET    20
+#define V_ENTRY_SIMD_WIDTH_BITS       8
+
+// mix
+#define V_ENTRY_M_GROUP_NUM_OFFSET   32
+#define V_ENTRY_M_GROUP_NUM_BITS     32
+
+// parallel
+#define V_ENTRY_VP_BLOCK_SUM_OFFSET  48
+#define V_ENTRY_VP_BLOCK_SUM_BITS    16
+
+// vector
+#define V_ENTRY_V_BLOCK_NUM_OFFSET   28
+#define V_ENTRY_V_BLOCK_NUM_BITS      6
+#define V_ENTRY_V_TILE_TAIL_OFFSET   34
+#define V_ENTRY_V_TILE_TAIL_BITS      6
+#define V_ENTRY_V_TILE_BODY_OFFSET   40
+#define V_ENTRY_V_TILE_BODY_BITS     24
 
 __aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) { return 1ul | mode << 4 | event_id << 8; }
 #endif  // _DVM_ISA_H_

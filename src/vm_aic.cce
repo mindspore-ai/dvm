@@ -617,11 +617,12 @@ extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t 
     ffts_addr = *ext_addr;
     body_addr = ext_addr + 2;
   }
-  if (entry & V_ENTRY_FLAG_MIX) {
+  uint64_t ktype = entry & V_ENTRY_MASK_TYPE;
+  if (ktype >= V_ENTRY_TYPE_C) {
     set_ffts_base_addr(ffts_addr);
     __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
     uint64_t flags = op->flags;
-    uint64_t tile_num = entry >> V_ENTRY_TILE_NUM_OFFSET;
+    uint64_t tile_num = entry >> V_ENTRY_M_GROUP_NUM_OFFSET;
     // Clear backsync area
     if (flags & V_CUBE_FLAG_PEER_STORE) {
       __gm__ int32_t *peer_mem =

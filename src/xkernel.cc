@@ -256,8 +256,7 @@ uint64_t MixKernel::AlignCodeGen() {
   code_.block_dim_ = cube_op_->block_dim_;
   if (!post_fusion_) {
     code_.data_size_ = head_reserve;
-    code_.target_ = Code::kTargetMix;
-    code_.UpdateHead(cube_op_->core_loop_, 0, V_ENTRY_FLAG_MIX);
+    code_.UpdateC(cube_op_->core_loop_);
     return 0;
   }
   if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
@@ -321,7 +320,7 @@ uint64_t MixKernel::AlignCodeGen() {
   cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   code_.data_size_ = code_end - code_.data_;
   code_.target_ = Code::kTargetMix;
-  code_.UpdateHead(cube_op_->core_loop_, post_fusion_->simd_width_, V_ENTRY_FLAG_MIX | V_ENTRY_FLAG_PRE_WAIT);
+  code_.UpdateMix(cube_op_->core_loop_, post_fusion_->simd_width_, V_ENTRY_FLAG_PRE_WAIT);
   code_.Combine(post_fusion_->code_, 0);
   return ws_size;
 }
@@ -660,14 +659,14 @@ class EagerVector : public VectorKernel {
     min_type_ = dom->type_id_;
     next_ = nullptr;
     objects_.clear();
-    code_.ResetEager(Code::kTargetVec);
+    code_.Clear();
     static_ops_.clear();
   }
 
   void CodeGenMix(CubeOp *mm) {
     objects_.clear();
     static_ops_.clear();
-    code_.ResetEager(Code::kTargetCube);
+    code_.Clear();
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
@@ -675,7 +674,7 @@ class EagerVector : public VectorKernel {
     body->subtilenum = 0;
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
-    code_.UpdateHead(mm->core_loop_, 0, V_ENTRY_FLAG_MIX);
+    code_.UpdateC(mm->core_loop_);
     next_ = mm;
   }
 

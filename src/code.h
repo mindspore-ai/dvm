@@ -38,18 +38,40 @@ class Code {
     bind_wss_ = nullptr;
     bind_ops_ = nullptr;
   }
-  void ResetEager(int target) {
-    target_ = target;
-    Clear();
-  }
   void Alloc(size_t size);
   void MoveCode(Code &other);
 
-  void UpdateHead(uint64_t tile_num, uint64_t simd_width, uint64_t flags) {
+  void UpdateHead(uint64_t data, uint64_t simd_width, uint64_t flags, uint64_t ktype) {
     uint64_t *head = reinterpret_cast<uint64_t *>(data_);
     head[0] = 0;
-    head[1] = tile_num << V_ENTRY_TILE_NUM_OFFSET | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET |
-              (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET | flags;
+    head[1] = data | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET | flags | ktype |
+              (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET;
+  }
+
+  void UpdateV(uint64_t tile_num, uint64_t simd_width) {
+    target_ = kTargetVec;
+    uint64_t block_dim = static_cast<uint64_t>(block_dim_);
+    uint64_t block_tile = CeilDiv<uint64_t>(tile_num, block_dim);
+    uint64_t block_tail = block_dim * block_tile - tile_num;
+    ASSERT(block_tail < block_dim);
+    uint64_t data = block_tile << V_ENTRY_V_TILE_BODY_OFFSET | block_tail << V_ENTRY_V_TILE_TAIL_OFFSET |
+                    block_dim << V_ENTRY_V_BLOCK_NUM_OFFSET;
+    UpdateHead(data, simd_width, 0, V_ENTRY_TYPE_V);
+  }
+
+  void UpdateVP() {
+    target_ = kTargetVec;
+    UpdateHead(static_cast<uint64_t>(block_dim_) << V_ENTRY_VP_BLOCK_SUM_OFFSET, 0, 0, V_ENTRY_TYPE_VP);
+  }
+
+  void UpdateC(uint64_t group_num) {
+    target_ = kTargetCube;
+    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, 0, 0, V_ENTRY_TYPE_C);
+  }
+
+  void UpdateMix(uint64_t group_num, uint64_t simd_width, uint64_t flags) {
+    target_ = kTargetMix;
+    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, simd_width, flags, V_ENTRY_TYPE_MIX);
   }
 
   static constexpr uint64_t HeadSize() { return sizeof(uint64_t) * 2; }  // ffts + entry

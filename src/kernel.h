@@ -135,7 +135,7 @@ class VectorKernel : public VKernel {
     code_.Alloc(code_reserve + code_.HeadSize());
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
     code_.data_size_ = code_end - code_.data_;
-    code_.UpdateHead(tile_num_, simd_width_, 0);
+    code_.UpdateV(tile_num_, simd_width_);
   }
 
   NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;

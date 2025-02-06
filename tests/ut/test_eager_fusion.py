@@ -163,7 +163,7 @@ def test_eager_stop_fuse_reduce():
     [[128, 1024], [1024, 256]],  # no pad
     [[128, 500], [500, 256]],    # pad a
     [[128, 1024], [1024, 500]],  # pad b
-    [[256, 34816], [34816, 256]],# split k
+    [[4096, 34816], [34816, 2560]],# split k
     [[1024, 1, 256], [256, 512]],# batch fold
 ])
 def test_eager_mm(shape_a, shape_b):

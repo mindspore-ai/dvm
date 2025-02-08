@@ -77,7 +77,7 @@ class Communicator {
    */
   void InitCommMem();
   /**
-   * @brief Free peer memory. Each process only process the peer memory of npu which it occupies
+   * @brief Free peer memory. Each process only processes the peer memory of npu which it occupies
    */
   void FreeCommMem();
 
@@ -85,7 +85,7 @@ class Communicator {
   int rank_id_;    // global rank id
   int rank_size_;  // global rank size
   static int communicator_id_;
-  int dev_id_;                                    // local device id, if all the npus are on the same
+  int dev_id_;                                    // local device id
   aclrtDrvMemHandle physical_mem_handle_;         // physical memory handle of current device
   uint8_t *peer_mem_[MAX_RANK_SIZE] = {};         // virtual memory addr of peer memory
   uint64_t peer_mem_handle_[MAX_RANK_SIZE] = {};  // shareable memory handle of peer memory

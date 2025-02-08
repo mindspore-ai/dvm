@@ -29,6 +29,7 @@
 #include <mutex>
 #include <vector>
 #include <cstring>
+#include <cstdlib>
 
 #include "system.h"
 #include "acl/acl_rt.h"
@@ -384,7 +385,23 @@ void Communicator::InitMem() {
 }
 
 void Communicator::CollectDev() {
-  (void)aclrtGetDevice(&dev_id_);
+  int virtual_dev_id{0};
+  (void)aclrtGetDevice(&virtual_dev_id);
+  const char *gvalue = std::getenv("ASCEND_RT_VISIBLE_DEVICES");
+  if (gvalue == nullptr) {
+    dev_id_ = virtual_dev_id;
+  } else {
+    std::string value_str(gvalue);
+    std::stringstream ss(value_str);
+    std::vector<int> devices;
+    std::string token;
+    while (std::getline(ss, token, ',')) {
+      devices.push_back(std::stoi(token));
+    }
+    dev_id_ = devices[virtual_dev_id];
+  }
+  std::cout << "[" << rank_id_ << "] "
+            << "physical device id: " << dev_id_ << std::endl;
   // get other rank dev id, put into dev_list_
   bool ret = socket_channel_->AllGather(&dev_id_, sizeof(dev_id_), &dev_list_);
   if (!ret) {
@@ -434,8 +451,10 @@ void Communicator::OpenIpcMem() {
       continue;
     }
     aclrtDrvMemHandle handle;
-    if (aclrtMemImportFromShareableHandle(peer_mem_handle_[i], rank_id_, &handle) != ACL_SUCCESS) {
-      DvmException(rank_id_, "aclrtMemImportFromShareableHandle failed");
+    if (auto ret = aclrtMemImportFromShareableHandle(peer_mem_handle_[i], dev_id_, &handle) != ACL_SUCCESS) {
+      std::stringstream oss;
+      oss << "aclrtMemImportFromShareableHandle failed, error code is: " << ret << ", device id is: " << dev_id_;
+      DvmException(rank_id_, oss.str().c_str());
     }
     if (aclrtReserveMemAddress((void **)&peer_mem_[i], MAX_BUFFER_BYTES, 0, nullptr, 1) != ACL_SUCCESS) {
       DvmException(rank_id_, "reserve virtual memory failed");

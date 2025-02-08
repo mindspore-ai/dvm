@@ -56,14 +56,13 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenSimd1, true},   // BinaryS
   {kGenSimd1, false},  // BroadcastTo
   {kGenSimd0, true},   // BroadcastS
-  {kGenSimd1, false},  // Reduce
+  {kGenFlex, false},   // Reduce
   {kGenFlex, true},    // Select
   {kGenSimd1, false},  // ElemAny
   {kGenWrap, true},    // RemovePad
   {kGenFlex, true},    // Power
   {kGenFlex, true},    // Compare
   {kGenFlex, true},    // CompareS
-  {kGenWrap, true},    // AtomicCum
 };
 
 class CodeGenHelper {

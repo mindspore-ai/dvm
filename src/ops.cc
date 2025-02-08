@@ -196,6 +196,34 @@ uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t simd_width) {
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
 
+bool CollectRoundTile(const DimArray &nd, const TileParam &tp, DimArray &round_tile) {
+  bool pointwise = false;
+  if (tp.num > 1) {
+    for (int i = tp.start; i <= tp.end; ++i) {
+      if (nd[i] != 1) {
+        pointwise = true;
+        break;
+      }
+    }
+    if (!pointwise) {
+      if (round_tile.size() % 2 == 0) {
+        round_tile.push_back(tp.num);
+      } else {
+        round_tile.back() *= tp.num;
+      }
+    } else {
+      if (!round_tile.empty()) {
+        if (round_tile.size() % 2 == 0) {
+          round_tile.back() *= tp.num;
+        } else {
+          round_tile.push_back(tp.num);
+        }
+      }
+    }
+  }
+  return pointwise;
+}
+
 void BuildDimRounds(const DimArray &round_tile, uint64_t rounds[]) {
   switch (round_tile.size()) {
     case 1: {
@@ -300,34 +328,10 @@ int NDLoadDummy::Emit(VectorKernel &k) {
 void NDLoadDummy::Dump(bool verbose, std::ostringstream &oss) { oss << "LoadDummy"; }
 
 void NDLoad::Tile(const TileParam &tp) {
-  if (tp.num > 1) {
-    bool is_broadcast = true;
-    for (int i = tp.start; i <= tp.end; ++i) {
-      if (nd_[i] != 1) {
-        is_broadcast = false;
-        break;
-      }
-    }
-    if (is_broadcast) {
-      if (round_tile_.size() % 2 == 0) {
-        round_tile_.push_back(tp.num);
-      } else {
-        round_tile_.back() *= tp.num;
-      }
-    } else {
-      if (!round_tile_.empty()) {
-        if (round_tile_.size() % 2 == 0) {
-          round_tile_.back() *= tp.num;
-        } else {
-          round_tile_.push_back(tp.num);
-        }
-      }
-      if (tp.tail > 0) {
-        ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
-        tail_dim_ = tp.start;
-        tail_size_ = tp.tail;
-      }
-    }
+  if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
+    ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
+    tail_dim_ = tp.start;
+    tail_size_ = tp.tail;
   }
   NDObject::Tile(tp);
 }
@@ -584,34 +588,10 @@ void NDStore::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 void NDStore::Tile(const TileParam &tp) {
-  if (tp.num > 1) {
-    bool is_broadcast = true;
-    for (int i = tp.start; i <= tp.end; ++i) {
-      if (nd_[i] != 1) {
-        is_broadcast = false;
-        break;
-      }
-    }
-    if (is_broadcast) {
-      if (round_tile_.size() % 2 == 0) {
-        round_tile_.push_back(tp.num);
-      } else {
-        round_tile_.back() *= tp.num;
-      }
-    } else {
-      if (!round_tile_.empty()) {
-        if (round_tile_.size() % 2 == 0) {
-          round_tile_.back() *= tp.num;
-        } else {
-          round_tile_.push_back(tp.num);
-        }
-      }
-      if (tp.tail > 0) {
-        ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
-        tail_dim_ = tp.start;
-        tail_size_ = tp.tail;
-      }
-    }
+  if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
+    ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
+    tail_dim_ = tp.start;
+    tail_size_ = tp.tail;
   }
   NDObject::Tile(tp);
 }
@@ -655,7 +635,7 @@ int NDStore::Emit(VectorKernel &k) {
       auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
         op.to = addr_.data;
         op.xn = lhs_->xbuf_;
-        op.cum_flag = (lhs_->RealObjType() == kAtomicCum && (round_tile_.size() & 1));
+        op.cum_flag = (round_tile_.size() & 1);
         op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
         op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = strides_.back() / lead_align;
@@ -834,31 +814,6 @@ int UnaryOp::QueryId(const std::string &op_name) {
     if (op_name == unary_id_list[i].name) return i;
   }
   return -1;
-}
-
-int AtomicCumOp::Emit(VectorKernel &k) {
-  if (!(round_tile_->size() & 1)) {
-    int size = InnerEmit(k, insn_, xbuf_);
-    tail_insn_ = inner_->tail_insn_;
-    return size;
-  }
-  int size = InnerEmit(k, insn_, inner_xbuf_);
-  vAtomicCum op;
-  uint64_t rounds[2];
-  BuildDimRounds(*round_tile_, rounds);
-  op.xd = xbuf_;
-  op.xn = inner_xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
-  op.round_rank = round_tile_->size();
-  tail_insn_ = insn_ + size;
-  size += vAtomicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
-  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-  return size;
-}
-
-void AtomicCumOp::Dump(bool verbose, std::ostringstream &oss) {
-  oss << "AtomicCum.";
-  inner_->Dump(verbose, oss);
 }
 
 int RemovePadOp::Emit(VectorKernel &k) {
@@ -1635,6 +1590,32 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
 }
 
+void ReduceOp::Tile(const TileParam &tp) {
+  CollectRoundTile(nd_, tp, round_tile_);
+  _ReduceOp::Tile(tp);
+}
+
+int ReduceOp::Emit(VectorKernel &k) {
+  if (!(round_tile_.size() & 1)) {
+    return _ReduceOp::Emit(k);
+  }
+  auto out_xbuf = xbuf_;
+  xbuf_ = wss_[0];
+  int size = _ReduceOp::Emit(k);
+  vAtomicCum op;
+  uint64_t rounds[2];
+  BuildDimRounds(round_tile_, rounds);
+  op.xd = out_xbuf;
+  op.xn = xbuf_;
+  xbuf_ = out_xbuf;
+  op.repeat = strides_.back() / k.simd_width_;
+  op.round_rank = round_tile_.size();
+  tail_insn_ = insn_ + size;
+  size += vAtomicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
+  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+  return size;
+}
+
 void ReduceOp::GenClearKernel(NDAccess *store) {
   if (clear_kernel_ == nullptr) {
     clear_kernel_ = new VKernelD();
@@ -2167,32 +2148,10 @@ void ReduceScatterOp::Dump(bool verbose, std::ostringstream &oss) {
 }
 
 void ReduceScatterOp::Tile(const TileParam &tp) {
-  bool is_reduce = true;
-  for (int i = tp.start; i <= tp.end; ++i) {
-    if (nd_[i] != 1) {
-      is_reduce = false;
-      break;
-    }
-  }
-  if (is_reduce) {
-    if (round_tile_.size() % 2 == 0) {
-      round_tile_.push_back(tp.num);
-    } else {
-      round_tile_.back() *= tp.num;
-    }
-  } else {
-    if (!round_tile_.empty()) {
-      if (round_tile_.size() % 2 == 0) {
-        round_tile_.back() *= tp.num;
-      } else {
-        round_tile_.push_back(tp.num);
-      }
-    }
-    if (tp.tail > 0) {
-      ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
-      tail_dim_ = tp.start;
-      tail_size_ = tp.tail;
-    }
+  if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
+    ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
+    tail_dim_ = tp.start;
+    tail_size_ = tp.tail;
   }
   NDObject::Tile(tp);
 }

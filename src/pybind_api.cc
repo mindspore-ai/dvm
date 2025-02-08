@@ -415,8 +415,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
   const static std::unordered_map<std::string, pass::Pass> pass_map = {
     {"PrintPeakLive", pass::PrintPeakLive},       {"ReorderStore", pass::ReorderStore},
     {"ReorderLoad", pass::ReorderLoad},           {"CompactPeakLiveness", pass::CompactPeakLiveness},
-    {"EliminateReshape", pass::EliminateReshape}, {"InsertRemovePad", pass::InsertRemovePad},
-    {"InsertAtomicCum", pass::InsertAtomicCum}};
+    {"EliminateReshape", pass::EliminateReshape}, {"InsertRemovePad", pass::InsertRemovePad}};
   int64_t begin, end;
   if (kernel_.GetImpl()->KType() == kEager) {
     std::vector<RelocEntry> relocs;

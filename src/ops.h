@@ -56,7 +56,6 @@ enum ObjectType {
   kPower,
   kCompare,
   kCompareS,
-  kAtomicCum,
   kCubeOp,
   kObjectBulk
 };
@@ -721,11 +720,11 @@ class BroadcastScalarOp : public NDObject {
   T scalar_;
 };
 
-class _ReduceOp : public NDObject {
+class _ReduceOp : public FlexOp {
  public:
   enum { SUM, MAX, MIN };
   _ReduceOp(NDObject *input, int red_op)
-      : NDObject(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {}
+      : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {}
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
@@ -752,9 +751,12 @@ class ReduceOp : public _ReduceOp {
       : _ReduceOp(input, red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
+    ws_num_ = 1;
   }
   ~ReduceOp();
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Tile(const TileParam &tp) override;
+  int Emit(VectorKernel &k) override;
 
   void GenClearKernel(NDAccess *store);
   NDStore *clear_store_{nullptr};
@@ -766,22 +768,10 @@ class ReduceOp : public _ReduceOp {
   ShapeWithRef shape_;
   bool keepdims_;
   ShapeRef *dims_ref_;
+  DimArray round_tile_;
 
   ShapeRef clear_shape_;
   int64_t clear_shape_data_;
-};
-
-class AtomicCumOp : public WrapOp {
- public:
-  AtomicCumOp(NDObject *inner, const DimArray *round_tile)
-      : WrapOp(inner, ObjectType::kAtomicCum), round_tile_(round_tile) {
-    ws_num_ = 1;
-  }
-  int Emit(VectorKernel &k) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-
- protected:
-  const DimArray *round_tile_;
 };
 
 class CubeTuner;

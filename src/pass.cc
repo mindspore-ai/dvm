@@ -569,21 +569,6 @@ void InsertRemovePad(BasicBlock &block) {
   }
 }
 
-void InsertAtomicCum(BasicBlock &block) {
-  for (auto iter = block.begin(); iter != block.end(); iter++) {
-    if (iter->IsStore()) {
-      if (iter->lhs_->obj_id_ == kReduce) {
-        auto inner = iter->lhs_;
-        auto atomic_cum = new AtomicCumOp(inner, &(static_cast<NDStore *>(iter.get())->round_tile_));
-        atomic_cum->nd_ = inner->nd_;
-        iter->lhs_ = atomic_cum;
-        block.Insert(iter, atomic_cum);
-        block.Erase(inner);
-      }
-    }
-  }
-}
-
 void PrintPeakLive(BasicBlock &bb) {
   auto maxlive = MaxLive(bb);
   printf("peak live: %lu\n", maxlive);
@@ -951,5 +936,5 @@ void EliminateReshape(BasicBlock &bb) {
 }
 
 std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad,
-                            &ReorderStore,     &InsertRemovePad,     &InsertAtomicCum};
+                            &ReorderStore,     &InsertRemovePad};
 }  // namespace dvm::pass

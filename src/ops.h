@@ -248,7 +248,6 @@ class VectorKernel;
 
 #define OBJ_FLAG_WORKSPACE (1u << 16)
 #define OBJ_FLAG_XHS (2u << 16)
-#define OBJ_FLAG_WRAP (4u << 16)
 #define OBJ_FLAG_EAGER (8u << 16)
 #define OBJ_FLAG_STAGE_IO (16u << 16)
 
@@ -291,10 +290,6 @@ class NDObject {
   bool IsSimd() const { return obj_id_ > kStore; }
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
-
-  template <typename T>
-  inline T Cast();
-  inline ObjectType RealObjType() const;
 
   void Clear(int index) {
     index_ = index;
@@ -462,35 +457,6 @@ class FlexOp : public NDObject {
   uint64_t wss_[kWsMax];
 };
 
-class WrapOp : public FlexOp {
- public:
-  WrapOp(NDObject *inner, ObjectType wrap_id);
-  void Normalize(std::vector<NDObject *> &run_ops) override;
-  void Tile(const TileParam &tp) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
-
-  int InnerEmit(VectorKernel &k, uint64_t *insn, uint64_t out_xbuf) {
-    inner_->strides_ = strides_;
-    inner_->lead_dim_ = lead_dim_;
-    inner_->tail_insn_ = inner_->insn_ = insn;
-    inner_->xbuf_ = out_xbuf;
-    return inner_->Emit(k);
-  }
-
-  NDObject *inner_;
-  uint64_t inner_xbuf_;
-  ObjectType wrap_id_;
-};
-
-template <typename T>
-inline T NDObject::Cast() {
-  return static_cast<T>(flags_ & OBJ_FLAG_WRAP ? static_cast<WrapOp *>(this)->inner_ : this);
-}
-inline ObjectType NDObject::RealObjType() const {
-  return flags_ & OBJ_FLAG_WRAP ? static_cast<const WrapOp *>(this)->wrap_id_ : obj_id_;
-}
-
 class CopyOp : public NDObject {
  public:
   CopyOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kCopy) {
@@ -530,9 +496,12 @@ class UnaryOp : public NDObject {
   int op_type_;
 };
 
-class RemovePadOp : public WrapOp {
+class RemovePadOp : public CopyOp {
  public:
-  RemovePadOp(NDObject *inner) : WrapOp(inner, ObjectType::kRemovePad) {}
+  RemovePadOp(NDObject *input) : CopyOp(input) {
+    ASSERT(ITEM_SIZE[type_id_] != 1);
+    obj_id_ = ObjectType::kRemovePad;
+  }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };

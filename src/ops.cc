@@ -631,7 +631,7 @@ int NDStore::Emit(VectorKernel &k) {
       return vStoreRS::Encode(insn_, V_STORE_RS, op, rounds);
     }
     if (lhs_->obj_id_ == kReduce) {
-      auto red_op = lhs_->Cast<ReduceOp *>();
+      auto red_op = static_cast<ReduceOp *>(lhs_);
       auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
         op.to = addr_.data;
         op.xn = lhs_->xbuf_;
@@ -675,7 +675,7 @@ int NDStore::Emit(VectorKernel &k) {
   uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
   uint64_t body_iter = strides_.back() / lead_align;
   uint64_t lead_tiling, tail_iter;
-  if (lhs_->RealObjType() == ObjectType::kRemovePad) {
+  if (lhs_->obj_id_ == ObjectType::kRemovePad) {
     if (tail_dim_ < 0) {
       iter_size *= body_iter;
       tail_iter = iter_size;
@@ -709,36 +709,6 @@ int NDStore::Emit(VectorKernel &k) {
 }
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }
-
-WrapOp::WrapOp(NDObject *inner, ObjectType wrap_id)
-    : FlexOp(inner->lhs_, inner->rhs_, inner->type_id_, inner->obj_id_), inner_(inner), wrap_id_(wrap_id) {
-  shape_ref_ = inner->shape_ref_;
-  if (inner->flags_ & OBJ_FLAG_XHS) {
-    SetXhs(static_cast<FlexOp *>(inner)->xhs_);
-  }
-  ws_num_ = 1;  // for inner_xbuf_
-  if (inner->flags_ & OBJ_FLAG_WORKSPACE) {
-    ws_num_ += static_cast<FlexOp *>(inner)->ws_num_;
-  }
-  ASSERT(!(flags_ & OBJ_FLAG_WRAP));
-  flags_ |= OBJ_FLAG_WRAP;
-}
-
-void WrapOp::Normalize(std::vector<NDObject *> &run_ops) {
-  inner_->Normalize(run_ops);
-  nd_ = inner_->nd_;
-  lhs_ = inner_->lhs_;
-  rhs_ = inner_->rhs_;
-  if (inner_->flags_ & OBJ_FLAG_XHS) {
-    xhs_ = static_cast<FlexOp *>(inner_)->xhs_;
-  }
-}
-void WrapOp::Tile(const TileParam &tp) {
-  inner_->Tile(tp);
-  nd_ = inner_->nd_;
-}
-void WrapOp::AlignProp(PropRange &range) { inner_->AlignProp(range); }
-void WrapOp::FoldProp(PropRange &range) { inner_->FoldProp(range); }
 
 int CopyOp::Emit(VectorKernel &k) { return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]); }
 
@@ -819,27 +789,19 @@ int UnaryOp::QueryId(const std::string &op_name) {
 int RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
   if (nd_[lead_dim_] == strides_[lead_dim_] || strides_.back() == strides_[lead_dim_]) {
-    int size = InnerEmit(k, insn_, xbuf_);
-    tail_insn_ = inner_->tail_insn_;
-    return size;
+    return CopyOp::Emit(k);
   }
-  int size = InnerEmit(k, insn_, inner_xbuf_);
   vRemovePad op;
   op.xd = xbuf_;
-  op.xn = inner_xbuf_;
+  op.xn = lhs_->xbuf_;
   op.repeat = strides_.back() / strides_[lead_dim_];
   op.iter_num = nd_[lead_dim_];
   op.rs = GetBlocks(strides_[lead_dim_]);
-  tail_insn_ = insn_ + size;
-  ASSERT(id_list[type_id_] != V_NONE);
-  size += vRemovePad::Encode(tail_insn_, id_list[type_id_], op);
-  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-  return size;
+  return vRemovePad::Encode(insn_, id_list[type_id_], op);
 }
 
 void RemovePadOp::Dump(bool verbose, std::ostringstream &oss) {
-  oss << "RemovePad.";
-  inner_->Dump(verbose, oss);
+  oss << "RemovePad";
 }
 
 void ElementAnyOp::Normalize(std::vector<NDObject *> &run_ops) {

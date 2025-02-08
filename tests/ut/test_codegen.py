@@ -67,33 +67,6 @@ def test_event_overflow():
         t.store_expect(x, result)
     assert(t.run_check())
 
-def test_wrap_inplace():
-    t = Tester()
-    a = np.random.normal(0, 1, (1024, 1)).astype(np.float32)
-    x = t.load(a)
-    x = t.broadcast(x, [1024, 23]);
-    y = t.binary("Add", x, 1.0)
-    out = t.store_expect(y, np.broadcast_to(a, [1024, 23]) + 1.0)
-    t.set_passes("InsertRemovePad")
-    assert(t.run_check())
-    for line in t.das().split("\n"):
-        if "Adds" in line:
-            words = line.split(" 0x")
-            assert(words[1] == words[2][:len(words[1])])
-            break
-    else:
-        assert(0)
-
-def test_wrap_flex_op():
-    t = Tester()
-    a = np.random.normal(0, 1, (1024, 1)).astype(np.float16)
-    x = t.load(a)
-    x = t.broadcast(x, [1024, 23]);
-    y = t.unary("IsFinite", x)
-    out = t.store_expect(y, np.isfinite(np.broadcast_to(a, [1024, 23])))
-    t.set_passes("InsertRemovePad")
-    assert(t.run_check())
-
 def test_inplace_anti_dep():
     t = Tester()
     x = t.load([32, 1024], "float16")

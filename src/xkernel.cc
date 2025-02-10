@@ -21,8 +21,6 @@
 #include "tuning.h"
 
 namespace dvm {
-constexpr int64_t MAX_K = 1 << 15;
-
 MixKernel::~MixKernel() {
   if (cube_op_) {
     if (auto lhs = cube_op_->lhs_; lhs != nullptr && lhs->IsLoad()) {
@@ -35,7 +33,7 @@ MixKernel::~MixKernel() {
       delete out;
     }
     if (auto bias = cube_op_->bias_; bias != nullptr) {
-     delete bias;
+      delete bias;
     }
     delete cube_op_;
   }
@@ -120,20 +118,20 @@ void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_n
 uint64_t MixKernel::UnAlignCodeGen() {
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
-  ShapeRef *pad_shape_ref[2] = {&cube_op_->pad_a_, &cube_op_->pad_b_};
+  int64_t pad_size[2] = {cube_op_->tactics_.lhs_pad_size, cube_op_->tactics_.rhs_pad_size};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
   for (size_t i = 0; i < 2; i++) {
-    if (pad_shape_ref[i]->size) {
+    if (pad_size[i]) {
       stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
       pad_inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
       auto load = stage_kernel_->Copy(pad_inputs[i]);
-      inputs[i] = stage_kernel_->StagePadStore(load, pad_shape_ref[i]);
+      inputs[i] = stage_kernel_->StagePadStore(load, pad_size[i]);
     }
   }
   stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
   for (size_t i = 0; i < 2; i++) {
-    if (pad_shape_ref[i]->size) {
+    if (pad_size[i]) {
       inputs[i] = stage_kernel_->StageLoad(inputs[i]);
     } else {
       inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
@@ -165,7 +163,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
 }
 
 uint64_t MixKernel::SplitKCodeGen() {
-  size_t k_stride = MAX_K >> 1;
+  size_t k_stride = cube_op_->tactics_.k_stride;
   auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
   size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
 
@@ -364,14 +362,14 @@ uint64_t MixKernel::CodeGen() {
   if (sload_ && cube_op_->output_ == nullptr) {
     cube_op_->output_ = sload_;
   }
-  cube_op_->InitPadShape();
-  if (cube_op_->bias_ && cube_op_->bias_->type_id_ == kBFloat16) {
+  cube_op_->InferCubeConfig();
+  if (cube_op_->tactics_.enable_bias_cast) {
     return BiasBF16CodeGen();
   }
-  if (cube_op_->pad_a_.size || cube_op_->pad_b_.size) {
+  if (cube_op_->tactics_.enable_pad) {
     return UnAlignCodeGen();
   }
-  if (cube_op_->k_real_ > MAX_K) {
+  if (cube_op_->tactics_.enable_splitk) {
     return SplitKCodeGen();
   }
   return AlignCodeGen();
@@ -577,25 +575,25 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 
 class CubeOptimizer {
  public:
-  CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InitPadShape(); }
+  CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
 
-  bool AlignA(std::vector<NDObject*> &ops) {
-    if (!dom_->pad_a_.size) {
+  bool AlignA(std::vector<NDObject *> &ops) {
+    if (dom_->tactics_.lhs_pad_size == 0) {
       return false;
     }
-    AlignInput(dom_->lhs_, &dom_->pad_a_, ops);
+    AlignInput(dom_->lhs_, dom_->tactics_.lhs_pad_size, ops);
     return true;
   }
 
-  bool AlignB(std::vector<NDObject*> &ops) {
-    if (!dom_->pad_b_.size) {
+  bool AlignB(std::vector<NDObject *> &ops) {
+    if (dom_->tactics_.rhs_pad_size == 0) {
       return false;
     }
-    AlignInput(dom_->rhs_, &dom_->pad_b_, ops);
+    AlignInput(dom_->rhs_, dom_->tactics_.rhs_pad_size, ops);
     return true;
   }
 
-  bool CastBias(std::vector<NDObject*> &ops) {
+  bool CastBias(std::vector<NDObject *> &ops) {
     if (dom_->bias_ == nullptr || dom_->bias_->type_id_ != kBFloat16) {
       return false;
     }
@@ -613,13 +611,13 @@ class CubeOptimizer {
     return true;
   }
 
-  bool SplitK(std::vector<NDObject*> &ops) {
-    if (dom_->k_real_ <= MAX_K) {
+  bool SplitK(std::vector<NDObject *> &ops) {
+    if (!dom_->tactics_.enable_splitk) {
       return false;
     }
     auto load = new NDLoad(nullptr, dom_->shape_ref_, kFloat32);
     auto cast = new CastOp(load, dom_->type_id_);
-    size_t k_stride = MAX_K >> 1;
+    size_t k_stride = dom_->tactics_.k_stride;
     auto split_num = CeilDiv(static_cast<size_t>(dom_->k_real_), k_stride);
     size_t k_tail = dom_->k_real_ % k_stride ? dom_->k_real_ % k_stride : k_stride;
     size_t offset_a = 0;
@@ -645,7 +643,7 @@ class CubeOptimizer {
   }
 
  protected:
-  void AlignInput(NDObject* &input, ShapeRef *align_shape, std::vector<NDObject*> &ops) {
+  void AlignInput(NDObject *&input, int64_t align_shape, std::vector<NDObject *> &ops) {
     NDObject *op = input;
     if (op->IsLoad()) {
       op = new CopyOp(op);
@@ -729,7 +727,7 @@ class EagerVector : public VectorKernel {
 
   void Dump(std::ostringstream &oss, const std::string &indent) {
     if (next_ && next_->obj_id_ == ObjectType::kCubeOp) {
-      auto mm = static_cast<CubeOp*>(next_);
+      auto mm = static_cast<CubeOp *>(next_);
       oss << indent << "vgraph() {" << std::endl;
       auto body_indent = indent + "  ";
       oss << body_indent << "%0" << mm->nd_ << " = ";
@@ -792,7 +790,7 @@ class EagerArea {
     return true;
   }
 
-  static EagerArea* Assign(VKernelE *k, size_t aid) {
+  static EagerArea *Assign(VKernelE *k, size_t aid) {
     EagerArea *area;
     auto &pool = k->areas_;
     if (aid == pool.size()) {
@@ -935,7 +933,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   mm->flags_ |= OBJ_FLAG_EAGER;
   mm->NormalizeCube();
   CubeOptimizer opt(mm);
-  auto prepare_input = [this](bool is_stuff, NDObject* &input) {
+  auto prepare_input = [this](bool is_stuff, NDObject *&input) {
     if (is_stuff) {
       for (auto op : temp_ops_) {
         InitObjInfo(op);
@@ -964,7 +962,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
     prepare_input(opt.CastBias(temp_ops_), mm->bias_);
   }
   auto output = new NDStore(nullptr, mm);
-  output ->Normalize(temp_ops_);
+  output->Normalize(temp_ops_);
   objects_.push_back(output);
   mm->output_ = output;
   NDObject *ret = mm;
@@ -994,28 +992,28 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
 }
 
 void VKernelE::CodeGenMix(EagerArea *area, EagerVector *kernel) {
-  auto mm = static_cast<CubeOp*>(area->dom_);
+  auto mm = static_cast<CubeOp *>(area->dom_);
   auto alloc_input = [this](NDAccess *input) {
     auto store = GetStore(input);
-    if (store->gm_ == nullptr) { // TODO: abstract common func
+    if (store->gm_ == nullptr) {  // TODO: abstract common func
       auto size = GetStoreSize(store);
       if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-        store->gm_ = static_cast<uint8_t*>(it->second);
+        store->gm_ = static_cast<uint8_t *>(it->second);
         wss_.erase(it);
         SetStoreSize(store, it->first);
       } else {
-        store->gm_ = static_cast<uint8_t*>(ws_alloc_(size, user_data_));
+        store->gm_ = static_cast<uint8_t *>(ws_alloc_(size, user_data_));
       }
     }
     input->gm_ = store->gm_;
   };
-  if (auto io = static_cast<NDAccess*>(mm->lhs_); io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->lhs_); io->gm_ == nullptr) {
     alloc_input(io);
   }
-  if (auto io = static_cast<NDAccess*>(mm->rhs_); io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->rhs_); io->gm_ == nullptr) {
     alloc_input(io);
   }
-  if (auto io = static_cast<NDAccess*>(mm->bias_); io && io->gm_ == nullptr) {
+  if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->gm_ == nullptr) {
     alloc_input(io);
   }
   if (!mm->atomic_add_) {

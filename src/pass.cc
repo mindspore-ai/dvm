@@ -760,6 +760,8 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
       forward_shape = new_shape;
       break;
     }
+    case kPadStore:
+    case kSStore:
     case kStore:
       ASSERT(is_forward);
       intermediate.RegisterNewShape(obj, new_shape);
@@ -919,10 +921,22 @@ void EliminateReshape(BasicBlock &bb) {
       }
       // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
       auto prev = reshape.lhs_;
+      NDObject *copy = nullptr;
       for (auto succ : bb.GetUsers(&reshape)) {
         auto &input_ref = GetInputRef(succ, &reshape);
-        input_ref = prev;
-        bb.AddUser(prev, succ);
+        if (succ->IsStore() && prev->IsLoad()) {
+          // Insert Copy Op between store and load
+          if (copy == nullptr) {
+            copy = new CopyOp(prev);
+            copy->nd_ = prev->nd_;
+            bb.Insert(BasicBlock::iterator(&reshape), copy);
+          }
+          input_ref = copy;
+          bb.AddUser(copy, succ);
+        } else {
+          input_ref = prev;
+          bb.AddUser(prev, succ);
+        }
       }
       bb.Erase(&reshape);
     }

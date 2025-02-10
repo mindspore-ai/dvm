@@ -302,9 +302,9 @@ py::object KernelPy::Store(const py::object &obj) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::PadStore(const py::object &obj, const py::object &pad_shape) {
+py::object KernelPy::PadStore(const py::object &obj, const py::object &pad_size) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.PadStore(nullptr, in_obj, GetShapeRef(pad_shape));
+  auto op = kernel_.PadStore(nullptr, in_obj, pad_size.cast<int64_t>());
   stores_[op] = StoreInfo();
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
@@ -377,9 +377,9 @@ py::object KernelPy::StageStore(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::StagePadStore(const py::object &input, const py::object &pad_shape) {
+py::object KernelPy::StagePadStore(const py::object &input, const py::object &pad_size) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.StagePadStore(in_obj, GetShapeRef(pad_shape));
+  auto op = kernel_.StagePadStore(in_obj, pad_size.cast<int64_t>());
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 

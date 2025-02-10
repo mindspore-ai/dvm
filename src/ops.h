@@ -27,6 +27,7 @@ namespace dvm {
 enum ObjectType {
   // Load
   kLoadDummy = 0,
+  kSLoad,
   kLoad,
 
   // Store
@@ -426,11 +427,11 @@ class NDStore : public NDAccess {
 
 class NDPadStore : public NDAccess {
  public:
-  NDPadStore(NDObject *src, ShapeRef *pad_shape)
-      : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_shape_(pad_shape) {
+  NDPadStore(NDObject *src, int64_t pad_size)
+      : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_size_(pad_size) {
     shape_ref_ = &shape_;
   }
-  NDPadStore(uint8_t *dst, NDObject *src, ShapeRef *pad_shape) : NDPadStore(src, pad_shape) { gm_ = dst; }
+  NDPadStore(uint8_t *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { gm_ = dst; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
@@ -440,7 +441,7 @@ class NDPadStore : public NDAccess {
 
  private:
   ShapeWithRef shape_;
-  ShapeRef *pad_shape_;
+  int64_t pad_size_;
 };
 
 class FlexOp : public NDObject {
@@ -783,6 +784,16 @@ class AtomicCumOp : public WrapOp {
 class CubeTuner;
 class CubeOp : public NDObject {
  public:
+  struct Tactics {
+    bool enable_splitk{false};
+    bool enable_pad{false};
+    bool enable_bias_cast{false};
+
+    int64_t k_stride;
+    int64_t lhs_pad_size{0};
+    int64_t rhs_pad_size{0};
+  };
+
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
 
@@ -791,7 +802,7 @@ class CubeOp : public NDObject {
   void CodeGen(vCubeOp *code, CubeTuner *tuner);
   void NormalizeCube();
   void NormalizeOutput();
-  void InitPadShape();
+  void InferCubeConfig();
   void GenTiling(vCubeOp *code);
 
   uint64_t PostFusionWorkSpace() const {
@@ -829,10 +840,9 @@ class CubeOp : public NDObject {
   bool pingpong_store_{false};
   bool peer_store_{false};
   bool atomic_add_{false};
-  ShapeRefData<1> pad_a_;
-  ShapeRefData<1> pad_b_;
   bool batch_fold_{false};
   NDObject *bias_{nullptr};
+  Tactics tactics_;
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);
@@ -915,7 +925,9 @@ class NDSStore : public NDStore {
 
 class NDSLoad : public NDLoad {
  public:
-  using NDLoad::NDLoad;
+  NDSLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32) : NDLoad(src, shape_ref, type_id) {
+    obj_id_ = kSLoad;
+  }
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;

@@ -413,13 +413,13 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
   return obj;
 }
 
-NDObject *Kernel::PadStore(void *addr, NDObject *input, ShapeRef *pad_shape) {
+NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
   auto ktype = kernel_->KType();
   if (ktype == kStaticStages) {
     ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
   NDObject *obj;
-  obj = new NDPadStore(static_cast<uint8_t *>(addr), input, pad_shape);
+  obj = new NDPadStore(static_cast<uint8_t *>(addr), input, pad_size);
   kernel_->Append(obj);
   return obj;
 }
@@ -475,9 +475,9 @@ NDObject *Kernel::StageStore(NDObject *input) {
   return op;
 }
 
-NDObject *Kernel::StagePadStore(NDObject *input, ShapeRef *pad_shape) {
+NDObject *Kernel::StagePadStore(NDObject *input, int64_t pad_size) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDPadStore(nullptr, input, pad_shape);
+  auto op = new NDPadStore(nullptr, input, pad_size);
   static_cast<StagesKernel *>(kernel_)->StageStore(op);
   return op;
 }

@@ -135,7 +135,7 @@ class Kernel {
   NDObject *SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DType type);
   NDObject *StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step, DType type);
   NDObject *Store(void *addr, NDObject *input);
-  NDObject *PadStore(void *addr, NDObject *input, ShapeRef *pad_shape);
+  NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);
 
   NDObject *Unary(int op_type, NDObject *input);
   NDObject *Binary(int op_type, NDObject *lhs, NDObject *rhs);
@@ -165,7 +165,7 @@ class Kernel {
   void StageSwitch(KernelType type);
   NDObject *StageLoad(NDObject *stage_store);
   NDObject *StageStore(NDObject *input);
-  NDObject *StagePadStore(NDObject *input, ShapeRef *pad_shape);
+  NDObject *StagePadStore(NDObject *input, int64_t pad_size);
 
   uint64_t CodeGen();
   int Launch(void *workspace, void *stream);

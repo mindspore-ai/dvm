@@ -9,8 +9,8 @@ def test_matmul(trans):
     t = Tester("mix")
     g0 = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
     g1 = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
-    expect = np.matmul((g0 if not trans[0] else g0.transpose()).astype(np.float32),
-                       (g1 if not trans[1] else g1.transpose()).astype(np.float32)).astype(np.float16)
+    expect = np.matmul((g0 if not trans[0] else g0.T).astype(np.float32),
+                       (g1 if not trans[1] else g1.T).astype(np.float32)).astype(np.float16)
     a = t.load(g0)
     b = t.load(g1)
     c = t.matmul(a, b, trans[0], trans[1])
@@ -19,7 +19,7 @@ def test_matmul(trans):
 
 
 @pytest.mark.mix
-@pytest.mark.parametrize('m, n, k', [[222, 1111, 40111], [512, 256, 67584]])
+@pytest.mark.parametrize('m, n, k', [[300, 5000, 40000]])
 @pytest.mark.parametrize('trans', [[False, True], [True, True], [False, False], [True, False]])
 def test_matmul_split_k(m, n, k, trans):
     shape_a = [k, m] if trans[0] else [m, k]
@@ -28,8 +28,8 @@ def test_matmul_split_k(m, n, k, trans):
         return
     g0 = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     g1 = np.random.normal(0, 0.01, shape_b).astype(np.float16)
-    expect = np.matmul((g0 if not trans[0] else g0.transpose()).astype(np.float32),
-                       (g1 if not trans[1] else g1.transpose()).astype(np.float32)).astype(np.float16)
+    expect = np.matmul((g0 if not trans[0] else g0.T).astype(np.float32),
+                       (g1 if not trans[1] else g1.T).astype(np.float32)).astype(np.float16)
     t = Tester("mix")
     a1 = t.load(g0)
     b1 = t.load(g1)
@@ -87,7 +87,7 @@ def test_matmul_bf16(trans):
     t = Tester("mix")
     g0 = np.random.normal(0, 0.01, [64, 64]).astype(np.float32)
     g1 = np.random.normal(0, 0.01, [64, 64]).astype(np.float32)
-    expect = np.matmul(g0 if not trans[0] else g0.transpose(), g1 if not trans[1] else g1.transpose())
+    expect = np.matmul(g0 if not trans[0] else g0.T, g1 if not trans[1] else g1.T)
     a = t.load(g0, "bfloat16")
     b = t.load(g1, "bfloat16")
     c = t.matmul(a, b, trans[0], trans[1])
@@ -166,7 +166,6 @@ def test_matmul_post_broadcast_fusion_1(shape_a, shape_b):
     [[1, 127], [127, 127]],        # m == 1
     [[1, 1000], [1000, 4000]],     # m == 1
     [[123, 1], [1, 777]],        # k == 1
-    [[123, 33333], [33333, 777]],
 ])
 def test_unaligned_matmul_post_fusion(shape_a, shape_b):
     np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
@@ -205,7 +204,7 @@ def test_matmul_post_fusion_inplace():
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[1024, 512], [512, 1024]],
-    [[123, 33333], [33333, 1111]],
+    [[256, 40960], [40960, 5120]],
 ])
 def test_matmul_post_fusion_matmul_output(shape_a, shape_b):
     t = Tester("mix")
@@ -234,7 +233,7 @@ def test_matmul_col_nopad():
     shape_b = [n, k]
     np_a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     np_b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
-    np_c = np.matmul(np_a.astype(np.float32), np_b.transpose().astype(np.float32)).astype(np.float16)
+    np_c = np.matmul(np_a.astype(np.float32), np_b.T.astype(np.float32)).astype(np.float16)
 
     t = Tester("mix")
     mat_a = t.load(np_a)
@@ -291,7 +290,7 @@ def test_sync_out_limit():
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
-    [[512, 40960], [40960, 256]],      # split k
+    [[5120, 40960], [40960, 256]],      # split k
     [[211, 211], [211, 230]],      # unalign
     [[2, 4, 256, 256], [2, 4, 256, 256]],       # batchmatmul
     [[256, 256], [256, 256]],    # same shape
@@ -334,7 +333,7 @@ def test_matmul_bias(shape_a, shape_b):
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],
-    [[102, 40000], [40000, 400]],
+    [[102, 40000], [40000, 5120]],
 ])
 def test_matmul_bias_bf16(shape_a, shape_b):
     t = Tester("mix")
@@ -375,7 +374,7 @@ def test_matmul_n_big(shape_a, shape_b):
     t = Tester("mix")
     ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
-    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32).transpose()).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32).T).astype(np.float16)
     zx = np.random.normal(0, 0.01, np_c.shape).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)

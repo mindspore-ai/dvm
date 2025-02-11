@@ -455,6 +455,29 @@ void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("xn_pad", op.xn_pad, oss);
 }
 
+void DumpStoreAG(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vStoreAG op;
+  vStoreAG::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "store_ag.u8.32x" << op.iter_size << "x" << op.iter_num;
+  oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("iter_num", op.iter_num, oss);
+  oss << ", ";
+  DumpVal("iter_size", op.iter_size, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.iter_tail, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("rank_id", op.rank_id, oss);
+  oss << ", ";
+  DumpVal("rank_size", op.rank_size, oss);
+  oss << ", ";
+  DumpVal("shard_stride", op.shard_stride, oss);
+}
+
 void DumpStoreRS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreRS op;
   vStoreRS::Decode(dump_info.insn, *dump_info.insn, op);
@@ -522,6 +545,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
   {V_STORE_STATUS, &DumpStoreStatus},
   {V_SSTORE, &DumpSStore},
+  {V_STORE_AG, &DumpStoreAG},
   {V_STORE_RS, &DumpStoreRS},
   {V_PEER_STORE, &DumpPeerDMA<name_peer_store>},
   {V_PEER_STORE_MIX, &DumpPeerDMA<name_peer_store_mix>},
@@ -743,7 +767,7 @@ class DisAssembler {
     } else if (ktype == V_ENTRY_TYPE_MIX) {
       DasMix(entry, bcode, bcode_size, "");
     } else {
-      ASSERT(0); // removed
+      ASSERT(0);  // removed
       DasStages(entry, bcode, bcode_size, "");
     }
   }
@@ -781,7 +805,8 @@ class DisAssembler {
     auto tile_tail = vGetBitRange(entry, V_ENTRY_V_TILE_TAIL_OFFSET, V_ENTRY_V_TILE_TAIL_BITS);
     auto block_num = vGetBitRange(entry, V_ENTRY_V_BLOCK_NUM_OFFSET, V_ENTRY_V_BLOCK_NUM_BITS);
     auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
-    oss << indent << "aiv(tile_num=" << tile_body << 'x' << block_num << '-' << tile_tail << ", simd_width=" << simd_width;
+    oss << indent << "aiv(tile_num=" << tile_body << 'x' << block_num << '-' << tile_tail
+        << ", simd_width=" << simd_width;
     oss << ") {" << std::endl;
     DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
     oss << indent << "}";
@@ -801,7 +826,7 @@ class DisAssembler {
     auto sub_indent = indent + "  ";
     vCubeOp *cube = reinterpret_cast<vCubeOp *>(bcode);
     ASSERT(cube->flags & V_CUBE_FLAG_GROUP_SET);
-    oss << sub_indent <<  "aic(group_set=1";
+    oss << sub_indent << "aic(group_set=1";
     if (cube->flags & V_CUBE_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
     }
@@ -814,7 +839,8 @@ class DisAssembler {
     oss << ") {" << std::endl;
     DasCubeBody(cube, sub_indent + "  ");
     oss << std::endl << sub_indent << "}" << std::endl;
-    oss << sub_indent << "aiv(sub_tile_num=[" << (cube->subtilenum & 0xfffffffful) << ", " << (cube->subtilenum >> 32) << "]";
+    oss << sub_indent << "aiv(sub_tile_num=[" << (cube->subtilenum & 0xfffffffful) << ", " << (cube->subtilenum >> 32)
+        << "]";
     auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
     oss << ", simd_width=" << simd_width;
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
@@ -986,7 +1012,7 @@ void Code::Combine(const Code &code, uint64_t ws_base) {
     BindOp(op, op->addr_.op);
   }
   if (!code.unique_ids_.empty()) {
-    for (auto id: code.unique_ids_) {
+    for (auto id : code.unique_ids_) {
       unique_ids_.push_back(id);
     }
   }

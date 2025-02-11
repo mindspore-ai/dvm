@@ -146,7 +146,7 @@ class Code {
   int LaunchEx(void *workspace, void *stream);
   uint64_t ReserveCodeSpace(uint64_t workspace_size);
 
-  void InsertBind(NDAccess* &pos, NDAccess *op) {
+  void InsertBind(NDAccess *&pos, NDAccess *op) {
 #ifdef DEBUG
     for (auto x = pos; x != nullptr; x = x->bind_list_) {
       ASSERT(x != op);

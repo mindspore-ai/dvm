@@ -587,6 +587,15 @@ NDObject *Kernel::AllGather(NDObject *input, const Comm *comm) {
   return obj;
 }
 
+NDObject *Kernel::AllGatherV2(NDObject *input, const Comm *comm) {
+  if (input->IsLoad()) {
+    input = Copy(input);
+  }
+  NDObject *obj = new AllGatherV2Op(input, comm->GetImpl());
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
   if (input->IsLoad()) {
     input = Copy(input);

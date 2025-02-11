@@ -46,6 +46,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenStore, true},   // Store
   {kGenComm, true},    // ReduceScatter
   {kGenComm, true},    // AllGather
+  {kGenComm, true},    // AllGatherV2
   {kGenComm, true},    // AllReduce
   {kGenSimd1, true},   // Reshape
   {kGenSimd1, true},   // Copy

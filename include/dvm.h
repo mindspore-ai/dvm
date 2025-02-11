@@ -188,6 +188,7 @@ class Kernel {
   // collective communication
   NDObject *AllReduce(NDObject *input, const Comm *comm);
   NDObject *AllGather(NDObject *input, const Comm *comm);
+  NDObject *AllGatherV2(NDObject *input, const Comm *comm);
   NDObject *ReduceScatter(NDObject *input, const Comm *comm);
 
   void StageSwitch(KernelType type);

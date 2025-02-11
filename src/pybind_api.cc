@@ -345,6 +345,12 @@ py::object KernelPy::AllGather(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
+py::object KernelPy::AllGatherV2(const py::object &input) {
+  auto input_obj = input.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.AllGatherV2(input_obj, &g_mpc.comm);
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
 py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b,
                             const py::object &bias) {
   auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
@@ -756,6 +762,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("copy", &KernelPy::Copy, "emit copy op")
     .def("allreduce", &KernelPy::AllReduce, "emit allreduce op")
     .def("allgather", &KernelPy::AllGather, "emit allgather op")
+    .def("allgatherv2", &KernelPy::AllGatherV2, "emit allgatherv2 op")
     .def("reducescatter", &KernelPy::ReduceScatter, "emit reducescatter op")
     .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
          py::arg("trans_b"), py::arg("bias") = py::none())

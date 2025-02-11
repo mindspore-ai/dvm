@@ -38,6 +38,7 @@ enum ObjectType {
   // Comm
   kReduceScatter,
   kAllGather,
+  kAllGatherV2,
   kAllReduce,
 
   // Simd
@@ -901,6 +902,22 @@ class AllGatherOp : public CommOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   DimArray round_tile_;
+
+ protected:
+  int tail_dim_{-1};
+  int tail_size_{0};
+
+ private:
+  ShapeWithRef shape_;
+};
+
+class AllGatherV2Op : public CommOp {
+ public:
+  AllGatherV2Op(NDObject *input, const Communicator *comm);
+  ~AllGatherV2Op() = default;
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  int Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
   int tail_dim_{-1};

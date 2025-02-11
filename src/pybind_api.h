@@ -89,6 +89,7 @@ class KernelPy {
   py::object Copy(const py::object &input);
   py::object AllReduce(const py::object &input);
   py::object AllGather(const py::object &input);
+  py::object AllGatherV2(const py::object &input);
   py::object ReduceScatter(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b, const py::object &bias);
   py::object ConvertToBF16(const py::object &input);

@@ -670,6 +670,29 @@ int NDStore::Emit(VectorKernel &k) {
       return code_size;
     }
   }
+  if (k.comm_op_ && k.comm_op_->GetObjectType() == kAllGatherV2) {
+    vStoreAG op;
+    op.to = addr_.data;
+    op.xn = k.comm_op_->xbufs_[0];
+    op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+    op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+    op.iter_num = strides_.back() / lead_align;
+    if (op.iter_num == 1) {
+      op.iter_tail = tail_dim_ < 0 ? op.iter_size : tail_size_ * ITEM_SIZE[type_id_];
+    } else {
+      op.iter_tail = tail_dim_ < 0 ? op.iter_num : op.iter_num / nd_[tail_dim_] * tail_size_;
+    }
+    // op.iter_tail = tail_dim_ < 0 ? op.iter_num : op.iter_num / nd_[tail_dim_] * tail_size_;
+    op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
+    op.rank_id = k.comm_op_->comm_->GetRankId();
+    op.rank_size = k.comm_op_->comm_->GetRankSize();
+    op.xbuf_size =
+      reinterpret_cast<uint64_t>(k.comm_op_->xbufs_[1]) - reinterpret_cast<uint64_t>(k.comm_op_->xbufs_[0]);
+    op.shard_stride = std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{}) *
+                      ITEM_SIZE[type_id_] / op.rank_size;
+    reloc_addr_ = insn_ + vStoreAG::RELOC_OFFSET;
+    return vStoreAG::Encode(insn_, V_STORE_AG, op);
+  }
   vStore op;
   uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
   uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
@@ -1512,7 +1535,8 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     if (input->nd_[d] == 1) continue;
     if (d != red_ext) {
       if (lead_dim == -1) {
-        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++);
+        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++)
+          ;
       }
       if (red_start >= 0) {
         _ReduceOp *obj;
@@ -1537,7 +1561,8 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
       red_start = d;
     }
     red_end = d;
-    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
+    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++)
+      ;
   }
   nd_ = input->nd_;
   if (red_start != -1) {
@@ -2671,4 +2696,79 @@ int AllGatherOp::Emit(VectorKernel &k) {
 }
 
 void AllGatherOp::Dump(bool verbose, std::ostringstream &oss) { oss << "AllGather"; }
+
+AllGatherV2Op::AllGatherV2Op(NDObject *input, const Communicator *comm)
+    : CommOp(input, comm, ObjectType::kAllGatherV2) {
+  shape_ref_ = &shape_;
+}
+
+// input shape: [a, b], AllGatherV2 nd: [b, a]，AllGather shape: [a * r, b]
+void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
+  auto size = lhs_->shape_ref_->size;
+  shape_.Resize(size);
+  for (size_t i = 0; i < size; i++) {
+    shape_[i] = lhs_->shape_ref_->data[i];
+  }
+  shape_[0] *= comm_->GetRankSize();
+
+  nd_ = lhs_->nd_;
+  xbuf_reserve_ = comm_->GetRankSize();
+  code_reserve_ = 5 * sizeof(uint64_t) * (comm_->GetRankSize() + 1);
+}
+
+int AllGatherV2Op::Emit(VectorKernel &k) {
+  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  int code_size = 0;
+  uint64_t *current_insn{nullptr};
+  auto forward_event = System::Instance().EventNum() - 1;
+
+  vPeerDMA p_store;
+  p_store.peer_mem = comm_->GetPeerMemPtr(rank_id);
+  p_store.flag_mem = p_store.peer_mem + PEERMEM_FLAG_OFFSET;
+  p_store.xn = lhs_->xbuf_;
+  p_store.tile_stride = tile_stride_size;
+  p_store.lenburst = GetBlocks(tile_stride);
+  p_store.tail_lenburst = p_store.lenburst;
+  p_store.round_rank = 0;
+  code_size += vPeerDMA::Encode(insn_, vAccInsnID::V_PEER_STORE, vPipe::V_PIPE_STORE, p_store, nullptr);
+  k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(insn_ + vPeerDMA::UNIQUEID_OFFSET));
+  for (int i = 0; i < rank_size; ++i) {
+    if (i == rank_id) {
+      continue;
+    }
+    auto ub_addr = xbufs_[i];
+    // PeerLoad
+    vPeerDMA p_load;
+    p_load.peer_mem = comm_->GetPeerMemPtr(i);
+    p_load.flag_mem = comm_->GetPeerMemPtr(i) + PEERMEM_FLAG_OFFSET;
+    p_load.xn = ub_addr;
+    p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
+    p_load.lenburst = GetBlocks(tile_stride);
+    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / nd_[tail_dim_] * tail_size_);
+    p_load.round_rank = 0;
+    p_load.event_id = 0;
+    current_insn = insn_ + code_size;
+    code_size += vPeerDMA::Encode(current_insn, vAccInsnID::V_PEER_LOAD, vPipe::V_PIPE_LOAD, p_load, nullptr);
+    k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    if (i == rank_size - 1 || (rank_id == rank_size - 1 && i == rank_size - 2)) {
+      *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+    }
+  }
+
+  vCopy cp;
+  cp.xn = lhs_->xbuf_;
+  cp.xd = xbufs_[rank_id];
+  cp.config = DMAConfig(0, 1, (tile_stride_size + 31) >> 5, 0, 0);
+  current_insn = insn_ + code_size;
+  code_size += vCopy::Encode(current_insn, V_COPY, cp);
+  *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+  *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+  tail_insn_ = current_insn;
+  return code_size;
+}
+
+void AllGatherV2Op::Dump(bool verbose, std::ostringstream &oss) { oss << "AllGatherV2"; }
 }  // namespace dvm

@@ -1599,6 +1599,34 @@ __aicore_inline__ void WaitBuffFlag(uint64_t flag, __gm__ uint64_t *buff){
   }
 }
 
+__aicore_inline__ void StoreAG(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vStoreAG op;
+
+  vStoreAG::Decode(pc, head, op);
+
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t rank_size = op.rank_size;
+  if (IsLastTile(tile)) {
+    if (op.iter_num == 1) {
+      for (size_t i = 0; i < rank_size; i++) {
+        __ubuf__ void* ub = (__ubuf__ void*)(op.xn + i * op.xbuf_size);
+        __gm__ void* gm = (__gm__ uint8_t*)op.to + i * op.shard_stride + op.tile_stride * tile_idx;
+        copy_ubuf_to_gm_align_b8(gm, ub, 0, 1, op.iter_tail, 0, 0, 0, 0);
+      }
+      OVER_WRITE_CHECK(pc, head, (rank_size - 1) * op.shard_stride + op.tile_stride * tile_idx + op.iter_tail);
+      return;
+    }
+    op.iter_num = op.iter_tail;
+  }
+
+  for (size_t i = 0; i < rank_size; i++) {
+    __ubuf__ void* ub = (__ubuf__ void*)(op.xn + i * op.xbuf_size);
+    __gm__ void* gm = (__gm__ uint8_t*)op.to + i * op.shard_stride + op.tile_stride * tile_idx;
+    copy_ubuf_to_gm_align_b8(gm, ub, 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
+  }
+  OVER_WRITE_CHECK(pc, head, (rank_size - 1) * op.shard_stride + op.tile_stride * tile_idx + op.iter_num * op.iter_size);
+}
+
 __aicore_inline__ void StoreRS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreRS op;
   vStoreRS::Decode(pc, head, op);
@@ -1941,6 +1969,7 @@ DEF_DISP_STORE(V_STORE_ATOMIC_DETERM, StoreAtomicDeterm(pc, head, tile))
 DEF_DISP_STORE(V_STORE_STATUS, StoreStatus(pc, head))
 DEF_DISP_STORE(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
+DEF_DISP_STORE(V_STORE_AG, StoreAG(pc, head, tile))
 DEF_DISP_STORE(V_STORE_RS, StoreRS(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE, PeerStore<false>(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))

@@ -67,7 +67,7 @@ void MixKernel::Append(NDObject *obj) {
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
-          auto sload = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          auto sload = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_, true);
           if (cube_op_->peer_store_) {
             sload->pingpong_load_ = true;
           }

@@ -54,7 +54,7 @@ void MixKernel::Append(NDObject *obj) {
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
-          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_, true);
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;

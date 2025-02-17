@@ -729,6 +729,8 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
       forward_shape = new_shape;
       backward_shape = new_shape;
       break;
+    case kSLoad:
+      if (static_cast<NDSLoad *>(obj)->is_from_cube_) return false;
     case kLoad:
     case kBroadcastS: {
       ASSERT(!is_forward);
@@ -925,6 +927,5 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad,
-                            &ReorderStore,     &InsertRemovePad};
+std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
 }  // namespace dvm::pass

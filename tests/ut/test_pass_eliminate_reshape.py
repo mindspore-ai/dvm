@@ -187,7 +187,7 @@ def test_reduce_lead_dim():
 @pytest.mark.mix
 def test_matmul_post_fusion_forward():
     t = Tester("mix",use_pass_opt=True)
-    shape_a = [10200, 3072]
+    shape_a = [1020, 3072]
     shape_b = [3072, 3072]
     ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
     bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
@@ -195,7 +195,26 @@ def test_matmul_post_fusion_forward():
     a = t.load(ax)
     b = t.load(bx)
     c = t.matmul(a, b, False, False)
-    e = t.reshape(c, (2, 5100, 48, 64))
-    expect = np.reshape(np_c,(2, 5100, 48, 64))
-    t.store_expect(e, np.reshape(expect,(2, 5100, 48, 64)), 2e-3)
+    e = t.reshape(c, (2, 510, 48, 64))
+    expect = np.reshape(np_c,(2, 510, 48, 64))
+    t.store_expect(e, np.reshape(expect,(2, 510, 48, 64)), 2e-3)
+    assert (t.run_check())
+
+@pytest.mark.mix
+def test_matmul_post_fusion_sload():
+    t = Tester("mix",use_pass_opt=True)
+    shape_a = [1, 32, 512, 2048]
+    shape_b = [1, 32, 512, 128]
+    shape_c = [32, 2048, 128]
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    cx = np.random.normal(0, 0.01, shape_c).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32).transpose(0, 1, 3, 2), bx.astype(np.float32)).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    cc = t.load(cx)
+    c = t.matmul(a, b, True, False)
+    e = t.reshape(c, shape_c)
+    f = t.binary("Add", e, cc)
+    t.store_expect(f, np.reshape(np_c, shape_c) + cx, 2e-3)
     assert (t.run_check())

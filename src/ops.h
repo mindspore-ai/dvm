@@ -944,7 +944,8 @@ class NDSStore : public NDStore {
 
 class NDSLoad : public NDLoad {
  public:
-  NDSLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32) : NDLoad(src, shape_ref, type_id) {
+  NDSLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32, bool is_from_cube = false)
+      : NDLoad(src, shape_ref, type_id), is_from_cube_(is_from_cube) {
     obj_id_ = kSLoad;
   }
   void Tile(const TileParam &tp) override;
@@ -955,6 +956,7 @@ class NDSLoad : public NDLoad {
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
   bool pingpong_load_{false};
+  bool is_from_cube_{false};
 
  private:
   CubeOp *cube_op_;

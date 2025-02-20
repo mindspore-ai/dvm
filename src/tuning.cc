@@ -223,13 +223,17 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
     int cur_idx = ctx->best_idx >= 0 ? ctx->best_idx : 0;
     if (ctx->gen_cnt == space_size * repeat) {
       if (ctx->gen_cnt != ctx->run_cnt) {
-        info = current_space[cur_idx];
-      } else if (ctx->tuning_stage == kSwizzleTuning) {
+        // means some tiling configure in the current generated tiling space have not been launched,
+        // wait launch completed
+        std::unique_lock<std::mutex> lock(ctx->mutex_);
+        ctx->cond_var_.wait(lock, [ctx] { return ctx->gen_cnt == ctx->run_cnt; });
+      }
+      if (ctx->tuning_stage == kSwizzleTuning) {  // tuning finished
         auto it = tuning_table.emplace(key, *ctx->swizzle_space[cur_idx]);
         info = &it.first->second;
         context_.erase(key);
         delete ctx;
-      } else { // ctx->tuning_stage == kSwizzleTuning
+      } else {  // tile_space finished, switch to swizzle_space
         BuildSwizzleSpace(code, ctx->tile_space[cur_idx], ctx->swizzle_space);
         ctx->tuning_stage = kSwizzleTuning;
         ctx->run_cnt = 0;
@@ -281,6 +285,10 @@ int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
     ctx->best_time = time;
   }
   ctx->run_cnt++;
+  if (ctx->run_cnt == ctx->gen_cnt) {
+    std::unique_lock<std::mutex> lock(ctx->mutex_);
+    ctx->cond_var_.notify_all();
+  }
 #endif
   return 0;
 }

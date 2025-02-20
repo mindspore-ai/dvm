@@ -54,6 +54,14 @@ const uint64_t UB_WORKSPACE_SIZE = 512;
 #define MixTileIsLastN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + V_GROUP_OFFSET_SIZE, 1)
 #define MixTileIsLastM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + V_GROUP_OFFSET_SIZE + 1, 1)
 
+__aicore_inline__ uint64_t vBlockIdx() {
+  return get_subblockdim() * block_idx + get_subblockid();
+}
+
+__aicore_inline__ uint64_t vBlockNum() {
+  return get_subblockdim() * block_num;
+}
+
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
   return (stride * type_size + 31) >> 5;
 }
@@ -1428,6 +1436,50 @@ static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   copy_gm_to_ubuf_align_b8(dst, src, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
 }
 
+__aicore_inline__ void MultiLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vMultiLoad op;
+  vMultiLoad::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+
+  __gm__ uint8_t *src = (__gm__ uint8_t *)op.from + op.tile_stride * tile_idx;
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
+  uint64_t truck_num = IsLastTile(tile) ? op.tail_iter : op.body_iter;
+
+  uint64_t offset_idx = vBlockIdx() * 2 + (op.pingpong & 0x1ul);
+  __gm__ uint64_t *flag_mem = (__gm__ uint64_t *)((__gm__ uint8_t *)op.flag_mem + offset_idx * CACHE_LINE_SIZE);
+  __gm__ uint8_t *gm = (__gm__ uint8_t *)op.peer_mem + op.tile_stride2 * offset_idx * (op.multi_size - 1);
+  uint64_t len_burst = (op.tile_stride + 31) >> 5;
+  vMultiLoad::PingPongSwitch(pc);
+
+  for (int i = 1; i < op.multi_size; ++i) {
+    if (i > 2) {
+      wait_flag(PIPE_MTE3, PIPE_MTE2, i % 2 == 1 ? EVENT_ID0 : EVENT_ID1);
+    }
+    auto rank_id = (op.rank_id + i) % op.multi_size;
+    auto xbuf_addr =
+      dst + ((i + op.multi_size) % 2) * op.xbuf_size;  // make sure xbuf_ can be used to store this rank's data
+    copy_gm_to_ubuf_align_b8(xbuf_addr, src + op.gap * rank_id, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
+    set_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID0);
+    wait_flag(PIPE_MTE2, PIPE_MTE3, EVENT_ID0);
+    copy_ubuf_to_gm(gm, xbuf_addr, 0, 1, len_burst, 0, 0);
+    // TODO: MTE3 backsync MTE2(maybe peerload is too long)
+    if (op.multi_size > 2 && i < op.multi_size - 1) {
+      set_flag(PIPE_MTE3, PIPE_MTE2, i % 2 == 1 ? EVENT_ID0 : EVENT_ID1);
+    }
+    gm += op.tile_stride2;
+  }
+  if (op.multi_size > 2) {
+    wait_flag(PIPE_MTE3, PIPE_MTE2, op.multi_size % 2 == 1 ? EVENT_ID0 : EVENT_ID1);
+  }
+  copy_gm_to_ubuf_align_b8(dst, src + op.gap * op.rank_id, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
+  // soft sync
+  set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+  uint64_t sync_flag = (op.unique_id << 32) | (tile_idx + 1);
+  *flag_mem = sync_flag;
+  dcci(flag_mem, 0);
+}
+
 static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vPingPongLoad op;
   vPingPongLoad::Decode(pc, head, op);
@@ -1573,14 +1625,6 @@ __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
 typedef void (*OpFunc) (__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
 __aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
   return base_addr + id;
-}
-
-__aicore_inline__ uint64_t vBlockIdx() {
-  return get_subblockdim() * block_idx + get_subblockid();
-}
-
-__aicore_inline__ uint64_t vBlockNum() {
-  return get_subblockdim() * block_num;
 }
 
 /******************************************************
@@ -1958,6 +2002,7 @@ DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_SLICE_LOAD, SliceLoad(pc, head, tile))
 DEF_DISP_LOAD(V_SLOAD, SLoad(pc, head, tile))
+DEF_DISP_LOAD(V_MULTI_LOAD, MultiLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PINGPONG_PEER_LOAD, PingPongPeerLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PEER_LOAD, PeerLoad<false>(pc, head, tile))

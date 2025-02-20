@@ -160,6 +160,7 @@ class Kernel {
   NDObject *Load(void *addr, ShapeRef *shape, DType type);
   NDObject *SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DType type);
   NDObject *StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step, DType type);
+  NDObject *MultiLoad(void *addr, ShapeRef *shape, DType type, const Comm *comm);
   NDObject *Store(void *addr, NDObject *input);
   NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);
 

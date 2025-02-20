@@ -369,6 +369,50 @@ void NDLoad::Normalize(std::vector<NDObject *> &run_ops) {
 
 void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 
+void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
+  auto dims = shape_ref_->size;
+  nd_.resize(dims);
+  gap_ = ITEM_SIZE[type_id_];
+  for (size_t i = 0; i < shape_ref_->size; i++) {
+    nd_[i] = shape_ref_->data[dims - i - 1];
+    gap_ *= nd_[i];
+  }
+  gap_ = gap_ / comm_->GetRankSize();
+  nd_[shape_ref_->size - 1] /= comm_->GetRankSize();
+  tail_dim_ = -1;
+  tail_size_ = 0;
+  round_tile_.resize(0);
+}
+
+int NDMultiLoad::Emit(VectorKernel &k) {
+  int64_t lead_align = LeadAlign();
+  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  vMultiLoad op;
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  op.from = addr_.gm;
+  op.multi_size = rank_size;
+  op.xbuf_size = xbuf_size_;
+  op.gap = gap_;
+  op.xn = xbuf_;
+  op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
+  op.body_iter = strides_.back() / lead_align;
+  op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+  op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+  op.round_rank = 0;
+  op.peer_mem = comm_->GetPeerMemPtr(rank_id);
+  op.flag_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_FLAG_OFFSET;
+  op.rank_id = rank_id;
+  op.tile_stride2 = strides_.back() * ITEM_SIZE[type_id_];
+
+  reloc_addr_ = insn_ + vMultiLoad::RELOC_OFFSET;
+  k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(insn_ + vMultiLoad::UNIQUEID_OFFSET));
+  return vMultiLoad::Encode(insn_, vAccInsnID::V_MULTI_LOAD, op, nullptr);
+}
+
+void NDMultiLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "MultiLoad"; }
+
 void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   auto size = lhs_->shape_ref_->size;
   shape_.Resize(size);
@@ -823,9 +867,7 @@ int RemovePadOp::Emit(VectorKernel &k) {
   return vRemovePad::Encode(insn_, id_list[type_id_], op);
 }
 
-void RemovePadOp::Dump(bool verbose, std::ostringstream &oss) {
-  oss << "RemovePad";
-}
+void RemovePadOp::Dump(bool verbose, std::ostringstream &oss) { oss << "RemovePad"; }
 
 void ElementAnyOp::Normalize(std::vector<NDObject *> &run_ops) {
   tail_dim_ = -1;
@@ -1535,8 +1577,7 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     if (input->nd_[d] == 1) continue;
     if (d != red_ext) {
       if (lead_dim == -1) {
-        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++)
-          ;
+        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++);
       }
       if (red_start >= 0) {
         _ReduceOp *obj;
@@ -1561,8 +1602,7 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
       red_start = d;
     }
     red_end = d;
-    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++)
-      ;
+    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
   }
   nd_ = input->nd_;
   if (red_start != -1) {
@@ -2040,10 +2080,11 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->k_loop = CeilDiv(op->k_real, op->k0);
 }
 
-ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm)
-    : CommOp(input, comm, ObjectType::kReduceScatter) {
+ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm, bool multi_load)
+    : CommOp(input, comm, ObjectType::kReduceScatter), multi_load_(multi_load) {
   add_id_ = binary_id_list[kAdd].ids[type_id_];
   shape_ref_ = &shape_;
+  if (multi_load_) store_lhs_ = false;
 }
 
 ReduceScatterOp::~ReduceScatterOp() {
@@ -2061,6 +2102,9 @@ void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
   const ShapeRef *input_shape_ref = lhs_->shape_ref_;
   size_t start_idx = lhs_->nd_[lhs_->nd_.size() - 1] != comm_->GetRankSize() ? 1 : 0;
+  if (multi_load_) {
+    start_idx = 0;
+  }
   shape_.Resize(input_shape_ref->size + start_idx);
   for (size_t i = 0; i < input_shape_ref->size; ++i) {
     shape_[i + start_idx] = input_shape_ref->data[i];
@@ -2076,16 +2120,26 @@ void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
     lhs_ = reshape_op_;
   }
   nd_ = lhs_->nd_;
-  ASSERT(nd_[nd_.size() - 1] == comm_->GetRankSize());
-  nd_[nd_.size() - 1] = 1;
-  shape_[0] = 1;
+  if (multi_load_) {
+    shape_[0] /= comm_->GetRankSize();
+  } else {
+    ASSERT(nd_[nd_.size() - 1] == comm_->GetRankSize());
+    nd_[nd_.size() - 1] = 1;
+    shape_[0] = 1;
+  }
 
   // init CommOp related member
-  xbuf_reserve_ = 2;
+  // suppose only 1 multiload is allowd, reserve xbuf for multiload here
+  xbuf_reserve_ = multi_load_ ? 3 : 2;
+  // Also Reserve for MultiLoad
   code_reserve_ = 8 * sizeof(uint64_t) * (comm_->GetRankSize() - 1);
 }
 
 void ReduceScatterOp::FoldProp(PropRange &range) {
+  if (multi_load_) {
+    CommOp::FoldProp(range);
+    return;
+  }
   int state = 0;  // -1 - reduce ; 1 - elemwise, 0 - undetemite
   int new_depth = 0;
   for (int i = range.base; i != range.base - range.depth; --i) {
@@ -2107,6 +2161,10 @@ void ReduceScatterOp::FoldProp(PropRange &range) {
 }
 
 void ReduceScatterOp::AlignProp(PropRange &range) {
+  if (multi_load_) {
+    CommOp::AlignProp(range);
+    return;
+  }
   int state = 0;  // -1 - reduce; 1 - elemwise, 0 - undetemite
   int new_depth = 0;
   for (int i = 0; i < range.depth; ++i) {
@@ -2130,7 +2188,7 @@ void ReduceScatterOp::AlignProp(PropRange &range) {
 void ReduceScatterOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "ReduceScatter";
   if (lhs_ == reshape_op_) {
-    oss << "WithReshape";
+    oss << "(WithReshape)";
   }
 }
 
@@ -2144,6 +2202,9 @@ void ReduceScatterOp::Tile(const TileParam &tp) {
 }
 
 int ReduceScatterOp::Emit(VectorKernel &k) {
+  if (multi_load_) {
+    return MultiLoadEmit(k);
+  }
   uint64_t rounds[2];
   ASSERT(!round_tile_.empty());
   BuildDimRounds(round_tile_, rounds);
@@ -2184,7 +2245,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
     p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id);
     p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_FLAG_OFFSET;
     p_load.xn = rhs;
-    p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
+    p_load.tile_stride = tile_stride_size;
     p_load.lenburst = GetBlocks(tile_stride);
     p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / nd_[tail_dim_] * tail_size_);
     p_load.round_rank = 2;
@@ -2216,6 +2277,61 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
 
   tail_insn_ = current_insn;
 
+  return code_size;
+}
+
+int ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
+  auto load_id = vAccInsnID::V_PEER_LOAD;
+  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
+  auto rank_size = comm_->GetRankSize();
+  auto rank_id = comm_->GetRankId();
+  uint64_t forward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event = System::Instance().EventNum() - 1;
+  uint64_t backward_event2 = backward_event - 1;
+  int code_size = 0;
+  uint64_t *current_insn{nullptr};
+
+  bool is_begin = true;
+  bool is_ping = true;
+  uint64_t rhs = 0;
+  for (int i = 1; i < rank_size; ++i) {
+    rhs = xbufs_[is_ping ? 0 : 1];
+    vPeerDMA p_load;
+    p_load.comm_type = CommType::kCommReduceScatter;
+    p_load.peer_mem = comm_->GetPeerMemPtr(rank_id + rank_size - i) + (i - 1) * tile_stride_size;
+    p_load.flag_mem = comm_->GetPeerMemPtr(rank_id + rank_size - i) + PEERMEM_FLAG_OFFSET;
+    p_load.xn = rhs;
+    p_load.tile_stride = tile_stride_size * (rank_size - 1);
+    p_load.lenburst = GetBlocks(tile_stride);
+    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / nd_[tail_dim_] * tail_size_);
+    p_load.rank_id = rank_id;
+    p_load.event_id = backward_event2;
+    if (!is_begin && rank_size - i > 1) {
+      p_load.set_flag = true;
+    }
+    if (i > 2) {
+      p_load.wait_flag = true;
+    }
+    current_insn = insn_ + code_size;
+    code_size += vPeerDMA::Encode(current_insn, load_id, vPipe::V_PIPE_LOAD, p_load, nullptr);
+    k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
+    *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
+
+    vBinary add;
+    add.xd = xbuf_;
+    add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
+    add.xm = rhs;
+    add.repeat = strides_.back() / k.simd_width_;
+    current_insn = insn_ + code_size;
+    code_size += vBinary::Encode(current_insn, add_id_, add);
+    *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+    *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+    is_begin = false;
+    is_ping = !is_ping;
+  }
+
+  tail_insn_ = current_insn;
   return code_size;
 }
 

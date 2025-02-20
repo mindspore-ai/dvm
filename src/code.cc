@@ -152,6 +152,35 @@ void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
+void DumpMultiLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vMultiLoad op;
+  vMultiLoad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "multi_load.u8." << op.iter_size << "x" << op.body_iter;
+  oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("tile_stride2", op.tile_stride2, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.tail_iter, oss);
+  oss << ", ";
+  DumpVal("gap", op.gap, oss);
+  oss << ", ";
+  DumpVal("xbuf_size", op.xbuf_size, oss);
+  oss << ", ";
+  DumpVal("peer_mem", reinterpret_cast<void *>(op.peer_mem), oss);
+  oss << ", ";
+  DumpVal("multi_size", op.multi_size, oss);
+  oss << ", ";
+  DumpVal("rank_id", op.rank_id, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vLoad::ROUND_OFFSET, oss);
+  }
+}
+
 void DumpPingPongLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vPingPongLoad op;
   vPingPongLoad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -536,6 +565,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_LOAD_DUMMY, &DumpLoadDummy},
   {V_SLICE_LOAD, &DumpSliceLoad},
   {V_SLOAD, &DumpSLoad},
+  {V_MULTI_LOAD, &DumpMultiLoad},
   {V_PINGPONG_LOAD, &DumpPingPongLoad},
   {V_PINGPONG_PEER_LOAD, &DumpPingpongPeerLoad},
   {V_PEER_LOAD, &DumpPeerDMA<name_peer_load>},
@@ -718,7 +748,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
       if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
         oss << ", simd_load_sync(set, " << int((head >> V_HEAD_B_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
       }
-    } else if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) < V_STORE) {
+    } else if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) < g_access_func_offset[V_STORE]) {
       oss << "load";
       if (head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) {
         oss << ", load_simd_sync(set, " << int((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";

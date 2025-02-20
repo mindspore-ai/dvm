@@ -94,6 +94,19 @@ class Tester(Kernel):
         self.input(op, shape_arr)
         return op
 
+    def multi_load(self, shape_arr, dtype=None):
+        if not isinstance(shape_arr, np.ndarray):
+            # dynamic shape scenario
+            return Kernel.multi_load(self, shape_arr, dtype)
+        if dtype == "bfloat16":
+            shape_arr = Kernel.convert_to_bf16(self, shape_arr)
+        elif dtype == None:
+            dtype = str(shape_arr.dtype)
+        shape = list(shape_arr.shape)
+        op = Kernel.multi_load(self, shape, dtype)
+        self.input(op, shape_arr)
+        return op
+
     def store_expect(self, x, e, eps=None):
         op = Kernel.store(self, x)
         self.expects.append([op, e, eps])

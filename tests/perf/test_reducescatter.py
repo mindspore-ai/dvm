@@ -19,7 +19,7 @@ import sys
 from dvm.tester import Tester
 
 
-all_cases = [[4,16384*40]]
+all_cases = [[4096, 4096]]
 
 
 def run_perf(shape):
@@ -29,7 +29,7 @@ def run_perf(shape):
     t = Tester(comm=comm)
     a = np.random.normal(0, 1, shape).astype(np.float16)
 
-    x1 = t.load(a)
+    x1 = t.multi_load(a)
     x2 = t.reducescatter(x1)
     t.store(x2)
 

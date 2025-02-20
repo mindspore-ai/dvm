@@ -76,6 +76,7 @@ class KernelPy {
                        const std::string &type);
   py::object StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end,
                               const py::object &step, const std::string &type);
+  py::object MultiLoad(const py::object &shape, const std::string &type);
   py::object Store(const py::object &obj);
   py::object PadStore(const py::object &obj, const py::object &pad_shape);
   py::object Unary(const std::string &op_name, const py::object &input);

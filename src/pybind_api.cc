@@ -307,6 +307,15 @@ py::object KernelPy::StridedSliceLoad(const py::object &shape, const py::object 
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
+py::object KernelPy::MultiLoad(const py::object &shape, const std::string &type) {
+  LoadInfo info;
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto op = kernel_.MultiLoad(nullptr, shape_ref, StringToTypeID(type), &g_mpc.comm);
+  loads_[op] = std::move(info);
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
 py::object KernelPy::Store(const py::object &obj) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.Store(nullptr, in_obj);
@@ -748,6 +757,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("load", &KernelPy::Load, "load array")
     .def("slice_load", &KernelPy::SliceLoad, "load array")
     .def("stridedslice_load", &KernelPy::StridedSliceLoad, "load array")
+    .def("multi_load", &KernelPy::MultiLoad, "load array(for reducescatter)")
     .def("store", &KernelPy::Store, "store array")
     .def("pad_store", &KernelPy::PadStore, "pad store array")
     .def("unary", &KernelPy::Unary, "emit unary op")

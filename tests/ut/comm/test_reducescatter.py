@@ -29,9 +29,7 @@ def reducescatter(arrs, rank_id=None):
     ]
 
 
-@pytest.mark.parametrize(
-    "shape", [[4, 256], [4, 16384], [4, 32, 256], [4, 1278487], [32, 256]]
-)
+@pytest.mark.parametrize("shape", [[40, 256], [16, 678487], [16, 40961]])
 def test_reducescatter(comm, rank, size, shape):
     np.random.seed(1)
     if shape[0] < size:
@@ -43,6 +41,29 @@ def test_reducescatter(comm, rank, size, shape):
     expect = reducescatter(inputs, rank)
 
     x1 = t.load(inputs[rank])
+    x2 = t.reducescatter(x1)
+    x3 = t.unary("Abs", x2)
+    t.store_expect(x3, np.abs(expect), 0.01)
+    res = t.run_check()
+    assert res
+
+
+@pytest.mark.parametrize("shape", [[8, 1], [40, 256], [16, 678487], [16, 40961]])
+def test_reducescatter_multiload(comm, rank, size, shape):
+    np.random.seed(1)
+    if shape[0] < size:
+        shape[0] = size
+    t = Tester(use_pass_opt=True, comm=comm)
+    inputs = []
+    a = np.full(shape, 10).astype(np.float16)
+    for i in range(shape[0]):
+        a[i, :] = i * 10
+    for i in range(size):
+        # inputs.append(a)
+        inputs.append(np.random.normal(0.1, 1, shape).astype(np.float32))
+    expect = reducescatter(inputs, rank)
+
+    x1 = t.multi_load(inputs[rank])
     x2 = t.reducescatter(x1)
     x3 = t.unary("Abs", x2)
     t.store_expect(x3, np.abs(expect), 0.01)

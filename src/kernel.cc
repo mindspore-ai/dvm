@@ -39,6 +39,7 @@ struct NDObjectAttr {
 
 static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenLoad, true},    // LoadDummy
+  {kGenLoad, true},    // MultiLoad
   {kGenLoad, true},    // SLoad
   {kGenLoad, true},    // Load
   {kGenStore, false},  // PadStore
@@ -84,6 +85,10 @@ class CodeGenHelper {
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
+      if (op->obj_id_ == kMultiLoad) {
+        static_xbuf_ += xbuf_size_;
+        static_cast<NDMultiLoad *>(op)->xbuf_size_ = xbuf_size_;
+      }
     }
     if (kernel_.comm_op_) {
       auto comm = kernel_.comm_op_;
@@ -220,14 +225,18 @@ class CodeGenHelper {
             auto to_sync = kernel_.objects_[sv_event.sync_idx]->insn_;
             *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
           }
-          *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
+          if (simd->IsComm()) {
+            *(simd->tail_insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
+          } else {
+            *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
+          }
           sv_event.sync_idx = simd->index_;
         }
       } else if (op->IsSimd() && op->lhs_) {
         if (op->IsComm()) {
           auto comm_op = static_cast<CommOp *>(op);
           NDObject *last = op->lhs_;
-          if (last->IsLoad() && last->index_ < vl_event.sync_idx) {  // case 1: simd -> load
+          if (last->IsLoad() && last->index_ < vl_event.sync_idx && comm_op->lhs_simd_) {  // case 1: simd -> load
             uint64_t event;
             if (alloc_event(vl_event, event)) {
               *(comm_op->lhs_simd_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
@@ -1106,7 +1115,6 @@ int VectorKernel::Analyze() {
   if (comm_op_) {
     cur_live += comm_op_->XbufReserve();
   }
-  int live_peak = cur_live;
   auto LivenessEnd = [this, &cur_live](NDObject *op, NDObject *end) {
     // TODO: check if other comm op can also spare 1 xbuf(like AllReduce)
     if (end->IsSimd()) {
@@ -1133,6 +1141,7 @@ int VectorKernel::Analyze() {
       OP_GEN_S(op);
     }
   }
+  int live_peak = cur_live;
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
     if (op->IsSimd()) {
@@ -1505,7 +1514,7 @@ uint64_t VKernelP::CodeGen() {
     code_.block_dim_ += code.block_dim_;
     // summary
     uint64_t lenburst = CeilDiv(code_size, 32ul);
-    uint64_t summary = lenburst << 58 | ((child_offset - code.HeadSize())>> 5) << 49 | k->simd_width_ << 41;
+    uint64_t summary = lenburst << 58 | ((child_offset - code.HeadSize()) >> 5) << 49 | k->simd_width_ << 41;
     uint64_t tile_per_block = (k->tile_num_ - 1) / code.block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code.block_dim_ - 1; ++i) {

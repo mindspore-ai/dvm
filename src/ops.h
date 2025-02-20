@@ -27,6 +27,7 @@ namespace dvm {
 enum ObjectType {
   // Load
   kLoadDummy = 0,
+  kMultiLoad,
   kSLoad,
   kLoad,
 
@@ -289,6 +290,7 @@ class NDObject {
   bool IsComm() const { return obj_id_ > kStore && obj_id_ <= kAllReduce; }
   // Comm op is considered a simd op, remember use !IsComm() to exclude comm op
   bool IsSimd() const { return obj_id_ > kStore; }
+  bool NeedTailCopy() const { return obj_id_ > kReduceScatter && obj_id_ <= kAllReduce; }
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
 
@@ -368,6 +370,24 @@ class NDLoad : public NDAccess {
   int tail_dim_{-1};
   int tail_size_{0};
   DimArray round_tile_;
+};
+
+// split input to `multi_size` parts, everytime load a piece from all parts
+class NDMultiLoad : public NDLoad {
+ public:
+  NDMultiLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id, const Communicator *comm)
+      : NDLoad(src, shape_ref, type_id), comm_(comm) {
+    obj_id_ = ObjectType::kMultiLoad;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  // void Tile(const TileParam &tp) override;
+  int Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  // uint32_t multi_size_{1}; // only support up to 1023(2^10)
+  uint64_t gap_{0};
+  uint32_t xbuf_size_{0};
+  const Communicator *comm_;
 };
 
 class NDSliceLoad : public NDLoad {
@@ -825,7 +845,7 @@ class CommOp : public NDObject {
       : NDObject(input, nullptr, input->type_id_, obj_id), comm_(comm) {
     shape_ref_ = input->shape_ref_;
   }
-  inline bool StoreLhs() { return cube_op_ == nullptr; }
+  inline bool StoreLhs() { return store_lhs_ && cube_op_ == nullptr; }
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
   uint64_t XbufReserve() { return xbuf_reserve_; }
@@ -846,12 +866,13 @@ class CommOp : public NDObject {
   uint64_t code_reserve_{0};
   CubeOp *cube_op_{nullptr};
   uint32_t xbuf_size_{0};
+  bool store_lhs_{true};
 };
 
 // Not Support (rank_size, 1)
 class ReduceScatterOp : public CommOp {
  public:
-  ReduceScatterOp(NDObject *input, const Communicator *comm);
+  ReduceScatterOp(NDObject *input, const Communicator *comm, bool multi_load_);
   ~ReduceScatterOp() override;
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
@@ -859,6 +880,7 @@ class ReduceScatterOp : public CommOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
+  int MultiLoadEmit(VectorKernel &k);
 
  private:
   int tail_dim_{-1};
@@ -868,6 +890,7 @@ class ReduceScatterOp : public CommOp {
   DimArray round_tile_;
   NDObject *reshape_op_{nullptr};
   ShapeWithRef reshape_shape_;
+  bool multi_load_;
 };
 
 // Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore

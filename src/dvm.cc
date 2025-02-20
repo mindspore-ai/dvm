@@ -344,6 +344,12 @@ NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start,
   return obj;
 }
 
+NDObject *Kernel::MultiLoad(void *addr, ShapeRef *shape, DType type, const Comm *comm) {
+  NDObject *obj = new NDMultiLoad(static_cast<uint8_t *>(addr), shape, type, comm->GetImpl());
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::Unary(int op_type, NDObject *input) {
   if (GetDType(input) == kInt32) {
     if (op_type == UnaryOpType::kAbs) {
@@ -536,7 +542,7 @@ NDObject *Kernel::Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keep
 }
 
 NDObject *Kernel::Store(void *addr, NDObject *input) {
-  if (input->IsLoad() || input->IsComm()) {
+  if (input->IsLoad() || input->NeedTailCopy()) {
     input = Copy(input);
   }
   auto ktype = kernel_->KType();
@@ -597,10 +603,11 @@ NDObject *Kernel::AllGatherV2(NDObject *input, const Comm *comm) {
 }
 
 NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
+  bool multi_load = input->obj_id_ == ObjectType::kMultiLoad;
   if (input->IsLoad()) {
     input = Copy(input);
   }
-  NDObject *obj = new ReduceScatterOp(input, comm->GetImpl());
+  NDObject *obj = new ReduceScatterOp(input, comm->GetImpl(), multi_load);
   kernel_->Append(obj);
   return obj;
 }

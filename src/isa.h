@@ -42,6 +42,7 @@ enum vAccInsnID {
   V_LOAD_DUMMY,
   V_SLICE_LOAD,
   V_SLOAD,
+  V_MULTI_LOAD,
   V_PINGPONG_LOAD,
   V_PINGPONG_PEER_LOAD,
   V_PEER_LOAD,
@@ -895,6 +896,77 @@ struct vLoad {
   }
 };
 
+struct vMultiLoad {
+  enum { ROUND_OFFSET = 7 };
+  enum { RELOC_OFFSET = 1 };
+  enum { UNIQUEID_OFFSET = 6 };
+  __gm__ void *from;
+  uint64_t xn;
+  uint64_t multi_size{1};
+  uint64_t xbuf_size;
+  uint64_t gap{0};
+  uint64_t tile_stride;
+  uint64_t body_iter;
+  uint64_t tail_iter;
+  uint64_t iter_size;
+  uint64_t pad_size;
+  uint64_t round_rank;
+  __gm__ uint8_t *peer_mem;
+  __gm__ uint8_t *flag_mem;
+  uint64_t rank_id;
+  uint64_t pingpong{0};
+  uint64_t unique_id;
+  uint64_t tile_stride2;  // for PeerStore
+  // pc[0]: tile_stride(18) << 13 | c_xn(13)
+  // pc[1]: from
+  // pc[2]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
+  // pc[3]: gap(38) << 26 | xbuf_size(16) << 10 | multi_size(10)
+  // pc[4]: peer_mem
+  // pc[5]: flag_mem
+  // pc[6]: tile_stride2(18) << 38 | rank_id(4) << 34 | pingpong(2) << 32 | unique_id(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vMultiLoad &op) {
+    op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + 13, 18);
+    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13));
+    op.from = reinterpret_cast<__gm__ void *>(pc[1]);
+    uint64_t data = pc[2];
+    op.round_rank = data >> 60;
+    op.pad_size = (data >> 50) & 0xfful;
+    op.iter_size = (data >> 32) & 0x3fffful;
+    op.tail_iter = (data >> 16) & 0xfffful;
+    op.body_iter = data & 0xfffful;
+    op.multi_size = pc[3] & 0x3fful;
+    op.xbuf_size = (pc[3] >> 10) & 0xfffful;
+    op.gap = pc[3] >> 26;
+    op.peer_mem = reinterpret_cast<__gm__ uint8_t *>(pc[4]);
+    op.flag_mem = reinterpret_cast<__gm__ uint8_t *>(pc[5]);
+    data = pc[6];
+    op.rank_id = (data >> 34) & 0xful;
+    op.pingpong = (data >> 32) & 0x3ul;
+    op.unique_id = data & 0xfffffffful;
+    op.tile_stride2 = data >> 38;
+  }
+  __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) {
+    auto &data = pc[6];
+    data ^= ((data >> 32) & 1ul) << 33;
+    data ^= 1ul << 32;
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vMultiLoad &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vMultiLoad::ROUND_OFFSET + round_size;
+    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, V_PIPE_LOAD);
+    pc[1] = reinterpret_cast<uint64_t>(op.from);
+    pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vLoad::ROUND_OFFSET + i] = rounds[i];
+    }
+    pc[3] = op.gap << 26 | op.xbuf_size << 10 | op.multi_size;
+    pc[4] = reinterpret_cast<uint64_t>(op.peer_mem);
+    pc[5] = reinterpret_cast<uint64_t>(op.flag_mem);
+    pc[6] = op.tile_stride2 << 38 | op.rank_id << 34 | 0x1ul;
+    return size;
+  }
+};
+
 struct vPingPongLoad {
   enum { ROUND_OFFSET = 4 };
   enum { RELOC_OFFSET = 1 };
@@ -1333,7 +1405,7 @@ struct vPeerDMA {
   uint64_t tile_stride;
   uint64_t lenburst;
   uint64_t tail_lenburst;
-  uint64_t round_rank;
+  uint64_t round_rank{0};
   uint64_t unique_id;
 
   uint64_t pingpong;

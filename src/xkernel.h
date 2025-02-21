@@ -130,14 +130,18 @@ class VKernelE : public VKernel {
     return kernels_;
   }
 
+  void Launch(int kernel_idx, void *stream) {
+    auto &code = reinterpret_cast<VKernel *>(kernels_[kernel_idx])->code_;
+    if (code.target_ == Code::kTargetCube && System::Instance().lazy_tuner_) {
+      TunerLaunch(kernels_[kernel_idx], stream);
+    } else {
+      code.Launch(extern_code_, stream);
+    }
+  }
+
   void Launch(void *stream) {
     for (int i = 0; i < kernel_used_; ++i) {
-      auto &code = reinterpret_cast<VKernel *>(kernels_[i])->code_;
-      if (code.target_ == Code::kTargetCube && System::Instance().lazy_tuner_) {
-        TunerLaunch(kernels_[i], stream);
-      } else {
-        code.Launch(extern_code_, stream);
-      }
+      Launch(i, stream);
     }
   }
 

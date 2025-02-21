@@ -220,7 +220,6 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
     auto &current_space = ctx->tuning_stage == kTileTuning ? ctx->tile_space : ctx->swizzle_space;
     int space_size = current_space.size();
     constexpr int repeat = 2;
-    int cur_idx = ctx->best_idx >= 0 ? ctx->best_idx : 0;
     if (ctx->gen_cnt == space_size * repeat) {
       if (ctx->gen_cnt != ctx->run_cnt) {
         // means some tiling configure in the current generated tiling space have not been launched,
@@ -228,6 +227,7 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
         std::unique_lock<std::mutex> lock(ctx->mutex_);
         ctx->cond_var_.wait(lock, [ctx] { return ctx->gen_cnt == ctx->run_cnt; });
       }
+      int cur_idx = ctx->best_idx >= 0 ? (ctx->best_idx % space_size) : 0;
       if (ctx->tuning_stage == kSwizzleTuning) {  // tuning finished
         auto it = tuning_table.emplace(key, *ctx->swizzle_space[cur_idx]);
         info = &it.first->second;
@@ -237,7 +237,7 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
         BuildSwizzleSpace(code, ctx->tile_space[cur_idx], ctx->swizzle_space);
         ctx->tuning_stage = kSwizzleTuning;
         ctx->run_cnt = 0;
-        ctx->best_idx = 0;
+        ctx->best_idx = -1;
         ctx->next_idx = 1;
         ctx->gen_cnt = 1;
         space_idx = 0;
@@ -281,7 +281,7 @@ int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
   (void)aclrtDestroyEvent(end);
   auto ctx = context_[GenKey(op, cube_code)];
   if (!err7 && (ctx->best_idx < 0 || time < ctx->best_time)) {
-    ctx->best_idx = space_idx;
+    ctx->best_idx = ctx->run_cnt;
     ctx->best_time = time;
   }
   ctx->run_cnt++;

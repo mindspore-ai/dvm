@@ -711,7 +711,6 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 
 int Kernel::EagerMsProfLaunch(void *stream) {
   auto kernel = static_cast<VKernelE *>(kernel_);
-  auto extern_code = kernel->ExternCode();
   int kernel_used;
   const auto &kernels = kernel->GetKernels(kernel_used);
   for (int i = 0; i < kernel_used; ++i) {
@@ -750,7 +749,7 @@ int Kernel::EagerMsProfLaunch(void *stream) {
     info.op_fullname = info.op_name;
     msprof_helper.InitReportNode();
     msprof_helper.UpdateBeginTime();
-    vector_kernel->code_.Launch(extern_code, stream);
+    kernel->Launch(i, stream);
     msprof_helper.ReportTask();
   }
   return 0;

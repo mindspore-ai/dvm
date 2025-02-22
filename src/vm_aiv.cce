@@ -1503,7 +1503,6 @@ static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t 
 static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStore op;
   vStore::Decode(pc, head, op);
-  uint64_t iter_body = op.iter_num;
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheStore>(tile, tile_idx, op.round_rank, pc + vStore::ROUND_OFFSET);
@@ -1511,17 +1510,18 @@ static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       return;
     }
   }
+  uint64_t iter_num = op.iter_num;
+  uint64_t iter_size = op.iter_size;
   __gm__ uint8_t *dst = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
   if (IsLastTile(tile)) {
-    if (op.lead_tiling) {
-      copy_ubuf_to_gm_align_b8(dst, (__ubuf__ uint8_t*)(op.xn), 0, 1, op.iter_tail, 0, 0, 0, 0);
-      OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_tail);
-      return;
+    if (iter_num == 1) {
+      iter_size = op.iter_tail;
+    } else {
+      iter_num = op.iter_tail;
     }
-    iter_body = op.iter_tail;
   }
-  copy_ubuf_to_gm_align_b8(dst, (__ubuf__ uint8_t*)(op.xn), 0, iter_body, op.iter_size, 0, 0, op.pad_size >> 5, 0);
-  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + iter_body * op.iter_size);
+  copy_ubuf_to_gm_align_b8(dst, (__ubuf__ uint8_t *)(op.xn), 0, iter_num, iter_size, 0, 0, op.pad_size >> 5, 0);
+  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + iter_num * iter_size);
 }
 
 static inline [aicore] void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreAtomic &op) {

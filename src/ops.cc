@@ -741,7 +741,7 @@ int NDStore::Emit(VectorKernel &k) {
   uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
   uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
   uint64_t body_iter = strides_.back() / lead_align;
-  uint64_t lead_tiling, tail_iter;
+  uint64_t tail_iter;
   if (lhs_->obj_id_ == ObjectType::kRemovePad) {
     if (tail_dim_ < 0) {
       iter_size *= body_iter;
@@ -752,14 +752,11 @@ int NDStore::Emit(VectorKernel &k) {
       tail_iter = body_iter / nd_[tail_dim_] * tail_size_ * iter_size;
       iter_size *= body_iter;
     }
-    lead_tiling = 1;
     body_iter = 1;
     pad_size = 0;
   } else if (body_iter == 1) {
-    lead_tiling = 1;
     tail_iter = tail_dim_ < 0 ? iter_size : tail_size_ * ITEM_SIZE[type_id_];
   } else {
-    lead_tiling = 0;
     tail_iter = tail_dim_ < 0 ? body_iter : body_iter / nd_[tail_dim_] * tail_size_;
   }
   op.xn = lhs_->xbuf_;
@@ -770,7 +767,6 @@ int NDStore::Emit(VectorKernel &k) {
   op.iter_size = iter_size;
   op.pad_size = pad_size;
   op.round_rank = round_tile_.size();
-  op.lead_tiling = lead_tiling;
   reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
   return vStore::Encode(insn_, vAccInsnID::V_STORE, op, rounds);
 }

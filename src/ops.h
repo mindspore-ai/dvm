@@ -240,6 +240,18 @@ class MemPool {
   std::mutex mutex_;
 };
 
+struct TileVisitCoder {
+  void Clear() {
+    rel_relocs_.clear();
+  }
+  uint32_t block_num_;
+  uint32_t ws_size_;
+  uint32_t visit_id_;
+  uint32_t code_size_;
+  uint64_t *code_{nullptr};
+  std::vector<uint64_t *> rel_relocs_;
+};
+
 class VectorKernel;
 
 #define OBJ_FLAG_FREE_LHS 1
@@ -741,7 +753,7 @@ class ReduceOp : public _ReduceOp {
       : _ReduceOp(input, red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
-    ws_num_ = 1;
+    ws_num_ = System::Instance().deterministic_ ? 2 : 1;
   }
   ~ReduceOp();
   void Normalize(std::vector<NDObject *> &run_ops) override;
@@ -753,13 +765,18 @@ class ReduceOp : public _ReduceOp {
   VectorKernel *clear_kernel_{nullptr};
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  TileVisitCoder visit_;
+
  private:
+  int EmitDeterm(VectorKernel &k);
+
   std::vector<_ReduceOp *> stuff_ops_;
   ShapeWithRef shape_;
   bool keepdims_;
   ShapeRef *dims_ref_;
   DimArray round_tile_;
 
+  NDLoadDummy *ws_reloc_{nullptr};
   ShapeRef clear_shape_;
   int64_t clear_shape_data_;
 };

@@ -17,10 +17,13 @@
 #ifndef _DVM_CODE_H_
 #define _DVM_CODE_H_
 #include <sstream>
+#include <cstring>
 #include <atomic>
 #include "isa.h"
 #include "system.h"
 #include "ops.h"
+
+extern const uint64_t g_visit_func_offset[];
 
 namespace dvm {
 class NDAccess;
@@ -57,6 +60,19 @@ class Code {
     uint64_t data = block_tile << V_ENTRY_V_TILE_BODY_OFFSET | block_tail << V_ENTRY_V_TILE_TAIL_OFFSET |
                     block_dim << V_ENTRY_V_BLOCK_NUM_OFFSET;
     UpdateHead(data, simd_width, 0, V_ENTRY_TYPE_V);
+  }
+
+  void UpdateVE(const TileVisitCoder *visit, uint64_t simd_width) {
+    target_ = kTargetMix;
+    uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
+    data_size_ += visit->code_size_;
+    std::memcpy(visit_code, visit->code_, visit->code_size_);
+    for (auto head : visit->rel_relocs_) {
+      *head |= static_cast<uint64_t>(visit_code - head) << V_HEAD_EXT_OFFSET;
+    }
+    uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - 2;
+    uint64_t data = g_visit_func_offset[visit->visit_id_] << V_ENTRY_VE_VISIT_ID_OFFSET | offset << V_ENTRY_VE_VISIT_OFFSET_OFFSET;
+    UpdateHead(data, simd_width, 0, V_ENTRY_TYPE_VE);
   }
 
   void UpdateVP() {

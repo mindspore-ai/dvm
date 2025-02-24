@@ -75,10 +75,7 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VectorKernel &kernel)
-      : forward_event_num_(System::Instance().EventNum()),
-        backward_event_num_(System::Instance().EventNum()),
-        kernel_(kernel) {}
+  CodeGenHelper(VectorKernel &kernel) :kernel_(kernel) {}
   uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
     static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserve;
@@ -97,10 +94,6 @@ class CodeGenHelper {
         static_xbuf_ += xbuf_size_;
       }
       comm->SetXbufSize(xbuf_size_);
-      ASSERT(forward_event_num_ > 1);
-      ASSERT(backward_event_num_ > 2);
-      forward_event_num_ -= 1;
-      backward_event_num_ -= 2;
     }
     auto simd_width = kernel_.simd_width_;
     for (auto op : kernel_.objects_) {
@@ -198,7 +191,7 @@ class CodeGenHelper {
   void BackwardSync() {
     auto &objects = kernel_.objects_;
     EventManager vl_event, sv_event;
-    auto alloc_event = [backward_event_num = this->backward_event_num_](EventManager &m, uint64_t &event) -> bool {
+    auto alloc_event = [backward_event_num = kernel_.backward_event_num_](EventManager &m, uint64_t &event) -> bool {
       event = m.hold_event + 1;
       if ((int)event >= backward_event_num) {
         event = m.hold_event;
@@ -393,7 +386,7 @@ class CodeGenHelper {
   }
 
   inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
-    int total = forward_event_num_;
+    int total = kernel_.forward_event_num_;
     for (int i = 1; i <= total; ++i) {
       event = (m.hold_event + i) % total;
       if (from_idx >= m.hold_idx[event]) {
@@ -413,8 +406,6 @@ class CodeGenHelper {
   int vector_vector_sync = 0;
   EventManager lv_event_;
   EventManager vs_event_;
-  int forward_event_num_;
-  int backward_event_num_;
 
   VectorKernel &kernel_;
   friend VectorKernel;
@@ -949,8 +940,6 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
     }
   }
   tile_num_ = root_dom_.TileNum();
-  auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
-  code_.block_dim_ = (tile_num_ + tile_per_block - 1) / tile_per_block;
   // simd_width
   int64_t lead_dim = root_dom_.DimSpace()[0];
   int64_t block_sw = BlockAlign();
@@ -972,6 +961,9 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
     }
   }
   // codegen
+  visit_ = nullptr;
+  code_.block_dim_ = core_limit;
+  forward_event_num_ = backward_event_num_ = System::Instance().EventNum();
   CodeGenHelper helper(*this);
   helper.xbuf_size_ = best_repeat * simd_width_ * ITEM_SIZE[max_type_];
   auto code_end = helper.Generate(code_ptr, code_reserve);
@@ -1355,8 +1347,7 @@ uint64_t VKernelS::CodeGen() {
   Optimize();
   BuildDomain(objects_);
   NormalizeDomain();
-  DoCodeGen(System::Instance().CoreNum());
-  return 0;
+  return DoCodeGen(System::Instance().CoreNum());
 }
 
 void VKernelD::Append(NDObject *obj) {
@@ -1413,8 +1404,7 @@ uint64_t VKernelD::CodeGen() {
     bb.Export(objects_);
     BuildDomain(objects_);
     NormalizeDomain();
-    DoCodeGen(System::Instance().CoreNum());
-    return 0;
+    return DoCodeGen(System::Instance().CoreNum());
   }
   if (pd_nexts_.empty()) {  // first
     BuildDomain(build_ops_);
@@ -1439,8 +1429,7 @@ uint64_t VKernelD::CodeGen() {
     start = size + 1;
   }
   NormalizeDomain();
-  DoCodeGen(System::Instance().CoreNum());
-  return 0;
+  return DoCodeGen(System::Instance().CoreNum());
 }
 
 VKernelP::~VKernelP() {
@@ -1479,6 +1468,7 @@ uint64_t VKernelP::CodeGen() {
     auto &code = k->code_;
     auto code_begin = code_.data_ + child_offset;
     uint64_t code_size = k->DoCodeGen(core_limit, code_begin, k->ReserveCodeSize()) - code_begin;
+    code.block_dim_ = k->CompactBlockDim(core_limit);
     total_workload -= workload;
     core_num -= code.block_dim_;
     code_.block_dim_ += code.block_dim_;

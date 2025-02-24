@@ -676,7 +676,25 @@ int NDStore::Emit(VectorKernel &k) {
     }
     if (lhs_->obj_id_ == kReduce) {
       auto red_op = static_cast<ReduceOp *>(lhs_);
-      auto build_atomic_store = [this, lead_align, dst_tile_stride_, red_op](vStoreAtomic &op) {
+      if (k.visit_) {
+        ASSERT(tail_dim_ < 0);
+        vStoreCond op;
+        uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+        uint64_t body_iter = strides_.back() / lead_align;
+        op.xn = lhs_->xbuf_;
+        op.to = addr_.data;
+        op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
+        op.iter_num = body_iter;
+        op.iter_size = iter_size;
+        op.pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
+        op.cond_offset = insn_ - red_op->tail_insn_ - vReduceJoin::STORE_FLAG_OFFSET;
+        op.round_rank = round_tile_.size();
+        reloc_addr_ = insn_ + vStoreCond::RELOC_OFFSET;
+        return vStoreCond::Encode(insn_, vAccInsnID::V_STORE_COND, op, rounds);
+      } else {
+        int code_size;
+        Code &code = k.code_;
+        vStoreAtomic op;
         op.to = addr_.data;
         op.xn = lhs_->xbuf_;
         op.cum_flag = (round_tile_.size() & 1);
@@ -691,27 +709,13 @@ int NDStore::Emit(VectorKernel &k) {
         }
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
         op.round_rank = round_tile_.size();
-      };
-      int code_size;
-      Code &code = k.code_;
-      if (System::Instance().deterministic_) {
-        vStoreAtomicDeterm op;
-        build_atomic_store(op.base);
-        op.core_tile_num = (k.tile_num_ + code.block_dim_ - 1) / code.block_dim_;
-        op.tail_tile_num = k.tile_num_ % op.core_tile_num ? k.tile_num_ % op.core_tile_num + 1 : 0;
-        op.stride_num = Size() / op.base.tile_stride;
-        reloc_addr_ = insn_ + vStoreAtomicDeterm::RELOC_OFFSET;
-        code_size = vStoreAtomicDeterm::Encode(insn_, V_STORE_ATOMIC_DETERM, code.block_dim_, op, rounds);
-      } else {
-        vStoreAtomic op;
-        build_atomic_store(op);
         reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
         code_size = vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
+        red_op->GenClearKernel(this);
+        code.sub_codes_.push_back(&(red_op->clear_kernel_->code_));
+        code.BindOpFast(red_op->clear_store_, this);
+        return code_size;
       }
-      red_op->GenClearKernel(this);
-      code.sub_codes_.push_back(&(red_op->clear_kernel_->code_));
-      code.BindOpFast(red_op->clear_store_, this);
-      return code_size;
     }
   }
   if (k.comm_op_ && k.comm_op_->GetObjectType() == kAllGatherV2) {
@@ -1499,6 +1503,9 @@ ReduceOp::~ReduceOp() {
   if (clear_kernel_ != nullptr) {
     delete clear_kernel_;
   }
+  if (ws_reloc_ != nullptr) {
+    delete ws_reloc_;
+  }
 }
 
 void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -1611,6 +1618,7 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     ASSERT(stuff_idx == 0);
     start_dim_ = end_dim_ = -1;
   }
+  visit_.Clear();
 }
 
 void ReduceOp::Tile(const TileParam &tp) {
@@ -1619,6 +1627,9 @@ void ReduceOp::Tile(const TileParam &tp) {
 }
 
 int ReduceOp::Emit(VectorKernel &k) {
+  if (ws_num_ == 2) {
+    return EmitDeterm(k);
+  }
   if (!(round_tile_.size() & 1)) {
     return _ReduceOp::Emit(k);
   }
@@ -1656,6 +1667,101 @@ void ReduceOp::GenClearKernel(NDAccess *store) {
     clear_shape_data_ += 32 / sizeof(float);
   }
   clear_kernel_->CodeGen();
+}
+
+static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, TileVisitCoder &coder) {
+  auto round_depth = round_tile.size();
+  if (round_depth == 0) {
+    return false;
+  }
+  uint64_t core_limit = k.code_.block_dim_;
+  if (round_depth == 1) {
+    auto v = reinterpret_cast<vVisitRed1*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed1));
+    uint64_t r1 = round_tile[0];
+    v->head = 0;
+    v->r1 = r1;
+    v->e = (k.tile_num_ / r1) << 32;
+    coder.code_ = reinterpret_cast<uint64_t *>(v);
+    coder.code_size_ = sizeof(vVisitRed1);
+    coder.visit_id_ = V_VISIT_RED_1;
+    coder.block_num_ = std::min(core_limit, k.tile_num_);
+  } else if (round_depth == 2) {
+    auto v = reinterpret_cast<vVisitRed2*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed2));
+    uint64_t r1 = round_tile[0];
+    uint64_t e1 = round_tile[1];
+    v->head = 0;
+    v->e = (k.tile_num_ /r1) << 32;
+    v->e1_r1 = e1 << 32 | r1;
+    coder.code_ = reinterpret_cast<uint64_t *>(v);
+    coder.code_size_ = sizeof(vVisitRed2);
+    coder.visit_id_ = V_VISIT_RED_2;
+    coder.block_num_ = std::min(core_limit, k.tile_num_);
+  } else if (round_depth == 3) {
+    auto v = reinterpret_cast<vVisitRed3*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed3));
+    uint64_t r1 = round_tile[0];
+    uint64_t e1 = round_tile[1];
+    uint64_t r2 = round_tile[2];
+    v->tidx_head = 0;
+    v->e = (k.tile_num_ /(r1 * r2)) << 32;
+    v->e1_r2 = e1 << 32 | r2;
+    v->r1 = r1;
+    coder.code_ = reinterpret_cast<uint64_t *>(v);
+    coder.code_size_ = sizeof(vVisitRed3);
+    coder.visit_id_ = V_VISIT_RED_3;
+    coder.block_num_ = std::min(core_limit, k.tile_num_ / r2);
+  } else {
+    ASSERT(round_depth == 4);
+    auto v = reinterpret_cast<vVisitRed4*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed4));
+    uint64_t r1 = round_tile[0];
+    uint64_t e1 = round_tile[1];
+    uint64_t r2 = round_tile[2];
+    uint64_t e2 = round_tile[3];
+    v->tidx_head = 0;
+    v->e = (k.tile_num_ /(r1 * r2)) << 32;
+    v->e1_r1 = e1 << 32 | r1;
+    v->e2_r2 = e2 << 32 | r2;
+    coder.code_ = reinterpret_cast<uint64_t *>(v);
+    coder.code_size_ = sizeof(vVisitRed4);
+    coder.visit_id_ = V_VISIT_RED_4;
+    coder.block_num_ = std::min(core_limit, k.tile_num_ / r2);
+  }
+  return true;
+}
+
+int ReduceOp::EmitDeterm(VectorKernel &k) {
+  if (!GenTileVisit(k, round_tile_, visit_)) {
+    return _ReduceOp::Emit(k);
+  }
+  if (k.visit_ == nullptr) {
+    k.visit_ = &visit_;
+    visit_.ws_size_ = strides_.back() * sizeof(float) * visit_.block_num_;
+  }
+  auto out_xbuf = xbuf_;
+  xbuf_ = wss_[0];
+  int size = _ReduceOp::Emit(k);
+  vReduceJoin op;
+  op.xd = xbuf_ = out_xbuf;
+  op.xn = wss_[0];
+  op.xs = wss_[1];
+  op.repeat = strides_.back() / k.simd_width_;
+  op.ws = 0;
+  tail_insn_ = insn_ + size;
+  size += vReduceJoin::Encode(tail_insn_, op);
+  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+  k.visit_->rel_relocs_.push_back(tail_insn_);
+  if (ws_reloc_ == nullptr) {
+    ws_reloc_ = new NDLoadDummy(type_id_);
+  }
+  ws_reloc_->addr_.ws = 0;
+  ws_reloc_->reloc_addr_ = tail_insn_ + vReduceJoin::RELOC_OFFSET;
+  k.code_.BindWorkspace(ws_reloc_, 0);  // TODO: mutli workspace
+  if (k.forward_event_num_ > 7) {
+    k.forward_event_num_ = 7;
+  }
+  if (k.backward_event_num_ > 7) {
+    k.backward_event_num_ = 7;
+  }
+  return size;
 }
 
 void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
@@ -2076,6 +2182,15 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->k_loop = CeilDiv(op->k_real, op->k0);
 }
 
+static void ReserveCommEvent(VectorKernel &k) {
+  if (k.forward_event_num_ > 7) {
+    k.forward_event_num_ = 7;
+  }
+  if (k.backward_event_num_ > 6) {
+    k.backward_event_num_ = 6;
+  }
+}
+
 ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm)
     : CommOp(input, comm, ObjectType::kReduceScatter) {
   add_id_ = binary_id_list[kAdd].ids[type_id_];
@@ -2199,6 +2314,7 @@ void ReduceScatterOp::Tile(const TileParam &tp) {
 }
 
 int ReduceScatterOp::Emit(VectorKernel &k) {
+  ReserveCommEvent(k);
   if (multi_load_) {
     return MultiLoadEmit(k);
   }
@@ -2292,7 +2408,6 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
   }
 
   tail_insn_ = current_insn;
-
   return code_size;
 }
 
@@ -2564,6 +2679,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
 }
 
 int AllReduceOp::Emit(VectorKernel &k) {
+  ReserveCommEvent(k);
   if (cube_op_ != nullptr) {
     return MatmulEmit(k);
   }
@@ -2834,6 +2950,7 @@ void AllGatherOp::AlignProp(PropRange &range) {
 }
 
 int AllGatherOp::Emit(VectorKernel &k) {
+  ReserveCommEvent(k);
   uint64_t tile_stride = strides_.back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
@@ -2947,6 +3064,7 @@ void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 int AllGatherV2Op::Emit(VectorKernel &k) {
+  ReserveCommEvent(k);
   uint64_t tile_stride = strides_.back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();

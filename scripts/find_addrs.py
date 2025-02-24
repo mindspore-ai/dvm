@@ -81,6 +81,10 @@ if __name__ == '__main__':
                     print('extern const unsigned long int g_simd_func_offset[] = {')
                     in_insn = True
                     pipe_cnt += 1
+                elif line.startswith('enum vVisitID'):
+                    print('extern const unsigned long int g_visit_func_offset[] = {')
+                    in_insn = True
+                    pipe_cnt += 1
             else:
                 stripped_line = line.strip()
                 if not stripped_line.startswith("//"):
@@ -89,12 +93,12 @@ if __name__ == '__main__':
                         if ins_name.endswith("_NONE"):
                             in_insn = False
                             print('0\n};')
-                            if pipe_cnt == 2:
+                            if pipe_cnt == 3:
                                 break
                         else:
                             offset = function_address_map.get(ins_name, None)
                             if offset == None:
                                 raise ValueError("Cannot find function for instruction: {}".format(ins_name))
                             print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
-    if pipe_cnt < 2:
+    if pipe_cnt < 3:
         raise ValueError("Some pipe not found")

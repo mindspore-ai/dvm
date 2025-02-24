@@ -138,11 +138,15 @@ def test_reduce_fake_atomic():
     t.store_expect(x3, 4096.0)
     assert(t.run_check())
 
-@pytest.mark.parametrize('in_shape, dims', [
-    [[400, 4096], (0,)], # reduce y
-    [[40000], (0,)], # reduce x
+@pytest.mark.parametrize('in_shape, dims, tile_depth', [
+    [[400, 4096], (0,), 1], # reduce y
+    [[40000], (0,), 0], # reduce x
+    [[65,40, 4096], (1,), 2], # order 1
+    [[8,3,7, 4,1024], (1,3), 3], # order 2
+    [[8,3,7,4, 4096], (1,3), 4], # order 3
+    [[8,3,6,4,3, 4,1024], (1,3,5), 5], # order 4
     ])
-def test_atomic_determ(in_shape, dims):
+def test_atomic_determ(in_shape, dims, tile_depth):
     t = Tester()
     t.set_determ(True)
     a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
@@ -150,6 +154,10 @@ def test_atomic_determ(in_shape, dims):
     y = t.reduce("sum", x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     out = t.store(y)
+    if tile_depth > 0:
+        for i in range(tile_depth):
+            idx = len(in_shape) - i - 1
+            t.tile(idx, idx, in_shape[i])
     t.run()
     expect = copy.deepcopy(t.output(out))
     t.run()

@@ -129,13 +129,26 @@ class VectorKernel : public VKernel {
   }
 
   int Analyze();
+
+  uint32_t CompactBlockDim(uint64_t core_limit) {
+    auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
+    return (tile_num_ + tile_per_block - 1) / tile_per_block;
+  }
+
   uint8_t *DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve);
-  void DoCodeGen(uint64_t core_limit) {
+  uint64_t DoCodeGen(uint64_t core_limit) {
     auto code_reserve = ReserveCodeSize();
     code_.Alloc(code_reserve + code_.HeadSize());
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
     code_.data_size_ = code_end - code_.data_;
-    code_.UpdateV(tile_num_, simd_width_);
+    if (!visit_) {
+      code_.block_dim_ = CompactBlockDim(core_limit);
+      code_.UpdateV(tile_num_, simd_width_);
+      return 0;
+    }
+    code_.block_dim_ = CeilDiv<uint32_t>(visit_->block_num_, 2);
+    code_.UpdateVE(visit_, simd_width_);
+    return visit_->ws_size_;
   }
 
   NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
@@ -147,6 +160,10 @@ class VectorKernel : public VKernel {
 
   uint64_t tile_num_{0};
   uint64_t simd_width_{0};
+  TileVisitCoder *visit_{nullptr};
+
+  int forward_event_num_;
+  int backward_event_num_;
 
  protected:
   int max_type_{-1};

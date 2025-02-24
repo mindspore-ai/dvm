@@ -650,8 +650,7 @@ class EagerVector : public VectorKernel {
   uint64_t CodeGen() override {
     root_dom_.SetHead(next_);
     NormalizeDomain();
-    DoCodeGen(System::Instance().CoreNum());
-    return 0;
+    return DoCodeGen(System::Instance().CoreNum());
   }
 
   void Reset(NDObject *dom) {
@@ -1037,6 +1036,23 @@ uint64_t VKernelE::CodeGen() {
       }
       io->addr_.gm = store->addr_.gm;
     }
+    objects_.resize(obj_size);
+    if (uint64_t ws_size = kernel->EagerVector::CodeGen(); ws_size > 0) {
+      void *ws_mem;
+      if (auto it = wss_.upper_bound(ws_size - 1); it != wss_.end()) {
+        ws_mem = it->second;
+      } else {
+        ws_mem = ws_alloc_(ws_size, user_data_);
+        wss_.insert({ws_size, ws_mem});
+      }
+      for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
+        op->Reloc(static_cast<char *>(ws_mem) + op->addr_.ws);
+      }
+      kernel->code_.bind_wss_ = nullptr;
+    }
+    if (uint64_t code_size = kernel->code_.ReserveWorkspace(0); code_size > extern_code_size) {
+      extern_code_size = code_size;
+    }
     if (kidx > 1) {  // kidx 1 is last wss user
       for (auto op : temp_ops_) {
         if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
@@ -1045,11 +1061,6 @@ uint64_t VKernelE::CodeGen() {
       }
     }
     temp_ops_.clear();
-    objects_.resize(obj_size);
-    (void)kernel->EagerVector::CodeGen();
-    if (uint64_t code_size = kernel->code_.ReserveWorkspace(0); code_size > extern_code_size) {
-      extern_code_size = code_size;
-    }
   }
   wss_.clear();
   area_used_ = 0;

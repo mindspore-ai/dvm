@@ -31,11 +31,14 @@ const uint64_t UB_WORKSPACE_SIZE = 512;
 #define BlockDataShift(x)  (5 - sizeof(x) / 2)   // 1B - 5, 2B - 4, 4B - 3, 8B - not support
 
 // tile format:
-// mix: simd_width(8) << 56 | is_last_tile_m(1) << 53 | is_last_tile_n(1) << 52 | group_idx_offset(32) << 20 | tile_idx(16) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
-// vec: simd_width(8) << 56 | ------------------------------------------------------------------------------ | tile_idx(32) << 4 | tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// comm: simd_width(8) << 56 | data(52) << 4 | discont_flag(1) << 3| tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
+// data:
+//   mix: | is_last_tile_m(1) << 53 | is_last_tile_n(1) << 52 | group_idx_offset(32) << 20 | tile_idx(16) << 4 |
+//   vec: | ------------------------------------------------------------------------------ | tile_idx(32) << 4 |
 #define V_TILE_N_BEGIN_FLAG_OFFSET  0
 #define V_TILE_END_FLAG_OFFSET      1
 #define V_TILE_TAIL_FLAG_OFFSET     2
+#define V_TILE_DISCONT_FLAG_OFFSET  3
 #define V_TILE_CUR_IDX_OFFSET       4
 #define V_TILE_GROUP_IDX_OFFSET     20
 #define V_TILE_SIMD_WIDTH_OFFSET    56
@@ -46,6 +49,7 @@ const uint64_t UB_WORKSPACE_SIZE = 512;
 #define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
 #define IsBeginTile(tile)     ((tile & (1ul << V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
 #define IsEndTile(tile)       ((tile) &(1ul << V_TILE_END_FLAG_OFFSET))
+#define IsDisContTile(tile)       ((tile) &(1ul << V_TILE_DISCONT_FLAG_OFFSET))
 #define TileSimdWidth(tile)   (tile >> V_TILE_SIMD_WIDTH_OFFSET)
 #define GetRepeatStride(tile, x)  (tile >> (V_TILE_SIMD_WIDTH_OFFSET + BlockDataShift(x)))
 
@@ -1074,6 +1078,60 @@ __aicore_inline__ void ReduceSumY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }  // end while iter_num
 }
 
+#define V_RED_HEAD_REPEAT_OFFSET    0
+#define V_RED_HEAD_REPEAT_MASK     0xffffffu
+#define V_RED_HEAD_THREAD_OFFSET   24
+#define V_RED_HEAD_THREAD_MASK     0x7fu
+#define V_RED_HEAD_INC_FLAG_OFFSET 31
+
+__aicore_inline__ void ReduceJoin(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vReduceJoin op;
+  vReduceJoin ::Decode(pc, head, op);
+  uint64_t rs = GetRepeatStride(tile, float);
+  uint32_t red_head = *reinterpret_cast<__bcode__ uint32_t *>(pc + op.seg_tile_rel);
+  // RESTRICT: tile in segement is continuously
+  if (IsBeginTile(tile) && !(red_head >> V_RED_HEAD_INC_FLAG_OFFSET)) {
+    copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, op.repeat * rs, 0, 0);
+  } else {
+    repeat_vadd((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xn, op.repeat, 1, 1, 1, rs, rs, rs);
+  }
+  uint32_t loop_repeat = (red_head >> V_RED_HEAD_REPEAT_OFFSET) & V_RED_HEAD_REPEAT_MASK;
+  if (!IsEndTile(tile) || loop_repeat > 0) {
+    return;
+  }
+  uint32_t thread_size = (red_head >> V_RED_HEAD_THREAD_OFFSET) &  V_RED_HEAD_THREAD_MASK;
+  if (thread_size > 1) {
+    uint64_t blockidx = vBlockIdx();
+    uint64_t block_begin = blockidx / thread_size * thread_size;
+    uint64_t lenburst = op.repeat * rs;
+    uint64_t ws_stride = lenburst * 32;
+    const uint64_t flag_id = 0;
+    if (blockidx == block_begin) {
+      ffts_cross_core_sync(PIPE_V, vFftsSyncConfig(0, flag_id));
+      wait_flag_dev(flag_id);
+      for (uint64_t bidx = 1; bidx < thread_size; ++bidx) {
+        copy_gm_to_ubuf((__ubuf__ float *)op.xs, (__gm__ uint8_t*)op.ws + (blockidx + bidx) * ws_stride, 0, 1, lenburst, 0, 0);
+        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        repeat_vadd((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xs, op.repeat, 1, 1, 1, rs, rs, rs);
+        if (bidx < thread_size - 1) {
+          set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+          wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+        }
+      }
+      vReduceJoin::SetStoreCond(pc, 1);
+    } else {
+      set_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
+      wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
+      copy_ubuf_to_gm((__gm__ uint8_t*)op.ws + blockidx * ws_stride, (__ubuf__ float *)op.xd, 0, 1, lenburst, 0, 0);
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, flag_id));
+      wait_flag_dev(flag_id);
+    }
+  } else {
+    vReduceJoin::SetStoreCond(pc, 1);
+  }
+}
+
 template <typename T>
 __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSelect op;
@@ -1137,7 +1195,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t r1 = rounds[0];
     uint64_t r_tile_idx = tile_idx / r1;
     if (mode == kRoundCacheLoad) {
-      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile) ? r_tile_idx : -1;
+      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile) || IsDisContTile(tile) ? r_tile_idx : -1;
     } else if (mode == kRoundCacheStore) {
       return r_tile_idx * r1 == tile_idx ? r_tile_idx : -1;
     } else if (mode == kRoundCacheStoreAtomic) {
@@ -1165,7 +1223,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t p2 = tile_idx % (r2 * r3);
     uint64_t p3 = p2 / r3;
     if (mode == kRoundCacheLoad) {
-      return p3 * r3 == p2 || IsBeginTile(tile) ? p1 + p3 : -1;
+      return p3 * r3 == p2 || IsBeginTile(tile) || IsDisContTile(tile) ? p1 + p3 : -1;
     } else if (mode == kRoundCacheStore) {
       return (tile_idx < p0 * r1 + r2 * r3) && (p3 * r3 == p2) ? p1 + p3 : -1;
     } else if (mode == kRoundCacheStoreAtomic) {
@@ -1524,6 +1582,22 @@ static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + iter_num * iter_size);
 }
 
+static inline [aicore] void CondStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  if (IsEndTile(tile)) {
+    vStoreCond op;
+    vStoreCond::Decode(pc, head, op);
+    __bcode__ uint8_t *cond = reinterpret_cast<__bcode__ uint8_t*>(pc - op.cond_offset);
+    if (*cond) {
+      *cond = 0;
+      uint64_t tile_idx = TileIdx(tile);
+      tile_idx = RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.round_rank, pc + vStoreCond::ROUND_OFFSET);
+      __gm__ uint8_t *dst = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
+      copy_ubuf_to_gm_align_b8(dst, (__ubuf__ uint8_t*)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
+      OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
+    }
+  }
+}
+
 static inline [aicore] void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreAtomic &op) {
   if (op.pad_size == 0) {
     copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
@@ -1552,63 +1626,6 @@ static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t t
   CopyUbufToGmAtomic(gm, op);
   set_atomic_none();
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
-}
-
-static inline [aicore] void StoreAtomicDeterm(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vStoreAtomicDeterm op;
-  vStoreAtomicDeterm::Decode(pc, head, op);
-  set_atomic_f32();
-  uint64_t tile_idx = TileIdx(tile);
-  uint64_t tile_offset =
-    op.base.cum_flag
-      ? RoundUpTileIdx<kRoundCacheStoreAtomic>(tile, tile_idx, op.base.round_rank, pc + vStoreAtomicDeterm::ROUND_OFFSET)
-      : RoundUpTileIdx<kRoundCacheNone>(tile, tile_idx, op.base.round_rank, pc + vStoreAtomicDeterm::ROUND_OFFSET);
-  if (IsLastTile(tile)) {
-    op.base.iter_num = op.base.iter_tail;
-  }
-  __gm__ volatile float *gm_step = (__gm__ float*)(op.base.to + op.stride_num * op.base.tile_stride + 28);
-  if (tile_idx > 0) {
-    uint64_t core_idx = tile_idx / op.core_tile_num;
-    float expect;
-    set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
-    wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
-    if (core_idx > 0) {
-      expect = 1.0f * core_idx;
-    } else {
-      expect = *op.step_end_addr;
-      if (tile_idx == 1) {
-        *op.step_addr = 1.0f - expect;
-      } else if (tile_idx == op.tail_tile_num) {
-        expect -= 1.0f;
-        *op.step_end_addr = expect;
-        *op.step_addr = 1.0f - expect;
-      }
-    }
-    __gm__ void *dcci_align = (__gm__ void*)((uint64_t)gm_step & ~0x1ful);
-    while (1) {
-      __asm__ __volatile__("");
-      dcci(dcci_align, 0);
-      __asm__ __volatile__("");
-      float delta = expect - *gm_step;
-      if (delta > -0.1f && delta < 0.1f) break;
-      float rest_step = delta  > 0.0f ? delta : *op.step_end_addr + delta;
-      for (int64_t i = 0; i < (int64_t(rest_step) - 1) * 20; ++i) {
-        __asm__ __volatile__("nop");
-      }
-    }
-  }
-  if (tile_offset != -1) {
-    __gm__ uint8_t *gm_data = (__gm__ uint8_t *)op.base.to + op.base.tile_stride * tile_offset;
-    CopyUbufToGmAtomic(gm_data, op.base);
-    pipe_barrier(PIPE_MTE3);
-  }
-  uint64_t step_addr = (uint64_t)op.step_addr & 0x1fffful;
-  uint64_t align_step_addr = (step_addr >> 5) << 5;
-  uint64_t align_size = step_addr - align_step_addr;
-  copy_ubuf_to_gm_align_b32((__gm__ uint8_t*)gm_step - align_size, (__ubuf__ void *)(align_step_addr),
-                            0, 1, align_size + sizeof(float), 0, 0, 0, 0);
-  set_atomic_none();
-  OVER_WRITE_CHECK(pc, head, op.base.tile_stride * tile_offset + op.base.iter_num * op.base.iter_size);
 }
 
 __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
@@ -1810,6 +1827,220 @@ static inline[aicore] void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64
   }
 }
 
+// tile_loop: loop_stride(24) << 40 | 0(4) << 36 | reserved(4) << 32 | loop_counter(32)
+#define V_LOOP_COUNTER_OFFSET   0
+#define V_LOOP_STRIDE_OFFSET   40
+
+typedef uint64_t (*VisitFunc)(bcodeptr_t pc, uint64_t &tile);
+
+template <typename T, bool inc = false>
+__aicore_inline__ T MakeRedHead(T repeat, T thread_size) {
+  T head = repeat << V_RED_HEAD_REPEAT_OFFSET | thread_size << V_RED_HEAD_THREAD_OFFSET;
+  if constexpr (inc) {
+    head |= 1ul << V_RED_HEAD_INC_FLAG_OFFSET;
+  }
+  return head;
+}
+
+__aicore_inline__ uint64_t VisitRed_1(bcodeptr_t pc, uint64_t &tile) {
+  __bcode__ vVisitRed1 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed1*>(pc);
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t r1 = op->r1;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    op->head = MakeRedHead<uint32_t>(0, 1);
+    tile |= (e_cur * r1) << V_TILE_CUR_IDX_OFFSET;
+    if (e_cur == e_num - 1) {
+      tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+    }
+    return 1ul << V_LOOP_STRIDE_OFFSET | r1;
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+      wait_flag_dev(0);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t tidx = e_cur * r1 + thread_idx;
+    uint64_t loop = (r1 - thread_idx - 1) / thread_size + 1;
+    op->head = MakeRedHead<uint32_t>(0, thread_size);
+    tile |= tidx << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_DISCONT_FLAG_OFFSET;
+    if (e_cur == e_num - 1 && thread_size * (loop - 1)  + thread_idx == r1 - 1) {
+      tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+    }
+    return thread_size << V_LOOP_STRIDE_OFFSET | loop;
+  }
+}
+
+__aicore_inline__ uint64_t VisitRed_2(bcodeptr_t pc, uint64_t &tile) {
+  __bcode__ vVisitRed2 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed2*>(pc);
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t loop, tidx;
+  uint64_t e1 = op->e1_r1 >> 32;
+  uint64_t r1 = op->e1_r1 & MASK_32;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    op->head = MakeRedHead<uint32_t>(0, 1);
+    tidx = r1 * e1 * (e_cur / e1) + e_cur % e1;
+    loop = e1 << V_LOOP_STRIDE_OFFSET | r1;
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+      wait_flag_dev(0);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t group_tile = r1 * e1 * (e_cur / e1) + e_cur % e1;
+    op->head = MakeRedHead<uint32_t>(0, thread_size);
+    tidx = group_tile + thread_idx * e1;
+    loop = (e1 * thread_size) << V_LOOP_STRIDE_OFFSET | (r1 - thread_idx - 1) / thread_size + 1;
+  }
+  tile |= tidx << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_DISCONT_FLAG_OFFSET;
+  return loop;
+}
+
+__aicore_inline__ uint64_t VisitRed_3(bcodeptr_t pc, uint64_t &tile) {
+  __bcode__ vVisitRed3 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed3 *>(pc);
+  uint64_t tidx_head = op->tidx_head;
+  uint64_t e1 = op->e1_r2 >> 32;
+  uint64_t r2 = op->e1_r2 & MASK_32;
+  if (tidx_head & V_RED_HEAD_REPEAT_MASK) {
+    uint64_t thread_size = (tidx_head  >> V_RED_HEAD_THREAD_OFFSET) & V_RED_HEAD_THREAD_MASK;
+    tidx_head = (tidx_head | 1ul << V_RED_HEAD_INC_FLAG_OFFSET) + ((r2 * e1 * thread_size) << 32) - 1ul;
+    tile |= (tidx_head >> 32) << V_TILE_CUR_IDX_OFFSET;
+    op->tidx_head = tidx_head;
+    return 1ul << V_LOOP_STRIDE_OFFSET | r2;
+  }
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t tidx;
+  uint64_t r1 = op->r1;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    tidx = (r1 * e1 * (e_cur / e1) + e_cur % e1) * r2;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(r1 - 1, 1);
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+      wait_flag_dev(0);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t repeat = (r1 - thread_idx - 1) / thread_size + 1;
+    tidx = (r1 * e1 * (e_cur / e1) + e_cur % e1 + thread_idx * e1) * r2;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(repeat - 1, thread_size);
+  }
+  tile |= tidx << V_TILE_CUR_IDX_OFFSET;
+  return 1ul << V_LOOP_STRIDE_OFFSET | r2;
+}
+
+__aicore_inline__ uint64_t VisitRed_4(bcodeptr_t pc, uint64_t &tile) {
+  __bcode__ vVisitRed4 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed4 *>(pc);
+  uint64_t tidx_head = op->tidx_head;
+  uint64_t e1 = op->e1_r1 >> 32;
+  uint64_t r1 = op->e1_r1 & MASK_32;
+  uint64_t e2 = op->e2_r2 >> 32;
+  uint64_t r2 = op->e2_r2 & MASK_32;
+  if (tidx_head & V_RED_HEAD_REPEAT_MASK) {
+    uint64_t thread_size = (tidx_head  >> V_RED_HEAD_THREAD_OFFSET) & V_RED_HEAD_THREAD_MASK;
+    tidx_head = (tidx_head | 1ul << V_RED_HEAD_INC_FLAG_OFFSET) + ((r2 * e1 * e2 * thread_size) << 32) - 1ul;
+    tile |= (tidx_head >> 32) << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_DISCONT_FLAG_OFFSET;
+    op->tidx_head = tidx_head;
+    return e2 << V_LOOP_STRIDE_OFFSET | r2;
+  }
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t tidx;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    uint64_t e0_idx = e_cur / (e1 * e2);
+    uint64_t e0_offset = e_cur % (e1 * e2);
+    uint64_t e1_idx = e0_offset / e2;
+    uint64_t e2_idx = e0_offset % e2;
+    tidx = e0_idx * (r1 * e1 * r2 * e2) + e1_idx * (r2 * e2) + e2_idx;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(r1 - 1, 1);
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+      wait_flag_dev(0);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t e0_idx = e_cur / (e1 * e2);
+    uint64_t e0_offset = e_cur % (e1 * e2);
+    uint64_t e1_idx = e0_offset / e2;
+    uint64_t e2_idx = e0_offset % e2;
+    uint64_t group_tile = e0_idx * (r1 * e1 * r2 * e2) + e1_idx * (r2 * e2) + e2_idx;
+    uint64_t repeat = (r1 - thread_idx - 1) / thread_size + 1;
+    tidx = group_tile + r2 * e2 * e1 * thread_idx;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(repeat - 1, thread_size);
+  }
+  tile |= tidx << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_DISCONT_FLAG_OFFSET;
+  return e2 << V_LOOP_STRIDE_OFFSET | r2;
+}
+
+#define VA_UB_OFFSET     0x80000ul
+#define VA_VMAIN_BASE    ((get_pc() - VMAIN_OFFSET) & (~0xffful))
+#define VA_BCODE_BASE_UB (get_sys_va_base() + VA_UB_OFFSET + PC_BASE)
+
 extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
   __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
@@ -1819,6 +2050,7 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
   }
   set_atomic_none();
   set_mask_norm();
+  uint8_t* main_addr = (uint8_t*)(VA_VMAIN_BASE);
   uint64_t tile;
   uint64_t tile_loops = 0;
   uint64_t simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
@@ -1829,13 +2061,23 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
     uint64_t idx = vBlockIdx();
     if (idx < num) {
       copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
-      tile_loops = vGetBitRange(entry, V_ENTRY_V_TILE_BODY_OFFSET, V_ENTRY_V_TILE_BODY_BITS);
+      tile_loops = 1ul << V_LOOP_STRIDE_OFFSET | vGetBitRange(entry, V_ENTRY_V_TILE_BODY_OFFSET, V_ENTRY_V_TILE_BODY_BITS);
       tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | (idx * tile_loops) << V_TILE_CUR_IDX_OFFSET;
       if (idx == num - 1) {
         tile_loops -= vGetBitRange(entry, V_ENTRY_V_TILE_TAIL_OFFSET, V_ENTRY_V_TILE_TAIL_BITS);
         tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
       }
     }
+  } else if (ktype == V_ENTRY_TYPE_VE) {
+    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
+    set_ffts_base_addr(ffts_addr);
+    tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET;
+    uint64_t visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);
+    uint64_t visit_offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);
+    bcodeptr_t visit_code = reinterpret_cast<bcodeptr_t>(VA_BCODE_BASE_UB) + visit_offset;
+    wait_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
+    tile_loops = ((VisitFunc)GetFunc(visit_id, main_addr))(visit_code, tile);
   } else if (ktype == V_ENTRY_TYPE_VP) {
     // summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
     // summary = lenburst(6) << 58 | offset(9) << 49 | simdwidth(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
@@ -1847,10 +2089,10 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
       uint64_t lenburst = summary >> 58;
       copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr + offset, 0, 1, lenburst, 0, 0);
       uint64_t start_idx = summary & 0xffffful;
-      tile_loops = (summary >> 20) & 0xffffful;
+      tile_loops = 1ul << V_LOOP_STRIDE_OFFSET | ((summary >> 20) & 0xffffful);
       simd_width = (summary >> 41) & 0xfful;
       tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | start_idx << V_TILE_CUR_IDX_OFFSET |
-            (summary >> (40 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET);
+            ((summary >> (40 - V_TILE_TAIL_FLAG_OFFSET)) & (1ul << V_TILE_TAIL_FLAG_OFFSET));
     }
   } else if (ktype == V_ENTRY_TYPE_MIX) {
     set_ffts_base_addr(ffts_addr);
@@ -1861,23 +2103,23 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
                       0, 1, (code_size - sizeof(vCubeOp)/sizeof(uint64_t) + 3) >> 2, 0, 0);
       __gm__ vCubeOp * __restrict__ cube = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
       tile = simd_width << V_TILE_SIMD_WIDTH_OFFSET | vCubeOp::GetCubeOffset(cube, init_group_idx) << V_TILE_GROUP_IDX_OFFSET;
-      tile_loops = init_group_idx << 32;
       uint64_t subtilenum = cube->subtilenum;
       uint64_t subtile_1 = subtilenum >> 32;
       uint64_t subtile_0 = subtilenum & MASK_32;
       if (get_subblockid() == 0) {
-        tile_loops |= subtile_0;
+        tile_loops = 1ul << V_LOOP_STRIDE_OFFSET | subtile_0;
         if (subtile_1 == 0) tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
       } else {
-        tile_loops |= subtile_1;
+        tile_loops = 1ul << V_LOOP_STRIDE_OFFSET | subtile_1;
         tile |= subtile_0 << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_TAIL_FLAG_OFFSET;
       }
+      vClrBitRange(entry, V_ENTRY_M_GROUP_IDX_OFFSET, V_ENTRY_M_GROUP_IDX_BITS);
+      entry |= init_group_idx << V_ENTRY_M_GROUP_IDX_OFFSET;
     }
   }
   SetVectorMask(simd_width);
   // Note: vmain_mix_aiv should be the first function in this file(inline function is not included)
   // We need that fact to calculate the right offset of dispatch functions
-  uint8_t* main_addr = (uint8_t*)((get_pc() - VMAIN_OFFSET) & (~0xfff));
   pipe_barrier(PIPE_ALL);
 TILE_LOOP:
   if (entry & V_ENTRY_FLAG_PRE_WAIT) {
@@ -1888,8 +2130,7 @@ TILE_LOOP:
     if ((tile_loops << 32) == 0) {
       tile |= 1ul << V_TILE_END_FLAG_OFFSET;
     }
-    const uint64_t ub_va_offset = 0x80000;
-    bcodeptr_t pc = reinterpret_cast<bcodeptr_t>(get_sys_va_base() + ub_va_offset + PC_BASE);
+    bcodeptr_t pc = reinterpret_cast<bcodeptr_t >(VA_BCODE_BASE_UB);
     for (uint64_t head = *pc; head != 0; head = *pc) {
       if (head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
         if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
@@ -1919,11 +2160,23 @@ TILE_LOOP:
       }
     }
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;
-    tile += 1ul << V_TILE_CUR_IDX_OFFSET;
+    tile += tile_loops >> (V_LOOP_STRIDE_OFFSET - V_TILE_CUR_IDX_OFFSET);
   }
-  if ((entry & V_ENTRY_MASK_TYPE) == V_ENTRY_TYPE_MIX) {
-    tile_loops += block_num << 32;
-    uint64_t group_idx = tile_loops >> 32;
+  uint64_t ktype2 = entry & V_ENTRY_MASK_TYPE;
+  if (ktype2 == V_ENTRY_TYPE_VE) {
+    set_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+    wait_flag(PIPE_MTE3, PIPE_MTE2, EVENT_ID0);
+    tile &= 0xfful << V_TILE_SIMD_WIDTH_OFFSET;
+    uint64_t visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);
+    uint64_t visit_offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);
+    bcodeptr_t visit_code = reinterpret_cast<bcodeptr_t>(VA_BCODE_BASE_UB) + visit_offset;
+    tile_loops = ((VisitFunc)GetFunc(visit_id, main_addr))(visit_code, tile);
+    if (tile_loops) {
+      goto TILE_LOOP;
+    }
+  } else if (ktype2 == V_ENTRY_TYPE_MIX) {
+    entry += static_cast<uint64_t>(block_num) << V_ENTRY_M_GROUP_IDX_OFFSET;
+    uint64_t group_idx = vGetBitRange(entry, V_ENTRY_M_GROUP_IDX_OFFSET, V_ENTRY_M_GROUP_IDX_BITS);
     if (group_idx < vGetBitRange(entry, V_ENTRY_M_GROUP_NUM_OFFSET, V_ENTRY_M_GROUP_NUM_BITS)) {
       // When the next tile does not require further processing,
       // there is no need to send ffts_cross to the cube.
@@ -1998,6 +2251,14 @@ TILE_LOOP:
     }                                                                                         \
   }
 
+#define DEF_DISP_VISIT(ID, func) \
+  extern "C" __noinline__[aicore] uint64_t D_##ID(bcodeptr_t pc, uint64_t &tile) { return func(pc, tile); }
+
+DEF_DISP_VISIT(V_VISIT_RED_1, VisitRed_1);
+DEF_DISP_VISIT(V_VISIT_RED_2, VisitRed_2);
+DEF_DISP_VISIT(V_VISIT_RED_3, VisitRed_3);
+DEF_DISP_VISIT(V_VISIT_RED_4, VisitRed_4);
+
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_SLICE_LOAD, SliceLoad(pc, head, tile))
@@ -2010,8 +2271,8 @@ DEF_DISP_LOAD(V_PEER_LOAD_MIX, PeerLoad<true>(pc, head, tile))
 
 DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
-DEF_DISP_STORE(V_STORE_ATOMIC_DETERM, StoreAtomicDeterm(pc, head, tile))
 DEF_DISP_STORE(V_STORE_STATUS, StoreStatus(pc, head))
+DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
 DEF_DISP_STORE(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
 DEF_DISP_STORE(V_STORE_AG, StoreAG(pc, head, tile))
@@ -2048,6 +2309,7 @@ DEF_DISP_SIMD(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, ha
 DEF_DISP_SIMD(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t))
 DEF_DISP_SIMD(V_RSUM_X, ReduceSumX(pc, head, tile))
 DEF_DISP_SIMD(V_RSUM_Y, ReduceSumY(pc, head, tile))
+DEF_DISP_SIMD(V_RSUM_JOIN, ReduceJoin(pc, head, tile))
 DEF_DISP_SIMD(V_SEL, Select<float>(pc, head, tile))
 DEF_DISP_SIMD(V_POW, Power(pc, head, tile))
 DEF_DISP_SIMD(V_CLR_PAD, ClearPad(pc, head))

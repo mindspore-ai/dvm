@@ -49,8 +49,8 @@ enum vAccInsnID {
   V_PEER_LOAD_MIX,
   V_STORE,
   V_STORE_ATOMIC,
-  V_STORE_ATOMIC_DETERM,
   V_STORE_STATUS,
+  V_STORE_COND,
   V_SSTORE,
   V_SLICE_STORE,
   V_STORE_AG,  // For AllGather
@@ -88,6 +88,7 @@ enum vSimdInsnID {
   V_CAST_FP32_TO_INT32,
   V_RSUM_X,
   V_RSUM_Y,
+  V_RSUM_JOIN,
   V_SEL,
   V_POW,
   V_CLR_PAD,
@@ -147,6 +148,14 @@ enum vSimdInsnID {
   V_CAST_BF16_TO_FP32,
   V_CAST_BF16_TO_INT32,
   V_NONE,
+};
+
+enum vVisitID {
+  V_VISIT_RED_1 = 0,
+  V_VISIT_RED_2,
+  V_VISIT_RED_3,
+  V_VISIT_RED_4,
+  V_VISIT_NONE,
 };
 
 enum CommType {
@@ -617,6 +626,39 @@ struct vReduceY {
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
     pc[1] = op.dup_num << 48 | op.red_tail << 32 | op.red_size << 16 | op.iter_size;
     return size;
+  }
+};
+
+struct vReduceJoin {
+  enum { STORE_FLAG_OFFSET = 1 };
+  enum { RELOC_OFFSET = 2 };
+  uint64_t repeat;
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t xs;
+  uint64_t ws;
+  uint64_t seg_tile_rel;
+  // pc[0]: c_xd(13) << 13 | seg_tile_rel(12)
+  // pc[1]: repeat(16) << 48 | xs(18) << 30 | xn(18) << 12 | store_flag(8)
+  // pc[2]: ws
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vReduceJoin &op) {
+    op.seg_tile_rel = vGetBitRange(head, V_HEAD_EXT_OFFSET, 12);
+    op.xd = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET + V_C_X_BITS, V_C_X_BITS));
+    uint64_t data = pc[1];
+    op.repeat = data >> 48;
+    op.xs = vGetBitRange(data, 30, 18);
+    op.xn = vGetBitRange(data, 12, 18);
+    op.ws = pc[2];
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, const vReduceJoin &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeHead(V_RSUM_JOIN, vCompactX(op.xd) << V_C_X_BITS, size, V_PIPE_SIMD);
+    pc[1] = op.repeat << 48 | op.xs << 30 | op.xn << 12;
+    pc[2] = op.ws;
+    return size;
+  }
+  __aicore_inline__ void SetStoreCond(bcodeptr_t pc, uint8_t cond) {
+    *(reinterpret_cast<__bcode__ uint8_t*>(pc + 1)) = cond;
   }
 };
 
@@ -1114,6 +1156,46 @@ struct vStore {
   }
 };
 
+struct vStoreCond {
+  enum { RELOC_OFFSET = 2 };
+  enum { ROUND_OFFSET = 3 };
+  uint64_t xn;
+  uint64_t to;
+  uint64_t tile_stride;
+  uint64_t iter_num;
+  uint64_t iter_size;
+  uint64_t pad_size;
+  uint64_t round_rank;
+  uint64_t cond_offset;
+  // pc[0]: tile_stride(18) << 13 | cond_offset(13)
+  // pc[1]: round_rank(4) << 60 | pad_size(8) << 52 | iter_size(18) << 34 | xn(18) << 16 | iter_num(16)
+  // pc[2]: to
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreCond &op) {
+    op.cond_offset = vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13);
+    op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
+    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
+    uint64_t data = pc[1];
+    op.iter_num = data & 0xfffful;
+    op.xn = (data >> 16) & 0x3fffful;
+    op.iter_size = (data >> 34) & 0x3fffful;
+    op.pad_size = (data >> 52) & 0xfful;
+    op.round_rank = data >> 60;
+    op.to = pc[2];
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreCond &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vStore::ROUND_OFFSET + round_size;
+    uint64_t ext = op.tile_stride << 13 | op.cond_offset;
+    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[1] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.xn << 16 | op.iter_num;
+    pc[2] = op.to;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vStore::ROUND_OFFSET + i] = rounds[i];
+    }
+    return size;
+  }
+};
+
 // [iter_num/iter_tail, iter_size+pad_size]
 struct vStoreAtomic {
   enum { RELOC_OFFSET = 2 };
@@ -1234,60 +1316,6 @@ struct vStoreAG {
     pc[2] = op.pad_size << 52 | op.iter_size << 34 | op.tile_stride << 16 | op.iter_num;
     pc[3] = op.iter_tail << 32 | op.xbuf_size;
     pc[4] = op.shard_stride;
-    return size;
-  }
-};
-
-// [iter_num/iter_tail, iter_size+pad_size]
-struct vStoreAtomicDeterm {
-  enum { RELOC_OFFSET = 2 };
-  enum { ROUND_OFFSET = 5 };
-  vStoreAtomic base;
-  uint64_t stride_num;
-  __bcode__ float *__restrict__ step_addr;
-  __bcode__ float *__restrict__ step_end_addr;
-  uint64_t core_tile_num;
-  uint64_t tail_tile_num;
-  // pc[0]: tile_stride(18) << 13 | c_xn(13)
-  // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 |
-  // iter_num(16) pc[2]: to pc[3]: tail_tile_num(20) << 40 | core_tile_num(20) << 20 | stride_num(20) pc[4]:
-  // step_end(32) << 32 | step(32)
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomicDeterm &op) {
-    op.base.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
-    op.base.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
-    uint64_t data = pc[1];
-    op.base.round_rank = data >> 60;
-    op.base.cum_flag = (data >> 58) & 0x3ul;
-    op.base.pad_size = (data >> 50) & 0xfful;
-    op.base.iter_size = (data >> 32) & 0x3fffful;
-    op.base.iter_tail = (data >> 16) & 0xfffful;
-    op.base.iter_num = data & 0xfffful;
-    op.base.to = pc[2];
-    data = pc[3];
-    op.stride_num = data & 0xffffful;
-    op.core_tile_num = (data >> 20) & 0xffffful;
-    op.tail_tile_num = data >> 40;
-    op.step_addr = reinterpret_cast<__bcode__ float *>(pc + 4);
-    op.step_end_addr = op.step_addr + 1;
-  }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, uint32_t core_num, const vStoreAtomicDeterm &op,
-                                    const uint64_t *rounds) {
-    uint64_t round_size = (op.base.round_rank + 1) / 2;
-    uint64_t size = vStoreAtomicDeterm::ROUND_OFFSET + round_size;
-    uint64_t ext = op.base.tile_stride << 13 | vCompactX(op.base.xn);
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
-    pc[1] = op.base.round_rank << 60 | op.base.cum_flag << 58 | op.base.pad_size << 50 | op.base.iter_size << 32 |
-            op.base.iter_tail << 16 | op.base.iter_num;
-    pc[2] = op.base.to;
-    pc[3] = op.tail_tile_num << 40 | op.core_tile_num << 20 | op.stride_num;
-    __bcode__ float *fp_data = reinterpret_cast<__bcode__ float *>(pc + 4);
-    fp_data[0] = 1.0f;
-#ifndef _CCE_KERNEL_
-    fp_data[1] = float(core_num);
-#endif
-    for (uint64_t i = 0; i < round_size; ++i) {
-      pc[vStoreAtomicDeterm::ROUND_OFFSET + i] = rounds[i];
-    }
     return size;
   }
 };
@@ -1469,6 +1497,35 @@ struct vPeerDMA {
   }
 };
 
+// head(32b): inc(1) << 31 | thread_size(7) << 24 | repeat(24) << 8
+// e(64b):    e_num << 32 | e_idx
+struct vVisitRed1 {
+  uint32_t head;
+  uint32_t r1;
+  uint64_t e;
+};
+
+struct vVisitRed2 {
+  uint32_t head;
+  uint32_t reserved;
+  uint64_t e;
+  uint64_t e1_r1;
+};
+
+struct vVisitRed3 {
+  uint64_t tidx_head;
+  uint64_t e;
+  uint64_t e1_r2;
+  uint64_t r1;
+};
+
+struct vVisitRed4 {
+  uint64_t tidx_head;
+  uint64_t e;
+  uint64_t e1_r1;
+  uint64_t e2_r2;
+};
+
 // [entry]
 // common:
 //  data(36) << 28 | simd_width(8) << 20 | code_size_8B(12) << 8 | next_stage(reserve: 1) << 5 | extern_code(1) << 4 |
@@ -1476,12 +1533,14 @@ struct vPeerDMA {
 // data:
 //  mix/cube: group_num(32) << 32 | reserved(4) << 28 | common(28)
 //  parallel: block_sum(16) << 48 | reserved(20) << 28 | common(28)
-//  vector:   block_tile(24) << 40 | block_tail(6) << 34 | block_num(6) << 28 | common(28)
+//  vector:   tile_body(24) << 40 | tail_tail(6) << 34 | block_num(6) << 28 | common(28)
+//  vectorEx: visit_offset_8B(16) << 48 | visit_id(16) << 32 | reserve(4) << 28 | common(28)
 
 #define V_ENTRY_TYPE_V 0
-#define V_ENTRY_TYPE_VP 1  // vector parallel
-#define V_ENTRY_TYPE_C 2
-#define V_ENTRY_TYPE_MIX 3
+#define V_ENTRY_TYPE_VE 1  // vector ext
+#define V_ENTRY_TYPE_VP 2  // vector parallel
+#define V_ENTRY_TYPE_C 3
+#define V_ENTRY_TYPE_MIX 4
 
 #define V_ENTRY_MASK_TYPE 7ul
 #define V_ENTRY_FLAG_PRE_WAIT 8
@@ -1495,6 +1554,8 @@ struct vPeerDMA {
 // mix
 #define V_ENTRY_M_GROUP_NUM_OFFSET 32
 #define V_ENTRY_M_GROUP_NUM_BITS 32
+#define V_ENTRY_M_GROUP_IDX_OFFSET 4
+#define V_ENTRY_M_GROUP_IDX_BITS 28
 
 // parallel
 #define V_ENTRY_VP_BLOCK_SUM_OFFSET 48
@@ -1507,6 +1568,12 @@ struct vPeerDMA {
 #define V_ENTRY_V_TILE_TAIL_BITS 6
 #define V_ENTRY_V_TILE_BODY_OFFSET 40
 #define V_ENTRY_V_TILE_BODY_BITS 24
+
+// vector ext
+#define V_ENTRY_VE_VISIT_ID_OFFSET 32
+#define V_ENTRY_VE_VISIT_ID_BITS 16
+#define V_ENTRY_VE_VISIT_OFFSET_OFFSET 48
+#define V_ENTRY_VE_VISIT_OFFSET_BITS 16
 
 __aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) { return 1ul | mode << 4 | event_id << 8; }
 #endif  // _DVM_ISA_H_

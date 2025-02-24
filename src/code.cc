@@ -245,6 +245,24 @@ void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
+void DumpStoreCond(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vStoreCond op;
+  vStoreCond::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "store_cond.u8." << op.iter_size << "x" << op.iter_num;
+  oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << " //";
+  DumpVal("tile_stride", op.tile_stride, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  oss << ", ";
+  DumpVal("cond_offset", op.cond_offset, oss);
+  oss << ", ";
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vStoreCond::ROUND_OFFSET, oss);
+  }
+}
+
 void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreAtomic op;
   vStoreAtomic::Decode(dump_info.insn, *dump_info.insn, op);
@@ -259,33 +277,6 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
   if (op.round_rank > 0) {
     oss << ", ";
     DumpRounds(op.round_rank, dump_info.insn + vStoreAtomic::ROUND_OFFSET, oss);
-  }
-}
-
-void DumpStoreAtomicDeterm(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vStoreAtomicDeterm op;
-  vStoreAtomicDeterm::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "store_atomic_determ.u8." << op.base.iter_size << "x" << op.base.iter_num;
-  oss << " " << reinterpret_cast<void *>(op.base.to) << ", " << reinterpret_cast<void *>(op.base.xn);
-  oss << " //";
-  DumpVal("tile_stride", op.base.tile_stride, oss);
-  oss << ", ";
-  DumpVal("iter_tail", op.base.iter_tail, oss);
-  oss << ", ";
-  DumpVal("pad_size", op.base.pad_size, oss);
-  oss << ", ";
-  DumpVal("step", *op.step_addr, oss);
-  oss << ", ";
-  DumpVal("step_end", *op.step_end_addr, oss);
-  oss << ", ";
-  DumpVal("core_tile_num", op.core_tile_num, oss);
-  oss << ", ";
-  DumpVal("tail_tile_num", op.tail_tile_num, oss);
-  oss << ", ";
-  DumpVal("stride_num", op.stride_num, oss);
-  if (op.base.round_rank > 0) {
-    oss << ", ";
-    DumpRounds(op.base.round_rank, dump_info.insn + vStoreAtomicDeterm::ROUND_OFFSET, oss);
   }
 }
 
@@ -440,6 +431,17 @@ void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("red_tail", op.red_tail, oss);
 }
 
+void DumpReduceJoin(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vReduceJoin op;
+  vReduceJoin::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  DumpVal("xs", reinterpret_cast<void *>(op.xs), oss);
+  oss << ", ";
+  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
+  oss << ", ";
+  DumpVal("seg_tile_rel", op.seg_tile_rel, oss);
+}
+
 void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
   vCopy op;
   auto head = *dump_info.insn;
@@ -574,8 +576,8 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_PEER_LOAD_MIX, &DumpPeerDMA<name_peer_load_mix>},
   {V_STORE, &DumpStore},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
-  {V_STORE_ATOMIC_DETERM, &DumpStoreAtomicDeterm},
   {V_STORE_STATUS, &DumpStoreStatus},
+  {V_STORE_COND, &DumpStoreCond},
   {V_SSTORE, &DumpSStore},
   {V_STORE_AG, &DumpStoreAG},
   {V_STORE_RS, &DumpStoreRS},
@@ -663,6 +665,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_SEL_INT32, {&DumpSelect, "Select", "int32"}},
   {V_RSUM_X, {&DumpReduceX, "SumX", "fp32"}},
   {V_RSUM_Y, {&DumpReduceY, "SumY", "fp32"}},
+  {V_RSUM_JOIN, {&DumpReduceJoin, "SumJoin", "fp32"}},
   {V_CLR_PAD, {&DumpClearPad, "ClrPad", "fp32"}},
   {V_ELEMENT_ANY, {&DumpElementAny, "ElementAny", "fp32"}},
   {V_REMOVEPAD, {&DumpRemovePad, "RemovePad", "u32"}},
@@ -672,7 +675,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_RESHAPE_B16, {&DumpReshape, "Reshape", "u16"}},
 };
 
-size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
+size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss, uint64_t &pipe) {
   auto convert_id = [](const uint64_t offsets[], uint64_t none_idx, uint64_t id) -> uint64_t {
     for (uint64_t i = 0; i <= none_idx; ++i) {
       if (offsets[i] == id) {
@@ -698,6 +701,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
       oss << "Unknown insn: ";
       DumpVal("id", id, oss);
     }
+    pipe = V_PIPE_SIMD;
   } else {
     uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
     offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
@@ -705,8 +709,9 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss) {
     id = convert_id(g_access_func_offset, V_ACCESS_NONE, id);
     if (acc_dump_func_table.find(id) != acc_dump_func_table.end()) {
       acc_dump_func_table[id](info, oss);
+      pipe = id >= V_STORE ? V_PIPE_STORE : V_PIPE_LOAD;
 #ifdef DEBUG
-      if (id >= V_STORE) {
+      if (pipe == V_PIPE_STORE ) {
         uint64_t debug_size = *(insn + (((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) - 1));
         oss << ", ";
         DumpVal("dbg_size", debug_size, oss);
@@ -725,16 +730,17 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
   bcodeptr_t insn = reinterpret_cast<bcodeptr_t>(bcode);
   bcodeptr_t insn_end = reinterpret_cast<bcodeptr_t>(bcode + bcode_size);
   uint64_t insn_idx = 0;
+  uint64_t pipe = 0;
   while (insn < insn_end) {
     auto head = *insn;
     if (head == 0) break;
     oss << indent << insn_idx << ": ";
     insn_idx++;
-    auto offset = DumpInsn(insn, simd_width, oss);
+    auto offset = DumpInsn(insn, simd_width, oss, pipe);
     oss << "\n";
     insn = insn + offset;
     oss << indent << "    {";
-    if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
+    if (pipe == V_PIPE_SIMD) {
       oss << "simd";
       if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
         oss << ", bar(1)";
@@ -751,7 +757,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
       if (head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) {
         oss << ", simd_load_sync(set, " << int((head >> V_HEAD_B_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
       }
-    } else if (((head >> V_HEAD_ID_OFFSET) & V_HEAD_ID_MASK) < g_access_func_offset[V_STORE]) {
+    } else if (pipe == V_PIPE_LOAD) {
       oss << "load";
       if (head & (0x1ul << V_M_HEAD_SET_FLAG_OFFSET)) {
         oss << ", load_simd_sync(set, " << int((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK) << ")";
@@ -793,6 +799,8 @@ class DisAssembler {
     auto ktype = entry & V_ENTRY_MASK_TYPE;
     if (ktype == V_ENTRY_TYPE_V) {
       DasVec(entry, bcode, bcode_size, "");
+    } else if (ktype == V_ENTRY_TYPE_VE) {
+      DasVecEx(entry, bcode, bcode_size, "");
     } else if (ktype == V_ENTRY_TYPE_VP) {
       DasParallel(entry, bcode, bcode_size, "");
     } else if (ktype == V_ENTRY_TYPE_C) {
@@ -841,6 +849,49 @@ class DisAssembler {
     oss << indent << "aiv(tile_num=" << tile_body << 'x' << block_num << '-' << tile_tail
         << ", simd_width=" << simd_width;
     oss << ") {" << std::endl;
+    DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
+    oss << indent << "}";
+  }
+
+  void DasVecEx(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    auto visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);
+    auto offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);
+    auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
+    oss << indent << "aiv(visit={";
+    auto visit_addr = bcode + offset * sizeof(uint64_t);
+    constexpr uint64_t MASK_32 = 0xfffffffful;
+    for (uint64_t i = 0; i < V_VISIT_NONE; ++i) {
+      if (g_visit_func_offset[i] == visit_id) {
+        visit_id = i;
+        break;
+      }
+    }
+    switch (visit_id) {
+      case V_VISIT_RED_1: {
+        auto v = reinterpret_cast<vVisitRed1 *>(visit_addr);
+        oss << "e:" << (v->e >> 32) << ", r1:" << (v->r1);
+        break;
+      }
+      case V_VISIT_RED_2: {
+        auto v = reinterpret_cast<vVisitRed2 *>(visit_addr);
+        oss << "e:" << (v->e >> 32) << ", r1:" << (v->e1_r1 & MASK_32) << ", e1:" << (v->e1_r1 >> 32);
+        break;
+      }
+      case V_VISIT_RED_3: {
+        auto v = reinterpret_cast<vVisitRed3 *>(visit_addr);
+        oss << "e:" << (v->e >> 32) << ", r1:" << (v->r1) << ", e1:" << (v->e1_r2 >> 32) << ", r2:" << (v->e1_r2 & MASK_32);
+        break;
+      }
+      case V_VISIT_RED_4: {
+        auto v = reinterpret_cast<vVisitRed4 *>(visit_addr);
+        oss << "e:" << (v->e >> 32) << ", r1:" << (v->e1_r1 & MASK_32) << ", e1:" << (v->e1_r1 >> 32)
+            << ", r2:" << (v->e2_r2 & MASK_32) << ", e2:" << (v->e2_r2 >> 32);
+        break;
+      }
+      default:
+        break;
+    }
+    oss << "}, simd_width=" << simd_width << ") {" << std::endl;
     DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
     oss << indent << "}";
   }
@@ -944,6 +995,8 @@ class DisAssembler {
       auto ktype = entry & V_ENTRY_MASK_TYPE;
       if (ktype == V_ENTRY_TYPE_V) {
         DasVec(entry, bcode, stage_size, indent + "  ");
+      } else if (ktype == V_ENTRY_TYPE_VE) {
+        DasVecEx(entry, bcode, stage_size, indent + "  ");
       } else if (ktype == V_ENTRY_TYPE_VP) {
         DasParallel(entry, bcode, stage_size, indent + "  ");
       } else if (ktype == V_ENTRY_TYPE_C) {

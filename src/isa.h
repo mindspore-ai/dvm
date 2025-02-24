@@ -62,6 +62,7 @@ enum vAccInsnID {
 
 enum vSimdInsnID {
   V_COPY = 0,
+  V_NOP,
   V_BROADCAST_Y,
   V_BROADCAST_S,
   V_SQRT,
@@ -634,6 +635,14 @@ struct vCopy {
     uint64_t size = 2;
     pc[0] = vMakeHead(V_COPY, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
     pc[1] = op.config;
+    return size;
+  }
+};
+
+struct vNop{
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc) {
+    uint64_t size =1;
+    pc[0] = vMakeHead(V_NOP, 0, size, V_PIPE_SIMD);
     return size;
   }
 };

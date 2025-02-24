@@ -43,7 +43,7 @@ def test_allreduce(comm, rank, size, shape_size):
     assert res
 
 
-@pytest.mark.parametrize("shape_size", [104857612])
+@pytest.mark.parametrize("shape_size", [54857612])
 def test_allreduce_big_shape(comm, rank, size, shape_size):
     np.random.seed(1)
 

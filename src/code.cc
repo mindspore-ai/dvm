@@ -449,6 +449,10 @@ void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
+void DumpNop(const DumpInfo &dump_info, std::ostringstream &oss){
+  oss << "0";
+}
+
 void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vClearPad op;
   vClearPad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -582,6 +586,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
   {V_COPY, {&DumpCopy, "Copy", "u8"}},
+  {V_NOP, {&DumpNop, "Nop", "u8"}},
   {V_BROADCAST_X_B32, {&DumpBroadcastX, "BroadcastX", "b32"}},
   {V_BROADCAST_X_B16, {&DumpBroadcastX, "BroadcastX", "b16"}},
   {V_BROADCAST_Y, {&DumpBroadcastY, "BroadcastY", "u8"}},

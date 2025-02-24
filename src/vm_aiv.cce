@@ -2020,6 +2020,7 @@ DEF_DISP_STORE(V_PEER_STORE, PeerStore<false>(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))
 
 DEF_DISP_SIMD(V_COPY, Copy(pc, head))
+DEF_DISP_SIMD(V_NOP,  ;)
 DEF_DISP_SIMD(V_BROADCAST_X_B32, BroadcastX<uint32_t>(pc, head, tile))
 DEF_DISP_SIMD(V_BROADCAST_Y, BroadcastY(pc, head))
 DEF_DISP_SIMD(V_BROADCAST_S, BroadcastS<uint32_t>(pc, head, tile))

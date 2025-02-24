@@ -845,7 +845,6 @@ class CommOp : public NDObject {
       : NDObject(input, nullptr, input->type_id_, obj_id), comm_(comm) {
     shape_ref_ = input->shape_ref_;
   }
-  inline bool StoreLhs() { return store_lhs_ && cube_op_ == nullptr; }
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
   uint64_t XbufReserve() { return xbuf_reserve_; }
@@ -856,8 +855,6 @@ class CommOp : public NDObject {
   std::vector<uint64_t> xbufs_;
   std::vector<uint64_t> forward_events_;
   std::vector<uint64_t> backward_events_;
-  uint64_t *lhs_simd_{nullptr};       // the simd instruction after lhs_(now only AllReudce has)
-  uint64_t *backsync_load_{nullptr};  // the load which need bacysync from the simd after comm op
   bool mix_{false};
   const Communicator *comm_;
 
@@ -872,7 +869,7 @@ class CommOp : public NDObject {
 // Not Support (rank_size, 1)
 class ReduceScatterOp : public CommOp {
  public:
-  ReduceScatterOp(NDObject *input, const Communicator *comm, bool multi_load_);
+  ReduceScatterOp(NDObject *input, const Communicator *comm);
   ~ReduceScatterOp() override;
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
@@ -882,6 +879,8 @@ class ReduceScatterOp : public CommOp {
   int Emit(VectorKernel &k) override;
   int MultiLoadEmit(VectorKernel &k);
 
+  bool multi_load_;
+
  private:
   int tail_dim_{-1};
   int tail_size_{0};
@@ -890,7 +889,6 @@ class ReduceScatterOp : public CommOp {
   DimArray round_tile_;
   NDObject *reshape_op_{nullptr};
   ShapeWithRef reshape_shape_;
-  bool multi_load_;
 };
 
 // Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore

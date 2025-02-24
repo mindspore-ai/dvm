@@ -542,7 +542,7 @@ NDObject *Kernel::Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keep
 }
 
 NDObject *Kernel::Store(void *addr, NDObject *input) {
-  if (input->IsLoad() || input->NeedTailCopy()) {
+  if (input->IsLoad()) {
     input = Copy(input);
   }
   auto ktype = kernel_->KType();
@@ -576,38 +576,25 @@ NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
 }
 
 NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
-  if (input->IsLoad()) {
-    input = Copy(input);
-  }
   NDObject *obj = new AllReduceOp(input, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject *Kernel::AllGather(NDObject *input, const Comm *comm) {
-  if (input->IsLoad()) {
-    input = Copy(input);
-  }
   NDObject *obj = new AllGatherOp(input, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject *Kernel::AllGatherV2(NDObject *input, const Comm *comm) {
-  if (input->IsLoad()) {
-    input = Copy(input);
-  }
   NDObject *obj = new AllGatherV2Op(input, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
-  bool multi_load = input->obj_id_ == ObjectType::kMultiLoad;
-  if (input->IsLoad()) {
-    input = Copy(input);
-  }
-  NDObject *obj = new ReduceScatterOp(input, comm->GetImpl(), multi_load);
+  NDObject *obj = new ReduceScatterOp(input, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
 }

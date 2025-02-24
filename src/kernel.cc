@@ -181,9 +181,7 @@ class CodeGenHelper {
           }
           auto code_size = op->Emit(kernel_);
           code_ptr += code_size;
-          if (static_cast<CommOp *>(op)->StoreLhs()) {
-            StoreSync(op->lhs_, op);
-          }
+          SimdSync(op->lhs_, op);
           break;
         }
         default:
@@ -225,62 +223,31 @@ class CodeGenHelper {
             auto to_sync = kernel_.objects_[sv_event.sync_idx]->insn_;
             *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
           }
-          if (simd->IsComm()) {
-            *(simd->tail_insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
-          } else {
-            *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
-          }
+          *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
           sv_event.sync_idx = simd->index_;
         }
       } else if (op->IsSimd() && op->lhs_) {
-        if (op->IsComm()) {
-          auto comm_op = static_cast<CommOp *>(op);
-          NDObject *last = op->lhs_;
-          if (last->IsLoad() && last->index_ < vl_event.sync_idx && comm_op->lhs_simd_) {  // case 1: simd -> load
-            uint64_t event;
-            if (alloc_event(vl_event, event)) {
-              *(comm_op->lhs_simd_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
-            } else {
-              auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
-              *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
-            }
-            *(last->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
-            vl_event.sync_idx = last->index_;
-          } else if (static_cast<CommOp *>(op)->StoreLhs()) {  // case 2: store -> simd
-            if (last->index_ < sv_event.sync_idx) {
-              uint64_t event;
-              if (alloc_event(sv_event, event)) {
-                *(op->insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
-              } else {
-                auto to_sync = kernel_.objects_[sv_event.sync_idx]->insn_;
-                *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
-              }
-              *(last->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
-              sv_event.sync_idx = last->index_;
-            }
+        // SIMD -> LOAD
+        NDObject *load = nullptr;
+        if (op->lhs_->IsLoad()) load = op->lhs_;
+        auto rhs = op->rhs_;
+        if (rhs) {
+          if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
+          if (op->flags_ & OBJ_FLAG_XHS) {
+            NDObject *xhs = reinterpret_cast<FlexOp *>(op)->xhs_;
+            if (xhs->IsLoad() && (load == nullptr || xhs->index_ < load->index_)) load = xhs;
           }
-        } else {  // SIMD -> LOAD
-          NDObject *load = nullptr;
-          if (op->lhs_->IsLoad()) load = op->lhs_;
-          auto rhs = op->rhs_;
-          if (rhs) {
-            if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
-            if (op->flags_ & OBJ_FLAG_XHS) {
-              NDObject *xhs = reinterpret_cast<FlexOp *>(op)->xhs_;
-              if (xhs->IsLoad() && (load == nullptr || xhs->index_ < load->index_)) load = xhs;
-            }
+        }
+        if (load != nullptr && load->index_ < vl_event.sync_idx) {
+          uint64_t event;
+          if (alloc_event(vl_event, event)) {
+            *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
+          } else {
+            auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
+            *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
           }
-          if (load != nullptr && load->index_ < vl_event.sync_idx) {
-            uint64_t event;
-            if (alloc_event(vl_event, event)) {
-              *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
-            } else {
-              auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
-              *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
-            }
-            *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
-            vl_event.sync_idx = load->index_;
-          }
+          *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
+          vl_event.sync_idx = load->index_;
         }
       }
     }
@@ -392,9 +359,7 @@ class CodeGenHelper {
   void SimdSync(NDObject *from, NDObject *to) {
     if (from->IsSimd()) {
       SimdBarrier(from, to);
-      if (!from->IsComm() || *(from->tail_insn_) & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
-        return;
-      }
+      return;
     }
     int from_pipe_idx = from->index_;
     if (from_pipe_idx <= lv_event_.sync_idx) return;
@@ -1099,6 +1064,8 @@ static inline bool LhsInplaceCheck(NDObject *obj) {
     case kSelect:
     case kReduce:
     case kCompare:
+    case kAllReduce:
+    case kReduceScatter:
       return true;
     case kCast:
       return (obj->type_id_ <= obj->lhs_->type_id_);
@@ -1114,6 +1081,9 @@ int VectorKernel::Analyze() {
   int cur_live = static_ops_.size();
   if (comm_op_) {
     cur_live += comm_op_->XbufReserve();
+    if (comm_op_->obj_id_ == kReduceScatter && static_cast<ReduceScatterOp *>(comm_op_)->multi_load_) {
+      cur_live += 1;
+    }
   }
   auto LivenessEnd = [this, &cur_live](NDObject *op, NDObject *end) {
     // TODO: check if other comm op can also spare 1 xbuf(like AllReduce)
@@ -1311,7 +1281,7 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
     }
     if (op->IsLoad()) {
       static_ops_.push_back(op);
-    } else if (op->IsStore() || (op->IsComm() && static_cast<CommOp *>(op)->StoreLhs())) {
+    } else if (op->IsStore()) {
       static_ops_.push_back(op->lhs_);
     }
   }

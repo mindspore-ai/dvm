@@ -18,6 +18,7 @@
 #include <vector>
 #include <cstring>
 #include "code.h"
+#include "ops.h"
 
 #ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
@@ -1085,17 +1086,17 @@ void Code::DisAssemble(std::ostringstream &oss) { DisAssembler(oss).Run(this, "v
 void Code::Combine(const Code &code, uint64_t ws_base) {
   if (auto op = code.bind_wss_) {
     for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
-      BindWorkspace(op, op->addr_.ws + ws_base);
+      BindWorkspace(*op, op->ws + ws_base);
       op = next;
     }
-    BindWorkspace(op, op->addr_.ws + ws_base);
+    BindWorkspace(*op, op->ws + ws_base);
   }
   if (auto op = code.bind_ops_) {
     for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
-      BindOp(op, op->addr_.op);
+      BindOp(*op, *(op->op));
       op = next;
     }
-    BindOp(op, op->addr_.op);
+    BindOp(*op, *(op->op));
   }
   if (!code.unique_ids_.empty()) {
     for (auto id : code.unique_ids_) {
@@ -1109,10 +1110,10 @@ void Code::Combine(const Code &code, uint64_t ws_base) {
   }
 }
 
-void Code::BindOp(NDAccess *op, NDAccess *target) {
-  op->addr_.op = target;
+void Code::BindOp(RelocAddr &op, const RelocAddr &target) {
+  op.op = &target;
   for (auto x = bind_ops_; x != nullptr; x = x->bind_list_) {
-    if (x == op->addr_.op) {
+    if (x == op.op) {
       InsertBind(x->bind_list_, op);
       return;
     }
@@ -1138,7 +1139,7 @@ uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
   head[1] |= V_ENTRY_FLAG_EXTERN_CODE;
   auto offset = RoundUp<uint64_t>(data_size_, 512);
   for (auto op = bind_wss_; op != nullptr; op = op->bind_list_) {
-    op->addr_.ws += offset;
+    op->ws += offset;
   }
   return workspace_size + offset;
 }

@@ -137,10 +137,10 @@ uint64_t MixKernel::UnAlignCodeGen() {
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
-  src_lhs->reloc_addr_ = static_cast<NDAccess *>(pad_inputs[0])->reloc_addr_;
-  src_rhs->reloc_addr_ = static_cast<NDAccess *>(pad_inputs[1])->reloc_addr_;
+  src_lhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[0])->addr_);
+  src_rhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[1])->addr_);
   if (real_out) {
-    cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
+    cube_op_->output_->addr_.Update(real_out->addr_);
   }
   return workspace_size;
 }
@@ -188,16 +188,16 @@ uint64_t MixKernel::SplitKCodeGen() {
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
-  src_lhs->reloc_addr_ = split_lhs[0]->reloc_addr_;
-  src_rhs->reloc_addr_ = split_rhs[0]->reloc_addr_;
-  code_.BindWorkspace(split_out[0], stage_workspace_size);
+  src_lhs->addr_.Update(split_lhs[0]->addr_);
+  src_rhs->addr_.Update(split_rhs[0]->addr_);
+  code_.BindWorkspace(split_out[0]->addr_, stage_workspace_size);
   for (size_t i = 1; i < split_num; i++) {
-    code_.BindOpFast(split_lhs[i], src_lhs);
-    code_.BindOpFast(split_rhs[i], src_rhs);
-    code_.BindWorkspace(split_out[i], stage_workspace_size);
+    code_.BindOpFast(split_lhs[i]->addr_, src_lhs->addr_);
+    code_.BindOpFast(split_rhs[i]->addr_, src_rhs->addr_);
+    code_.BindWorkspace(split_out[i]->addr_, stage_workspace_size);
   }
   if (real_out) {
-    cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
+    cube_op_->output_->addr_.Update(real_out->addr_);
   }
   return workspace_size;
 }
@@ -227,11 +227,11 @@ uint64_t MixKernel::BiasBF16CodeGen() {
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
-  src_lhs->reloc_addr_ = static_cast<NDAccess *>(x)->reloc_addr_;
-  src_rhs->reloc_addr_ = static_cast<NDAccess *>(y)->reloc_addr_;
-  static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = static_cast<NDAccess *>(bias_bf16)->reloc_addr_;
+  src_lhs->addr_.Update(static_cast<NDAccess *>(x)->addr_);
+  src_rhs->addr_.Update(static_cast<NDAccess *>(y)->addr_);
+  static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_bf16)->addr_);
   if (real_out) {
-    cube_op_->output_->reloc_addr_ = real_out->reloc_addr_;
+    cube_op_->output_->addr_.Update(real_out->addr_);
   }
   return workspace_size;
 }
@@ -247,12 +247,12 @@ uint64_t MixKernel::AlignCodeGen() {
   vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
   cube_op_->CodeGen(cube_code, tuner_);
   cube_code->subtilenum = 0;
-  static_cast<NDAccess *>(cube_op_->lhs_)->reloc_addr_ = &cube_code->gm_a;
-  static_cast<NDAccess *>(cube_op_->rhs_)->reloc_addr_ = &cube_code->gm_b;
+  static_cast<NDAccess *>(cube_op_->lhs_)->addr_.Update(&cube_code->gm_a);
+  static_cast<NDAccess *>(cube_op_->rhs_)->addr_.Update(&cube_code->gm_b);
   if (cube_op_->bias_) {
-    static_cast<NDAccess *>(cube_op_->bias_)->reloc_addr_ = &cube_code->gm_bias;
+    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(&cube_code->gm_bias);
   }
-  cube_op_->output_->reloc_addr_ = &cube_code->gm_c;
+  cube_op_->output_->addr_.Update(&cube_code->gm_c);
   code_.block_dim_ = cube_op_->block_dim_;
   if (!post_fusion_) {
     code_.data_size_ = head_reserve;
@@ -291,21 +291,21 @@ uint64_t MixKernel::AlignCodeGen() {
     cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
     code_.unique_ids_.push_back(&cube_code->unique_id);  // record vCubeOp's unique_id address
     cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
-    code_.BindOpFast(sload_, cube_op_->output_);
+    code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
   } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
     if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
-      code_.BindOpFast(cube_op_->output_, inplace_store);
-      code_.BindOpFast(sload_, inplace_store);
+      code_.BindOpFast(cube_op_->output_->addr_, inplace_store->addr_);
+      code_.BindOpFast(sload_->addr_, inplace_store->addr_);
     } else {
       cube_op_->pingpong_store_ = true;
       static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
       cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      code_.BindWorkspace(cube_op_->output_, 0);
-      code_.BindWorkspace(sload_, 0);
+      code_.BindWorkspace(cube_op_->output_->addr_, 0);
+      code_.BindWorkspace(sload_->addr_, 0);
       ws_size = cube_op_->PostFusionWorkSpace();
     }
   } else {
-    code_.BindOpFast(sload_, cube_op_->output_);
+    code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
   }
   post_fusion_->root_dom_.GroupTile(1, sload_->nd_[1], cube_code->m0);
   post_fusion_->root_dom_.GroupTile(0, sload_->nd_[0], cube_code->n0);
@@ -393,12 +393,12 @@ uint64_t StagesKernel::CodeGen() {
       if (!op->CheckFlag(OBJ_FLAG_STAGE_IO)) continue;
       if (op->IsStore()) {
         if (op->xbuf_ == STAGE_FLAG_REUSE) {
-          code_.BindOp(op, GetOutputReuse(op));
+          code_.BindOp(op->addr_, GetOutputReuse(op)->addr_);
         } else {
-          code_.BindWorkspace(op, GetWorkspace(op));
+          code_.BindWorkspace(op->addr_, GetWorkspace(op));
         }
       } else {
-        code_.BindOp(op, GetStageStore(op));
+        code_.BindOp(op->addr_, GetStageStore(op)->addr_);
       }
     }
     if (s != stages_.back()) {
@@ -1046,7 +1046,7 @@ uint64_t VKernelE::CodeGen() {
         wss_.insert({ws_size, ws_mem});
       }
       for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
-        op->Reloc(static_cast<char *>(ws_mem) + op->addr_.ws);
+        op->Reloc(static_cast<char *>(ws_mem) + op->ws);
       }
       kernel->code_.bind_wss_ = nullptr;
     }

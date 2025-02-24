@@ -624,7 +624,7 @@ void KernelPy::ClearStoreMemory(const py::object &store) {
 
 void KernelPy::PrepareIO() {
   for (auto &[op, info] : loads_) {
-    static_cast<NDAccess *>(op)->Reloc(info.dev);
+    static_cast<NDAccess *>(op)->addr_.Reloc(info.dev);
   }
   for (auto &it : stores_) {
     auto op = it.first;
@@ -646,7 +646,7 @@ void KernelPy::PrepareIO() {
       std::memset(info.host, 0, info.size);
       ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
-    static_cast<NDAccess *>(op)->Reloc(info.dev);
+    static_cast<NDAccess *>(op)->addr_.Reloc(info.dev);
   }
 }
 

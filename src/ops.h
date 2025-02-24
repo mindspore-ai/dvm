@@ -22,6 +22,7 @@
 #include <mutex>
 #include "isa.h"
 #include "system.h"
+#include "code.h"
 
 namespace dvm {
 enum ObjectType {
@@ -240,18 +241,6 @@ class MemPool {
   std::mutex mutex_;
 };
 
-struct TileVisitCoder {
-  void Clear() {
-    rel_relocs_.clear();
-  }
-  uint32_t block_num_;
-  uint32_t ws_size_;
-  uint32_t visit_id_;
-  uint32_t code_size_;
-  uint64_t *code_{nullptr};
-  std::vector<uint64_t *> rel_relocs_;
-};
-
 class VectorKernel;
 
 #define OBJ_FLAG_FREE_LHS 1
@@ -337,19 +326,7 @@ class NDAccess : public NDObject {
  public:
   NDAccess(void *gm, NDObject *lhs, DType type_id, ObjectType obj_id)
       : NDObject(lhs, nullptr, type_id, obj_id), addr_({gm}) {}
-  void Reloc(void *dst) {
-    if (reloc_addr_) {
-      *reloc_addr_ = reinterpret_cast<uint64_t>(dst);
-    }
-  }
-  union {
-    void *gm;
-    uint64_t ws;
-    NDAccess *op;
-    uint64_t data;
-  } addr_;  // NOTICE: bind after codegen
-  uint64_t *reloc_addr_{nullptr};
-  NDAccess *bind_list_{nullptr};
+  RelocAddr addr_;
 };
 
 class NDLoadDummy : public NDAccess {
@@ -776,7 +753,7 @@ class ReduceOp : public _ReduceOp {
   ShapeRef *dims_ref_;
   DimArray round_tile_;
 
-  NDLoadDummy *ws_reloc_{nullptr};
+  RelocAddr ws_reloc_;
   ShapeRef clear_shape_;
   int64_t clear_shape_data_;
 };

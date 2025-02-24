@@ -95,10 +95,10 @@ class StagesKernel : public VKernel {
  protected:
   static void SetWorkspace(NDAccess *op, int64_t offset) { op->addr_.ws = offset; }
   static int64_t GetWorkspace(NDAccess *op) { return op->addr_.ws; }
-  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->addr_.op = store; }
-  static NDAccess *GetOutputReuse(NDAccess *op) { return op->addr_.op; }
-  static void SetStageStore(NDAccess *op, NDAccess *store) { op->addr_.op = store; }
-  static NDAccess *GetStageStore(NDAccess *op) { return op->addr_.op; }
+  static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->addr_.gm = static_cast<void *>(store); }
+  static NDAccess *GetOutputReuse(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
+  static void SetStageStore(NDAccess *op, NDAccess *store) { op->addr_.gm = static_cast<void *>(store); }
+  static NDAccess *GetStageStore(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
 
   uint64_t AllocWorkspace();
 

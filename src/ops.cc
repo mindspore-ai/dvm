@@ -352,7 +352,7 @@ int NDLoad::Emit(VectorKernel &k) {
   op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
   op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = round_tile_.size();
-  reloc_addr_ = insn_ + vLoad::RELOC_OFFSET;
+  addr_.Update(insn_ + vLoad::RELOC_OFFSET);
   return vLoad::Encode(insn_, vAccInsnID::V_LOAD, op, rounds);
 }
 
@@ -406,7 +406,7 @@ int NDMultiLoad::Emit(VectorKernel &k) {
   op.rank_id = rank_id;
   op.tile_stride2 = strides_.back() * ITEM_SIZE[type_id_];
 
-  reloc_addr_ = insn_ + vMultiLoad::RELOC_OFFSET;
+  addr_.Update(insn_ + vMultiLoad::RELOC_OFFSET);
   k.code_.unique_ids_.emplace_back(reinterpret_cast<uint32_t *>(insn_ + vMultiLoad::UNIQUEID_OFFSET));
   return vMultiLoad::Encode(insn_, vAccInsnID::V_MULTI_LOAD, op, nullptr);
 }
@@ -451,7 +451,7 @@ int NDPadStore::Emit(VectorKernel &k) {
     op.one_flag = 1;
   }
   op.round_rank = 0;
-  reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
+  addr_.Update(insn_ + vSliceSL::RELOC_OFFSET);
   return vSliceSL::Encode(insn_, vAccInsnID::V_SLICE_STORE, V_PIPE_STORE, op, nullptr);
 }
 
@@ -489,7 +489,7 @@ int NDSStore::Emit(VectorKernel &k) {  // TODO: broadcast
   op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
   op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
   op.type_size = ITEM_SIZE[type_id_];
-  reloc_addr_ = insn_ + vSStore::RELOC_OFFSET;
+  addr_.Update(insn_ + vSStore::RELOC_OFFSET);
   return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op);
   ;
 }
@@ -513,7 +513,7 @@ int NDSLoad::Emit(VectorKernel &k) {
     op.pingpong = 0;
     op.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
     op.round_rank = round_tile_.size();
-    reloc_addr_ = insn_ + vPingPongLoad::RELOC_OFFSET;
+    addr_.Update(insn_ + vPingPongLoad::RELOC_OFFSET);
     return vPingPongLoad::Encode(insn_, vAccInsnID::V_PINGPONG_LOAD, op, rounds);
   } else {
     vSLoad op;
@@ -535,7 +535,7 @@ int NDSLoad::Emit(VectorKernel &k) {
       op.flags = broadcast_m << 1 | broadcast_n;
     }
     op.type_size = ITEM_SIZE[type_id_];
-    reloc_addr_ = insn_ + vSLoad::RELOC_OFFSET;
+    addr_.Update(insn_ + vSLoad::RELOC_OFFSET);
     return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op);
   }
 }
@@ -602,7 +602,7 @@ int NDSliceLoad::Emit(VectorKernel &k) {
   op.type_size = ITEM_SIZE[type_id_];
   op.offset = reloc_offset;
   op.one_flag = 0;
-  reloc_addr_ = insn_ + vSliceSL::RELOC_OFFSET;
+  addr_.Update(insn_ + vSliceSL::RELOC_OFFSET);
   return vSliceSL::Encode(insn_, vAccInsnID::V_SLICE_LOAD, V_PIPE_LOAD, op, rounds);
 }
 
@@ -648,7 +648,7 @@ int NDStore::Emit(VectorKernel &k) {
     vStoreStatus op;
     op.xn = lhs_->xbuf_;
     op.to = addr_.data;
-    reloc_addr_ = insn_ + vStoreStatus::RELOC_OFFSET;
+    addr_.Update(insn_ + vStoreStatus::RELOC_OFFSET);
     return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);
   }
   uint64_t rounds[2];
@@ -671,7 +671,7 @@ int NDStore::Emit(VectorKernel &k) {
       }
       op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
       op.round_rank = round_tile_.size();
-      reloc_addr_ = insn_ + vStoreRS::RELOC_OFFSET;
+      addr_.Update(insn_ + vStoreRS::RELOC_OFFSET);
       return vStoreRS::Encode(insn_, V_STORE_RS, op, rounds);
     }
     if (lhs_->obj_id_ == kReduce) {
@@ -689,7 +689,7 @@ int NDStore::Emit(VectorKernel &k) {
         op.pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
         op.cond_offset = insn_ - red_op->tail_insn_ - vReduceJoin::STORE_FLAG_OFFSET;
         op.round_rank = round_tile_.size();
-        reloc_addr_ = insn_ + vStoreCond::RELOC_OFFSET;
+        addr_.Update(insn_ + vStoreCond::RELOC_OFFSET);
         return vStoreCond::Encode(insn_, vAccInsnID::V_STORE_COND, op, rounds);
       } else {
         int code_size;
@@ -709,11 +709,11 @@ int NDStore::Emit(VectorKernel &k) {
         }
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
         op.round_rank = round_tile_.size();
-        reloc_addr_ = insn_ + vStoreAtomic::RELOC_OFFSET;
+        addr_.Update(insn_ + vStoreAtomic::RELOC_OFFSET);
         code_size = vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
         red_op->GenClearKernel(this);
         code.sub_codes_.push_back(&(red_op->clear_kernel_->code_));
-        code.BindOpFast(red_op->clear_store_, this);
+        code.BindOpFast(red_op->clear_store_->addr_, addr_);
         return code_size;
       }
     }
@@ -738,7 +738,7 @@ int NDStore::Emit(VectorKernel &k) {
       reinterpret_cast<uint64_t>(k.comm_op_->xbufs_[1]) - reinterpret_cast<uint64_t>(k.comm_op_->xbufs_[0]);
     op.shard_stride = std::accumulate(shape_ref_->data, shape_ref_->data + shape_ref_->size, 1LL, std::multiplies{}) *
                       ITEM_SIZE[type_id_] / op.rank_size;
-    reloc_addr_ = insn_ + vStoreAG::RELOC_OFFSET;
+    addr_.Update(insn_ + vStoreAG::RELOC_OFFSET);
     return vStoreAG::Encode(insn_, V_STORE_AG, op);
   }
   vStore op;
@@ -771,7 +771,7 @@ int NDStore::Emit(VectorKernel &k) {
   op.iter_size = iter_size;
   op.pad_size = pad_size;
   op.round_rank = round_tile_.size();
-  reloc_addr_ = insn_ + vStore::RELOC_OFFSET;
+  addr_.Update(insn_ + vStore::RELOC_OFFSET);
   return vStore::Encode(insn_, vAccInsnID::V_STORE, op, rounds);
 }
 
@@ -1503,9 +1503,6 @@ ReduceOp::~ReduceOp() {
   if (clear_kernel_ != nullptr) {
     delete clear_kernel_;
   }
-  if (ws_reloc_ != nullptr) {
-    delete ws_reloc_;
-  }
 }
 
 void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -1749,17 +1746,14 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   size += vReduceJoin::Encode(tail_insn_, op);
   *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
   k.visit_->rel_relocs_.push_back(tail_insn_);
-  if (ws_reloc_ == nullptr) {
-    ws_reloc_ = new NDLoadDummy(type_id_);
-  }
-  ws_reloc_->addr_.ws = 0;
-  ws_reloc_->reloc_addr_ = tail_insn_ + vReduceJoin::RELOC_OFFSET;
+  ws_reloc_.ws = 0;
+  ws_reloc_.Update(tail_insn_ + vReduceJoin::RELOC_OFFSET);
   k.code_.BindWorkspace(ws_reloc_, 0);  // TODO: mutli workspace
-  if (k.forward_event_num_ > 7) {
-    k.forward_event_num_ = 7;
+  if (k.forward_event_num_ > 6) {
+    k.forward_event_num_ = 6;
   }
-  if (k.backward_event_num_ > 7) {
-    k.backward_event_num_ = 7;
+  if (k.backward_event_num_ > 6) {
+    k.backward_event_num_ = 6;
   }
   return size;
 }

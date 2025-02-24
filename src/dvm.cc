@@ -745,11 +745,11 @@ int Kernel::EagerMsProfLaunch(void *stream) {
 int Kernel::Launch(const RelocTable &reloc_table, void **inputs, void **outputs, void *workspace, void *stream) {
   auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
   for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    (*loads++)->Reloc(*inputs++);
+    (*loads++)->addr_.Reloc(*inputs++);
   }
   auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
   for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    (*stores++)->Reloc(*outputs++);
+    (*stores++)->addr_.Reloc(*outputs++);
   }
   auto &code = kernel_->code_;
   code.RelocBinds(workspace);

@@ -470,8 +470,6 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   vElementAny::Decode(dump_info.insn, *dump_info.insn, op);
   oss << dump_info.simd_width << "x" << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", "
       << reinterpret_cast<void *>(op.xn) << " //";
-  DumpVal("rs", op.rs, oss);
-  oss << ", ";
   DumpVal("iter_size", op.iter_size, oss);
   oss << ", ";
   DumpVal("tail_size", op.tail_size, oss);

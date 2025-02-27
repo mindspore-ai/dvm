@@ -717,7 +717,6 @@ struct vClearPad {
 struct vElementAny {
   uint64_t xd;
   uint64_t xn;
-  uint64_t rs;
   uint64_t iter_size;
   uint64_t repeat;
   uint64_t tail_size;
@@ -727,7 +726,6 @@ struct vElementAny {
     op.xd = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET + V_C_X_BITS, V_C_X_BITS));
     op.xn = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET, V_C_X_BITS));
     uint64_t data = pc[1];
-    op.rs = data >> 60;
     op.tail_size = (data >> 32) & 0xfffful;
     op.iter_size = (data >> 16) & 0xfffful;
     op.repeat = data & 0xfffful;
@@ -736,7 +734,7 @@ struct vElementAny {
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vElementAny &op) {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
-    pc[1] = op.rs << 60 | op.tail_size << 32 | op.iter_size << 16 | op.repeat;
+    pc[1] = op.tail_size << 32 | op.iter_size << 16 | op.repeat;
     return size;
   }
 };

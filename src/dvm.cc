@@ -225,7 +225,7 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
     case BinaryOpType::kLessEqual:
     case BinaryOpType::kGreaterEqual:
     case BinaryOpType::kLess: {
-      if constexpr (!std::is_same<T, int32_t>::value) {
+      if (input->type_id_ != kInt32) {
         auto obj = new CompareScalarOp<T>(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
         vkernel->Append(obj);
         return obj;

@@ -894,7 +894,6 @@ int ElementAnyOp::Emit(VectorKernel &k) {
   vElementAny op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
-  op.rs = GetBlocks(k.simd_width_);
   op.iter_size = lhs_->strides_.back();
   op.tail_size = tail_dim_ < 0 ? lhs_->strides_.back() : lhs_->strides_.back() / lhs_->nd_[tail_dim_] * tail_size_;
 

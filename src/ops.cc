@@ -837,7 +837,7 @@ int UnaryOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   ASSERT(size_t(op_type_) < sizeof(unary_id_list) / sizeof(InsnIdTable));
   auto id = unary_id_list[op_type_].ids[type_id_];
   ASSERT(id != V_NONE);
@@ -898,6 +898,7 @@ int ElementAnyOp::Emit(VectorKernel &k) {
   op.tail_size = tail_dim_ < 0 ? lhs_->strides_.back() : lhs_->strides_.back() / lhs_->nd_[tail_dim_] * tail_size_;
 
   op.repeat = lhs_->strides_.back() / k.simd_width_;
+  op.simd_width = k.simd_width_;
   size += vElementAny::Encode(tail_insn_, V_ELEMENT_ANY, op);
 
   if (insn_num > 1) {
@@ -912,7 +913,7 @@ int CastOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   auto id = cast_id_list[lhs_->type_id_][type_id_];
   ASSERT(id != V_NONE);
   return vUnary::Encode(insn_, id, op);
@@ -931,7 +932,7 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
   vBinaryS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   op.scalar = EncodeScalar(scalar_, type_id_);
   ASSERT(size_t(op_type_) < sizeof(binarys_id_list) / sizeof(InsnIdTable));
   auto id = binarys_id_list[op_type_].ids[type_id_];
@@ -965,7 +966,7 @@ int CompareScalarOp<T>::Emit(VectorKernel &k) {
   vCompareS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   op.scalar = EncodeScalar(scalar_, type_id_);
   op.ws = wss_[0];
   op.type = cmp_op_;
@@ -1086,7 +1087,7 @@ int BinaryOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.xm = rhs_->xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   ASSERT(size_t(op_type_) < sizeof(binary_id_list) / sizeof(InsnIdTable));
   auto id = binary_id_list[op_type_].ids[type_id_];
   ASSERT(id != V_NONE);
@@ -1116,7 +1117,7 @@ int CompareOp::Emit(VectorKernel &k) {
   op.xm = rhs_->xbuf_;
   op.type = cmp_op_;
   op.ws = wss_[0];
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   auto id = binary_id_list[cmp_op_].ids[type_id_];
   ASSERT(id != V_NONE);
   return vCompare::Encode(insn_, id, op);
@@ -1135,7 +1136,7 @@ int PowerOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.xm = rhs_->xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   op.ws0 = wss_[0];
   op.ws1 = wss_[1];
   return vBinaryWS::Encode(insn_, V_POW, op);
@@ -1205,7 +1206,7 @@ int SelectOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_SEL_FP16, V_NONE, V_SEL, V_SEL_INT32};
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   op.xm = rhs_->xbuf_;
   op.cond = xhs_->xbuf_;
   op.ws = wss_[0];
@@ -1285,7 +1286,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_widt
   vBroadcastX op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.repeat = strides_[end_dim] / simd_width;
+  op.count = strides_[end_dim];
   int64_t rank_size = static_cast<int64_t>(strides_.size());
   op.lead_num = end_dim + 1 < rank_size ? nd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 < rank_size ? strides_.back() / strides_[end_dim + 1] : 1;
@@ -1365,7 +1366,7 @@ int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
   vBroadcastS op;
   op.scalar = EncodeScalar(scalar_, type_id_);
   op.xd = xbuf_;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   return vBroadcastS::Encode(insn_, ITEM_SIZE[type_id_] == sizeof(uint32_t) ? V_BROADCAST_S : V_BROADCAST_S_B16, op);
 }
 
@@ -1445,6 +1446,7 @@ int _ReduceOp::Emit(VectorKernel &k) {
       insn_num++;
     }
     vReduceX op;
+    op.simd_width = k.simd_width_;
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;
     op.red_size = lhs_->strides_[end_dim_];
@@ -1471,6 +1473,7 @@ int _ReduceOp::Emit(VectorKernel &k) {
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;
     op.iter_size = strides_[start_dim_];
+    op.simd_width = k.simd_width_;
     op.red_size = lhs_->strides_[end_dim_] / op.iter_size;
     ASSERT(op.red_size > 1);
     if (InRange(tail_dim_)) {
@@ -1638,7 +1641,7 @@ int ReduceOp::Emit(VectorKernel &k) {
   op.xd = out_xbuf;
   op.xn = xbuf_;
   xbuf_ = out_xbuf;
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   op.round_rank = round_tile_.size();
   tail_insn_ = insn_ + size;
   size += vAtomicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
@@ -1672,7 +1675,7 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, TileVisitC
   }
   uint64_t core_limit = k.code_.block_dim_;
   if (round_depth == 1) {
-    auto v = reinterpret_cast<vVisitRed1*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed1));
+    auto v = reinterpret_cast<vVisitRed1 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed1));
     uint64_t r1 = round_tile[0];
     v->head = 0;
     v->r1 = r1;
@@ -1682,23 +1685,23 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, TileVisitC
     coder.visit_id_ = V_VISIT_RED_1;
     coder.block_num_ = std::min(core_limit, k.tile_num_);
   } else if (round_depth == 2) {
-    auto v = reinterpret_cast<vVisitRed2*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed2));
+    auto v = reinterpret_cast<vVisitRed2 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed2));
     uint64_t r1 = round_tile[0];
     uint64_t e1 = round_tile[1];
     v->head = 0;
-    v->e = (k.tile_num_ /r1) << 32;
+    v->e = (k.tile_num_ / r1) << 32;
     v->e1_r1 = e1 << 32 | r1;
     coder.code_ = reinterpret_cast<uint64_t *>(v);
     coder.code_size_ = sizeof(vVisitRed2);
     coder.visit_id_ = V_VISIT_RED_2;
     coder.block_num_ = std::min(core_limit, k.tile_num_);
   } else if (round_depth == 3) {
-    auto v = reinterpret_cast<vVisitRed3*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed3));
+    auto v = reinterpret_cast<vVisitRed3 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed3));
     uint64_t r1 = round_tile[0];
     uint64_t e1 = round_tile[1];
     uint64_t r2 = round_tile[2];
     v->tidx_head = 0;
-    v->e = (k.tile_num_ /(r1 * r2)) << 32;
+    v->e = (k.tile_num_ / (r1 * r2)) << 32;
     v->e1_r2 = e1 << 32 | r2;
     v->r1 = r1;
     coder.code_ = reinterpret_cast<uint64_t *>(v);
@@ -1707,13 +1710,13 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, TileVisitC
     coder.block_num_ = std::min(core_limit, k.tile_num_ / r2);
   } else {
     ASSERT(round_depth == 4);
-    auto v = reinterpret_cast<vVisitRed4*>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed4));
+    auto v = reinterpret_cast<vVisitRed4 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed4));
     uint64_t r1 = round_tile[0];
     uint64_t e1 = round_tile[1];
     uint64_t r2 = round_tile[2];
     uint64_t e2 = round_tile[3];
     v->tidx_head = 0;
-    v->e = (k.tile_num_ /(r1 * r2)) << 32;
+    v->e = (k.tile_num_ / (r1 * r2)) << 32;
     v->e1_r1 = e1 << 32 | r1;
     v->e2_r2 = e2 << 32 | r2;
     coder.code_ = reinterpret_cast<uint64_t *>(v);
@@ -1739,7 +1742,7 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   op.xd = xbuf_ = out_xbuf;
   op.xn = wss_[0];
   op.xs = wss_[1];
-  op.repeat = strides_.back() / k.simd_width_;
+  op.count = strides_.back();
   op.ws = 0;
   tail_insn_ = insn_ + size;
   size += vReduceJoin::Encode(tail_insn_, op);
@@ -2391,7 +2394,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
     add.xd = xbuf_;
     add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
     add.xm = rhs;
-    add.repeat = strides_.back() / k.simd_width_;
+    add.count = strides_.back();
     current_insn = insn_ + code_size;
     code_size += vBinary::Encode(current_insn, add_id_, add);
     *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2449,7 +2452,7 @@ int ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
     add.xd = xbuf_;
     add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
     add.xm = rhs;
-    add.repeat = strides_.back() / k.simd_width_;
+    add.count = strides_.back();
     current_insn = insn_ + code_size;
     code_size += vBinary::Encode(current_insn, add_id_, add);
     *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2516,7 +2519,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
     uint64_t per_rank_load_offset = per_rank_nburst * lenburst;
     ASSERT(per_rank_offset % 32 == 0);
     // Should be 32Byte aligned in UB
-    uint64_t this_rank_repeat = this_rank_nburst * lead_align / k.simd_width_;
+    uint64_t this_rank_count = this_rank_nburst * lead_align;
 
     // Used by statge 2
     uint64_t per_rank_lenburst = per_rank_offset / 32;
@@ -2553,7 +2556,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       add.xd = add_dst;
       add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
       add.xm = rhs;
-      add.repeat = this_rank_repeat;
+      add.count = this_rank_count;
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2654,7 +2657,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       add.xd = add_dst;
       add.xn = is_begin ? lhs_->xbuf_ : add_dst;
       add.xm = rhs;
-      add.repeat = strides_.back() / k.simd_width_;
+      add.count = strides_.back();
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2718,14 +2721,14 @@ int AllReduceOp::Emit(VectorKernel &k) {
   *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | backward_event2 << V_M_HEAD_SET_EVENT_OFFSET;
 
   if (use_twoshot_) {
-    uint64_t repeat_full = strides_.back() / k.simd_width_;
-    uint64_t per_rank_repeat = repeat_full / rank_size;
-    uint64_t last_rank_repeat = repeat_full - per_rank_repeat * (rank_size - 1);
-    uint64_t this_rank_repeat = rank_id == rank_size - 1 ? last_rank_repeat : per_rank_repeat;
-    uint64_t per_rank_offset = per_rank_repeat * k.simd_width_ * ITEM_SIZE[type_id_];
+    uint64_t repeat_full = strides_.back();
+    uint64_t per_rank_count = repeat_full / rank_size;
+    uint64_t last_rank_count = repeat_full - per_rank_count * (rank_size - 1);
+    uint64_t this_rank_count = rank_id == rank_size - 1 ? last_rank_count : per_rank_count;
+    uint64_t per_rank_offset = per_rank_count * ITEM_SIZE[type_id_];
     ASSERT(per_rank_offset % 32 == 0);  // Should be 32Byte aligned in UB
-    uint64_t per_rank_lenburst = GetBlocks(per_rank_repeat * k.simd_width_);
-    uint64_t last_rank_lenburst = GetBlocks(last_rank_repeat * k.simd_width_);
+    uint64_t per_rank_lenburst = GetBlocks(per_rank_count);
+    uint64_t last_rank_lenburst = GetBlocks(last_rank_count);
     uint64_t this_rank_lenburst = rank_id == rank_size - 1 ? last_rank_lenburst : per_rank_lenburst;
 
     // TwoShot stage 1:
@@ -2755,7 +2758,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
       add.xd = add_dst;
       add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
       add.xm = rhs;
-      add.repeat = this_rank_repeat;
+      add.count = this_rank_count;
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2853,7 +2856,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
       add.xd = xbuf_;
       add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
       add.xm = rhs;
-      add.repeat = strides_.back() / k.simd_width_;
+      add.count = strides_.back();
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;

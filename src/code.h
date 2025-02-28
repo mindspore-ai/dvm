@@ -27,9 +27,7 @@ extern const uint64_t g_visit_func_offset[];
 namespace dvm {
 
 struct TileVisitCoder {
-  void Clear() {
-    rel_relocs_.clear();
-  }
+  void Clear() { rel_relocs_.clear(); }
   uint32_t block_num_;
   uint32_t ws_size_;
   uint32_t visit_id_;
@@ -47,7 +45,7 @@ struct RelocAddr {
   void Update(uint64_t *insn) { reloc_ = insn; }
   void Update(const RelocAddr &share) { reloc_ = share.reloc_; }
 
-  union { // NOTICE: bind after codegen
+  union {  // NOTICE: bind after codegen
     void *gm;
     uint64_t ws;
     const RelocAddr *op;
@@ -74,14 +72,14 @@ class Code {
   void Alloc(size_t size);
   void MoveCode(Code &other);
 
-  void UpdateHead(uint64_t data, uint64_t simd_width, uint64_t flags, uint64_t ktype) {
+  void UpdateHead(uint64_t data, uint64_t flags, uint64_t ktype) {
     uint64_t *head = reinterpret_cast<uint64_t *>(data_);
     head[0] = 0;
-    head[1] = data | simd_width << V_ENTRY_SIMD_WIDTH_OFFSET | flags | ktype |
-              (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET;
+    head[1] =
+      data | flags | ktype | (static_cast<uint64_t>(data_size_) / sizeof(uint64_t) - 2) << V_ENTRY_CODE_SIZE_OFFSET;
   }
 
-  void UpdateV(uint64_t tile_num, uint64_t simd_width) {
+  void UpdateV(uint64_t tile_num) {
     target_ = kTargetVec;
     uint64_t block_dim = static_cast<uint64_t>(block_dim_);
     uint64_t block_tile = CeilDiv<uint64_t>(tile_num, block_dim);
@@ -89,10 +87,10 @@ class Code {
     ASSERT(block_tail < block_dim);
     uint64_t data = block_tile << V_ENTRY_V_TILE_BODY_OFFSET | block_tail << V_ENTRY_V_TILE_TAIL_OFFSET |
                     block_dim << V_ENTRY_V_BLOCK_NUM_OFFSET;
-    UpdateHead(data, simd_width, 0, V_ENTRY_TYPE_V);
+    UpdateHead(data, 0, V_ENTRY_TYPE_V);
   }
 
-  void UpdateVE(const TileVisitCoder *visit, uint64_t simd_width) {
+  void UpdateVE(const TileVisitCoder *visit) {
     target_ = kTargetMix;
     uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
     data_size_ += visit->code_size_;
@@ -101,23 +99,24 @@ class Code {
       *head |= static_cast<uint64_t>(visit_code - head) << V_HEAD_EXT_OFFSET;
     }
     uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - 2;
-    uint64_t data = g_visit_func_offset[visit->visit_id_] << V_ENTRY_VE_VISIT_ID_OFFSET | offset << V_ENTRY_VE_VISIT_OFFSET_OFFSET;
-    UpdateHead(data, simd_width, 0, V_ENTRY_TYPE_VE);
+    uint64_t data =
+      g_visit_func_offset[visit->visit_id_] << V_ENTRY_VE_VISIT_ID_OFFSET | offset << V_ENTRY_VE_VISIT_OFFSET_OFFSET;
+    UpdateHead(data, 0, V_ENTRY_TYPE_VE);
   }
 
   void UpdateVP() {
     target_ = kTargetVec;
-    UpdateHead(static_cast<uint64_t>(block_dim_) << V_ENTRY_VP_BLOCK_SUM_OFFSET, 0, 0, V_ENTRY_TYPE_VP);
+    UpdateHead(static_cast<uint64_t>(block_dim_) << V_ENTRY_VP_BLOCK_SUM_OFFSET, 0, V_ENTRY_TYPE_VP);
   }
 
   void UpdateC(uint64_t group_num) {
     target_ = kTargetCube;
-    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, 0, 0, V_ENTRY_TYPE_C);
+    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, 0, V_ENTRY_TYPE_C);
   }
 
-  void UpdateMix(uint64_t group_num, uint64_t simd_width, uint64_t flags) {
+  void UpdateMix(uint64_t group_num, uint64_t flags) {
     target_ = kTargetMix;
-    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, simd_width, flags, V_ENTRY_TYPE_MIX);
+    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, flags, V_ENTRY_TYPE_MIX);
   }
 
   static constexpr uint64_t HeadSize() { return sizeof(uint64_t) * 2; }  // ffts + entry

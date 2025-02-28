@@ -143,11 +143,11 @@ class VectorKernel : public VKernel {
     code_.data_size_ = code_end - code_.data_;
     if (!visit_) {
       code_.block_dim_ = CompactBlockDim(core_limit);
-      code_.UpdateV(tile_num_, simd_width_);
+      code_.UpdateV(tile_num_);
       return 0;
     }
     code_.block_dim_ = CeilDiv<uint32_t>(visit_->block_num_, 2);
-    code_.UpdateVE(visit_, simd_width_);
+    code_.UpdateVE(visit_);
     return visit_->ws_size_;
   }
 

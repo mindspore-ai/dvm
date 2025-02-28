@@ -46,9 +46,7 @@ void DumpVal(const std::string &name, T val, std::ostringstream &oss) {
 struct DumpInfo {
   uint64_t *insn = nullptr;
   uint64_t ext = 0;
-  uint64_t simd_width = 0;
-  DumpInfo(uint64_t *insn_in, uint64_t ext_in, uint64_t simd_width_in = 0)
-      : insn(insn_in), ext(ext_in), simd_width(simd_width_in) {}
+  DumpInfo(uint64_t *insn_in, uint64_t ext_in) : insn(insn_in), ext(ext_in) {}
 };
 
 void DumpRounds(uint64_t rank, uint64_t *rounds, std::ostringstream &oss) {
@@ -102,7 +100,7 @@ void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpAtomicCum(const DumpInfo &dump_info, std::ostringstream &oss) {
   vAtomicCum op;
   vAtomicCum::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   if (op.round_rank > 0) {
     oss << ", ";
@@ -292,14 +290,14 @@ void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << 
 void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
   vUnary op;
   vUnary::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
 void DumpUnaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBinary op;
   vBinary::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " // ";
   DumpVal("ws", reinterpret_cast<void *>(op.xm), oss);
 }
@@ -307,10 +305,8 @@ void DumpUnaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpRemovePad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vRemovePad op;
   vRemovePad::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.iter_num << "x" << op.repeat;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " // ";
-  DumpVal("iter_num", op.iter_num, oss);
-  oss << ", ";
   DumpVal("rs", op.rs, oss);
 }
 
@@ -318,7 +314,7 @@ template <typename T = float>
 void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBinaryS op;
   vBinaryS::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << ", "
       << vBinaryS::GetScalar<T>(dump_info.insn);
 }
@@ -326,7 +322,7 @@ void DumpBinaryS(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBinary op;
   vBinary::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm);
 }
@@ -334,7 +330,7 @@ void DumpBinary(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpBinaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBinaryWS op;
   vBinaryWS::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
   DumpVal("ws0", reinterpret_cast<void *>(op.ws0), oss);
@@ -351,7 +347,7 @@ void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
       cmp_op = it->first;
     }
   }
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
   DumpVal("cmp_type", cmp_op, oss);
@@ -369,7 +365,7 @@ void DumpCompareS(const DumpInfo &dump_info, std::ostringstream &oss) {
       cmp_op = it->first;
     }
   }
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
   oss << ", " << vCompareS::GetScalar<T>(dump_info.insn) << " //";
   DumpVal("cmp_type", cmp_op, oss);
@@ -380,14 +376,14 @@ void DumpCompareS(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastS op;
   vBroadcastS::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op.scalar;
 }
 
 void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSelect op;
   vSelect::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat;
+  oss << op.count;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.cond) << ", "
       << reinterpret_cast<void *>(op.xn);
   oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
@@ -397,7 +393,7 @@ void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpBroadcastX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vBroadcastX op;
   vBroadcastX::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "[" << dump_info.simd_width << "x" << op.repeat << "]x" << op.lead_num << "x" << op.iter_num;
+  oss << "[" << op.count << "]x" << op.lead_num << "x" << op.iter_num;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("lead_pad", op.lead_pad, oss);
 }
@@ -435,7 +431,7 @@ void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpReduceJoin(const DumpInfo &dump_info, std::ostringstream &oss) {
   vReduceJoin op;
   vReduceJoin::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  oss << op.count << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("xs", reinterpret_cast<void *>(op.xs), oss);
   oss << ", ";
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
@@ -452,9 +448,7 @@ void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
-void DumpNop(const DumpInfo &dump_info, std::ostringstream &oss){
-  oss << "0";
-}
+void DumpNop(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "0"; }
 
 void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vClearPad op;
@@ -468,7 +462,7 @@ void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   vElementAny op;
   vElementAny::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << dump_info.simd_width << "x" << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", "
+  oss << op.simd_width << "x" << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", "
       << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("iter_size", op.iter_size, oss);
   oss << ", ";
@@ -674,7 +668,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_RESHAPE_B16, {&DumpReshape, "Reshape", "u16"}},
 };
 
-size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss, uint64_t &pipe) {
+size_t DumpInsn(uint64_t *insn, std::ostringstream &oss, uint64_t &pipe) {
   auto convert_id = [](const uint64_t offsets[], uint64_t none_idx, uint64_t id) -> uint64_t {
     for (uint64_t i = 0; i <= none_idx; ++i) {
       if (offsets[i] == id) {
@@ -690,7 +684,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss, ui
   if (head & (1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
     uint64_t ext = (head >> V_HEAD_EXT_OFFSET) & V_HEAD_EXT_MASK;
     offset = (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
-    DumpInfo info{insn, ext, simd_width};
+    DumpInfo info{insn, ext};
     id = convert_id(g_simd_func_offset, V_NONE, id);
     if (op_dump_info_table.find(id) != op_dump_info_table.end()) {
       auto [dump_func, name, dtype_str] = op_dump_info_table[id];
@@ -704,13 +698,13 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss, ui
   } else {
     uint64_t ext = (head >> V_M_HEAD_EXT_OFFSET) & V_M_HEAD_EXT_MASK;
     offset = (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
-    DumpInfo info{insn, ext, simd_width};
+    DumpInfo info{insn, ext};
     id = convert_id(g_access_func_offset, V_ACCESS_NONE, id);
     if (acc_dump_func_table.find(id) != acc_dump_func_table.end()) {
       acc_dump_func_table[id](info, oss);
       pipe = id >= V_STORE ? V_PIPE_STORE : V_PIPE_LOAD;
 #ifdef DEBUG
-      if (pipe == V_PIPE_STORE ) {
+      if (pipe == V_PIPE_STORE) {
         uint64_t debug_size = *(insn + (((head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK) - 1));
         oss << ", ";
         DumpVal("dbg_size", debug_size, oss);
@@ -724,8 +718,7 @@ size_t DumpInsn(uint64_t *insn, uint64_t simd_width, std::ostringstream &oss, ui
   return offset;
 }
 
-void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width,
-             const std::string &indent) {
+void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
   bcodeptr_t insn = reinterpret_cast<bcodeptr_t>(bcode);
   bcodeptr_t insn_end = reinterpret_cast<bcodeptr_t>(bcode + bcode_size);
   uint64_t insn_idx = 0;
@@ -735,7 +728,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, uint6
     if (head == 0) break;
     oss << indent << insn_idx << ": ";
     insn_idx++;
-    auto offset = DumpInsn(insn, simd_width, oss, pipe);
+    auto offset = DumpInsn(insn, oss, pipe);
     oss << "\n";
     insn = insn + offset;
     oss << indent << "    {";
@@ -812,8 +805,8 @@ class DisAssembler {
     }
   }
 
-  void DasVecBody(uint8_t *bcode, uint64_t bcode_size, uint64_t simd_width, const std::string &indent) {
-    DasBody(oss, bcode, bcode_size, simd_width, indent);
+  void DasVecBody(uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+    DasBody(oss, bcode, bcode_size, indent);
   }
 
   void DasCubeBody(vCubeOp *op, const std::string &indent) {
@@ -844,18 +837,15 @@ class DisAssembler {
     auto tile_body = vGetBitRange(entry, V_ENTRY_V_TILE_BODY_OFFSET, V_ENTRY_V_TILE_BODY_BITS);
     auto tile_tail = vGetBitRange(entry, V_ENTRY_V_TILE_TAIL_OFFSET, V_ENTRY_V_TILE_TAIL_BITS);
     auto block_num = vGetBitRange(entry, V_ENTRY_V_BLOCK_NUM_OFFSET, V_ENTRY_V_BLOCK_NUM_BITS);
-    auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
-    oss << indent << "aiv(tile_num=" << tile_body << 'x' << block_num << '-' << tile_tail
-        << ", simd_width=" << simd_width;
+    oss << indent << "aiv(tile_num=" << tile_body << 'x' << block_num << '-' << tile_tail;
     oss << ") {" << std::endl;
-    DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
+    DasVecBody(bcode, bcode_size, indent + "  ");
     oss << indent << "}";
   }
 
   void DasVecEx(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
     auto visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);
     auto offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);
-    auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
     oss << indent << "aiv(visit={";
     auto visit_addr = bcode + offset * sizeof(uint64_t);
     constexpr uint64_t MASK_32 = 0xfffffffful;
@@ -878,7 +868,8 @@ class DisAssembler {
       }
       case V_VISIT_RED_3: {
         auto v = reinterpret_cast<vVisitRed3 *>(visit_addr);
-        oss << "e:" << (v->e >> 32) << ", r1:" << (v->r1) << ", e1:" << (v->e1_r2 >> 32) << ", r2:" << (v->e1_r2 & MASK_32);
+        oss << "e:" << (v->e >> 32) << ", r1:" << (v->r1) << ", e1:" << (v->e1_r2 >> 32)
+            << ", r2:" << (v->e1_r2 & MASK_32);
         break;
       }
       case V_VISIT_RED_4: {
@@ -890,8 +881,8 @@ class DisAssembler {
       default:
         break;
     }
-    oss << "}, simd_width=" << simd_width << ") {" << std::endl;
-    DasVecBody(bcode, bcode_size, simd_width, indent + "  ");
+    oss << "}) {" << std::endl;
+    DasVecBody(bcode, bcode_size, indent + "  ");
     oss << indent << "}";
   }
 
@@ -924,13 +915,11 @@ class DisAssembler {
     oss << std::endl << sub_indent << "}" << std::endl;
     oss << sub_indent << "aiv(sub_tile_num=[" << (cube->subtilenum & 0xfffffffful) << ", " << (cube->subtilenum >> 32)
         << "]";
-    auto simd_width = vGetBitRange(entry, V_ENTRY_SIMD_WIDTH_OFFSET, V_ENTRY_SIMD_WIDTH_BITS);
-    oss << ", simd_width=" << simd_width;
     if (entry & V_ENTRY_FLAG_PRE_WAIT) {
       oss << ", pre_wait=1";
     }
     oss << ") {" << std::endl;
-    DasVecBody(bcode + sizeof(vCubeOp), bcode_size - sizeof(vCubeOp), simd_width, sub_indent + "  ");
+    DasVecBody(bcode + sizeof(vCubeOp), bcode_size - sizeof(vCubeOp), sub_indent + "  ");
     oss << sub_indent << "}" << std::endl;
     oss << indent << "}";
   }
@@ -942,7 +931,6 @@ class DisAssembler {
       int64_t block_end{-1};
       int64_t block_step{-1};
       int64_t block_tail{-1};
-      int64_t simd_width{-1};
       uint8_t *bcode;
       int64_t code_size;
     };
@@ -963,7 +951,6 @@ class DisAssembler {
         current->block_start = i;
         current->block_step = tile_loops;
         current->bcode = vec_code;
-        current->simd_width = (sum_data >> 41) & 0xfful;
         current->code_size = (sum_data >> 58) * 32;
       }
       if (tail_flag) {
@@ -974,10 +961,10 @@ class DisAssembler {
     oss << indent << "parallel(block_num=" << block_dim << ") {" << std::endl;
     for (uint64_t i = 0; i < summays.size(); ++i) {
       auto &summary = summays[i];
-      oss << " kernel_" << i << "(simd_width=" << summary.simd_width << ", block_range=[" << summary.block_start << ", "
+      oss << " kernel_" << i << "(block_range=[" << summary.block_start << ", "
           << summary.block_end << "], block_step=" << summary.block_step << ", block_tail=" << summary.block_tail
           << ") {" << std::endl;
-      DasVecBody(summary.bcode, summary.code_size, summary.simd_width, indent + "  ");
+      DasVecBody(summary.bcode, summary.code_size, indent + "  ");
       oss << indent << " }" << std::endl;
     }
     oss << indent << "}";

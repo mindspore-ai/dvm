@@ -320,7 +320,7 @@ uint64_t MixKernel::AlignCodeGen() {
   cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   code_.data_size_ = code_end - code_.data_;
   code_.target_ = Code::kTargetMix;
-  code_.UpdateMix(cube_op_->core_loop_, post_fusion_->simd_width_, V_ENTRY_FLAG_PRE_WAIT);
+  code_.UpdateMix(cube_op_->core_loop_, V_ENTRY_FLAG_PRE_WAIT);
   code_.Combine(post_fusion_->code_, 0);
   return ws_size;
 }

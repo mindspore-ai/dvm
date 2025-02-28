@@ -199,6 +199,9 @@ NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start,
 }
 
 NDObject *Kernel::Unary(int op_type, NDObject *input) {
+  if (op_type >= UnaryOpType::kRound && op_type <= UnaryOpType::kTrunc && GetDType(input) == kFloat16) {
+    return Cast(Unary(op_type, Cast(input, kFloat32)), kFloat16);
+  }
   if (GetDType(input) == kInt32) {
     if (op_type == UnaryOpType::kAbs) {
       return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));
@@ -531,7 +534,6 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 
 int Kernel::EagerMsProfLaunch(void *stream) {
   auto kernel = static_cast<VKernelE *>(kernel_);
-  auto extern_code = kernel->ExternCode();
   int kernel_used;
   const auto &kernels = kernel->GetKernels(kernel_used);
   for (int i = 0; i < kernel_used; ++i) {
@@ -570,7 +572,7 @@ int Kernel::EagerMsProfLaunch(void *stream) {
     info.op_fullname = info.op_name;
     msprof_helper.InitReportNode();
     msprof_helper.UpdateBeginTime();
-    vector_kernel->code_.Launch(extern_code, stream);
+    kernel->Launch(i, stream);
     msprof_helper.ReportTask();
   }
   return 0;

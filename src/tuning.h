@@ -17,6 +17,8 @@
 #ifndef _DVM_TUNING_H_
 #define _DVM_TUNING_H_
 #include <map>
+#include <mutex>
+#include <condition_variable>
 #include "dvm.h"
 #include "ops.h"
 
@@ -102,6 +104,8 @@ class LazyCubeTuner : public CubeTuner {
     int next_idx{0};
     int gen_cnt{0};
     int run_cnt{0};
+    std::mutex mutex_;
+    std::condition_variable cond_var_;
     TuningStage tuning_stage{kTileTuning};
   };
 

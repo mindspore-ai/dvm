@@ -351,6 +351,9 @@ NDObject *Kernel::MultiLoad(void *addr, ShapeRef *shape, DType type, const Comm 
 }
 
 NDObject *Kernel::Unary(int op_type, NDObject *input) {
+  if (op_type >= UnaryOpType::kRound && op_type <= UnaryOpType::kTrunc && GetDType(input) == kFloat16) {
+    return Cast(Unary(op_type, Cast(input, kFloat32)), kFloat16);
+  }
   if (GetDType(input) == kInt32) {
     if (op_type == UnaryOpType::kAbs) {
       return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));

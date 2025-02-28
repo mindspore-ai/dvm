@@ -415,18 +415,6 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     builtin(xd, xn, 1, 1, 1, 8, 8);                 \
   } while (0)
 
-#define TRUNC_FP16(pc, builtin, head, tile)                   \
-  do {                                                        \
-    vUnary op;                                                \
-    vUnary::Decode(pc, head, op);                             \
-    __ubuf__ half *xd = (__ubuf__ half *)(op.xd);             \
-    __ubuf__ half *xn = (__ubuf__ half *)(op.xn);             \
-    set_vector_mask(0, op.count);                             \
-    builtin((__ubuf__ int16_t *)xd, xn, 1, 1, 1, 8, 8);       \
-    pipe_barrier(PIPE_V);                                     \
-    vconv_s162f16(xd, (__ubuf__ int16_t *)xd, 1, 1, 1, 8, 8); \
-  } while (0)
-
 #define BINARY(pc, builtin, head, tile, VTYPE)      \
   do {                                              \
     vBinary op;                                     \
@@ -2073,10 +2061,6 @@ DEF_DISP_SIMD(V_SQRT_FP16, UNARY(pc, vsqrt, head, tile, half))
 DEF_DISP_SIMD(V_ABS_FP16, UNARY(pc, vabs, head, tile, half))
 DEF_DISP_SIMD(V_LOG_FP16, UNARY(pc, vln, head, tile, half))
 DEF_DISP_SIMD(V_EXP_FP16, UNARY(pc, vexp, head, tile, half))
-DEF_DISP_SIMD(V_ROUND_FP16, TRUNC_FP16(pc, vconv_f162s16r, head, tile))
-DEF_DISP_SIMD(V_FLOOR_FP16, TRUNC_FP16(pc, vconv_f162s16f, head, tile))
-DEF_DISP_SIMD(V_CEIL_FP16, TRUNC_FP16(pc, vconv_f162s16c, head, tile))
-DEF_DISP_SIMD(V_TRUNC_FP16, TRUNC_FP16(pc, vconv_f162s16z, head, tile))
 
 DEF_DISP_SIMD(V_ADDS_FP16, BINARYS(pc, vadds, head, half))
 DEF_DISP_SIMD(V_MULS_FP16, BINARYS(pc, vmuls, head, half))

@@ -56,10 +56,10 @@ static const InsnIdTable unary_id_list[kUnaryOpEnd] = {
   {"Reciprocal", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
   {"IsFinite", {V_NONE, V_ISFINITE_FP16, V_NONE, V_ISFINITE, V_NONE}},
   {"LogicalNot", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
-  {"Round", {V_NONE, V_ROUND_FP16, V_NONE, V_ROUND, V_NONE}},
-  {"Floor", {V_NONE, V_FLOOR_FP16, V_NONE, V_FLOOR, V_NONE}},
-  {"Ceil", {V_NONE, V_CEIL_FP16, V_NONE, V_CEIL, V_NONE}},
-  {"Trunc", {V_NONE, V_TRUNC_FP16, V_NONE, V_TRUNC, V_NONE}}};
+  {"Round", {V_NONE, V_NONE, V_NONE, V_ROUND, V_NONE}},
+  {"Floor", {V_NONE, V_NONE, V_NONE, V_FLOOR, V_NONE}},
+  {"Ceil", {V_NONE, V_NONE, V_NONE, V_CEIL, V_NONE}},
+  {"Trunc", {V_NONE, V_NONE, V_NONE, V_TRUNC, V_NONE}}};
 
 static const InsnIdTable binary_id_list[] = {
   // must keep consistent order with BinaryOpType

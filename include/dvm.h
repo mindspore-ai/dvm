@@ -168,6 +168,8 @@ class Kernel {
   NDObject *StagePadStore(NDObject *input, int64_t pad_size);
 
   uint64_t CodeGen();
+  // only used for dynamic-shape kernel shape inference
+  void Infer();
   int Launch(void *workspace, void *stream);
   int Launch(const RelocTable &reloc_table, void **inputs, void **outputs, void *workspace, void *stream);
   int MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,

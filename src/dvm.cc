@@ -494,6 +494,14 @@ uint64_t Kernel::CodeGen() {
   return kernel_->code_.ReserveWorkspace(ws_size);
 }
 
+void Kernel::Infer() {
+  if (kernel_->KType() != KernelType::kDynShape) {
+    return;
+  }
+  auto dyn_kernel = static_cast<VKernelD *>(kernel_);
+  dyn_kernel->Normalize();
+}
+
 int Kernel::Launch(void *workspace, void *stream) {
   auto &code = kernel_->code_;
   return code.RelocLaunch(workspace, stream);

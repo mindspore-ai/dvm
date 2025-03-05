@@ -248,11 +248,14 @@ class VectorKernel;
 #define OBJ_FLAG_REUSE_LHS 4
 #define OBJ_FLAG_REUSE_RHS 8
 #define OBJ_FLAG_DEAD 16
+#define OBJ_FLAG_FLEX_RREE_XHS (1u << 5)
+#define OBJ_FLAG_FLEX_REUSE_WS (1u << 6)
 
 #define OBJ_FLAG_WORKSPACE (1u << 16)
 #define OBJ_FLAG_XHS (2u << 16)
 #define OBJ_FLAG_EAGER (8u << 16)
 #define OBJ_FLAG_STAGE_IO (16u << 16)
+#define OBJ_FLAG_FLEX_INPL_WS (1u << 20)
 
 class NDObject {
  public:
@@ -462,7 +465,6 @@ class FlexOp : public NDObject {
   }
 
   NDObject *xhs_{nullptr};
-  bool free_xhs_{false};
   int ws_num_{0};
   uint64_t wss_[kWsMax];
 };
@@ -664,8 +666,8 @@ class _BroadcastOp : public NDObject {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
-  int64_t EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_width);
-  int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim, int64_t simd_width);
+  int64_t EmitBroadcastX(uint64_t *p, int end_dim);
+  int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
 };
 
 // expect shape is align: equal rank
@@ -731,6 +733,7 @@ class ReduceOp : public _ReduceOp {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
     ws_num_ = System::Instance().deterministic_ ? 2 : 1;
+    flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   }
   ~ReduceOp();
   void Normalize(std::vector<NDObject *> &run_ops) override;

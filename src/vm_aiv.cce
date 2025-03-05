@@ -1823,7 +1823,7 @@ extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t e
     tile_loops = ((VisitFunc)GetFunc(visit_id, main_addr))(visit_code, tile);
   } else if (ktype == V_ENTRY_TYPE_VP) {
     // summary[BLOCK_NUM] + codeseg[KERNEL_NUM]
-    // summary = lenburst(6) << 58 | offset(9) << 49 | simdwidth(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
+    // summary = lenburst(6) << 58 | offset(9) << 49 | reserved(8) << 41 | tail_tile(1) << 40 | tile_loops(20) << 20 | start_idx(20)
     uint64_t blocksum = vGetBitRange(entry, V_ENTRY_VP_BLOCK_SUM_OFFSET, V_ENTRY_VP_BLOCK_SUM_BITS);
     uint64_t blockidx = vBlockIdx();
     if (blockidx < blocksum) {

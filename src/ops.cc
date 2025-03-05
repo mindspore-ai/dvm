@@ -957,6 +957,7 @@ template <typename T>
 CompareScalarOp<T>::CompareScalarOp(int op_type, NDObject *input, T scalar)
     : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
   ws_num_ = 1;
+  flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   cmp_op_ = op_type;
   shape_ref_ = input->shape_ref_;
 }
@@ -1106,6 +1107,7 @@ int BinaryOp::QueryId(const std::string &op_name) {
 CompareOp::CompareOp(int op_type, NDObject *lhs, NDObject *rhs)
     : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
   ws_num_ = 1;
+  flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   cmp_op_ = op_type;
   shape_ref_ = &norm_.shape_;
 }
@@ -1275,14 +1277,14 @@ int _BroadcastOp::Emit(VectorKernel &k) {
   }
   int64_t offset;
   if (start_dim == 0 || start_dim == lead_dim_) {
-    offset = EmitBroadcastX(insn_, end_dim, k.simd_width_);
+    offset = EmitBroadcastX(insn_, end_dim);
   } else {
-    offset = EmitBroadcastY(insn_, start_dim, end_dim, k.simd_width_);
+    offset = EmitBroadcastY(insn_, start_dim, end_dim);
   }
   return offset;
 }
 
-int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_width) {
+int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   vBroadcastX op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1297,7 +1299,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim, int64_t simd_widt
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
 
-int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim, int64_t simd_width) {
+int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim) {
   vBroadcastY op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;

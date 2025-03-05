@@ -28,6 +28,7 @@ enum CodeGenTmpl {
   kGenSimd2,
   kGenComm,
   kGenFlex,
+  kGenSimd3,
   kGenLoad,
   kGenStore,
 };
@@ -58,7 +59,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenSimd1, false},  // BroadcastTo
   {kGenSimd0, true},   // BroadcastS
   {kGenFlex, false},   // Reduce
-  {kGenFlex, true},    // Select
+  {kGenSimd3, true},    // Select
   {kGenSimd1, false},  // ElemAny
   {kGenSimd1, true},   // RemovePad
   {kGenFlex, true},    // Power
@@ -145,7 +146,38 @@ class CodeGenHelper {
           break;
         }
         case kGenFlex: {
-          code_ptr += GenFlexOp(static_cast<FlexOp *>(op));
+          code_ptr += GenFlexOpCommon(static_cast<FlexOp *>(op));
+          if (op->rhs_ == nullptr) {
+            ASSERT(op->lhs_);
+            SimdSync(op->lhs_, op);
+          } else if (op->rhs_->index_ > op->lhs_->index_) {
+            SimdSync(op->rhs_, op);
+            SimdSync(op->lhs_, op);
+          } else {
+            SimdSync(op->lhs_, op);
+            SimdSync(op->rhs_, op);
+          }
+          break;
+        };
+        case kGenSimd3: {
+          auto flex = static_cast<FlexOp *>(op);
+          code_ptr += GenFlexOpCommon(flex);
+          if (op->flags_ & OBJ_FLAG_FLEX_RREE_XHS) {
+            free_xbuf_.emplace(flex->xhs_->xbuf_, op);
+          }
+          NDObject *inputs[3] = {flex->lhs_, flex->rhs_, flex->xhs_};
+          if (inputs[0]->index_ < inputs[1]->index_) {
+            std::swap(inputs[0], inputs[1]);
+          }
+          if (inputs[0]->index_ < inputs[2]->index_) {
+            std::swap(inputs[0], inputs[2]);
+          }
+          if (inputs[1]->index_ < inputs[2]->index_) {
+            std::swap(inputs[1], inputs[2]);
+          }
+          for (size_t i = 0; i < 3; i++) {
+            SimdSync(inputs[i], op);
+          }
           break;
         };
         case kGenLoad: {
@@ -246,71 +278,47 @@ class CodeGenHelper {
     }
   }
 
-  int GenFlexOpCommon(FlexOp *op, NDObject *anti_ops[], int anti_num) {
-    if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-      free_xbuf_.emplace(op->lhs_->xbuf_, op);
-    }
-    if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-      free_xbuf_.emplace(op->rhs_->xbuf_, op);
-    }
-    if (op->free_xhs_) {
-      free_xbuf_.emplace(op->xhs_->xbuf_, op);
-    }
-    int code_size = op->Emit(kernel_);
-    for (int i = 0; i < anti_num; ++i) {
-      SimdBarrier(anti_ops[i], op);
-    }
-    if (op->rhs_ == nullptr) {
-      ASSERT(op->lhs_);
-      SimdSync(op->lhs_, op);
-    } else if (op->xhs_ == nullptr) {
-      if (op->rhs_->index_ > op->lhs_->index_) {
-        SimdSync(op->rhs_, op);
-        SimdSync(op->lhs_, op);
-      } else {
-        SimdSync(op->lhs_, op);
-        SimdSync(op->rhs_, op);
-      }
-    } else {
-      NDObject *inputs[3] = {op->lhs_, op->rhs_, op->xhs_};
-      if (inputs[0]->index_ < inputs[1]->index_) {
-        std::swap(inputs[0], inputs[1]);
-      }
-      if (inputs[0]->index_ < inputs[2]->index_) {
-        std::swap(inputs[0], inputs[2]);
-      }
-      if (inputs[1]->index_ < inputs[2]->index_) {
-        std::swap(inputs[1], inputs[2]);
-      }
-      for (size_t i = 0; i < 3; i++) {
-        SimdSync(inputs[i], op);
-      }
-    }
-    return code_size;
-  }
-
-  int GenFlexOp(FlexOp *op) {
+  int GenFlexOpCommon(FlexOp *op) {
     int anti_num = 0;
     NDObject *anti_ops[FlexOp::kWsMax + 1];
     if (op->xbuf_ == 0) {
       auto anti = AllocOutXBuf(op);
       if (anti) anti_ops[anti_num++] = anti;
     }
-    ASSERT(op->ws_num_ <= FlexOp::kWsMax);
-    for (int i = 0; i < op->ws_num_; ++i) {
-      NDObject *anti = nullptr;
-      op->wss_[i] = AllocDynXBuf(op, &anti);
-      if (anti) anti_ops[anti_num++] = anti;
+    ASSERT(op->ws_num_ <= 2);
+    if (op->ws_num_ > 0) {
+      if (op->flags_ & OBJ_FLAG_FLEX_REUSE_WS) {
+        auto reuse = op->wss_[0] == 0 ? op->lhs_ : op->rhs_;
+        op->wss_[0] = reuse->xbuf_;
+        if (op->reuse_dep_) {
+          anti_ops[anti_num++] = kernel_.objects_[op->reuse_dep_];
+        }
+      } else {
+        auto anti = AllocDynXBuf(op, op->wss_[0]);
+        if (anti) anti_ops[anti_num++] = anti;
+      }
+      if (op->ws_num_ > 1) {
+        auto anti = AllocDynXBuf(op, op->wss_[1]);
+        if (anti) anti_ops[anti_num++] = anti;
+        free_xbuf_.emplace(op->wss_[1], op);
+      }
+      free_xbuf_.emplace(op->wss_[0], op);
     }
-    int size = GenFlexOpCommon(op, anti_ops, anti_num);
-    for (int i = 0; i < op->ws_num_; ++i) {
-      free_xbuf_.emplace(op->wss_[i], op);
+    if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+      free_xbuf_.emplace(op->lhs_->xbuf_, op);
+    }
+    if (op->flags_ & OBJ_FLAG_FREE_RHS) {
+      free_xbuf_.emplace(op->rhs_->xbuf_, op);
+    }
+    int size = op->Emit(kernel_);
+    for (int i = 0; i < anti_num; ++i) {
+      SimdBarrier(anti_ops[i], op);
     }
     return size;
   }
 
-  uint64_t AllocDynXBuf(NDObject *obj, NDObject **anti) {
-    uint64_t xbuf;
+  NDObject *AllocDynXBuf(NDObject *obj, uint64_t &xbuf) {
+    NDObject *anti = nullptr;
     if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
       xbuf = free_xbuf_.front().first;
@@ -322,10 +330,10 @@ class CodeGenHelper {
       ASSERT(!free_xbuf_.empty());
       auto &op = free_xbuf_.front();
       xbuf = op.first;
-      *anti = op.second;
+      anti = op.second;
       free_xbuf_.pop();
     }
-    return xbuf;
+    return anti;
   }
 
   NDObject *AllocOutXBuf(NDObject *obj) {
@@ -337,9 +345,7 @@ class CodeGenHelper {
       obj->xbuf_ = obj->rhs_->xbuf_;
       return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
     }
-    NDObject *anti = nullptr;
-    obj->xbuf_ = AllocDynXBuf(obj, &anti);
-    return anti;
+    return AllocDynXBuf(obj, obj->xbuf_);
   }
 
   inline void SimdBarrier(NDObject *from, NDObject *to) {
@@ -1112,44 +1118,81 @@ int VectorKernel::Analyze() {
         continue;
       }
       int reuse_flag = OP_LIVE_D(op) ? REUSE_READY : REUSE_REJECT;
-      auto kill = op->lhs_;
-      if (kill && LivenessEnd(op, kill)) {
-        if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
-          op->flags_ |= OBJ_FLAG_REUSE_LHS;
-          reuse_flag = REUSE_SUCC;
-          op->reuse_dep_ = 0;
-          kill->reuse_dep_ = op->index_;
-        } else {
-          op->flags_ |= OBJ_FLAG_FREE_LHS;
-          cur_live++;
-        }
-      }
-      kill = op->rhs_;
-      if (kill && LivenessEnd(op, kill)) {
-        if (reuse_flag == REUSE_READY && RhsInplaceCheck(op)) {
-          op->flags_ |= OBJ_FLAG_REUSE_RHS;
-          reuse_flag = REUSE_SUCC;
-          op->reuse_dep_ = 0;
-          kill->reuse_dep_ = op->index_;
-        } else {
-          op->flags_ |= OBJ_FLAG_FREE_RHS;
-          cur_live++;
-        }
-      }
-      int ws_num = 0;
-      if (op->flags_ & OBJ_FLAG_WORKSPACE) {
-        if (op->flags_ & OBJ_FLAG_XHS) {
-          FlexOp *flex = static_cast<FlexOp *>(op);
-          if (LivenessEnd(op, flex->xhs_)) {
+      if (!(op->flags_ & OBJ_FLAG_WORKSPACE)) {
+        if (auto kill = op->lhs_; kill && LivenessEnd(op, kill)) {
+          if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
+            op->flags_ |= OBJ_FLAG_REUSE_LHS;
+            reuse_flag = REUSE_SUCC;
+            op->reuse_dep_ = 0;
+            kill->reuse_dep_ = op->index_;
+          } else {
+            op->flags_ |= OBJ_FLAG_FREE_LHS;
             cur_live++;
-            flex->free_xhs_ = true;
           }
         }
-        ws_num = static_cast<FlexOp *>(op)->ws_num_;
-      }
-      if (cur_live + ws_num > live_peak) {
-        live_peak = cur_live + ws_num;
-      }
+        if (auto kill = op->rhs_; kill && LivenessEnd(op, kill)) {
+          if (reuse_flag == REUSE_READY && RhsInplaceCheck(op)) {
+            op->flags_ |= OBJ_FLAG_REUSE_RHS;
+            reuse_flag = REUSE_SUCC;
+            op->reuse_dep_ = 0;
+            kill->reuse_dep_ = op->index_;
+          } else {
+            op->flags_ |= OBJ_FLAG_FREE_RHS;
+            cur_live++;
+          }
+        }
+        if (cur_live > live_peak) {
+          live_peak = cur_live;
+        }
+      } else {
+        auto flex = static_cast<FlexOp *>(op);
+        int ws_num = flex->ws_num_;
+        if (auto kill = op->lhs_; kill && LivenessEnd(op, kill)) {
+          if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
+            op->flags_ |= OBJ_FLAG_REUSE_LHS;
+            reuse_flag = REUSE_SUCC;
+            op->reuse_dep_ = 0;
+            kill->reuse_dep_ = op->index_;
+          } else {
+            if (op->flags_ & OBJ_FLAG_FLEX_INPL_WS) {
+              op->flags_ |= OBJ_FLAG_FLEX_REUSE_WS;
+              op->reuse_dep_ = 0;
+              op->lhs_->reuse_dep_ = op->index_;
+              flex->wss_[0] = 0;
+              ws_num--;
+            } else {
+              op->flags_ |= OBJ_FLAG_FREE_LHS;
+            }
+            cur_live++;
+          }
+        }
+        if (auto kill = op->rhs_; kill && LivenessEnd(op, kill)) {
+          if (reuse_flag == REUSE_READY && RhsInplaceCheck(op)) {
+            op->flags_ |= OBJ_FLAG_REUSE_RHS;
+            reuse_flag = REUSE_SUCC;
+            op->reuse_dep_ = 0;
+            kill->reuse_dep_ = op->index_;
+          } else {
+            if ((op->flags_ & (OBJ_FLAG_FLEX_INPL_WS | OBJ_FLAG_FLEX_REUSE_WS)) == OBJ_FLAG_FLEX_INPL_WS) {
+              op->flags_ |= OBJ_FLAG_FLEX_REUSE_WS;
+              op->reuse_dep_ = 0;
+              op->lhs_->reuse_dep_ = op->index_;
+              flex->wss_[0] = 1;
+              ws_num--;
+            } else {
+              op->flags_ |= OBJ_FLAG_FREE_RHS;
+            }
+            cur_live++;
+          }
+        }
+        if ((op->flags_ & OBJ_FLAG_XHS) && LivenessEnd(op, flex->xhs_)) {
+          cur_live++;
+          flex->flags_ |= OBJ_FLAG_FLEX_RREE_XHS;
+        }
+        if (cur_live + ws_num > live_peak) {
+          live_peak = cur_live + ws_num;
+        }
+      } // end flexop
       if (reuse_flag == REUSE_READY) {
         cur_live--;
       }
@@ -1474,7 +1517,7 @@ uint64_t VKernelP::CodeGen() {
     code_.block_dim_ += code.block_dim_;
     // summary
     uint64_t lenburst = CeilDiv(code_size, 32ul);
-    uint64_t summary = lenburst << 58 | ((child_offset - code.HeadSize()) >> 5) << 49 | k->simd_width_ << 41;
+    uint64_t summary = lenburst << 58 | ((child_offset - code.HeadSize()) >> 5) << 49;
     uint64_t tile_per_block = (k->tile_num_ - 1) / code.block_dim_ + 1;
     uint64_t start_idx = 0;
     for (uint64_t i = 0; i < code.block_dim_ - 1; ++i) {

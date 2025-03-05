@@ -90,3 +90,24 @@ def test_cmp_int(op, func):
     z = t.binary(op,x, y)
     t.store_expect(z, func(a, b).astype(np.int32))
     assert(t.run_check())
+
+def test_cmp_ws_inplace():
+    t = Tester()
+    a = np.random.randint(1024, size=(32, 512)).astype(np.float16)
+    b = np.random.randint(1024, size=(32, 512)).astype(np.float16)
+    x = t.load(a)
+    y = t.load(b)
+    x = t.copy(x)
+    y = t.copy(y)
+    z = t.binary("Equal", x, y)
+    t.store_expect(z, np.equal(a, b).astype(np.float16))
+    assert(t.run_check())
+
+def test_cmp_s_ws_inplace():
+    t = Tester()
+    a = np.random.randint(1024, size=(32, 512)).astype(np.float16)
+    x = t.load(a)
+    x = t.copy(x)
+    z = t.binary("Equal", x, 1.0)
+    t.store_expect(z, np.equal(a, 1.0).astype(np.float16))
+    assert(t.run_check())

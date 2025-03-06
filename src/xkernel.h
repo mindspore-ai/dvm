@@ -125,8 +125,9 @@ class VKernelE : public VKernel {
   std::string &DisAssemble() override;
   NDObject *AppendCube(CubeOp *mm);
 
-  const std::vector<EagerVector *> &GetKernels(int &num) {
-    num = kernel_used_;
+  const std::vector<EagerVector *> &GetKernels(int &begin, int &end) {
+    begin = kernel_begin_;
+    end = kernel_used_;
     return kernels_;
   }
 
@@ -140,7 +141,7 @@ class VKernelE : public VKernel {
   }
 
   void Launch(void *stream) {
-    for (int i = 0; i < kernel_used_; ++i) {
+    for (int i = kernel_begin_; i < kernel_used_; ++i) {
       Launch(i, stream);
     }
   }
@@ -151,12 +152,21 @@ class VKernelE : public VKernel {
       NDObject::mem_pool_.Put(op);
     }
     objects_.clear();
+    area_used_ = 0;
     kernel_used_ = 0;
+    pv_black_mask_ = 0;
   }
 
-  void *ExternCode() const { return extern_code_; }
-
   static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
+
+  static void SetParallelRange(VectorKernel *k, VectorKernel **kernels, int num) {
+    k->comm_op_ = reinterpret_cast<CommOp *>(kernels);
+    k->forward_event_num_ = num;
+  }
+  static VectorKernel **GetParallelRange(VectorKernel *k, int &num) {
+    num = k->forward_event_num_;
+    return reinterpret_cast<VectorKernel **>(k->comm_op_);
+  }
 
  protected:
   static int GetArea(NDObject *obj) { return obj->lead_dim_; }
@@ -185,9 +195,15 @@ class VKernelE : public VKernel {
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;
   std::vector<EagerVector *> kernels_;
-  int area_used_{0};
+  union {
+    int area_used_{0};
+    int kernel_begin_;
+  };
   int kernel_used_{0};
-  void *extern_code_{nullptr};
+  union {
+    uint64_t pv_black_mask_{0};
+    void *extern_code_;
+  };
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> temp_ops_;
   std::multimap<uint64_t, void *> wss_;

@@ -285,3 +285,40 @@ def test_eager_lazy_tuner():
         t.reset_eager()
     Tester.set_online_tuning(False)
 
+def test_eager_pv_1():
+    ''' parallel: {V, V} '''
+    t = Tester("eager")
+    g0 = np.full([32, 1024], 0.1, np.float32)
+    g1 = np.full([32, 1024], 0.1, np.float32)
+    x1 = t.binary("Add", t.load(g0), 1.0)
+    x2 = t.binary("Add", t.load(g1), 2.0)
+    t.store_expect(x1, 1.1)
+    t.store_expect(x2, 2.1)
+    assert(t.run_check())
+
+def test_eager_pv_2():
+    ''' parallel: V -> {V, V} '''
+    t = Tester("eager")
+    g0 = np.full([10, 1024], 0.1, np.float32)
+    g1 = np.full([16, 1024], 0.2, np.float32)
+    g2 = np.full([17, 1024], 0.3, np.float32)
+    x0 = t.load(g0)
+    x1 = t.reduce("sum", x0, (0,), True)
+    x2 = t.binary("Add", t.load(g1), x1)
+    x3 = t.binary("Add", t.load(g2), x1)
+    t.store_expect(x2, 1.2)
+    t.store_expect(x3, 1.3)
+    assert(t.run_check())
+
+def test_eager_pv_3():
+    ''' parallel: V -> {V, V} -> V '''
+    t = Tester("eager")
+    g0 = np.full([4, 5, 3,1024], 0.1, np.float32)
+    x0 = t.load(g0)
+    x1 = t.reduce("sum", x0, (0,), True)
+    x2 = t.reduce("sum", x1, (1,), True)
+    x3 = t.reduce("sum", x1, (2,), True)
+    x4 = t.binary("Add", x2, x3)
+    t.store_expect(x4, 3.2)
+    assert(t.run_check())
+

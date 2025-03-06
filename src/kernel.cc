@@ -1483,6 +1483,20 @@ VKernelP::~VKernelP() {
 
 void VKernelP::Append(NDObject *obj) { children_.back()->Append(obj); }
 
+uint64_t VKernelP::UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t* &summaries) {
+  uint64_t lenburst = CeilDiv(code_size, 32ul);
+  uint64_t summary = lenburst << 58 | ((code_offset - Code::HeadSize()) >> 5) << 49;
+  uint64_t block_dim = k->code_.block_dim_;
+  uint64_t tile_per_block = (k->tile_num_ - 1) / block_dim + 1;
+  uint64_t start_idx = 0;
+  for (uint64_t i = 0; i < block_dim - 1; ++i) {
+    *summaries++ = summary | tile_per_block << 20 | start_idx;
+    start_idx += tile_per_block;
+  }
+  *summaries++ = summary | (k->tile_num_ - start_idx) << 20 | start_idx | 1ul << 40;
+  return code_offset + RoundUp<uint64_t>(code_size, 32ul);
+}
+
 uint64_t VKernelP::CodeGen() {
   uint64_t core_num = System::Instance().CoreNum();
   uint64_t summaries_offset = code_.HeadSize();
@@ -1501,7 +1515,6 @@ uint64_t VKernelP::CodeGen() {
             [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
   code_.Alloc(code_reserve);
   uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + summaries_offset);
-  uint64_t summary_idx = 0;
   code_.block_dim_ = 0;
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
@@ -1516,16 +1529,7 @@ uint64_t VKernelP::CodeGen() {
     core_num -= code.block_dim_;
     code_.block_dim_ += code.block_dim_;
     // summary
-    uint64_t lenburst = CeilDiv(code_size, 32ul);
-    uint64_t summary = lenburst << 58 | ((child_offset - code.HeadSize()) >> 5) << 49;
-    uint64_t tile_per_block = (k->tile_num_ - 1) / code.block_dim_ + 1;
-    uint64_t start_idx = 0;
-    for (uint64_t i = 0; i < code.block_dim_ - 1; ++i) {
-      summaries[summary_idx++] = summary | tile_per_block << 20 | start_idx;
-      start_idx += tile_per_block;
-    }
-    summaries[summary_idx++] = summary | (k->tile_num_ - start_idx) << 20 | start_idx | 1ul << 40;
-    child_offset += RoundUp<uint64_t>(code_size, 32ul);
+    child_offset = UpdateSummary(k, child_offset, code_size, summaries);
     code_.Combine(code, 0);
   }
   code_.data_size_ = child_offset;

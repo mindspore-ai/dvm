@@ -217,6 +217,8 @@ class VKernelP : public VKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
+  static uint64_t UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t* &summaries);
+
  protected:
   std::vector<VKernelS *> children_;
 };

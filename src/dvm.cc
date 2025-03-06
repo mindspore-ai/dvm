@@ -709,9 +709,9 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
 
 int Kernel::EagerMsProfLaunch(void *stream) {
   auto kernel = static_cast<VKernelE *>(kernel_);
-  int kernel_used;
-  const auto &kernels = kernel->GetKernels(kernel_used);
-  for (int i = 0; i < kernel_used; ++i) {
+  int kernel_begin, kernel_end;
+  const auto &kernels = kernel->GetKernels(kernel_begin, kernel_end);
+  for (int i = kernel_begin; i < kernel_end; ++i) {
     MsProfHelper msprof_helper;
     auto &info = msprof_helper.info_;
     auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);

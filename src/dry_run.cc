@@ -192,6 +192,7 @@ void wait_flag(int, int, int) {}
 #define VA_BCODE_BASE_UB  (reinterpret_cast<uint64_t *>(g_bytecode) + 2)
 #define get_pc()  VMAIN_OFFSET
 #define min(x,y) (x > y ? y : x)
+#define max(x,y) (x < y ? y : x)
 
 namespace {
 uint64_t block_idx{0};

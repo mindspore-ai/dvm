@@ -13,12 +13,12 @@ __aicore_inline__ uint64_t CeilDiv(uint64_t val, uint64_t rnd) { return (val + r
 
 #define __force_inline__ inline __attribute__((always_inline))
 
-constexpr uint32_t L0_PINGPONG_BUFFER_LEN = 16384;
-constexpr uint32_t L1_PINGPONG_BUFFER_LEN = 131072;
-constexpr uint32_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
-constexpr uint32_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
+constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
+constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
 constexpr uint64_t BIAS_ADDR = 0;
-constexpr int32_t BLOCK_SIZE = 16;
+constexpr uint64_t BLOCK_SIZE = 16;
 
 template <typename S>
 struct QuantPRE {};
@@ -59,19 +59,20 @@ class MatMul {
     bias_type_size = (flags & V_CUBE_FLAG_BIAS_FP16) ? sizeof(half) : sizeof(float);
     swizzle_dir = op->swizzle >> 16;
     swizzle_cnt = op->swizzle & 0xffff;
-    int64_t mn_max = m0 > n0 ? m0 : n0;
-    k0_part_len = min((uint64_t)(L0_PINGPONG_BUFFER_LEN / mn_max / 16 * 16), k0);
+    k0_part_len = min(L0_PINGPONG_BUFFER_LEN / max(m0, n0) / 16 * 16, k0);
     m_loop = op->m_loop;
     n_loop = op->n_loop;
     k_loop = op->k_loop;
+    shuffle_k = block_idx % k_loop;
+    k_actual = (shuffle_k == k_loop - 1) ? (k_real - shuffle_k * k0) : k0;
   }
 
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst,
                                          __gm__ T *__restrict__ src,
-                                         int64_t midx,
-                                         int64_t kidx,
-                                         int64_t m_actual,
-                                         int64_t k_actual) {
+                                         uint64_t midx,
+                                         uint64_t kidx,
+                                         uint64_t m_actual,
+                                         uint64_t k_actual) {
     // load GM to L1: ND -> zN
     bool transpose_a = flags & V_CUBE_FLAG_TRANS_A;
     uint64_t offset_a = transpose_a ? (kidx * k0 * m_align + midx * m0) : (midx * m0 * k_align + kidx * k0);
@@ -113,10 +114,10 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadB(__cbuf__ T *__restrict__ dst,
                                          __gm__ T *__restrict__ src,
-                                         int64_t kidx,
-                                         int64_t nidx,
-                                         int64_t k_actual,
-                                         int64_t n_actual) {
+                                         uint64_t kidx,
+                                         uint64_t nidx,
+                                         uint64_t k_actual,
+                                         uint64_t n_actual) {
     // load GM to L1: ND -> zN
     if (flags & V_CUBE_FLAG_TRANS_B) {
       copy_gm_to_cbuf_multi_nd2nz_b16(
@@ -151,13 +152,13 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadL0A(__ca__ T *__restrict__ dst,
                                            __cbuf__ T *__restrict__ src,
-                                           int64_t total_k,
-                                           int64_t k_part_idx,
-                                           int64_t k_round,
-                                           int64_t k0_round,
-                                           int64_t m_actual) {
+                                           uint64_t total_k,
+                                           uint64_t k_part_idx,
+                                           uint64_t k_round,
+                                           uint64_t k0_round,
+                                           uint64_t m_actual) {
     // load L1 to L0A: zN -> zZ
-    int64_t m_round = RoundUp(m_actual, BLOCK_SIZE);
+    uint64_t m_round = RoundUp(m_actual, BLOCK_SIZE);
     // GEMV mode
     if ((m_actual == 1 && !(flags & V_CUBE_FLAG_TRANS_A))) {
       load_cbuf_to_ca(
@@ -172,7 +173,7 @@ class MatMul {
         inc);
     } else {
       if (flags & V_CUBE_FLAG_TRANS_A) {
-        for (int64_t i = 0; i < m_round / BLOCK_SIZE; i++) {
+        for (uint64_t i = 0; i < m_round / BLOCK_SIZE; i++) {
           load_cbuf_to_ca(
             dst + i * BLOCK_SIZE * k0_round,
             src + i * k_round * BLOCK_SIZE + k0_part_len * k_part_idx * BLOCK_SIZE,
@@ -185,7 +186,7 @@ class MatMul {
             inc);
         }
       } else {
-        for (int64_t i = 0; i < m_round / BLOCK_SIZE; i++) {
+        for (uint64_t i = 0; i < m_round / BLOCK_SIZE; i++) {
           load_cbuf_to_ca(
             dst + i * BLOCK_SIZE * k0_round,
             src + m_round * k0_part_len * k_part_idx + i * BLOCK_SIZE * BLOCK_SIZE,
@@ -203,13 +204,13 @@ class MatMul {
 
   __force_inline__ __aicore__ void LoadL0B(__cb__ T *__restrict__ dst,
                                            __cbuf__ T *__restrict__ src,
-                                           int64_t total_k,
-                                           int64_t k_part_idx,
-                                           int64_t k_round,
-                                           int64_t k0_round,
-                                           int64_t n_actual) {
+                                           uint64_t total_k,
+                                           uint64_t k_part_idx,
+                                           uint64_t k_round,
+                                           uint64_t k0_round,
+                                           uint64_t n_actual) {
     // load L1 to L0A: zN -> nZ
-    int64_t n_round = RoundUp(n_actual, BLOCK_SIZE);
+    uint64_t n_round = RoundUp(n_actual, BLOCK_SIZE);
     if (flags & V_CUBE_FLAG_TRANS_B) {
       load_cbuf_to_cb(
         dst,
@@ -222,7 +223,7 @@ class MatMul {
         false,                             // transpose
         inc);
     } else {
-      for (int64_t i = 0; i < k0_round / BLOCK_SIZE; i++) {
+      for (uint64_t i = 0; i < k0_round / BLOCK_SIZE; i++) {
         load_cbuf_to_cb(
           dst + i * BLOCK_SIZE * n_round,
           src + (k0_part_len * k_part_idx + i * BLOCK_SIZE) * BLOCK_SIZE,
@@ -242,15 +243,17 @@ class MatMul {
                                        __cb__ T *__restrict__ b,
                                        bool init_c,
                                        uint8_t unit_flag,
-                                       int64_t m_actual,
-                                       int64_t n_actual,
-                                       int64_t k0_actual) {
-    bool special_handle_req = (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
+                                       uint64_t m_actual,
+                                       uint64_t n_actual,
+                                       uint64_t k0_actual) {
+    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+      m_actual = 16;
+    }
     mad(
       c,
       a,
       b,
-      special_handle_req ? 16 : m_actual,     // m
+      m_actual,                               // m
       k0_actual,                              // k
       n_actual,                               // n
       unit_flag,                              // unitFlag
@@ -258,11 +261,14 @@ class MatMul {
       0,                                      // cmatrixSource
       init_c                                  // cmatrixInitVal
     );
+    if ((m_actual / BLOCK_SIZE) * (n_actual / BLOCK_SIZE) < 10) {
+      pipe_barrier(PIPE_M);
+    }
   }
 
   __force_inline__ __aicore__ void LoadBias(__cbuf__ void *__restrict__ dst,
                                             __gm__ void *__restrict__ src,
-                                            int64_t n_actual) {
+                                            uint64_t n_actual) {
     copy_gm_to_cbuf(
       dst,                                // dst
       src,                                // src
@@ -275,7 +281,7 @@ class MatMul {
     );
   }
 
-  __force_inline__ __aicore__ void LoadBt(uint64_t dst, __cbuf__ void *__restrict__ src, int64_t n_actual) {
+  __force_inline__ __aicore__ void LoadBt(uint64_t dst, __cbuf__ void *__restrict__ src, uint64_t n_actual) {
     copy_cbuf_to_bt(
       dst,                                      // dst
       src,                                      // src
@@ -292,16 +298,18 @@ class MatMul {
                                         __cb__ T *__restrict__ b, 
                                         bool init_c, 
                                         uint8_t unit_flag, 
-                                        int64_t m_actual, 
-                                        int64_t n_actual,
-                                        int64_t k0_actual) {
-    bool special_handle_req = (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
+                                        uint64_t m_actual, 
+                                        uint64_t n_actual,
+                                        uint64_t k0_actual) {
+    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+      m_actual = 16;
+    }
     mad(
       c,
       a,
       b,
       BIAS_ADDR,
-      special_handle_req ? 16 : m_actual,     // m
+      m_actual,                               // m
       k0_actual,                              // k
       n_actual,                               // n
       unit_flag,                              // unitFlag
@@ -309,15 +317,18 @@ class MatMul {
       1,                                      // cmatrixSource
       0                                       // cmatrixInitVal
     );
+    if ((m_actual / BLOCK_SIZE) * (n_actual / BLOCK_SIZE) < 10) {
+      pipe_barrier(PIPE_M);
+    }
   }
 
   __force_inline__ __aicore__ void StoreC_Fp32(__gm__ float *__restrict__ dst,
                                                __cc__ float *__restrict__ c,
-                                               int64_t midx,
-                                               int64_t nidx,
+                                               uint64_t midx,
+                                               uint64_t nidx,
                                                uint8_t unit_flag,
-                                               int64_t m_actual,
-                                               int64_t n_actual) {
+                                               uint64_t m_actual,
+                                               uint64_t n_actual) {
     copy_matrix_cc_to_gm(
       dst + midx * m0 * n_real + nidx * n0,        // dst
       c,                                      // src
@@ -336,11 +347,11 @@ class MatMul {
 
   __force_inline__ __aicore__ void StoreC(__gm__ T *__restrict__ dst,
                                           __cc__ float *__restrict__ c,
-                                          int64_t midx,
-                                          int64_t nidx,
+                                          uint64_t midx,
+                                          uint64_t nidx,
                                           uint8_t unit_flag,
-                                          int64_t m_actual,
-                                          int64_t n_actual) {
+                                          uint64_t m_actual,
+                                          uint64_t n_actual) {
     copy_matrix_cc_to_gm(
       dst + midx * m0 * n_real + nidx * n0,        // dst
       c,                                      // src
@@ -360,9 +371,9 @@ class MatMul {
   __force_inline__ __aicore__ void StoreC_PingPong(__gm__ T *__restrict__ dst,
                                           __cc__ float *__restrict__ c,
                                           uint8_t unit_flag,
-                                          int64_t m_actual,
-                                          int64_t n_actual) {
-    int64_t pingpong_offset = pingpong_store ? block_num + block_idx : block_idx;
+                                          uint64_t m_actual,
+                                          uint64_t n_actual) {
+    uint64_t pingpong_offset = pingpong_store ? block_num + block_idx : block_idx;
     pingpong_store ^= 0x1u;
     copy_matrix_cc_to_gm(
       dst + m0 * n0 * pingpong_offset,        // dst
@@ -394,7 +405,7 @@ class MatMul {
     offset_b = b_idx * b_size;
   }
 
-  uint32_t n_loop, m_loop, k_loop;
+  uint64_t n_loop, m_loop, k_loop;
   uint64_t k0_part_len;
   uint64_t m_real, n_real, k_real;
   uint64_t m_align, n_align, k_align;
@@ -405,8 +416,9 @@ class MatMul {
   uint64_t a_size;
   uint64_t b_size;
   uint64_t bias_type_size;
-  uint32_t flags;
-  uint32_t pingpong_store{0};
+  uint64_t flags;
+  uint64_t pingpong_store{0};
+  uint64_t k_actual, shuffle_k;
 };
 
 template <typename M, typename T>
@@ -436,9 +448,10 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
-  int64_t pingpong = 1;
-  int64_t last_midx = -1;
-  int64_t last_nidx = -1;
+  uint64_t pingpong = 1;
+  uint64_t last_midx = -1;
+  uint64_t last_nidx = -1;
+  uint64_t c_idx = block_idx / (mat.m_loop * mat.n_loop);
   //if (op->forward_fusion) { wait_flag_dev(flag_id); }
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
@@ -450,23 +463,21 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
 
   for (uint64_t tile = block_idx; tile < tile_end; tile += block_num) {
     __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
-    uint64_t c_idx = tile / (mat.m_loop * mat.n_loop);
     uint64_t batch_offset = c_idx * mat.m_real * mat.n_real;
     uint64_t offset_a, offset_b;
     mat.ComputeOffset(c_idx, offset_a, offset_b);
-    int64_t midx, nidx;
+    uint64_t midx, nidx;
     vCubeOp::TileMap(tile, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, midx, nidx);
-    int64_t m_actual = (midx == (mat.m_loop - 1)) ? (mat.m_real - midx * mat.m0) : mat.m0;
-    int64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
-    int64_t shuffle_k = block_idx % mat.k_loop;
-    int64_t k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
+    uint64_t m_actual = (midx == (mat.m_loop - 1)) ? (mat.m_real - midx * mat.m0) : mat.m0;
+    uint64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
+
     if (tile == block_idx) {
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
-      mat.LoadA(l1a, gm_a + offset_a, midx, shuffle_k, m_actual, k_actual);
+      mat.LoadA(l1a, gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
-      mat.LoadB(l1b, gm_b + offset_b, shuffle_k, nidx, k_actual, n_actual);
+      mat.LoadB(l1b, gm_b + offset_b, mat.shuffle_k, nidx, mat.k_actual, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
     }
     if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
@@ -476,35 +487,33 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       }
       set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
     }
+    uint64_t shuffle_k = mat.shuffle_k;
     for (uint64_t k = 0; k < mat.k_loop; ++k) {
-      shuffle_k = (k + block_idx) % mat.k_loop;
-      k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
+      uint64_t k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
       uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
-      uint64_t k_part_loop = (k_actual + mat.k0_part_len - 1) / mat.k0_part_len;
+      uint64_t k_part_loop = CeilDiv(k_actual, mat.k0_part_len);
       auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
       auto event_id_next = pingpong ? EVENT_ID1 : EVENT_ID0;
       if (k < mat.k_loop - 1) {
-        int64_t shuffle_k_next = (block_idx + k + 1) % mat.k_loop;
-        int64_t k_actual_next = (shuffle_k_next == mat.k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
+        shuffle_k = (shuffle_k + 1) % mat.k_loop;
+        uint64_t k_actual_next = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
-        mat.LoadA(n_l1a, gm_a + offset_a, midx, shuffle_k_next, m_actual, k_actual_next);
+        mat.LoadA(n_l1a, gm_a + offset_a, midx, shuffle_k, m_actual, k_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
-        mat.LoadB(n_l1b, gm_b + offset_b, shuffle_k_next, nidx, k_actual_next, n_actual);
+        mat.LoadB(n_l1b, gm_b + offset_b, shuffle_k, nidx, k_actual_next, n_actual);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       } else if (tile + block_num < tile_end) {
-        int64_t c_idx_n = (tile + block_num) / (mat.m_loop * mat.n_loop);
-        mat.ComputeOffset(c_idx_n, offset_a, offset_b);
-        int64_t n_midx, n_nidx;
+        c_idx = (tile + block_num) / (mat.m_loop * mat.n_loop);
+        mat.ComputeOffset(c_idx, offset_a, offset_b);
+        uint64_t n_midx, n_nidx;
         vCubeOp::TileMap(tile + block_num, mat.m_loop, mat.n_loop, mat.swizzle_dir, mat.swizzle_cnt, n_midx, n_nidx);
-        int64_t m_actual_next = (n_midx == (mat.m_loop - 1)) ? (mat.m_real - n_midx * mat.m0) : mat.m0;
-        int64_t n_actual_next = (n_nidx == (mat.n_loop - 1)) ? (mat.n_real - n_nidx * mat.n0) : mat.n0;
-        int64_t shuffle_k_next = block_idx % mat.k_loop;
-        int64_t k_actual_next = (shuffle_k_next == mat.k_loop - 1) ? (mat.k_real - shuffle_k_next * mat.k0) : mat.k0;
+        uint64_t m_actual_next = (n_midx == (mat.m_loop - 1)) ? (mat.m_real - n_midx * mat.m0) : mat.m0;
+        uint64_t n_actual_next = (n_nidx == (mat.n_loop - 1)) ? (mat.n_real - n_nidx * mat.n0) : mat.n0;
         bool load_a_flag = false;
         bool load_b_flag = false;
         if (mat.k_loop == 1 && tile >= block_num) {
-          int64_t c_idx_n_last = (tile - block_num) / (mat.m_loop * mat.n_loop);
+          uint64_t c_idx_n_last = (tile - block_num) / (mat.m_loop * mat.n_loop);
           uint64_t last_offset_a, last_offset_b;
           mat.ComputeOffset(c_idx_n_last, last_offset_a, last_offset_b);
           load_a_flag = (offset_a == last_offset_a && last_midx == n_midx);
@@ -512,20 +521,20 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         }
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         if (!load_a_flag) {
-          mat.LoadA(n_l1a, gm_a + offset_a, n_midx, shuffle_k_next, m_actual_next, k_actual_next);
+          mat.LoadA(n_l1a, gm_a + offset_a, n_midx, mat.shuffle_k, m_actual_next, mat.k_actual);
         }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
         if (!load_b_flag) {
-          mat.LoadB(n_l1b, gm_b + offset_b, shuffle_k_next, n_nidx, k_actual_next, n_actual_next);
+          mat.LoadB(n_l1b, gm_b + offset_b, mat.shuffle_k, n_nidx, mat.k_actual, n_actual_next);
         }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
       for (uint64_t k_part_idx = 0; k_part_idx < k_part_loop; ++k_part_idx) {
         __ca__ T *__restrict__ l0a = (k_part_idx & 1) ? l0a_next : l0a_base;
         __cb__ T *__restrict__ l0b = (k_part_idx & 1) ? l0b_next : l0b_base;
-        int64_t k0_round = (k_part_idx == k_part_loop - 1) ? k_round - k_part_idx * mat.k0_part_len : mat.k0_part_len;
-        int64_t k0_actual = (k_part_idx == k_part_loop - 1) ? k_actual - k_part_idx * mat.k0_part_len : mat.k0_part_len;
+        uint64_t k0_round = (k_part_idx == k_part_loop - 1) ? k_round - k_part_idx * mat.k0_part_len : mat.k0_part_len;
+        uint64_t k0_actual = (k_part_idx == k_part_loop - 1) ? k_actual - k_part_idx * mat.k0_part_len : mat.k0_part_len;
         auto mte1_mad_event_id = (k_part_idx & 1) ? EVENT_ID1 : EVENT_ID0;
         if (k_part_idx == 0) {
           wait_flag(PIPE_MTE2, PIPE_MTE1, event_id);
@@ -561,7 +570,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         } else{
           mat.MM(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
         }
-        pipe_barrier(PIPE_M);
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
       pingpong = pingpong ^ 1ul;
@@ -575,9 +583,9 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
       mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual);
       if (mat.flags & V_CUBE_FLAG_PEER_STORE) {
-        int64_t pingpong_offset = mat.pingpong_store ? block_idx : block_num + block_idx;
+        uint64_t pingpong_offset = mat.pingpong_store ? block_idx : block_num + block_idx;
         // result of GetCubeOffset()
-        uint32_t group_offset = midx * mat.m0 * mat.n_real + nidx * mat.n0;
+        uint64_t group_offset = midx * mat.m0 * mat.n_real + nidx * mat.n0;
         set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
         wait_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
         __gm__ uint64_t *peer_flag_mem =

@@ -1385,12 +1385,12 @@ struct vCubeOp {
   uint64_t subtilenum;  // subblockid1 << 32 | subblockid0
 
   __aicore_inline__ uint64_t GetCubeOffset(__gm__ vCubeOp *__restrict__ op, uint32_t block_tile) {
-    int64_t midx, nidx;
+    uint64_t midx, nidx;
     uint64_t swizzle_dir = op->swizzle >> 16;
     uint64_t swizzle_cnt = op->swizzle & 0xffff;
     TileMap(block_tile, op->m_loop, op->n_loop, swizzle_dir, swizzle_cnt, midx, nidx);
-    int64_t m_end = op->m_real / op->m0;
-    int64_t n_end = op->n_real / op->n0;
+    uint64_t m_end = op->m_real / op->m0;
+    uint64_t n_end = op->n_real / op->n0;
     uint64_t tile_flag = (midx == m_end) << 1 | (nidx == n_end);
     midx *= op->m0;
     nidx *= op->n0;
@@ -1399,7 +1399,7 @@ struct vCubeOp {
   }
 
   __aicore_inline__ void TileMap(uint32_t tile, uint32_t m_loop, uint32_t n_loop, uint64_t swizzle_dir,
-                                 uint64_t swizzle_cnt, int64_t &midx, int64_t &nidx) {
+                                 uint64_t swizzle_cnt, uint64_t &midx, uint64_t &nidx) {
     tile = tile % (m_loop * n_loop);
     if (swizzle_dir == 0) {
       uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);

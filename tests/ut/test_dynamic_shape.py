@@ -71,6 +71,18 @@ def test_reduce():
         t.run()
         t.check(out, np.sum(d1, tuple(dims_shape), keepdims=True), 1e-4)
 
+def test_reduce_round_tile():
+    t = Tester('dyn')
+    x = t.load([-1,2,4,3000], "float32")
+    a = t.reduce("sum", x, [0,2], True)
+    out = t.store(a)
+    din = np.random.normal(0, 1, [2,2,4,3000]).astype(np.float32)
+    expect = np.sum(din, (0,2), keepdims=True)
+    for i in range(3):
+        t.input(x, din)
+        t.run()
+        t.check(out, expect, 1e-4)
+
 def test_broadcast():
     t = Tester('dyn')
     x = t.load([-1], "float32")

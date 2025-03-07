@@ -24,6 +24,7 @@ const uint64_t UB_WORKSPACE_SIZE = 512;
 
 #define WORKSPACE (uint64_t)0
 #define MASK_32 0xfffffffful
+#define INVALID_INT  uint64_t(-1)
 
 #define IS_FLOAT(x) (sizeof(*x) == 4)
 #define SIMD_WIDTH_SHIFT(x) (IS_FLOAT(x) ? 3 : 4)
@@ -238,7 +239,7 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
 }
 
 #define DELCARE_BINARY(builtin, VTYPE)                                                                          \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src0, __ubuf__ VTYPE *src1,  \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src0, __ubuf__ VTYPE *src1,  \
                                               uint16_t repeat, uint8_t dstBlockStride, uint8_t src0BlockStride, \
                                               uint8_t src1BlockStride, uint8_t dstRepeatStride,                 \
                                               uint8_t src0RepeatStride, uint8_t src1RepeatStride) {             \
@@ -254,7 +255,7 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
   }
 
 #define DELCARE_BINARYS(builtin, VTYPE)                                                                             \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, VTYPE val, uint16_t repeat, \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ VTYPE *dst, __ubuf__ VTYPE *src, VTYPE val, uint16_t repeat, \
                                               uint16_t dstBlockStride, uint16_t srcBlockStride,                     \
                                               uint16_t dstRepeatStride, uint16_t srcRepeatStride) {                 \
     for (; repeat > 255; repeat -= 255) {                                                                           \
@@ -266,7 +267,7 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
   }
 
 #define DELCARE_UNARYS(builtin, VTYPE)                                                              \
-  static inline[aicore] void repeat_##builtin(__ubuf__ VTYPE *dst, VTYPE val, uint16_t repeat,      \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ VTYPE *dst, VTYPE val, uint16_t repeat,      \
                                               uint16_t dstBlockStride, uint16_t srcBlockStride,     \
                                               uint16_t dstRepeatStride, uint16_t srcRepeatStride) { \
     for (; repeat > 255; repeat -= 255) {                                                           \
@@ -277,7 +278,7 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
   }
 
 #define DELCARE_CMPS(builtin, VTYPE)                                                                              \
-  static inline[aicore] void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ VTYPE *src0, VTYPE src1,            \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ VTYPE *src0, VTYPE src1,            \
                                               uint16_t repeat, uint16_t dstBlockStride, uint16_t src0BlockStride, \
                                               uint8_t dstRepeatStride, uint8_t src0RepeatStride) {                \
     for (; repeat > 255; repeat -= 255) {                                                                         \
@@ -289,7 +290,7 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
   }
 
 #define DELCARE_CMP(builtin, VTYPE)                                                                              \
-  static inline[aicore] void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ VTYPE *src0, __ubuf__ VTYPE *src1, \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ VTYPE *src0, __ubuf__ VTYPE *src1, \
                                               uint16_t repeat, uint8_t dstBlockStride, uint8_t src0BlockStride,  \
                                               uint8_t src1BlockStride, uint8_t dstRepeatStride,                  \
                                               uint8_t src0RepeatStride, uint8_t src1RepeatStride) {              \
@@ -578,7 +579,7 @@ __aicore_inline__ void _IsFiniteProc(__ubuf__ uint32_t *xd, __ubuf__ uint32_t *x
 }
 
 template <typename T>
-static inline[aicore] void IsFinite(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void IsFinite(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vUnary op;
   vUnary::Decode(pc, head, op);
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
@@ -892,7 +893,7 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   SelectMode2(xd, xn, xm, 1, 8, op.ws);
 }
 
-static inline [aicore] void Copy(bcodeptr_t pc, uint64_t head) {
+__aicore_inline__ void Copy(bcodeptr_t pc, uint64_t head) {
   vCopy op;
   vCopy::Decode(pc, head, op);
   if (op.xd != op.xn) {
@@ -943,11 +944,11 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t r1 = rounds[0];
     uint64_t r_tile_idx = tile_idx / r1;
     if (mode == kRoundCacheLoad) {
-      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile) || IsDisContTile(tile) ? r_tile_idx : -1;
+      return r_tile_idx * r1 == tile_idx || IsBeginTile(tile) || IsDisContTile(tile) ? r_tile_idx : INVALID_INT;
     } else if (mode == kRoundCacheStore) {
-      return r_tile_idx * r1 == tile_idx ? r_tile_idx : -1;
+      return r_tile_idx * r1 == tile_idx ? r_tile_idx : INVALID_INT;
     } else if (mode == kRoundCacheStoreAtomic) {
-      return r_tile_idx * r1 + r1 - 1 == tile_idx || IsEndTile(tile) ? r_tile_idx : -1;
+      return r_tile_idx * r1 + r1 - 1 == tile_idx || IsEndTile(tile) ? r_tile_idx : INVALID_INT;
     } else {
       return r_tile_idx;
     }
@@ -958,7 +959,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t p1 = tile_idx / r1;
     if (mode == kRoundCacheStore) {
       uint64_t align = p1 * r1;
-      return tile_idx < align + r2 ? p1 * r2 + tile_idx - align: -1;
+      return tile_idx < align + r2 ? p1 * r2 + tile_idx - align: INVALID_INT;
     }
     return p1 * r2 + tile_idx % r2;
   } else if (round_rank == 3) {
@@ -971,11 +972,11 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t p2 = tile_idx % (r2 * r3);
     uint64_t p3 = p2 / r3;
     if (mode == kRoundCacheLoad) {
-      return p3 * r3 == p2 || IsBeginTile(tile) || IsDisContTile(tile) ? p1 + p3 : -1;
+      return p3 * r3 == p2 || IsBeginTile(tile) || IsDisContTile(tile) ? p1 + p3 : INVALID_INT;
     } else if (mode == kRoundCacheStore) {
-      return (tile_idx < p0 * r1 + r2 * r3) && (p3 * r3 == p2) ? p1 + p3 : -1;
+      return (tile_idx < p0 * r1 + r2 * r3) && (p3 * r3 == p2) ? p1 + p3 : INVALID_INT;
     } else if (mode == kRoundCacheStoreAtomic) {
-      return p3 * r3 + r3 - 1 == p2 || IsEndTile(tile) ? p1 + p3 : -1;
+      return p3 * r3 + r3 - 1 == p2 || IsEndTile(tile) ? p1 + p3 : INVALID_INT;
     } else {
       return p1 + p3;
     }
@@ -990,7 +991,7 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
     uint64_t p1 = tile_idx % (r2 * r3);
     uint64_t p2 = p1 / r3;
     if (mode == kRoundCacheStore) {
-      return (tile_idx < p0 * r1 + r2 * r3) && (p1 < p2 * r3 + r4) ? (p0 * r2 + p2) * r4 + p1 - p2 * r3 : -1;
+      return (tile_idx < p0 * r1 + r2 * r3) && (p1 < p2 * r3 + r4) ? (p0 * r2 + p2) * r4 + p1 - p2 * r3 : INVALID_INT;
     }
     return (p0 * r2 + p2) * r4 + tile_idx % r4;
   }
@@ -1000,7 +1001,6 @@ __aicore_inline__ uint64_t RoundUpTileIdx(uint64_t tile, uint64_t tile_idx, uint
 __aicore_inline__ uint64_t RoundUpTileIdxRS(uint64_t tile_idx, uint64_t round_rank, uint64_t rank_id,
                                             bcodeptr_t rounds) {
   if (round_rank == 1) {
-    uint64_t r1 = rounds[0];
     if (tile_idx != rank_id) return -1;
     return 0;
   }
@@ -1008,7 +1008,6 @@ __aicore_inline__ uint64_t RoundUpTileIdxRS(uint64_t tile_idx, uint64_t round_ra
   uint64_t r2_r1 = rounds[0];
   uint64_t r1 = r2_r1 & MASK_32;
   uint64_t r2 = r2_r1 >> 32;
-  uint64_t rank_size = r1 / r2;
   uint64_t p2 = tile_idx / r2;
   if (p2 != rank_id) return -1;
   uint64_t p1 = tile_idx / r1;
@@ -1021,7 +1020,7 @@ __aicore_inline__ uint64_t RoundUpTileIdxAG(uint64_t tile_idx, uint64_t round_ra
   uint64_t r2_r1 = rounds[0];
   uint64_t r2 = r2_r1 >> 32;
   uint64_t p2 = tile_idx / r2;
-  if (p2 != rank_id) return -1;
+  if (p2 != rank_id) return INVALID_INT;
   return tile_idx;
 }
 
@@ -1033,7 +1032,7 @@ __aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vAtomicCum::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       set_vector_mask(0, op.count);
       vadd(xd, xd, xn, 1, 1, 1, 1, 8, 8, 8);
       return;
@@ -1042,7 +1041,7 @@ __aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, op.count >> BlockDataShift(float), 0, 0);
 }
 
-static inline [aicore] void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
+__aicore_inline__ void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                         uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                         uint64_t pad_size, uint64_t type_size) {
   if (begin_m == end_m && begin_n <= end_n) {
@@ -1054,7 +1053,7 @@ static inline [aicore] void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *s
   }
 }
 
-static inline [aicore] void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
+__aicore_inline__ void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                          uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                          uint64_t pad_size, uint64_t type_size, uint64_t one_flag = 0) {
   if (one_flag) {
@@ -1081,7 +1080,7 @@ static inline [aicore] void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *
   }
 }
 
-static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSLoad op;
   vSLoad::Decode(pc, head, op);
   uint64_t tile_idx = MixTileIdx(tile);
@@ -1119,7 +1118,7 @@ static inline [aicore] void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-static inline [aicore] void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSStore op;
   vSStore::Decode(pc, head, op);
   uint64_t tile_idx = MixTileIdx(tile);
@@ -1147,7 +1146,7 @@ static inline [aicore] void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
 }
 
-static inline [aicore] void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSliceSL op;
   vSliceSL::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
@@ -1166,13 +1165,13 @@ static inline [aicore] void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t ti
   SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, op.slice_n, op.src_n, op.pad_size, op.type_size, op.one_flag);
 }
 
-static inline [aicore] void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void SliceLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSliceSL op;
   vSliceSL::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vSliceSL::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       return;
     }
   }
@@ -1222,13 +1221,13 @@ __aicore_inline__ void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vReducev2(xd, xn, xn, op.repeat, 1, 7, op.rs, 0);
 }
 
-static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vLoad op;
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       return;
     }
   }
@@ -1253,7 +1252,7 @@ __aicore_inline__ void MultiLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t len_burst = (op.tile_stride + 31) >> 5;
   vMultiLoad::PingPongSwitch(pc);
 
-  for (int i = 1; i < op.multi_size; ++i) {
+  for (uint64_t i = 1; i < op.multi_size; ++i) {
     if (i > 2) {
       wait_flag(PIPE_MTE3, PIPE_MTE2, i % 2 == 1 ? EVENT_ID0 : EVENT_ID1);
     }
@@ -1282,7 +1281,7 @@ __aicore_inline__ void MultiLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   dcci(flag_mem, 0);
 }
 
-static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vPingPongLoad op;
   vPingPongLoad::Decode(pc, head, op);
   if (IsEndTile(tile)) {
@@ -1291,7 +1290,7 @@ static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t 
   uint64_t tile_idx = MixTileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vPingPongLoad::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       return;
     }
   }
@@ -1302,13 +1301,13 @@ static inline [aicore] void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t 
   copy_gm_to_ubuf_align_b8(dst, src, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
 }
 
-static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStore op;
   vStore::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheStore>(tile, tile_idx, op.round_rank, pc + vStore::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       return;
     }
   }
@@ -1326,7 +1325,7 @@ static inline [aicore] void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + iter_num * iter_size);
 }
 
-static inline [aicore] void CondStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void CondStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   if (IsEndTile(tile)) {
     vStoreCond op;
     vStoreCond::Decode(pc, head, op);
@@ -1342,7 +1341,7 @@ static inline [aicore] void CondStore(bcodeptr_t pc, uint64_t head, uint64_t til
   }
 }
 
-static inline [aicore] void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreAtomic &op) {
+__aicore_inline__ void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreAtomic &op) {
   if (op.pad_size == 0) {
     copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
   } else {
@@ -1350,13 +1349,13 @@ static inline [aicore] void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreA
   }
 }
 
-static inline [aicore] void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreAtomic op;
   vStoreAtomic::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   if (op.cum_flag) {
     tile_idx = RoundUpTileIdx<kRoundCacheStoreAtomic>(tile, tile_idx, op.round_rank, pc + vStoreAtomic::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       return;
     }
   } else {
@@ -1381,11 +1380,6 @@ __aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
   if (static_cast<uint32_t>(*x) != 0) {
     copy_ubuf_to_gm((__gm__ void *)op.to, (__ubuf__ void *)x, 0, 1, 1, 0, 0);
   }
-}
-
-typedef void (*OpFunc) (__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
-__aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
-  return base_addr + id;
 }
 
 /******************************************************
@@ -1437,7 +1431,7 @@ __aicore_inline__ void StoreRS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreRS::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   tile_idx = RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vStoreRS::ROUND_OFFSET);
-  if (tile_idx == -1) return;
+  if (tile_idx == INVALID_INT) return;
   if (IsLastTile(tile)) {
     // TODO: last tile may be from round
     op.iter_num = op.iter_tail;
@@ -1481,10 +1475,10 @@ __aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
   wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
   if (op.round_rank) {
-    if (op.comm_type == CommType::kCommReduceScatter && RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == -1) {
+    if (op.comm_type == CommType::kCommReduceScatter && RoundUpTileIdxRS(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == INVALID_INT) {
       return;
     }
-    if (op.comm_type == CommType::kCommAllGather && RoundUpTileIdxAG(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == -1) {
+    if (op.comm_type == CommType::kCommAllGather && RoundUpTileIdxAG(tile_idx, op.round_rank, op.rank_id, pc + vPeerDMA::ROUND_OFFSET) == INVALID_INT) {
       return;
     }
   }
@@ -1520,7 +1514,7 @@ __aicore_inline__ void PeerStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   dcci(flag_mem, 0);
 }
 
-static inline[aicore] void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+__aicore_inline__ void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vPingPongPeerLoad speer_load;
   vPingPongPeerLoad::Decode(pc, head, speer_load);
   vPingPongLoad &op = speer_load.base;
@@ -1537,7 +1531,7 @@ static inline[aicore] void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64
   uint64_t tile_idx = MixTileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vPingPongPeerLoad::ROUND_OFFSET);
-    if (tile_idx == -1) {
+    if (tile_idx == INVALID_INT) {
       return;
     }
   }
@@ -1667,7 +1661,7 @@ __aicore_inline__ uint64_t VisitRed_2(bcodeptr_t pc, uint64_t &tile) {
     uint64_t group_tile = r1 * e1 * (e_cur / e1) + e_cur % e1;
     op->head = MakeRedHead<uint32_t>(0, thread_size);
     tidx = group_tile + thread_idx * e1;
-    loop = (e1 * thread_size) << V_LOOP_STRIDE_OFFSET | (r1 - thread_idx - 1) / thread_size + 1;
+    loop = (e1 * thread_size) << V_LOOP_STRIDE_OFFSET | ((r1 - thread_idx - 1) / thread_size + 1);
   }
   tile |= tidx << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_DISCONT_FLAG_OFFSET;
   return loop;
@@ -1783,9 +1777,17 @@ __aicore_inline__ uint64_t VisitRed_4(bcodeptr_t pc, uint64_t &tile) {
 
 #define VA_UB_OFFSET     0x80000ul
 #define VA_VMAIN_BASE    ((get_pc() - VMAIN_OFFSET) & (~0xffful))
-#define VA_BCODE_BASE_UB (get_sys_va_base() + VA_UB_OFFSET + PC_BASE)
+typedef void (*OpFunc) (__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
 
-extern "C" __global__ [aicore] void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
+#ifndef __VM_DRY_RUN__
+#define VA_BCODE_BASE_UB (get_sys_va_base() + VA_UB_OFFSET + PC_BASE)
+#define DEF_DRY_FUNC(offset, op, func)
+__aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
+  return base_addr + id;
+}
+#endif
+
+extern "C" __global__ __aicore__ void vmain_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
   __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
     __gm__ uint64_t *ext_addr = reinterpret_cast<__gm__ uint64_t*>(ffts_addr);
@@ -1964,10 +1966,11 @@ TILE_LOOP:
 }
 
 #define DEF_DISP_SIMD(OP, func) \
-  extern "C" __noinline__[aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; }
+  extern "C" __noinline__ __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; } \
+  DEF_DRY_FUNC(g_simd_func_offset, OP, D_##OP);
 
 #define DEF_DISP_LOAD(OP, func)                                                               \
-  extern "C" __noinline__[aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
+  extern "C" __noinline__ __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
     if ((head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) && !IsBeginTile(tile)) {                \
       event_t event = event_t((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);      \
       wait_flag(PIPE_V, PIPE_MTE2, event);                                                    \
@@ -1977,10 +1980,12 @@ TILE_LOOP:
       event_t event = event_t((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);       \
       set_flag(PIPE_MTE2, PIPE_V, event);                                                     \
     }                                                                                         \
-  }
+  }                                                                                           \
+  DEF_DRY_FUNC(g_access_func_offset, OP, D_##OP);
+
 
 #define DEF_DISP_STORE(OP, func)                                                              \
-  extern "C" __noinline__[aicore] void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
+  extern "C" __noinline__ __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
     if (head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) {                                        \
       event_t event = event_t((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);      \
       wait_flag(PIPE_V, PIPE_MTE3, event);                                                    \
@@ -1990,10 +1995,12 @@ TILE_LOOP:
       event_t event = event_t((head >> V_M_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);       \
       set_flag(PIPE_MTE3, PIPE_V, event);                                                     \
     }                                                                                         \
-  }
+  }                                                                                           \
+  DEF_DRY_FUNC(g_access_func_offset, OP, D_##OP);
 
 #define DEF_DISP_VISIT(ID, func) \
-  extern "C" __noinline__[aicore] uint64_t D_##ID(bcodeptr_t pc, uint64_t &tile) { return func(pc, tile); }
+  extern "C" __noinline__ __aicore__ uint64_t D_##ID(bcodeptr_t pc, uint64_t &tile) { return func(pc, tile); } \
+  DEF_DRY_FUNC(g_visit_func_offset, ID, D_##ID);
 
 DEF_DISP_VISIT(V_VISIT_RED_1, VisitRed_1);
 DEF_DISP_VISIT(V_VISIT_RED_2, VisitRed_2);

@@ -519,6 +519,14 @@ void KernelPy::Run() {
   }
 }
 
+void DryRunEntry(uint64_t core_idx, bool is_cube);
+void DryRunExit();
+void KernelPy::DryRun(int core_idx, bool cube_core) {
+  DryRunEntry(core_idx, cube_core);
+  Run();
+  DryRunExit();
+}
+
 py::object KernelPy::Perf() {
 #define TEST_NUM 10
 #ifdef VK_SIM_MODEL
@@ -793,6 +801,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("perf", &KernelPy::Perf, "perf test")
     .def("run", &KernelPy::Run, "run kernel")
+    .def("dry_run", &KernelPy::DryRun, "dry run vm")
     .def("init_comm", &KernelPy::InitComm, "init communicatior")
     .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
     .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning")

@@ -198,6 +198,10 @@ class Tester(Kernel):
         perf = self.perf()
         return PerformanceResult(perf)
 
+    def dry_run(self, core_id = 0, is_cube = False):
+        self.codegen()
+        Kernel.dry_run(self, core_id, is_cube)
+
     def set_passes(self, *pass_names):
         self.passes = []
         for pass_name in pass_names:

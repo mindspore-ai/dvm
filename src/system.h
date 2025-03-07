@@ -105,6 +105,9 @@ class System {
   }
   rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
 
+  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm,
+                                 rtStream_t stm){nullptr};
+
  private:
   System();
   AiCoreArch arch_;
@@ -119,8 +122,6 @@ class System {
   SocType soc_name_{kSocUnknow};
 
   void *rt_handle_;
-  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm,
-                                 rtStream_t stm){nullptr};
   rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
 };
 

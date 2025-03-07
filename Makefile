@@ -29,7 +29,7 @@ HEADERS = $(OBJ:.o=.h) isa.h
 
 all: _dvm_py.so
 
-_dvm_py.so: pybind_api.o libdvm.a
+_dvm_py.so: pybind_api.o dry_run.o libdvm.a
 	g++ -shared  $^ $(LD_FLAGS) -o $@
 	cp $@ ./python/dvm
 
@@ -37,6 +37,9 @@ libdvm.a: $(OBJ) vm.o
 	ar crv $@ $^
 
 pybind_api.o: pybind_api.cc pybind_api.h $(HEADERS)
+	g++ -c $(CFLGAS) $< -o $@
+
+dry_run.o: dry_run.cc isa.h vm_aiv.cce vm_aic.cce
 	g++ -c $(CFLGAS) $< -o $@
 
 ${OBJ}: %.o: %.cc $(HEADERS)

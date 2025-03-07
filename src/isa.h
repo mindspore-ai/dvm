@@ -23,11 +23,13 @@
 #define __aicore_inline__ static inline[aicore]
 #define __bcode__ __gm__
 #define bcodeptr_t __bcode__ uint64_t *__restrict__
+#define __aicore__ [aicore]
 #else
 #define __gm__
 #define __bcode__
 #define __aicore_inline__ static inline
 #define bcodeptr_t uint64_t *
+#define __aicore__
 #endif
 
 enum vPipe {

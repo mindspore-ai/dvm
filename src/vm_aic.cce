@@ -1,8 +1,6 @@
 #define _CCE_KERNEL_
 #include "isa.h"
 
-#define __aicore__ [aicore]
-
 template <typename T>
 __aicore_inline__ void Swap(T &x, T &y) {
   T t = x;
@@ -21,6 +19,19 @@ constexpr uint32_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
 constexpr uint32_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
 constexpr uint64_t BIAS_ADDR = 0;
 constexpr int32_t BLOCK_SIZE = 16;
+
+template <typename S>
+struct QuantPRE {};
+
+template <>
+struct QuantPRE<half> {
+  static constexpr QuantMode_t type = F322F16;
+};
+
+template <>
+struct QuantPRE<bfloat16_t> {
+  static constexpr QuantMode_t type = F322BF16;
+};
 
 // TODO: only support fp16/bf16 now
 template <typename T>
@@ -161,7 +172,7 @@ class MatMul {
         inc);
     } else {
       if (flags & V_CUBE_FLAG_TRANS_A) {
-        for (size_t i = 0; i < m_round / BLOCK_SIZE; i++) {
+        for (int64_t i = 0; i < m_round / BLOCK_SIZE; i++) {
           load_cbuf_to_ca(
             dst + i * BLOCK_SIZE * k0_round,
             src + i * k_round * BLOCK_SIZE + k0_part_len * k_part_idx * BLOCK_SIZE,
@@ -174,7 +185,7 @@ class MatMul {
             inc);
         }
       } else {
-        for (size_t i = 0; i < m_round / BLOCK_SIZE; i++) {
+        for (int64_t i = 0; i < m_round / BLOCK_SIZE; i++) {
           load_cbuf_to_ca(
             dst + i * BLOCK_SIZE * k0_round,
             src + m_round * k0_part_len * k_part_idx + i * BLOCK_SIZE * BLOCK_SIZE,
@@ -211,7 +222,7 @@ class MatMul {
         false,                             // transpose
         inc);
     } else {
-      for (size_t i = 0; i < k0_round / BLOCK_SIZE; i++) {
+      for (int64_t i = 0; i < k0_round / BLOCK_SIZE; i++) {
         load_cbuf_to_cb(
           dst + i * BLOCK_SIZE * n_round,
           src + (k0_part_len * k_part_idx + i * BLOCK_SIZE) * BLOCK_SIZE,
@@ -299,19 +310,6 @@ class MatMul {
       0                                       // cmatrixInitVal
     );
   }
-
-  template <typename S>
-  struct QuantPRE {};
-
-  template <>
-  struct QuantPRE<half> {
-    static constexpr QuantMode_t type = F322F16;
-  };
-
-  template <>
-  struct QuantPRE<bfloat16_t> {
-    static constexpr QuantMode_t type = F322BF16;
-  };
 
   __force_inline__ __aicore__ void StoreC_Fp32(__gm__ float *__restrict__ dst,
                                                __cc__ float *__restrict__ c,
@@ -523,7 +521,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
-      for (int64_t k_part_idx = 0; k_part_idx < k_part_loop; ++k_part_idx) {
+      for (uint64_t k_part_idx = 0; k_part_idx < k_part_loop; ++k_part_idx) {
         __ca__ T *__restrict__ l0a = (k_part_idx & 1) ? l0a_next : l0a_base;
         __cb__ T *__restrict__ l0b = (k_part_idx & 1) ? l0b_next : l0b_base;
         int64_t k0_round = (k_part_idx == k_part_loop - 1) ? k_round - k_part_idx * mat.k0_part_len : mat.k0_part_len;
@@ -610,7 +608,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   }
 }
 
-extern "C"  __global__ [aicore] void vmain_mix_aic(uint64_t ffts_addr, uint64_t entry) {
+extern "C"  __global__ __aicore__ void vmain_mix_aic(uint64_t ffts_addr, uint64_t entry) {
   __gm__ uint64_t * body_addr = (__gm__ uint64_t*)(get_para_base()) + 2;
   if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
     __gm__ uint64_t *ext_addr = reinterpret_cast<__gm__ uint64_t*>(ffts_addr);

@@ -112,6 +112,7 @@ class KernelPy {
   void Run();
   void InitComm(int rank_id, int rank_size);
 
+  void DryRun(int core_idx, bool cube_core);
   py::object DisAssemble();
   py::object DumpGraph();
   py::object Perf();

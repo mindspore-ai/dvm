@@ -1618,6 +1618,7 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     start_dim_ = end_dim_ = -1;
   }
   visit_.Clear();
+  round_tile_.resize(0);
 }
 
 void ReduceOp::Tile(const TileParam &tp) {

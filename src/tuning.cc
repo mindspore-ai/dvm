@@ -133,11 +133,11 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
     block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
     for (uint32_t cnt = std::min(block_dim, m_loop); cnt >= 1; --cnt) {
-      auto swizzle = cnt;
+      auto swizzle = vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_nZ, cnt);
       Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
     for (uint32_t cnt = std::min(block_dim, n_loop); cnt >= 1; --cnt) {
-      auto swizzle = 1u << 16 | cnt;
+      auto swizzle = vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_zN, cnt);
       Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
   };
@@ -316,8 +316,8 @@ void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<Tuning
     block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
     uint32_t cnt = 7;
-    space.push_back(new TuningInfo(m0, n0, k0, cnt, core_loop, block_dim));
-    space.push_back(new TuningInfo(m0, n0, k0, 1u << 16 | cnt, core_loop, block_dim));
+    space.push_back(new TuningInfo(m0, n0, k0, vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_nZ, cnt), core_loop, block_dim));
+    space.push_back(new TuningInfo(m0, n0, k0, vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_zN, cnt), core_loop, block_dim));
   };
   uint32_t align_max = 512 / ITEM_SIZE[op->lhs_->type_id_];
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {

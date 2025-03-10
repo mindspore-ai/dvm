@@ -1353,6 +1353,10 @@ struct vStoreStatus {
 #define V_CUBE_FLAG_WITH_BIAS 128
 #define V_CUBE_FLAG_BIAS_FP16 256
 #define V_CUBE_FLAG_PEER_STORE 512
+#define V_CUBE_FLAG_DTYPE_OFFSET 30 // [30, 31]
+
+#define V_CUBE_SWIZ_VISIT_nZ 0
+#define V_CUBE_SWIZ_VISIT_zN 1
 
 struct vCubeOp {
   enum { FP16, BF16 };
@@ -1366,67 +1370,72 @@ struct vCubeOp {
   uint32_t batch_a0, batch_a1, batch_b0, batch_b1;
   uint32_t m0, n0, k0;
   uint32_t unique_id{1};
-  // if swizzle_dir is 0, swizzle is like:
-  // 0 2 4 6
-  // 1 3 5 7
-  // if swizzle_dir is 1, swizzle is like:
-  // 0 1 4 5
-  // 2 3 6 7
-  // swizzle_dir << 16 | swizzle_cnt
+
+  // format: visit_type(16) << 16 | data(16)
+  // data:
+  //  nZ: swizzle_cnt(16)
+  //  zN: swizzle_cnt(16)
   uint32_t swizzle;
-  uint32_t dtype;
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;
   uint64_t gm_bias;
-  uint64_t a_size, b_size;
-  uint64_t offset_a, offset_b;
+  uint32_t a_size, b_size;
+  uint32_t offset_a, offset_b;
   // for aiv
   uint64_t subtilenum;  // subblockid1 << 32 | subblockid0
 
+  __aicore_inline__ uint32_t SwizzleEncode(uint32_t visit_type, uint32_t data) {
+    return visit_type << 16 | data;
+  }
+
   __aicore_inline__ uint64_t GetCubeOffset(__gm__ vCubeOp *__restrict__ op, uint32_t block_tile) {
     uint64_t midx, nidx;
-    uint64_t swizzle_dir = op->swizzle >> 16;
+    uint64_t visit_type = op->swizzle >> 16;
     uint64_t swizzle_cnt = op->swizzle & 0xffff;
-    TileMap(block_tile, op->m_loop, op->n_loop, swizzle_dir, swizzle_cnt, midx, nidx);
+    uint64_t cidx = block_tile / (op->m_loop * op->n_loop);
+    uint64_t sub_tile_idx = block_tile - (op->m_loop * op->n_loop) * cidx;
+    if (visit_type == V_CUBE_SWIZ_VISIT_nZ) {
+      TileMap_nZ(sub_tile_idx, op->m_loop, op->n_loop, swizzle_cnt, midx, nidx);
+    } else {
+      TileMap_zN(sub_tile_idx, op->m_loop, op->n_loop, swizzle_cnt, midx, nidx);
+    }
     uint64_t m_end = op->m_real / op->m0;
     uint64_t n_end = op->n_real / op->n0;
     uint64_t tile_flag = (midx == m_end) << 1 | (nidx == n_end);
     midx *= op->m0;
     nidx *= op->n0;
-    uint64_t batch_offset = block_tile / (op->m_loop * op->n_loop) * op->n_real * op->m_real;
+    uint64_t batch_offset = cidx * op->n_real * op->m_real;
     return tile_flag << V_GROUP_OFFSET_SIZE | (midx * op->n_real + nidx + batch_offset);
   }
 
-  __aicore_inline__ void TileMap(uint32_t tile, uint32_t m_loop, uint32_t n_loop, uint64_t swizzle_dir,
+  __aicore_inline__ void TileMap_nZ(uint32_t sub_tile_idx, uint32_t m_loop, uint32_t n_loop,
                                  uint64_t swizzle_cnt, uint64_t &midx, uint64_t &nidx) {
-    tile = tile % (m_loop * n_loop);
-    if (swizzle_dir == 0) {
-      uint32_t tile_block_idx = tile / (swizzle_cnt * n_loop);
-      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * n_loop);
+    uint32_t tile_block_idx = sub_tile_idx / (swizzle_cnt * n_loop);
+    uint32_t in_tile_block_idx = sub_tile_idx - tile_block_idx * (swizzle_cnt * n_loop);
+    uint32_t n_row = swizzle_cnt;
+    if (m_loop < (tile_block_idx + 1) * swizzle_cnt) {
+      n_row = m_loop - swizzle_cnt * tile_block_idx;
+    }
+    nidx = in_tile_block_idx / n_row;
+    midx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_row * nidx;
+    if (tile_block_idx & 1) {
+      nidx = n_loop - nidx - 1;
+    }
+  }
 
-      uint32_t n_row = swizzle_cnt;
-      if (m_loop < (tile_block_idx + 1) * swizzle_cnt) {
-        n_row = m_loop - swizzle_cnt * tile_block_idx;
-      }
-      nidx = in_tile_block_idx / n_row;
-      midx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_row * nidx;
-      if (tile_block_idx & 1) {
-        nidx = n_loop - nidx - 1;
-      }
-    } else {
-      uint32_t tile_block_idx = tile / (swizzle_cnt * m_loop);
-      uint32_t in_tile_block_idx = tile - tile_block_idx * (swizzle_cnt * m_loop);
-
-      uint32_t n_col = swizzle_cnt;
-      if (n_loop < (tile_block_idx + 1) * swizzle_cnt) {
-        n_col = n_loop - swizzle_cnt * tile_block_idx;
-      }
-      midx = in_tile_block_idx / n_col;
-      nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_col * midx;
-      if (tile_block_idx & 1) {
-        midx = m_loop - midx - 1;
-      }
+  __aicore_inline__ void TileMap_zN(uint32_t sub_tile_idx, uint32_t m_loop, uint32_t n_loop,
+                                 uint64_t swizzle_cnt, uint64_t &midx, uint64_t &nidx) {
+    uint32_t tile_block_idx = sub_tile_idx / (swizzle_cnt * m_loop);
+    uint32_t in_tile_block_idx = sub_tile_idx - tile_block_idx * (swizzle_cnt * m_loop);
+    uint32_t n_col = swizzle_cnt;
+    if (n_loop < (tile_block_idx + 1) * swizzle_cnt) {
+      n_col = n_loop - swizzle_cnt * tile_block_idx;
+    }
+    midx = in_tile_block_idx / n_col;
+    nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_col * midx;
+    if (tile_block_idx & 1) {
+      midx = m_loop - midx - 1;
     }
   }
 };

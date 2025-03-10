@@ -1938,7 +1938,7 @@ void CubeOp::Dump(bool verbose, std::ostringstream &oss) {
 
 void CubeOp::GetSwizzleConfig(vCubeOp *op) {
   uint32_t swizzle_cnt = DEFAULT_SWIZZLE_COUNT;
-  uint32_t swizzle_dir = 0;
+  uint32_t visit_type = 0;
   if (System::Instance().SocName() == kAscend910B4) {
     float mincost = op->m_align + op->n_align;
     for (size_t i = 1; i <= block_dim_; i++) {
@@ -1949,7 +1949,7 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
         uint32_t mem_b_zN = i * op->n0;
         cost = mem_a_zN + mem_b_zN;
         if (cost <= mincost) {
-          swizzle_dir = 1;
+          visit_type = V_CUBE_SWIZ_VISIT_zN;
           mincost = cost;
           swizzle_cnt = i;
         }
@@ -1958,7 +1958,7 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
         uint32_t mem_b_nZ = i * op->m0;
         cost = mem_a_nZ + mem_b_nZ;
         if (cost < mincost) {
-          swizzle_dir = 0;
+          visit_type = V_CUBE_SWIZ_VISIT_nZ;
           mincost = cost;
           swizzle_cnt = i;
         }
@@ -1966,16 +1966,16 @@ void CubeOp::GetSwizzleConfig(vCubeOp *op) {
     }
   } else {
     if (op->m_real > op->n_real) {
-      swizzle_dir = 0;
+      visit_type = V_CUBE_SWIZ_VISIT_nZ;
       uint32_t m_loop = CeilDiv(op->m_real, op->m0);
       swizzle_cnt = std::min(swizzle_cnt, m_loop);
     } else {
-      swizzle_dir = 1;
+      visit_type = V_CUBE_SWIZ_VISIT_zN;
       uint32_t n_loop = CeilDiv(op->n_real, op->n0);
       swizzle_cnt = std::min(swizzle_cnt, n_loop);
     }
   }
-  op->swizzle = swizzle_dir << 16 | swizzle_cnt;
+  op->swizzle = vCubeOp::SwizzleEncode(visit_type, swizzle_cnt);
 }
 
 static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, uint64_t minor_loop, uint64_t k_real,
@@ -2077,17 +2077,17 @@ void CubeOp::TileV2(vCubeOp *op) {
     uint32_t core_loop = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
     uint32_t block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
-    bool swizzle_zN = m_align_ < n_align_;
+    uint32_t swizzle_type = m_align_ < n_align_ ? V_CUBE_SWIZ_VISIT_zN : V_CUBE_SWIZ_VISIT_nZ;
     // std::cout << "param: m0=" << m0 << ", n0=" << n0 << ", k0=" << k0 << ", core_loop=" << core_loop << ",
     // block_dim=" << block_dim << ", swizzle_zN=" << swizzle_zN << std::endl;
-    uint32_t swizzle = swizzle_zN
+    uint32_t swizzle_cnt = swizzle_type == V_CUBE_SWIZ_VISIT_zN
                          ? GetSwizzle(n0, m0, n_loop, m_loop, k_real_, !trans_b_, trans_a_, block_dim, mincost)
                          : GetSwizzle(m0, n0, m_loop, n_loop, k_real_, trans_a_, !trans_b_, block_dim, mincost);
-    if (swizzle) {
+    if (swizzle_cnt) {
       op->m0 = m0_ = m0;
       op->n0 = n0_ = n0;
       op->k0 = k0_ = k0;
-      op->swizzle = swizzle_zN ? 1u << 16 | swizzle : swizzle;
+      op->swizzle = vCubeOp::SwizzleEncode(swizzle_type, swizzle_cnt);
       block_dim_ = block_dim;
       core_loop_ = core_loop;
     }
@@ -2168,9 +2168,9 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
     op->gm_bias = static_cast<NDAccess *>(bias_)->addr_.data;
   }
-  auto dtype = lhs_->type_id_;
-  ASSERT(dtype == dvm::kFloat16 || dtype == dvm::kBFloat16);
-  op->dtype = dtype == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
+  ASSERT(lhs_->type_id_ == dvm::kFloat16 || lhs_->type_id_ == dvm::kBFloat16);
+  uint64_t dtype = lhs_->type_id_  == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
+  op->flags |= dtype << V_CUBE_FLAG_DTYPE_OFFSET;
   if (tuner) {
     tuner->GenTile(this, op);
   } else {

@@ -56,9 +56,9 @@ typedef enum {
   QF322S4_PRE = 26,
 } QuantMode_t;
 
-const char ONLY_VALUE[] = "ONLY_VALUE";
-const char PAD_NONE[] = "PAD_NONE";
-const char inc[] = "inc";
+const int ONLY_VALUE = 2;
+const int PAD_NONE = 0;
+const int inc = 0;
 
 /************* cce intrinsic ***************/
 struct CallTracer {

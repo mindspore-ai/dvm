@@ -234,12 +234,14 @@ class MatMul {
                                        int64_t m_actual,
                                        int64_t n_actual,
                                        int64_t k0_actual) {
-    bool special_handle_req = (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
+    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+      m_actual = 16;
+    }
     mad(
       c,
       a,
       b,
-      special_handle_req ? 16 : m_actual,     // m
+      m_actual,                               // m
       k0_actual,                              // k
       n_actual,                               // n
       unit_flag,                              // unitFlag
@@ -247,7 +249,10 @@ class MatMul {
       0,                                      // cmatrixSource
       init_c                                  // cmatrixInitVal
     );
-  }
+    if ((m_actual / BLOCK_SIZE) * (n_actual / BLOCK_SIZE) < 10) {
+      pipe_barrier(PIPE_M);
+    }
+}
 
   __force_inline__ __aicore__ void LoadBias(__cbuf__ void *__restrict__ dst,
                                             __gm__ void *__restrict__ src,
@@ -284,13 +289,15 @@ class MatMul {
                                         int64_t m_actual, 
                                         int64_t n_actual,
                                         int64_t k0_actual) {
-    bool special_handle_req = (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A));
+    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+      m_actual = 16;
+    }
     mad(
       c,
       a,
       b,
       BIAS_ADDR,
-      special_handle_req ? 16 : m_actual,     // m
+      m_actual,                               // m
       k0_actual,                              // k
       n_actual,                               // n
       unit_flag,                              // unitFlag
@@ -298,6 +305,9 @@ class MatMul {
       1,                                      // cmatrixSource
       0                                       // cmatrixInitVal
     );
+    if ((m_actual / BLOCK_SIZE) * (n_actual / BLOCK_SIZE) < 10) {
+      pipe_barrier(PIPE_M);
+    }
   }
 
   template <typename S>
@@ -563,7 +573,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         } else{
           mat.MM(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
         }
-        pipe_barrier(PIPE_M);
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
       pingpong = pingpong ^ 1ul;

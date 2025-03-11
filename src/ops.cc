@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Huawei Technologies Co., Ltd
+ * Copyright 2024-2025 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -2074,7 +2074,7 @@ void CubeOp::TileV2(vCubeOp *op) {
     // 2. get core_loop, block_dim
     uint32_t m_loop = CeilDiv(op->m_real, m0);
     uint32_t n_loop = CeilDiv(op->n_real, n0);
-    uint32_t core_loop = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
+    uint32_t core_loop = m_loop * n_loop * batch_c0_ * batch_c1_;
     uint32_t block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
     uint32_t swizzle_type = m_align_ < n_align_ ? V_CUBE_SWIZ_VISIT_zN : V_CUBE_SWIZ_VISIT_nZ;
@@ -2119,7 +2119,7 @@ void CubeOp::GenTiling(vCubeOp *op) {
     Tile(op);
     auto m_loop = CeilDiv(op->m_real, op->m0);
     auto n_loop = CeilDiv(op->n_real, op->n0);
-    core_loop_ = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
+    core_loop_ = m_loop * n_loop * batch_c0_ * batch_c1_;
     auto core_num = System::Instance().CoreNum(CoreType::kCube);
     block_dim_ = core_loop_ < core_num ? core_loop_ : core_num;
     GetSwizzleConfig(op);
@@ -2139,16 +2139,16 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->offset_b = offset_b_;
   auto a = static_cast<NDAccess *>(lhs_);
   op->gm_a = a->addr_.data;
-  op->batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
-  op->batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
+  uint32_t batch_a1 = a->nd_.size() > 2 ? static_cast<uint32_t>(a->nd_[2]) : 1;
+  uint32_t batch_a0 = a->nd_.size() > 3 ? static_cast<uint32_t>(a->nd_[3]) : 1;
   auto b = static_cast<NDAccess *>(rhs_);
   op->gm_b = b->addr_.data;
-  op->batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
-  op->batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
+  uint32_t batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
+  uint32_t batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
   if (!trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2) {
-    auto batch_fold = op->batch_a1 * op->batch_a0;
-    op->batch_a1 = 1;
-    op->batch_a0 = 1;
+    auto batch_fold = batch_a1 * batch_a0;
+    batch_a1 = 1;
+    batch_a0 = 1;
     if (!batch_fold_) {
       op->m_align = m_align_ *= batch_fold;
       op->m_real = m_real_ *= batch_fold;
@@ -2156,6 +2156,14 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
       batch_fold_ = true;
     }
   }
+  batch_c0_ = std::max(batch_a0, batch_b0);
+  batch_c1_ = std::max(batch_a1, batch_b1);
+  op->batch_cast = 0;
+  if (batch_c0_ != batch_a0) op->batch_cast |= V_CUBE_BCAST_FLAG_BCAST_A0;
+  if (batch_c0_ != batch_b0) op->batch_cast |= V_CUBE_BCAST_FLAG_BCAST_B0;
+  if (batch_c1_ != batch_a1) op->batch_cast |= V_CUBE_BCAST_FLAG_BCAST_A1;
+  if (batch_c1_ != batch_b1) op->batch_cast |= V_CUBE_BCAST_FLAG_BCAST_B1;
+  if (op->batch_cast) op->batch_cast |= batch_c1_ << V_CUBE_BCAST_C1_OFFSET;
   auto c = static_cast<NDAccess *>(output_);
   op->gm_c = c->addr_.data;
   op->flags = trans_a_ ? V_CUBE_FLAG_TRANS_A : 0;

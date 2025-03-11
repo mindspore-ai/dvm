@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Huawei Technologies Co., Ltd
+ * Copyright 2024-2025 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -1358,19 +1358,26 @@ struct vStoreStatus {
 #define V_CUBE_SWIZ_VISIT_nZ 0
 #define V_CUBE_SWIZ_VISIT_zN 1
 
+#define V_CUBE_BCAST_FLAG_BCAST_A0 (1u << 0)
+#define V_CUBE_BCAST_FLAG_BCAST_A1 (1u << 1)
+#define V_CUBE_BCAST_FLAG_BCAST_B0 (1u << 2)
+#define V_CUBE_BCAST_FLAG_BCAST_B1 (1u << 3)
+#define V_CUBE_BCAST_C1_OFFSET 8
+#define V_CUBE_BCAST_C1_BITS 24
+
 struct vCubeOp {
   enum { FP16, BF16 };
 
   uint32_t flags;
-  uint32_t rank_size{0};
   uint32_t m_real, n_real, k_real;
   uint32_t m_align, n_align, k_align;
   uint32_t m_loop, n_loop, k_loop;
   // shape_a: [batch_a0, batch_a1, m, k], shape_b: [batch_b0, batch_b1, k, n]
-  uint32_t batch_a0, batch_a1, batch_b0, batch_b1;
+  uint32_t batch_cast;
   uint32_t m0, n0, k0;
   uint32_t unique_id{1};
-
+  uint32_t rank_size{0};
+  uint32_t reserved;
   // format: visit_type(16) << 16 | data(16)
   // data:
   //  nZ: swizzle_cnt(16)

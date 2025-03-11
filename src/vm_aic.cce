@@ -1,3 +1,18 @@
+/**
+ * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 #define _CCE_KERNEL_
 #include "isa.h"
 
@@ -44,19 +59,13 @@ class MatMul {
     m_align = op->m_align;
     n_align = op->n_align;
     k_align = op->k_align;
-    batch_a0 = op->batch_a0;
-    batch_a1 = op->batch_a1;
-    batch_b0 = op->batch_b0;
-    batch_b1 = op->batch_b1;
+    batch_cast = op->batch_cast;
     a_size = op->a_size;
     b_size = op->b_size;
-    batch_c0 = batch_a0 > batch_b0 ? batch_a0 : batch_b0;
-    batch_c1 = batch_a1 > batch_b1 ? batch_a1 : batch_b1;
     m0 = op->m0;
     n0 = op->n0;
     k0 = op->k0;
     flags = op->flags;
-    bias_type_size = (flags & V_CUBE_FLAG_BIAS_FP16) ? sizeof(half) : sizeof(float);
     k0_part_len = min(L0_PINGPONG_BUFFER_LEN / max(m0, n0) / 16 * 16, k0);
     m_loop = op->m_loop;
     n_loop = op->n_loop;
@@ -272,7 +281,7 @@ class MatMul {
       src,                                // src
       0,                                  // sid
       1,                                  // nBurst
-      CeilDiv(n_actual * bias_type_size, 32),  // lenBurst
+      CeilDiv(n_actual * BiasTypeSize(), 32),  // lenBurst
       0,                                  // srcGap
       0,                                  // dstGap
       PAD_NONE                            // padMode
@@ -285,7 +294,7 @@ class MatMul {
       src,                                      // src
       (flags & V_CUBE_FLAG_BIAS_FP16) ? 1 : 0,  // convControl
       1,                                        // nBurst
-      CeilDiv(n_actual * bias_type_size, 64),   // lenBurst
+      CeilDiv(n_actual * BiasTypeSize(), 64),   // lenBurst
       0,                                        // srcGap
       0                                         // dstGap
     );
@@ -370,9 +379,8 @@ class MatMul {
                                           __cc__ float *__restrict__ c,
                                           uint8_t unit_flag,
                                           uint64_t m_actual,
-                                          uint64_t n_actual) {
-    uint64_t pingpong_offset = pingpong_store ? block_num + block_idx : block_idx;
-    pingpong_store ^= 0x1u;
+                                          uint64_t n_actual,
+                                          uint64_t pingpong_offset) {
     copy_matrix_cc_to_gm(
       dst + m0 * n0 * pingpong_offset,        // dst
       c,                                      // src
@@ -389,16 +397,25 @@ class MatMul {
     );
   }
 
+  __force_inline__ __aicore__ uint64_t BiasTypeSize() {
+    return (flags & V_CUBE_FLAG_BIAS_FP16) ? sizeof(half) : sizeof(float);
+  }
+
   // Compute global memory offset of matrix A and B based on batch idx of matrix C
   __force_inline__ __aicore__ void ComputeOffset(uint64_t c_idx, uint64_t &offset_a, uint64_t &offset_b) {
-    uint64_t c_idx0 = c_idx / batch_c1;
-    uint64_t c_idx1 = c_idx - c_idx0 * batch_c1;
-    uint64_t a_idx0 = min(batch_a0 - 1, c_idx0);
-    uint64_t a_idx1 = min(batch_a1 - 1, c_idx1);
-    uint64_t b_idx0 = min(batch_b0 - 1, c_idx0);
-    uint64_t b_idx1 = min(batch_b1 - 1, c_idx1);
-    uint64_t a_idx = a_idx0 * batch_a1 + a_idx1;
-    uint64_t b_idx = b_idx0 * batch_b1 + b_idx1;
+    uint64_t a_idx = c_idx;
+    uint64_t b_idx = c_idx;
+    if (batch_cast) {
+      uint64_t batch_c1 = vGetBitRange(batch_cast, V_CUBE_BCAST_C1_OFFSET, V_CUBE_BCAST_C1_BITS);
+      uint64_t c_idx0 = c_idx / batch_c1;
+      uint64_t c_idx1 = c_idx - c_idx0 * batch_c1;
+      if (uint64_t cast_a = batch_cast & (V_CUBE_BCAST_FLAG_BCAST_A0 | V_CUBE_BCAST_FLAG_BCAST_A1)) {
+        a_idx = cast_a == V_CUBE_BCAST_FLAG_BCAST_A0 ? c_idx1 : (cast_a == V_CUBE_BCAST_FLAG_BCAST_A1 ? c_idx0 : 0);
+      }
+      if (uint64_t cast_b = batch_cast & (V_CUBE_BCAST_FLAG_BCAST_B0 | V_CUBE_BCAST_FLAG_BCAST_B1)) {
+        b_idx = cast_b == V_CUBE_BCAST_FLAG_BCAST_B0 ? c_idx1 : (cast_b == V_CUBE_BCAST_FLAG_BCAST_B1 ? c_idx0 : 0);
+      }
+    }
     offset_a = a_idx * a_size;
     offset_b = b_idx * b_size;
   }
@@ -407,13 +424,11 @@ class MatMul {
   uint64_t k0_part_len;
   uint64_t m_real, n_real, k_real;
   uint64_t m_align, n_align, k_align;
-  uint64_t batch_a0, batch_a1, batch_b0, batch_b1, batch_c0, batch_c1;
+  uint64_t batch_cast;
   uint64_t m0, n0, k0;
   uint64_t a_size;
   uint64_t b_size;
-  uint64_t bias_type_size;
   uint64_t flags;
-  uint64_t pingpong_store{0};
   uint64_t k_actual, shuffle_k;
 };
 
@@ -492,6 +507,8 @@ class TileVisitor {
   uint64_t tile_loop_;
 };
 
+#define V_PINGPONG_FLAG_EVENT  0x1ul
+#define V_PINGPONG_FLAG_STORE  0x2ul
 template <typename M, typename T>
 __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end) {
   set_padding((uint64_t)0);
@@ -520,7 +537,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
-  uint64_t pingpong = 1;
+  uint64_t pingpong_flags = 0;
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
@@ -541,7 +558,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
 
     if (!visit.HasLast()) {
-      auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
+      auto event_id = pingpong_flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
       mat.LoadA(l1a, gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
@@ -552,7 +569,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
       wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
       if (nidx != visit.LastN()) {
-        mat.LoadBias(bias_l1, gm_bias + mat.bias_type_size * nidx * mat.n0, n_actual);
+        mat.LoadBias(bias_l1, gm_bias + mat.BiasTypeSize() * nidx * mat.n0, n_actual);
       }
       set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
     }
@@ -561,8 +578,14 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       uint64_t k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
       uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
       uint64_t k_part_loop = CeilDiv(k_actual, mat.k0_part_len);
-      auto event_id = pingpong ? EVENT_ID0 : EVENT_ID1;
-      auto event_id_next = pingpong ? EVENT_ID1 : EVENT_ID0;
+      event_t event_id, event_id_next;
+      if (pingpong_flags & V_PINGPONG_FLAG_EVENT) {
+        event_id = EVENT_ID0;
+        event_id_next = EVENT_ID1;
+      } else {
+        event_id = EVENT_ID1;
+        event_id_next = EVENT_ID0;
+      }
       if (k < mat.k_loop - 1) {
         shuffle_k = (shuffle_k + 1) % mat.k_loop;
         uint64_t k_actual_next = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
@@ -641,15 +664,16 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         }
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
-      pingpong = pingpong ^ 1ul;
+      pingpong_flags ^= V_PINGPONG_FLAG_EVENT;
       Swap(l1a, n_l1a);
       Swap(l1b, n_l1b);
     }
     uint8_t unit_flag = 0b11;
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
-      mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual);
+      uint64_t pingpong_offset = pingpong_flags & V_PINGPONG_FLAG_STORE ? block_num + block_idx : block_idx;
+      pingpong_flags ^= V_PINGPONG_FLAG_STORE;
+      mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual, pingpong_offset);
       if (mat.flags & V_CUBE_FLAG_PEER_STORE) {
-        uint64_t pingpong_offset = mat.pingpong_store ? block_idx : block_num + block_idx;
         // result of GetCubeOffset()
         uint64_t group_offset = midx * mat.m0 * mat.n_real + nidx * mat.n0;
         set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);

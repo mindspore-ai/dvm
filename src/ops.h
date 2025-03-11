@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Huawei Technologies Co., Ltd
+ * Copyright 2024-2025 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -821,6 +821,8 @@ class CubeOp : public NDObject {
   bool batch_fold_{false};
   NDObject *bias_{nullptr};
   Tactics tactics_;
+  uint32_t batch_c0_{0};
+  uint32_t batch_c1_{0};
 
  protected:
   void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);

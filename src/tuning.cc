@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Huawei Technologies Co., Ltd
+ * Copyright 2024-2025 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -129,7 +129,7 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
     // 2. get core_loop, block_dim
     uint32_t m_loop = CeilDiv(op->m_real, m0);
     uint32_t n_loop = CeilDiv(op->n_real, n0);
-    uint32_t core_loop = m_loop * n_loop * std::max(op->batch_a0, op->batch_b0) * std::max(op->batch_a1, op->batch_b1);
+    uint32_t core_loop = m_loop * n_loop * mm->batch_c0_ * mm->batch_c1_;
     block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
     for (uint32_t cnt = std::min(block_dim, m_loop); cnt >= 1; --cnt) {
@@ -312,7 +312,7 @@ void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<Tuning
     uint32_t m_loop = CeilDiv(code->m_real, m0);
     uint32_t n_loop = CeilDiv(code->n_real, n0);
     uint32_t core_loop =
-      m_loop * n_loop * std::max(code->batch_a0, code->batch_b0) * std::max(code->batch_a1, code->batch_b1);
+      m_loop * n_loop * op->batch_c0_ * op->batch_c1_;
     block_dim = core_loop < core_num ? core_loop : core_num;
     // 3. select swizzle
     uint32_t cnt = 7;

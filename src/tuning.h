@@ -1,5 +1,5 @@
 /**
- * Copyright 2024 Huawei Technologies Co., Ltd
+ * Copyright 2024-2025 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -52,7 +52,7 @@ class CubeTuner {
   }
 
   Key GenKey(CubeOp *op, vCubeOp *code) {
-    uint64_t key_batch = (uint64_t)code->batch_a0 << 48 | (uint64_t)code->batch_a1 << 32 | code->batch_b0 << 16 | code->batch_b1;
+    uint64_t key_batch = (uint64_t)op->batch_c0_ << 32 | (uint64_t)op->batch_c1_ << V_CUBE_BCAST_C1_OFFSET | (uint64_t)code->batch_cast;
     uint64_t key_shape = op->m_real_ << 44 | op->n_real_ << 24 | op->k_real_ << 2;
     if (op->type_id_ == dvm::kFloat32) key_shape |= 4ul;
     if (op->trans_a_) key_shape |= 2ul;

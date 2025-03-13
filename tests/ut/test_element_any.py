@@ -52,3 +52,15 @@ def test_element_any_02(shape, tile):
     t.clear_store_memory(b)
     t.run()
     assert t.output(b)[0] == 0
+
+def test_element_any_03():
+    t = Tester()
+    a = np.full([256, 32, 64], 0, np.bool_)
+    a[1,1,1] = 1
+    x = t.load(a)
+    g = t.cast(x, "float32")
+    z = t.element_any(g)
+    b = t.store(z)
+    t.clear_store_memory(b)
+    t.run()
+    assert t.output(b)[0] == 1

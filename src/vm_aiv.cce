@@ -361,15 +361,16 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint64_t simd_width = op.simd_width;
   uint64_t rs = op.simd_width >> BlockDataShift(T);
-  copy_ubuf_to_ubuf((__ubuf__ void *)xd, (__ubuf__ void *)xn, 0, 1, GetBlock(op.iter_size, sizeof(T)), 0, 0);
   set_mask_norm();
   SetVectorMask(simd_width);
+  copy_ubuf_to_ubuf((__ubuf__ void *)xd, (__ubuf__ void *)xn, 0, 1, GetBlock(op.iter_size, sizeof(T)), 0, 0);
+  pipe_barrier(PIPE_V);
   if (IsLastTile(tile) && op.iter_size != op.tail_size) {
-    uint64_t mod = op.tail_size % simd_width;
-    pipe_barrier(PIPE_V);
-    if (op.iter_size / simd_width > op.tail_size / simd_width + 1) {
-      uint64_t iter_num = op.iter_size / simd_width - (op.tail_size / simd_width + 1);
-      repeat_vector_dup(xd, (T)0, iter_num, 1, 1, rs, rs);
+    uint64_t end = op.repeat;
+    uint64_t start = op.tail_size / simd_width + 1;
+    uint64_t mod = op.tail_size - (start - 1) * simd_width;
+    if (end > start) {
+      repeat_vector_dup(xd + start * simd_width, (T)0, end - start, 1, 1, rs, rs);
     }
     uint64_t lmask, rmask;
     if (simd_width > 64) {
@@ -388,9 +389,9 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     }
     set_vector_mask(lmask, rmask);
     vDup(xd + op.tail_size - mod, (T)0, 1, 8);
+    pipe_barrier(PIPE_V);
     SetVectorMask(simd_width);
   }
-  pipe_barrier(PIPE_V);
   while (op.repeat != 1) {
     if (op.repeat & 1) {
       uint64_t offset_repeat = (op.repeat / 2) * 2;

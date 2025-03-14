@@ -29,12 +29,10 @@ enum ObjectType {
   // Load
   kLoadDummy = 0,
   kMultiLoad,
-  kSLoad,
   kLoad,
 
   // Store
   kPadStore,
-  kSStore,
   kStore,
 
   // Comm
@@ -70,7 +68,6 @@ struct TileParam {
   int64_t num;
   int64_t tile;
   int64_t tail;
-  bool group_tile;
 };
 
 struct PropRange {
@@ -83,6 +80,15 @@ struct PropRange {
   int depth;
   int affine{ELEMWISE};
   int64_t space;
+};
+
+// shard map(low axis left): [a0, a1,.. s0, s1, s2, ...] -> [a0, a1,...tile[0], tile[1], 1, 1, ..]
+struct ShardParam {
+  enum { PARTIAL_SIZE = 2 };
+  int base;
+  int64_t tile[PARTIAL_SIZE];
+  int64_t tail[PARTIAL_SIZE];
+  int64_t stride[PARTIAL_SIZE];
 };
 
 std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape);
@@ -243,19 +249,27 @@ class MemPool {
 
 class VectorKernel;
 
+// dynamic flags
 #define OBJ_FLAG_FREE_LHS 1
 #define OBJ_FLAG_FREE_RHS 2
 #define OBJ_FLAG_REUSE_LHS 4
 #define OBJ_FLAG_REUSE_RHS 8
 #define OBJ_FLAG_DEAD 16
-#define OBJ_FLAG_FLEX_RREE_XHS (1u << 5)
-#define OBJ_FLAG_FLEX_REUSE_WS (1u << 6)
 
+#define OBJ_FLAG_FLEX_RREE_XHS (1u << 14)
+#define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
+#define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 14)
+#define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 15)
+
+// static flags
 #define OBJ_FLAG_WORKSPACE (1u << 16)
 #define OBJ_FLAG_XHS (2u << 16)
 #define OBJ_FLAG_EAGER (8u << 16)
 #define OBJ_FLAG_STAGE_IO (16u << 16)
-#define OBJ_FLAG_FLEX_INPL_WS (1u << 20)
+
+#define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
+#define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
+#define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
 
 class NDObject {
  public:
@@ -268,6 +282,7 @@ class NDObject {
 
   // re-infer shape(nd_) from its inputs nd_
   virtual void Normalize(std::vector<NDObject *> &run_ops) {}
+  virtual void Shard(const ShardParam &sp);
   // fold axis right alignment: [base-depth+1, base]
   virtual void FoldProp(PropRange &range) {}
   // fold axis left alignment:  [0, depth-1]
@@ -355,6 +370,7 @@ class NDLoad : public NDAccess {
     shape_ref_ = shape_ref;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Shard(const ShardParam &sp) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -945,41 +961,6 @@ class AllGatherV2Op : public CommOp {
 
  private:
   ShapeWithRef shape_;
-};
-
-class NDSStore : public NDStore {
- public:
-  NDSStore(NDObject *src) : NDStore(src) { obj_id_ = kSStore; }
-  NDSStore(void *dst, NDObject *src) : NDStore(dst, src) { obj_id_ = kSStore; }
-  void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-  void SetCubeOp(CubeOp *op) { cube_op_ = op; }
-
- private:
-  CubeOp *cube_op_;
-};
-
-class NDSLoad : public NDLoad {
- public:
-  NDSLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32, bool is_from_cube = false)
-      : NDLoad(src, shape_ref, type_id), is_from_cube_(is_from_cube) {
-    obj_id_ = kSLoad;
-  }
-  void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-  void SetCubeOp(CubeOp *op) { cube_op_ = op; }
-
-  bool pingpong_load_{false};
-  bool is_from_cube_{false};
-
- private:
-  CubeOp *cube_op_;
 };
 }  // namespace dvm
 #endif  // _DVM_OPS_H_

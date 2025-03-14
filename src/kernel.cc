@@ -41,10 +41,8 @@ struct NDObjectAttr {
 static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenLoad, true},    // LoadDummy
   {kGenLoad, true},    // MultiLoad
-  {kGenLoad, true},    // SLoad
   {kGenLoad, true},    // Load
   {kGenStore, false},  // PadStore
-  {kGenStore, true},   // SStore
   {kGenStore, true},   // Store
   {kGenComm, true},    // ReduceScatter
   {kGenComm, true},    // AllGather
@@ -505,12 +503,11 @@ void PropDomain::TileProp(const TileParam &tp) {
   }
 }
 
-void RootDomain::Normalize(VectorKernel *kernel) {
+void RootDomain::PrepareTiling(VectorKernel *kernel) {
   tile_num_ = 1;
-  PropDomain::Normalize();
   auto &nd = dom_->nd_;
   align_.base = 0;
-  align_.depth = nd.size();
+  align_.depth = shard_ ? shard_->base + 1 : nd.size();
   PropDomain::AlignProp(align_);
   tile_size_ = 1;
   for (int i = 0; i < align_.depth; ++i) {
@@ -533,7 +530,6 @@ int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
   tp.num = num;
   tp.tile = CeilDiv(space, num);
   tp.tail = space % tp.tile;
-  tp.group_tile = false;
   PropDomain::TileProp(tp);
   if (start > 0) {
     tile_size_ = tile_size_ / space * CeilDiv(space, num);
@@ -546,17 +542,6 @@ int64_t RootDomain::Tile(int start, int end, int64_t space, int64_t num) {
   return tile_size_;
 }
 
-void RootDomain::GroupTile(int dim, int64_t space, int64_t tile) {
-  TileParam tp;
-  tp.start = dim;
-  tp.end = dim;
-  tp.num = CeilDiv(space, tile);
-  tp.tile = tile;
-  tp.tail = space % tile;
-  tp.group_tile = true;
-  PropDomain::TileProp(tp);
-}
-
 void RootDomain::Align(int depth, int64_t space) {
   TileParam tp;
   tp.start = 0;
@@ -564,8 +549,15 @@ void RootDomain::Align(int depth, int64_t space) {
   tp.num = 1;
   tp.tile = space;
   tp.tail = 0;
-  tp.group_tile = false;
   PropDomain::TileProp(tp);
+}
+
+void RootDomain::Shard(const ShardParam &sp) {
+  for (auto op = head_; op != nullptr; op = op->pd_next_) {
+    op->Shard(sp);
+  }
+  ASSERT(subdoms_.empty());
+  shard_ = &sp;
 }
 
 class ReshapeDomain : public PropDomain {
@@ -677,9 +669,15 @@ class ShapeTiling {
     int64_t num;
     do {
       if (fold.base + 1 > align_depth) {
-        fold.depth = fold.base + 1;
-        fold.space = -1;
-        prim_dom_.FoldProp(fold);
+        if (prim_dom_.shard_ && fold.base > prim_dom_.shard_->base) {
+          int partial_end = prim_dom_.shard_->base + ShardParam::PARTIAL_SIZE;
+          fold.depth = fold.base >= partial_end ? fold.base - partial_end + 2 : 1;
+          fold.space = prim_dom_.DimSpace()[fold.base + 1 - fold.depth];
+        } else {
+          fold.space = -1;
+          fold.depth = fold.base + 1;
+          prim_dom_.FoldProp(fold);
+        }
         int start_dim = fold.base + 1 - fold.depth;
         ASSERT(start_dim > 0);
         if (start_dim < align_depth) {  // axis of 1
@@ -932,6 +930,7 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);  // max tile_size for each op
   // tiling
+  root_dom_.PrepareTiling(this);
   ShapeTiling tiling(this, root_dom_, core_limit);
   if (tiles_.empty()) {
     tiling.Run(tile_size_limit);
@@ -1100,10 +1099,6 @@ int VectorKernel::Analyze() {
     }
     return false;
   };
-  int op_index = 0;
-  for (auto op : objects_) {  // clear status
-    op->Clear(op_index++);
-  }
   for (auto op : static_ops_) {
     if (op->IsSimd()) {
       OP_GEN_S(op);

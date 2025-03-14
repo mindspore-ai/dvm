@@ -54,7 +54,8 @@ void MixKernel::Append(NDObject *obj) {
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
-          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_, true);
+          sload_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          sload_->flags_ |= OBJ_FLAG_LOAD_FROM_CUBE;
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;
@@ -266,17 +267,10 @@ uint64_t MixKernel::AlignCodeGen() {
       op->nd_.resize(2);
     }
   }
-  for (auto op : post_fusion_->objects_) {
-    if (op->IsLoad()) {
-      static_cast<NDSLoad *>(op)->SetCubeOp(cube_op_);
-    } else if (op->IsStore()) {
-      static_cast<NDSStore *>(op)->SetCubeOp(cube_op_);
-    } else if (op->IsComm()) {
-      auto comm = static_cast<CommOp *>(op);
-      comm->mix_ = true;
-      if (comm->lhs_ == sload_) {
-        static_cast<CommOp *>(op)->SetCubeOp(cube_op_);
-      }
+  if (auto comm = post_fusion_->comm_op_) {
+    comm->mix_ = true;
+    if (comm->lhs_ == sload_) {
+      comm->SetCubeOp(cube_op_);
     }
   }
   post_fusion_->Optimize();
@@ -285,7 +279,7 @@ uint64_t MixKernel::AlignCodeGen() {
   uint64_t ws_size = 0;
   if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
     cube_op_->pingpong_store_ = true;
-    static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
+    static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
     cube_code->rank_size = comm->comm_->GetRankSize();
     cube_code->flags |= V_CUBE_FLAG_PEER_STORE;
     cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
@@ -298,7 +292,7 @@ uint64_t MixKernel::AlignCodeGen() {
       code_.BindOpFast(sload_->addr_, inplace_store->addr_);
     } else {
       cube_op_->pingpong_store_ = true;
-      static_cast<NDSLoad *>(sload_)->pingpong_load_ = true;
+      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
       cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
       code_.BindWorkspace(cube_op_->output_->addr_, 0);
       code_.BindWorkspace(sload_->addr_, 0);
@@ -307,12 +301,15 @@ uint64_t MixKernel::AlignCodeGen() {
   } else {
     code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
   }
-  post_fusion_->root_dom_.GroupTile(1, sload_->nd_[1], cube_code->m0);
-  post_fusion_->root_dom_.GroupTile(0, sload_->nd_[0], cube_code->n0);
-  for (size_t i = 2; i < sload_->nd_.size(); i++) {
-    post_fusion_->root_dom_.GroupTile(i, sload_->nd_[i], 1);
-  }
-  post_fusion_->NormalizeDomain();
+  ShardParam shard;
+  shard.base = 0;
+  shard.tile[0] = cube_op_->n0_;
+  shard.tail[0] = cube_op_->n_real_ % cube_op_->n0_;
+  shard.tile[1] = cube_op_->m0_;
+  shard.tail[1] = cube_op_->m_real_ % cube_op_->m0_;
+  shard.stride[0] = 1;
+  shard.stride[1] = cube_op_->n_real_;
+  post_fusion_->root_dom_.Shard(shard);
   auto code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
   uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
   uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;

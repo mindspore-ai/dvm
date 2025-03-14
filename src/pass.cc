@@ -534,7 +534,7 @@ void InsertRemovePad(BasicBlock &block) {
     if (op.nd_.size() != max_depth) {
       op.nd_.resize(max_depth, 1);
     }
-    op.AlignProp(range);
+    op.AlignProp(range); // TODO: shard mode should less align
   }
   for (auto iter = block.begin(); iter != block.end(); iter++) {
     if (iter->GetObjectType() == kStore) {
@@ -729,9 +729,8 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
       forward_shape = new_shape;
       backward_shape = new_shape;
       break;
-    case kSLoad:
-      if (static_cast<NDSLoad *>(obj)->is_from_cube_) return false;
     case kLoad:
+      if (obj->flags_ & OBJ_FLAG_LOAD_FROM_CUBE) return false;
     case kBroadcastS: {
       ASSERT(!is_forward);
       intermediate.RegisterNewShape(obj, new_shape);
@@ -739,7 +738,6 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
       break;
     }
     case kPadStore:
-    case kSStore:
     case kStore:
       ASSERT(is_forward);
       intermediate.RegisterNewShape(obj, new_shape);

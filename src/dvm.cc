@@ -321,12 +321,7 @@ NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
   if (ktype == kStaticStages) {
     ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
-  NDObject *obj;
-  if (ktype == kStaticMix) {
-    obj = new NDSLoad(addr, shape, type);
-  } else {
-    obj = new NDLoad(addr, shape, type);
-  }
+  NDObject *obj = new NDLoad(addr, shape, type);
   kernel_->Append(obj);
   return obj;
 }
@@ -558,12 +553,7 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
   } else if (ktype == kStaticStages) {
     ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
-  NDObject *obj;
-  if (ktype == kStaticMix) {
-    obj = new NDSStore(addr, input);
-  } else {
-    obj = new NDStore(addr, input);
-  }
+  NDObject *obj = new NDStore(addr, input);
   kernel_->Append(obj);
   return obj;
 }
@@ -629,17 +619,14 @@ void Kernel::StageSwitch(KernelType type) {
 
 NDObject *Kernel::StageLoad(NDObject *stage_store) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = static_cast<StagesKernel *>(kernel_)->Current()->KType() == kStaticMix
-              ? new NDSLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_)
-              : new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
+  auto op = new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
   static_cast<StagesKernel *>(kernel_)->StageLoad(op, static_cast<NDStore *>(stage_store));
   return op;
 }
 
 NDObject *Kernel::StageStore(NDObject *input) {
   ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = static_cast<StagesKernel *>(kernel_)->Current()->KType() == kStaticMix ? new NDSStore(nullptr, input)
-                                                                                   : new NDStore(nullptr, input);
+  auto op = new NDStore(nullptr, input);
   static_cast<StagesKernel *>(kernel_)->StageStore(op);
   return op;
 }

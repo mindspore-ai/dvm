@@ -394,7 +394,7 @@ int NDLoad::Emit(VectorKernel &k) {
       addr_.Update(insn_ + vSLoad::RELOC_OFFSET);
       return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op);
     }
-  } // end shard_
+  }  // end shard_
   vLoad op;
   op.from = addr_.gm;
   op.xn = xbuf_;
@@ -2063,8 +2063,8 @@ void CubeOp::TileV2(vCubeOp *op) {
     // std::cout << "param: m0=" << m0 << ", n0=" << n0 << ", k0=" << k0 << ", core_loop=" << core_loop << ",
     // block_dim=" << block_dim << ", swizzle_zN=" << swizzle_zN << std::endl;
     uint32_t swizzle_cnt = swizzle_type == V_CUBE_SWIZ_VISIT_zN
-                         ? GetSwizzle(n0, m0, n_loop, m_loop, k_real_, !trans_b_, trans_a_, block_dim, mincost)
-                         : GetSwizzle(m0, n0, m_loop, n_loop, k_real_, trans_a_, !trans_b_, block_dim, mincost);
+                             ? GetSwizzle(n0, m0, n_loop, m_loop, k_real_, !trans_b_, trans_a_, block_dim, mincost)
+                             : GetSwizzle(m0, n0, m_loop, n_loop, k_real_, trans_a_, !trans_b_, block_dim, mincost);
     if (swizzle_cnt) {
       op->m0 = m0_ = m0;
       op->n0 = n0_ = n0;
@@ -2159,7 +2159,7 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
     op->gm_bias = static_cast<NDAccess *>(bias_)->addr_.data;
   }
   ASSERT(lhs_->type_id_ == dvm::kFloat16 || lhs_->type_id_ == dvm::kBFloat16);
-  uint64_t dtype = lhs_->type_id_  == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
+  uint64_t dtype = lhs_->type_id_ == dvm::kFloat16 ? vCubeOp::FP16 : vCubeOp::BF16;
   op->flags |= dtype << V_CUBE_FLAG_DTYPE_OFFSET;
   if (tuner) {
     tuner->GenTile(this, op);
@@ -2714,15 +2714,15 @@ int AllReduceOp::Emit(VectorKernel &k) {
   *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | backward_event2 << V_M_HEAD_SET_EVENT_OFFSET;
 
   if (use_twoshot_) {
-    uint64_t repeat_full = strides_.back();
-    uint64_t per_rank_count = repeat_full / rank_size;
-    uint64_t last_rank_count = repeat_full - per_rank_count * (rank_size - 1);
-    uint64_t this_rank_count = rank_id == rank_size - 1 ? last_rank_count : per_rank_count;
-    uint64_t per_rank_offset = per_rank_count * ITEM_SIZE[type_id_];
+    uint64_t num_in_block = SIMD_BLOCK_SIZE / ITEM_SIZE[type_id_];
+    ASSERT(strides_.back() % num_in_block == 0);
+    uint64_t repeat_full = strides_.back() / num_in_block;
+    // make sure block(32Byte) aligned
+    uint64_t per_rank_block = (repeat_full / rank_size);
+    uint64_t last_rank_block = repeat_full - per_rank_block * (rank_size - 1);
+    uint64_t this_rank_block = rank_id == rank_size - 1 ? last_rank_block : per_rank_block;
+    uint64_t per_rank_offset = per_rank_block * SIMD_BLOCK_SIZE;
     ASSERT(per_rank_offset % 32 == 0);  // Should be 32Byte aligned in UB
-    uint64_t per_rank_lenburst = GetBlocks(per_rank_count);
-    uint64_t last_rank_lenburst = GetBlocks(last_rank_count);
-    uint64_t this_rank_lenburst = rank_id == rank_size - 1 ? last_rank_lenburst : per_rank_lenburst;
 
     // TwoShot stage 1:
     // Copy data to peermem
@@ -2738,7 +2738,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
       p_load.xn = rhs;
       p_load.tile_stride = tile_stride_size;
       p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id) + rank_id * per_rank_offset;
-      p_load.lenburst = this_rank_lenburst;
+      p_load.lenburst = this_rank_block;
       // TODO: consider tail, If use tail will faster?(less mte2 in tail tile)
       p_load.tail_lenburst = p_load.lenburst;
       p_load.round_rank = 0;  // TODO: consider broadcast
@@ -2751,7 +2751,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
       add.xd = add_dst;
       add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
       add.xm = rhs;
-      add.count = this_rank_count;
+      add.count = this_rank_block * num_in_block;
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2771,7 +2771,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
     p_store2.flag_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_TWOSHOT_FLAG_OFFSET;
     p_store2.xn = add_dst;  // store result of Allreduce
     p_store2.tile_stride = tile_stride_size;
-    p_store2.lenburst = this_rank_lenburst;
+    p_store2.lenburst = this_rank_block;
     p_store2.tail_lenburst = p_store2.lenburst;
     p_store2.round_rank = 0;
     current_insn = insn_ + code_size;
@@ -2789,7 +2789,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
       p_load.xn = dst;
       p_load.tile_stride = tile_stride_size;
       p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_TWOSHOT_OFFSET;
-      p_load.lenburst = is_last ? last_rank_lenburst : per_rank_lenburst;
+      p_load.lenburst = is_last ? last_rank_block : per_rank_block;
       p_load.tail_lenburst = p_load.lenburst;
       p_load.round_rank = 0;
       current_insn = insn_ + code_size;

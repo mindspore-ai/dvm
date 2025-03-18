@@ -316,7 +316,6 @@ uint64_t MixKernel::AlignCodeGen() {
   cube_code->subtilenum = subtile_1 << 32 | subtile_0;
   cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   code_.data_size_ = code_end - code_.data_;
-  code_.target_ = Code::kTargetMix;
   code_.UpdateMix(cube_op_->core_loop_, V_ENTRY_FLAG_PRE_WAIT);
   code_.Combine(post_fusion_->code_, 0);
   return ws_size;
@@ -658,10 +657,7 @@ class EagerVector : public VectorKernel {
     static_ops_.clear();
   }
 
-  void CodeGenMix(CubeOp *mm) {
-    objects_.clear();
-    static_ops_.clear();
-    code_.Clear();
+  void CodeGenCube(CubeOp *mm) {
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
@@ -670,6 +666,35 @@ class EagerVector : public VectorKernel {
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
     code_.UpdateC(mm->core_loop_);
+    next_ = mm;
+  }
+
+  void CodeGenMix(CubeOp *mm) {
+    size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
+    size_t post_reserve = ReserveCodeSize();
+    code_.Alloc(head_reserve + post_reserve);
+    vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
+    mm->CodeGen(cube_code, System::Instance().lazy_tuner_);
+    ASSERT(!mm->batch_fold_);
+    root_dom_.SetHead(next_);
+    NormalizeDomain();
+    ShardParam shard;
+    shard.base = 0;
+    shard.tile[0] = mm->n0_;
+    shard.tail[0] = mm->n_real_ % mm->n0_;
+    shard.tile[1] = mm->m0_;
+    shard.tail[1] = mm->m_real_ % mm->m0_;
+    shard.stride[0] = 1;
+    shard.stride[1] = mm->n_real_;
+    root_dom_.Shard(shard);
+    auto code_end = DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
+    uint64_t subtile_0 = (tile_num_ + 1) / 2;
+    uint64_t subtile_1 = tile_num_ - subtile_0;
+    cube_code->subtilenum = subtile_1 << 32 | subtile_0;
+    cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
+    code_.data_size_ = code_end - code_.data_;
+    code_.block_dim_ = mm->block_dim_;
+    code_.UpdateMix(mm->core_loop_, V_ENTRY_FLAG_PRE_WAIT);
     next_ = mm;
   }
 
@@ -725,7 +750,7 @@ class EagerVector : public VectorKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) {
     if (next_ && next_->obj_id_ == ObjectType::kCubeOp) {
       auto mm = static_cast<CubeOp *>(next_);
-      oss << indent << "vgraph() {" << std::endl;
+      oss << indent << "vgraph_cube() {" << std::endl;
       auto body_indent = indent + "  ";
       oss << body_indent << "%0" << mm->nd_ << " = ";
       mm->Dump(true, oss);
@@ -735,9 +760,10 @@ class EagerVector : public VectorKernel {
         oss << ", %3" << mm->bias_->nd_;
       }
       oss << ")" << std::endl << indent << "}";
-      return;
+      if (objects_.empty()) return;
+      oss << std::endl;
     }
-    return VectorKernel::Dump(oss, indent);
+    VectorKernel::Dump(oss, indent);
   }
 
   NDObject *next_;
@@ -759,12 +785,14 @@ class EagerArea {
     fused_.clear();
   }
 
-  void ResetMix(NDObject *dom) {
+  void ResetMix(NDObject *dom, int state) {
     dom_ = dom;
-    state_ = kSubmitted;
+    state_ = state;
+    objects_.clear();
+    fused_.clear();
   }
 
-  bool TryFuse(EagerArea *a, std::vector<std::pair<EagerArea *, EagerArea *>> &areas) {
+  bool FuseCheck(EagerArea *a) {
     ASSERT(dom_ != nullptr);
     const auto &dom_nd = dom_->nd_;
     const auto &op_nd = a->dom_->nd_;
@@ -773,14 +801,6 @@ class EagerArea {
     }
     for (size_t i = 0; i < op_nd.size(); ++i) {
       if (dom_nd[i] != op_nd[i]) return false;
-    }
-    fused_.push_back(a);
-    areas[a->area_id_].second = this;
-    if (!a->fused_.empty()) {
-      for (auto x : a->fused_) {
-        fused_.push_back(x);
-        areas[x->area_id_].second = this;
-      }
     }
     return true;
   }
@@ -858,7 +878,22 @@ void VKernelE::Split(NDObject *root) {
     if (auto idx = GetArea(input); idx >= 0) {
       if (auto a = areas_[idx].second; a != area) {
         if (a->state_ == EagerArea::kPending) {
-          if (area->TryFuse(a, areas_)) {
+          if (area->FuseCheck(a)) {
+            if (a->dom_->obj_id_ == ObjectType::kCubeOp) {
+              if (input == a->dom_) {
+                update = Exchange(area, input);
+                temp_ops_.push_back(update);
+              }
+              area->dom_ = a->dom_;
+            }
+            area->fused_.push_back(a);
+            areas_[a->area_id_].second = area;
+            if (!a->fused_.empty()) {
+              for (auto x : a->fused_) {
+                area->fused_.push_back(x);
+                areas_[x->area_id_].second = area;
+              }
+            }
             kernel_used_--;
             pv_black_mask_ |= 1ul << a->area_id_;
             area->depend_mask_ |= a->depend_mask_;
@@ -986,7 +1021,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
       if (op->obj_id_ == kCubeOp) {
         int aid = area_used_++;
         auto area = EagerArea::Assign(this, aid);
-        area->ResetMix(op);
+        area->ResetMix(op, EagerArea::kSubmitted);
         area->depend_mask_ |= dep_mask;
         dep_mask |= 1ul << aid;
         pv_black_mask_ |= 1ul << aid;
@@ -1001,7 +1036,8 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   }
   int aid = area_used_++;
   auto area = EagerArea::Assign(this, aid);
-  area->ResetMix(mm);
+  // TODO: support bmm batch axis broadcast
+  area->ResetMix(mm, mm->nd_.size() == 2 ? EagerArea::kPending : EagerArea::kSubmitted);
   area->depend_mask_ |= dep_mask;
   SetArea(mm, aid);
   SetStore(mm, output);
@@ -1009,37 +1045,6 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   objects_.push_back(mm);
   pv_black_mask_ |= 1ul << aid;
   return ret;
-}
-
-void VKernelE::CodeGenMix(EagerArea *area, EagerVector *kernel) {
-  auto mm = static_cast<CubeOp *>(area->dom_);
-  auto alloc_input = [this](NDAccess *input) {
-    auto store = GetStore(input);
-    if (store->addr_.gm == nullptr) {  // TODO: abstract common func
-      auto size = GetStoreSize(store);
-      if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-        store->addr_.gm = it->second;
-        wss_.erase(it);
-        SetStoreSize(store, it->first);
-      } else {
-        store->addr_.gm = ws_alloc_(size, user_data_);
-      }
-    }
-    input->addr_.gm = store->addr_.gm;
-  };
-  if (auto io = static_cast<NDAccess *>(mm->lhs_); io->addr_.gm == nullptr) {
-    alloc_input(io);
-  }
-  if (auto io = static_cast<NDAccess *>(mm->rhs_); io->addr_.gm == nullptr) {
-    alloc_input(io);
-  }
-  if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->addr_.gm == nullptr) {
-    alloc_input(io);
-  }
-  if (!mm->atomic_add_) {
-    wss_.insert({GetStoreSize(mm->output_), mm->output_->addr_.gm});
-  }
-  kernel->CodeGenMix(mm);
 }
 
 uint64_t VKernelE::CodeGen() {
@@ -1073,10 +1078,6 @@ uint64_t VKernelE::CodeGen() {
     if (area->state_ == EagerArea::kFree) continue;
     area->state_ = EagerArea::kFree;
     auto kernel = kernels_[--kidx];
-    if (area->dom_->obj_id_ == kCubeOp) {
-      CodeGenMix(area, kernel);
-      continue;
-    }
     kernel->Reset(area->dom_);
     if (!area->fused_.empty()) {
       for (auto it = area->fused_.rbegin(); it != area->fused_.rend(); ++it) {
@@ -1084,64 +1085,65 @@ uint64_t VKernelE::CodeGen() {
       }
     }
     append_ops(kernel, area->objects_);
-    EagerVector **pv_kernels = nullptr;
-    int pv_num = 0;
-    if (uint64_t pv_mask = ~(area->depend_mask_ | pv_black_mask_) & ((1ul << area_used_) - 1); pv_mask > 0) {
-      pv_kernels = kernels_.data() + kernel_begin;
-      for (; pv_mask && pv_num < g_eager_pv_width; ++pv_num) {
-        int area_id = 63 - __builtin_clzl(pv_mask);
-        pv_mask &= ~(1ul << area_id);
-        auto a = areas_[area_id].second;
-        a->state_ = EagerArea::kFree;
-        auto k = kernels_[kernel_begin++];
-        k->Reset(a->dom_);
-        if (!a->fused_.empty()) {
-          for (auto it = a->fused_.rbegin(); it != a->fused_.rend(); ++it) {
-            append_ops(k, (*it)->objects_);
-          }
-        }
-        append_ops(k, a->objects_);
+    if (area->dom_->obj_id_ == ObjectType::kCubeOp) {
+      auto mm = static_cast<CubeOp *>(area->dom_);
+      if (auto io = static_cast<NDAccess *>(mm->lhs_); io->addr_.gm == nullptr) {
+        io->addr_.gm = AllocWS(GetStore(io));
       }
-    }
-    for (size_t i = obj_size; i < objects_.size(); ++i) {
-      NDAccess *io = static_cast<NDAccess *>(objects_[i]);
-      auto store = GetStore(io);
-      if (store->addr_.gm == nullptr) {
-        if (auto is =
-              kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
-          store->addr_.gm = is->addr_.gm;
-          SetStoreInplace(is, 1);
-        } else {
-          auto size = GetStoreSize(store);
-          if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-            store->addr_.gm = it->second;
-            wss_.erase(it);
-            SetStoreSize(store, it->first);
-          } else {
-            store->addr_.gm = ws_alloc_(size, user_data_);
-          }
-        }
+      if (auto io = static_cast<NDAccess *>(mm->rhs_); io->addr_.gm == nullptr) {
+        io->addr_.gm = AllocWS(GetStore(io));
       }
-      io->addr_.gm = store->addr_.gm;
-    }
-    objects_.resize(obj_size);
-    if (uint64_t ws_size = kernel->EagerVector::CodeGenV(pv_kernels, pv_num); ws_size > 0) {
-      void *ws_mem;
-      if (auto it = wss_.upper_bound(ws_size - 1); it != wss_.end()) {
-        ws_mem = it->second;
+      if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->addr_.gm == nullptr) {
+        io->addr_.gm = AllocWS(GetStore(io));
+      }
+      if (kernel->objects_.empty()) {
+        kernel->CodeGenCube(mm);
       } else {
-        ws_mem = ws_alloc_(ws_size, user_data_);
-        wss_.insert({ws_size, ws_mem});
+        AllocVectorWSS(kernel, obj_size);
+        kernel->CodeGenMix(mm);
       }
-      for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
-        op->Reloc(static_cast<char *>(ws_mem) + op->ws);
+      if (auto output = mm->output_; !mm->atomic_add_ && !(output->flags_ & OBJ_FLAG_EAGER)) {
+        wss_.insert({GetStoreSize(output), output->addr_.gm});
       }
-      kernel->code_.bind_wss_ = nullptr;
+    } else {
+      EagerVector **pv_kernels = nullptr;
+      int pv_num = 0;
+      if (uint64_t pv_mask = ~(area->depend_mask_ | pv_black_mask_) & ((1ul << area_used_) - 1); pv_mask > 0) {
+        pv_kernels = kernels_.data() + kernel_begin;
+        for (; pv_mask && pv_num < g_eager_pv_width; ++pv_num) {
+          int area_id = 63 - __builtin_clzl(pv_mask);
+          pv_mask &= ~(1ul << area_id);
+          auto a = areas_[area_id].second;
+          a->state_ = EagerArea::kFree;
+          auto k = kernels_[kernel_begin++];
+          k->Reset(a->dom_);
+          if (!a->fused_.empty()) {
+            for (auto it = a->fused_.rbegin(); it != a->fused_.rend(); ++it) {
+              append_ops(k, (*it)->objects_);
+            }
+          }
+          append_ops(k, a->objects_);
+        }
+      }
+      AllocVectorWSS(kernel, obj_size);
+      if (uint64_t ws_size = kernel->EagerVector::CodeGenV(pv_kernels, pv_num); ws_size > 0) {
+        void *ws_mem;
+        if (auto it = wss_.upper_bound(ws_size - 1); it != wss_.end()) {
+          ws_mem = it->second;
+        } else {
+          ws_mem = ws_alloc_(ws_size, user_data_);
+          wss_.insert({ws_size, ws_mem});
+        }
+        for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
+          op->Reloc(static_cast<char *>(ws_mem) + op->ws);
+        }
+        kernel->code_.bind_wss_ = nullptr;
+      }
     }
     if (uint64_t code_size = kernel->code_.ReserveWorkspace(0); code_size > extern_code_size) {
       extern_code_size = code_size;
     }
-    if (kidx > 1) {  // kidx 1 is last wss user
+    if (kidx > kernel_begin + 1) {
       for (auto op : temp_ops_) {
         if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
           wss_.insert({GetStoreSize(store), store->addr_.gm});

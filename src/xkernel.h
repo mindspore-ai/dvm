@@ -188,9 +188,38 @@ class VKernelE : public VKernel {
     SetStoreInplace(store, 0);
   }
 
+  void *AllocWS(NDAccess *store) {
+    auto size = GetStoreSize(store);
+    if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
+      store->addr_.gm = it->second;
+      wss_.erase(it);
+      SetStoreSize(store, it->first);
+    } else {
+      store->addr_.gm = ws_alloc_(size, user_data_);
+    }
+    return store->addr_.gm;
+  }
+
+  void AllocVectorWSS(VectorKernel *kernel, size_t obj_size) {
+    for (size_t i = obj_size; i < objects_.size(); ++i) {
+      NDAccess *io = static_cast<NDAccess *>(objects_[i]);
+      auto store = GetStore(io);
+      if (store->addr_.gm == nullptr) {
+        if (auto is =
+              kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
+          store->addr_.gm = is->addr_.gm;
+          SetStoreInplace(is, 1);
+        } else {
+          AllocWS(store);
+        }
+      }
+      io->addr_.gm = store->addr_.gm;
+    }
+    objects_.resize(obj_size);
+  }
+
   void Split(NDObject *root);
   NDObject *Exchange(EagerArea *area, NDObject *input);
-  void CodeGenMix(EagerArea *area, EagerVector *kernel);
   void TunerLaunch(EagerVector *kernel, void *stream);
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;

@@ -772,16 +772,13 @@ class DisAssembler {
   DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
 
   void Run(Code *code, const char *prefix) {
+    if (code->wrap_ && !code->wrap_->DasWrap(oss)) {
+      return;
+    }
     void *ffts = *reinterpret_cast<void **>(code->data_);
     uint64_t entry = *reinterpret_cast<uint64_t *>(code->data_ + sizeof(uint64_t));
     uint8_t *bcode = code->data_ + code->HeadSize();
     uint64_t bcode_size = code->data_size_ - code->HeadSize();
-    if (!code->sub_codes_.empty()) {
-      for (auto ac : code->sub_codes_) {
-        Run(ac, "_sub");
-        oss << std::endl;
-      }
-    }
     oss << "// target=" << code->target_ << ", block_dim=" << code->block_dim_ << ", ffts_addr=" << ffts << std::endl;
     oss << prefix << ".";
     auto ktype = entry & V_ENTRY_MASK_TYPE;
@@ -1000,7 +997,18 @@ class DisAssembler {
   std::ostringstream &oss;
 };
 
-std::atomic<uint32_t> Code::unique_id_ = 0;
+int CodeWrap::LaunchWrap(void *workspace, void *stream) {
+  return next_->LaunchWrap(workspace, stream);
+}
+
+void CodeWrap::CombineWrap(Code *to, uint64_t ws_base) {
+  to->InsertWrap(this);
+  next_->CombineWrap(to, ws_base);
+}
+
+bool CodeWrap::DasWrap(std::ostringstream &oss) {
+  return next_->DasWrap(oss);
+}
 
 Code::~Code() {
   if (data_) {
@@ -1015,10 +1023,9 @@ Code::~Code() {
 
 Code &Code::operator=(Code &&other) {
   MoveCode(other);
-  sub_codes_ = std::move(other.sub_codes_);
-  unique_ids_ = std::move(other.unique_ids_);
   bind_wss_ = other.bind_wss_;
   bind_ops_ = other.bind_ops_;
+  wrap_ = other.wrap_;
   return *this;
 }
 
@@ -1079,15 +1086,8 @@ void Code::Combine(const Code &code, uint64_t ws_base) {
     }
     BindOp(*op, *(op->op));
   }
-  if (!code.unique_ids_.empty()) {
-    for (auto id : code.unique_ids_) {
-      unique_ids_.push_back(id);
-    }
-  }
-  if (!code.sub_codes_.empty()) {
-    for (auto a : code.sub_codes_) {
-      sub_codes_.push_back(a);
-    }
+  if (code.wrap_) {
+    code.wrap_->CombineWrap(this, ws_base);
   }
 }
 
@@ -1124,4 +1124,12 @@ uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
   }
   return workspace_size + offset;
 }
+
+int Code::LaunchWrap(void *workspace, void *stream) {
+  return DoLaunch(workspace, stream);
+}
+
+void Code::CombineWrap(Code *code, uint64_t ws_base) {}
+bool Code::DasWrap(std::ostringstream &oss) { return true; }
+
 }  // namespace dvm

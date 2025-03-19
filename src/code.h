@@ -18,7 +18,6 @@
 #define _DVM_CODE_H_
 #include <sstream>
 #include <cstring>
-#include <atomic>
 #include "isa.h"
 #include "system.h"
 
@@ -55,7 +54,18 @@ struct RelocAddr {
   RelocAddr *bind_list_{nullptr};
 };
 
-class Code {
+class Code;
+class CodeWrap {
+ public:
+  CodeWrap() = default;
+  virtual ~CodeWrap(){}
+  virtual int LaunchWrap(void *workspace, void *stream);
+  virtual void CombineWrap(Code *to, uint64_t ws_base);
+  virtual bool DasWrap(std::ostringstream &oss);
+  CodeWrap *next_{nullptr};
+};
+
+class Code : public CodeWrap {
  public:
   enum { kTargetVec = 0, kTargetCube, kTargetMix };
   Code() = default;
@@ -64,10 +74,9 @@ class Code {
   Code &operator=(Code &&other);
   ~Code();
   void Clear() {
-    sub_codes_.clear();
-    unique_ids_.clear();
     bind_wss_ = nullptr;
     bind_ops_ = nullptr;
+    wrap_ = nullptr;
   }
   void Alloc(size_t size);
   void MoveCode(Code &other);
@@ -126,20 +135,22 @@ class Code {
   }
 
   int Launch(void *workspace, void *stream) {
-    if (!sub_codes_.empty()) {
-      for (auto a : sub_codes_) {
-        auto ret = a->DoLaunch(workspace, stream);
-        if (ret != RT_ERROR_NONE) return ret;
-      }
+    if (!wrap_) {
+      return DoLaunch(workspace, stream);
     }
-    // std::ostringstream oss;
-    // this->DisAssemble(oss);
-    // std::cout << oss.str() << std::endl;
-    return DoLaunch(workspace, stream);
+    return wrap_->LaunchWrap(workspace, stream);
   }
 
   void Combine(const Code &code, uint64_t ws_base);
   void DisAssemble(std::ostringstream &oss);
+  bool DasWrap(std::ostringstream &oss) override;
+  int LaunchWrap(void *workspace, void *stream) override;
+  void CombineWrap(Code *to, uint64_t ws_base) override;
+
+  void InsertWrap(CodeWrap *wrap) {
+    wrap->next_ = wrap_ ? wrap_ : this;
+    wrap_ = wrap;
+  }
 
   void RelocBinds(void *workspace) {
     for (auto op = bind_wss_; op != nullptr; op = op->bind_list_) {
@@ -165,18 +176,11 @@ class Code {
   int target_{0};
   RelocAddr *bind_wss_{nullptr};
   RelocAddr *bind_ops_{nullptr};
-  std::vector<Code *> sub_codes_;
-  std::vector<uint32_t *> unique_ids_;  // used to ensure softsync work, not affected by last kernel
+  CodeWrap *wrap_{nullptr};
   size_t mem_size_{0};
 
  private:
   int DoLaunch(void *workspace, void *stream) {
-    if (!unique_ids_.empty()) {
-      uint32_t cur_id = ++unique_id_;
-      for (auto id : unique_ids_) {
-        *id = cur_id;
-      }
-    }
     if (unlikely(data_size_ > PARAM_TABLE_LIMIT)) {
       return LaunchEx(workspace, stream);
     }
@@ -200,8 +204,6 @@ class Code {
     op.bind_list_ = pos;
     pos = &op;
   }
-
-  static std::atomic<uint32_t> unique_id_;  // each kernel has a unique id
 };
 }  // namespace dvm
 #endif  // _DVM_CODE_H_

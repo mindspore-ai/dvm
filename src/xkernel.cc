@@ -283,7 +283,7 @@ uint64_t MixKernel::AlignCodeGen() {
     cube_code->rank_size = comm->comm_->GetRankSize();
     cube_code->flags |= V_CUBE_FLAG_PEER_STORE;
     cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-    code_.unique_ids_.push_back(&cube_code->unique_id);  // record vCubeOp's unique_id address
+    comm->id_wrap_.ids_.push_back(&cube_code->unique_id);  // record vCubeOp's unique_id address
     cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
     code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
   } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
@@ -359,6 +359,21 @@ void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
+int StageCodeWrap::LaunchWrap(void *workspace, void *stream) {
+  for (auto s : kernel_->stages_) {
+    s->kernel->code_.Launch(workspace, stream);
+  }
+  return 0;
+}
+
+bool StageCodeWrap::DasWrap(std::ostringstream &oss) {
+  for (auto s : kernel_->stages_) {
+    s->kernel->code_.DisAssemble(oss);
+    oss << std::endl;
+  }
+  return false;
+}
+
 StagesKernel::~StagesKernel() {
   for (auto s : stages_) {
     delete s->kernel;
@@ -397,12 +412,8 @@ uint64_t StagesKernel::CodeGen() {
         code_.BindOp(op->addr_, GetStageStore(op)->addr_);
       }
     }
-    if (s != stages_.back()) {
-      code_.sub_codes_.push_back(&code);
-    } else {
-      code_.MoveCode(code);
-    }
   }
+  code_.InsertWrap(&code_wrap_);
   return ws_size;
 }
 

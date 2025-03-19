@@ -48,9 +48,20 @@ class MixKernel : public VKernel {
   CubeTuner *tuner_;
 };
 
+class StagesKernel;
+class StageCodeWrap : public CodeWrap {
+ public:
+  StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
+  int LaunchWrap(void *workspace, void *stream) override;
+  bool DasWrap(std::ostringstream &oss) override;
+
+ private:
+  StagesKernel *kernel_;
+};
+
 class StagesKernel : public VKernel {
  public:
-  StagesKernel() : VKernel(KernelType::kStaticStages) {}
+  StagesKernel() : VKernel(KernelType::kStaticStages), code_wrap_(this) {}
   ~StagesKernel() override;
 
   void StageSwitch(KernelType type) {
@@ -110,6 +121,8 @@ class StagesKernel : public VKernel {
     std::vector<NDAccess *> ios;
   };
   std::vector<Stage *> stages_;
+  StageCodeWrap code_wrap_;
+  friend StageCodeWrap;
 };
 
 class EagerVector;

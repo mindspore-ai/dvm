@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <vector>
 #include <mutex>
+#include <atomic>
 #include "isa.h"
 #include "system.h"
 #include "code.h"
@@ -742,6 +743,7 @@ class _ReduceOp : public FlexOp {
   int64_t tail_size_{0};
 };
 
+class AtomicCleanWrap;
 class ReduceOp : public _ReduceOp {
  public:
   ReduceOp(NDObject *input, int red_op, ShapeRef *dims_ref, bool keepdims)
@@ -756,12 +758,10 @@ class ReduceOp : public _ReduceOp {
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
 
-  void GenClearKernel(NDAccess *store);
-  NDStore *clear_store_{nullptr};
-  VectorKernel *clear_kernel_{nullptr};
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   TileVisitCoder visit_;
+  AtomicCleanWrap *clean_wrap_{nullptr};
 
  private:
   int EmitDeterm(VectorKernel &k);
@@ -773,8 +773,6 @@ class ReduceOp : public _ReduceOp {
   DimArray round_tile_;
 
   RelocAddr ws_reloc_;
-  ShapeRef clear_shape_;
-  int64_t clear_shape_data_;
 };
 
 class CubeTuner;
@@ -854,6 +852,14 @@ class CubeOp : public NDObject {
   ShapeRef shape_ref_data_;
 };
 
+class CommIdWrap : public CodeWrap {
+ public:
+  int LaunchWrap(void *workspace, void *stream) override;
+  std::vector<uint32_t *> ids_;  // used to ensure softsync work, not affected by last kernel
+ private:
+  static std::atomic<uint32_t> unique_id_;  // each kernel has a unique id
+};
+
 class CommOp : public NDObject {
  public:
   CommOp(NDObject *input, const Communicator *comm, ObjectType obj_id)
@@ -872,6 +878,7 @@ class CommOp : public NDObject {
   std::vector<uint64_t> backward_events_;
   bool mix_{false};
   const Communicator *comm_;
+  CommIdWrap id_wrap_;
 
  protected:
   uint64_t xbuf_reserve_{0};  // static

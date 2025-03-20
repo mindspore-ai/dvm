@@ -657,7 +657,6 @@ class ShapeTiling {
  public:
   ShapeTiling(VectorKernel *kernel, RootDomain &prim_dom, int64_t core_limit)
       : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {
-    repeat_size_ = ITEM_SIMD_WIDTH_MAX[kernel->MaxType()];
   }
   ~ShapeTiling() = default;
   void Run(int64_t tile_size_limit) {
@@ -698,8 +697,6 @@ class ShapeTiling {
       prim_dom_.Align(align_depth, prim_dom_.align_.space);
     }
   }
-
-  int64_t proposal_sw_{0};
 
  protected:
   int64_t GetDivision(int64_t val, int64_t min) {
@@ -780,82 +777,48 @@ class ShapeTiling {
     return tile_num;
   }
 
-  int64_t CostMeasure2(int64_t repeat_num, int64_t tile_num) {
-    int64_t core_tile = CeilDiv(tile_num, core_limit_);
-    return core_tile * (repeat_num + 2);
-  }
-
-  int64_t CalcLeadDivision(int64_t tile_size, const PropRange &range) {
-    int64_t block_size = kernel_->BlockAlign();
-    int64_t space = range.space;
-    auto ProposalSimdWidth = [this, block_size, space](int64_t tile_num, int64_t &best_cost) -> bool {
-      int64_t factor = space / tile_num;
-      int64_t last_cost = INT_MAX;
-      bool selected = false;
-      for (int64_t sw = repeat_size_; sw > 0; sw -= block_size) {
-        int64_t align_repeat = CeilDiv(factor, sw);
-        int64_t align_factor = align_repeat * sw;
-        if (align_factor > tile_size_limit_) continue;
-        int64_t cost = CostMeasure2(align_repeat, tile_num * prim_dom_.TileNum());
-        if (cost > last_cost) break;
-        last_cost = cost;
-        if (cost <= best_cost) {
-          proposal_sw_ = sw;
-          best_cost = cost;
-          selected = true;
-        }
-      }
-      return selected;
-    };
-    int64_t tile_num = GetDivision(space, CeilDiv(tile_size, tile_size_limit_));
-    if (tile_num < space && range.affine < PropRange::REDUCE) {
-      int64_t best_cost = INT_MAX;
-      ProposalSimdWidth(tile_num, best_cost);
-      int64_t div_tile = tile_num;
-      while (div_tile < space) {
-        div_tile = GetDivision(space, div_tile + 1);
-        if (!ProposalSimdWidth(div_tile, best_cost)) break;
-        tile_num = div_tile;
-      }
-    }
-    return tile_num;
+  int64_t CostMeasure2(int64_t block_num, int64_t tile_num) {
+    int64_t core_tile = CeilDiv(tile_num * prim_dom_.TileNum(), core_limit_);
+    return core_tile * (block_num + 16);
   }
 
   int64_t CalcLeadTile(int64_t tile_size, const PropRange &range) {
-    if (prim_dom_.TileNum() > 1) {  // avoid tile range pad
-      return CalcLeadDivision(tile_size, range);
-    }
-    int64_t space = range.space;
-    int64_t init_repeat = space > repeat_size_ ? std::min(tile_size_limit_, space) / repeat_size_ : 1L;
-    int64_t best_tile = (space - 1) / (init_repeat * repeat_size_) + 1;
-    int64_t best_cost = CostMeasure2(init_repeat, best_tile);
-    int64_t start_num = best_tile + 1;
     int64_t block_size = kernel_->BlockAlign();
-    while (true) {
-      int64_t align_tile = CeilDiv(start_num, core_limit_) * core_limit_;
-      int64_t factor = CeilDiv(space, align_tile);
-      if (factor < repeat_size_ * 4) break;
-      start_num = align_tile + core_limit_;
-      int64_t last_cost = INT_MAX;
-      int64_t selected = 0;
-      for (int64_t sw = repeat_size_; sw > 0; sw -= block_size) {
-        int64_t repeat = CeilDiv(factor, sw);
-        int64_t align_factor = repeat * sw;
-        if (align_factor > tile_size_limit_) continue;
-        int64_t tile_num = CeilDiv(space, align_factor);
-        int64_t cost = CostMeasure2(repeat, tile_num);
-        if (cost > last_cost) break;
-        last_cost = cost;
-        if (cost <= best_cost) {
+    int64_t space = range.space;
+    if (prim_dom_.TileNum() > 1) {  // avoid tile range pad
+      int64_t tile_num = GetDivision(space, CeilDiv(tile_size, tile_size_limit_));
+      if (tile_num < space && range.affine < PropRange::REDUCE) {
+        int64_t factor = space / tile_num;
+        int64_t best_cost = CostMeasure2(CeilDiv(factor, block_size), tile_num);
+        int64_t div_tile = tile_num;
+        while (div_tile < space) {
+          div_tile = GetDivision(space, div_tile + 1);
+          int64_t cost = CostMeasure2(CeilDiv(space / div_tile, block_size), div_tile);
+          if (cost >= best_cost) break;
           best_cost = cost;
-          best_tile = tile_num;
-          selected = sw;
+          tile_num = div_tile;
         }
       }
-      if (selected > 0) {
-        proposal_sw_ = selected;
-        if (best_tile % core_limit_ == 0) break;
+      return tile_num;
+    }
+    int64_t block_num = space > block_size ? CeilDiv(std::min(tile_size_limit_, space), block_size) : 1L;
+    int64_t best_tile = CeilDiv(space, block_num * block_size);
+    int64_t factor = CeilDiv(space, best_tile);
+    int64_t best_cost = CostMeasure2(CeilDiv(factor, block_size), best_tile);
+    int64_t start_num = best_tile + 1;
+    constexpr int64_t min_factor = 512L;
+    while (true) {
+      int64_t align_tile = CeilDiv(start_num, core_limit_) * core_limit_;
+      factor = std::max(CeilDiv(space, align_tile), min_factor);
+      block_num = CeilDiv(factor, block_size);
+      start_num = align_tile + core_limit_;
+      int64_t tile_num = CeilDiv(space, factor);
+      int64_t cost = CostMeasure2(block_num, tile_num);
+      if (cost < best_cost) {
+        best_cost = cost;
+        best_tile = tile_num;
       }
+      if (factor == min_factor || align_tile > core_limit_ * 4) break;
     }
     return best_tile;
   }
@@ -863,7 +826,6 @@ class ShapeTiling {
   VectorKernel *kernel_;
   RootDomain &prim_dom_;
   int64_t tile_size_limit_;
-  int64_t repeat_size_;
   int64_t core_limit_;
 };
 
@@ -948,29 +910,20 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   // simd_width
   int64_t lead_dim = root_dom_.DimSpace()[0];
   int64_t block_sw = BlockAlign();
-  int64_t align_lead_dim = CeilDiv(lead_dim, block_sw) * block_sw;
-  int64_t tile_outer = root_dom_.TileSize() / align_lead_dim;
-  int64_t best_repeat;
-  if (tiling.proposal_sw_) {
-    best_repeat = CeilDiv(lead_dim, tiling.proposal_sw_) * tile_outer;
-    simd_width_ = tiling.proposal_sw_;
-  } else {
-    simd_width_ = block_sw;
-    best_repeat = CeilDiv(lead_dim, block_sw) * tile_outer;
-    for (int64_t sw = ITEM_SIMD_WIDTH_MAX[max_type_]; sw > block_sw; sw -= block_sw) {
-      int64_t repeat = CeilDiv(lead_dim, sw) * tile_outer;
-      if (repeat * sw <= tile_size_limit && repeat <= best_repeat) {
-        simd_width_ = sw;
-        best_repeat = repeat;
-      }
-    }
+  int64_t block_lead = RoundUp(lead_dim, block_sw);
+  int64_t tile_outer = root_dom_.TileSize() / block_lead;
+  int64_t lead_limit = tile_size_limit / tile_outer;
+  int64_t simd_width = std::min(static_cast<int64_t>(ITEM_SIMD_WIDTH_MAX[max_type_]), block_lead);
+  while (simd_width >= block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
+    simd_width -= block_sw;
   }
+  simd_width_ = simd_width;
   // codegen
   visit_ = nullptr;
   code_.block_dim_ = core_limit;
   forward_event_num_ = backward_event_num_ = System::Instance().EventNum();
   CodeGenHelper helper(*this);
-  helper.xbuf_size_ = best_repeat * simd_width_ * ITEM_SIZE[max_type_];
+  helper.xbuf_size_ = RoundUp(lead_dim, simd_width) * tile_outer * ITEM_SIZE[max_type_];
   auto code_end = helper.Generate(code_ptr, code_reserve);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
   return code_end;

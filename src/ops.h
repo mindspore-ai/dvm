@@ -26,6 +26,7 @@ namespace dvm {
 enum ObjectType {
   // Load
   kLoadDummy = 0,
+  kSLoad,
   kLoad,
   // Store
   kPadStore,
@@ -576,12 +577,17 @@ class NDSStore : public NDStore {
 
 class NDSLoad : public NDLoad {
  public:
-  using NDLoad::NDLoad;
+  NDSLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id = kFloat32, bool is_from_cube = false)
+      : NDLoad(src, shape_ref, type_id), is_from_cube_(is_from_cube) {
+    obj_id_ = kSLoad;
+  }
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
+
+  bool is_from_cube_{false};
 
  private:
   CubeOp *cube_op_;

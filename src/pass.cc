@@ -204,8 +204,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     if (!obj->rhs_->IsLoad()) {
       ++res;
     }
-    if (obj->GetObjectType() == ObjectType::kSelect &&
-        !reinterpret_cast<SelectOp *>(obj)->cond_->IsLoad()) {
+    if (obj->GetObjectType() == ObjectType::kSelect && !reinterpret_cast<SelectOp *>(obj)->cond_->IsLoad()) {
       ++res;
     }
     return res;
@@ -767,6 +766,8 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
       forward_shape = new_shape;
       backward_shape = new_shape;
       break;
+    case kSLoad:
+      if (static_cast<NDSLoad *>(obj)->is_from_cube_) return false;
     case kLoad:
     case kBroadcastS: {
       ASSERT(!is_forward);
@@ -774,6 +775,8 @@ bool Propagate(NDObject *obj, const std::vector<int64_t> &new_shape, NDObject *l
       forward_shape = new_shape;
       break;
     }
+    case kPadStore:
+    case kSStore:
     case kStore:
       ASSERT(is_forward);
       intermediate.RegisterNewShape(obj, new_shape);

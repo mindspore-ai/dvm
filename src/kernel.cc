@@ -48,6 +48,7 @@ class CodeGenHelper {
   bool Generate() {
     static const CodeGenType codegen_types[ObjectType::kObjectBulk] = {
       kGenLoad,  // loaddummy
+      kGenLoad,  // sload
       kGenLoad,  // load
       kGenStore, // padstore
       kGenStore, // sstore
@@ -854,6 +855,7 @@ void VectorKernel::DoCodeGen(uint64_t core_limit) {
 void VectorKernel::DumpKernel(std::ostringstream &oss, const std::string &indent) {
   static const char* obj_names[ObjectType::kObjectBulk] = {
     "LoadDummy",
+    "SLoad",
     "Load",
     "PadStore",
     "SStore",
@@ -1177,6 +1179,7 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
 NDAccess* VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess*)> &check) const {
   const static bool elem_objects[ObjectType::kObjectBulk] = {
     true,  // loaddummy
+    true,  // sload
     true,  // load
     false, // padstore
     false, // sstore
@@ -1422,7 +1425,7 @@ void MixKernel::Append(NDObject *obj) {
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
-          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          sload_ = new NDSLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_, true);
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;

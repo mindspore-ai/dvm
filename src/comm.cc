@@ -32,7 +32,9 @@
 #include <cstdlib>
 
 #include "system.h"
-#include "acl/acl_rt.h"
+#ifndef VK_SIM_MODEL
+  #include "acl/acl_rt.h"
+#endif
 
 namespace dvm {
 namespace {
@@ -50,12 +52,14 @@ enum TopologyType : int64_t {
   TOPOLOGY_HCCS_SW
 };
 
+#ifndef VK_SIM_MODEL
 void DvmException(int rank_id, const char *error_str) {
   std::ostringstream oss;
   oss << "[" << rank_id << "]"
       << "DVM EXCEPTION. reason: " << error_str;
   throw std::runtime_error(oss.str());
 }
+#endif
 }  // namespace
 
 class SocketChannel {
@@ -324,6 +328,7 @@ bool SocketChannel::ClientSendRecv(const uint8_t *send_buf, size_t send_size, ui
 }
 
 bool SocketChannel::ServerRecvSend(const uint8_t *send_buf, size_t send_size, uint8_t *recv_buf) {
+#ifndef VK_SIM_MODEL
   memcpy_s(recv_buf, send_size, send_buf, send_size);
 
   for (int i = 1; i < rank_size_; ++i) {
@@ -337,6 +342,7 @@ bool SocketChannel::ServerRecvSend(const uint8_t *send_buf, size_t send_size, ui
       return false;
     }
   }
+#endif
 
   return true;
 }
@@ -354,6 +360,7 @@ Communicator::~Communicator() {
 }
 
 void Communicator::InitMem() {
+#ifndef VK_SIM_MODEL
   // step 1: reserve virtual memory address
   auto ret = aclrtReserveMemAddress((void **)&peer_mem_[rank_id_], MAX_BUFFER_BYTES, 0, nullptr, 1);
   if (ret != ACL_SUCCESS) {
@@ -382,9 +389,11 @@ void Communicator::InitMem() {
     DvmException(rank_id_, "memset shared mem falied");
   }
   return;
+#endif
 }
 
 void Communicator::CollectDev() {
+#ifndef VK_SIM_MODEL
   int virtual_dev_id{0};
   (void)aclrtGetDevice(&virtual_dev_id);
   const char *gvalue = std::getenv("ASCEND_RT_VISIBLE_DEVICES");
@@ -407,9 +416,11 @@ void Communicator::CollectDev() {
   if (!ret) {
     DvmException(rank_id_, "Collect device info failed");
   }
+#endif
 }
 
 void Communicator::CollectPid(std::vector<int32_t> &pids) {
+#ifndef VK_SIM_MODEL
   if (aclrtDeviceGetBareTgid(&pids[rank_id_]) != ACL_SUCCESS) {
     DvmException(rank_id_, "DeviceGetBareTgid failed");
   }
@@ -417,9 +428,11 @@ void Communicator::CollectPid(std::vector<int32_t> &pids) {
   if (!ret) {
     DvmException(rank_id_, "Collect pid failed");
   }
+#endif
 }
 
 void Communicator::CollectShareableHandle() {
+#ifndef VK_SIM_MODEL
   if (aclrtMemExportToShareableHandle(physical_mem_handle_, ACL_MEM_HANDLE_TYPE_NONE, 0, &peer_mem_handle_[rank_id_]) !=
       ACL_SUCCESS) {
     DvmException(rank_id_, "aclrtMemExportToShareableHandle failed");
@@ -429,9 +442,11 @@ void Communicator::CollectShareableHandle() {
   if (!ret) {
     DvmException(rank_id_, "Collect name failed");
   }
+#endif
 }
 
 void Communicator::SetPidToShareableHandle(std::vector<int32_t> &pids) {
+#ifndef VK_SIM_MODEL
   for (int i = 0; i < rank_size_; i++) {
     if (i == rank_id_) {
       continue;
@@ -441,9 +456,11 @@ void Communicator::SetPidToShareableHandle(std::vector<int32_t> &pids) {
       DvmException(rank_id_, "aclrtMemSetPidToShareableHandle failed");
     }
   }
+#endif
 }
 
 void Communicator::OpenIpcMem() {
+#ifndef VK_SIM_MODEL
   static std::mutex mut;
   std::lock_guard<std::mutex> lock(mut);
   for (int i = 0; i < rank_size_; i++) {
@@ -463,9 +480,11 @@ void Communicator::OpenIpcMem() {
       DvmException(rank_id_, "map virtual memory addr to physical memory addr failed");
     }
   }
+#endif
 }
 
 void Communicator::InitCommon() {
+#ifndef VK_SIM_MODEL
   for (size_t i = 0; i < static_cast<size_t>(rank_size_); i++) {
     if (static_cast<size_t>(rank_id_) == i) {
       continue;
@@ -483,6 +502,7 @@ void Communicator::InitCommon() {
       DvmException(rank_id_, "aclrtDeviceEnablePeerAccess failed");
     }
   }
+#endif
 }
 
 void Communicator::InitCommMem() {
@@ -504,6 +524,7 @@ void Communicator::InitCommMem() {
 }
 
 void Communicator::FreeCommMem() {
+#ifndef VK_SIM_MODEL
   for (size_t i = 0; i < static_cast<size_t>(rank_size_); i++) {
     // step 1: unmap virtual memory address and physical memory space
     if (aclrtUnmapMem(reinterpret_cast<void *>(peer_mem_[i])) != ACL_SUCCESS) {
@@ -518,6 +539,7 @@ void Communicator::FreeCommMem() {
   if (aclrtFreePhysical(physical_mem_handle_) != ACL_SUCCESS) {
     DvmException(rank_id_, "aclrtFreePhysical failed");
   }
+#endif
 }
 
 bool Communicator::Init() {

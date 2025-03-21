@@ -123,7 +123,7 @@ System::System() {
 #ifdef VK_SIM_MODEL
   auto rt_binary_register = rtDevBinaryRegister;
   auto rt_function_register = rtFunctionRegister;
-  rt_kernel_launch_ = rtKernelLaunch;
+  rt_kernel_launch_ = ::rtKernelLaunch;
 #else
   rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
   EXCEPTION_IF(rt_handle_ == nullptr, "Load libruntime.so failed");
@@ -166,7 +166,7 @@ System::System() {
   err = rt_function_register(module, stub_func, "vmain", "vmain", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 #ifdef VK_SIM_MODEL
-  rt_get_c2c_addr_ = rtGetC2cCtrlAddr;
+  rt_get_c2c_addr_ = ::rtGetC2cCtrlAddr;
 #else
   rt_get_c2c_addr_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(rt_handle_, "rtGetC2cCtrlAddr"));
 #endif

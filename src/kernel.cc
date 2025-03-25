@@ -22,49 +22,6 @@
 namespace dvm {
 static const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd] = {128, 128, 128, 64, 64};
 
-enum CodeGenTmpl {
-  kGenSimd0 = 0,
-  kGenSimd1,
-  kGenSimd2,
-  kGenComm,
-  kGenFlex,
-  kGenSimd3,
-  kGenLoad,
-  kGenStore,
-};
-
-struct NDObjectAttr {
-  CodeGenTmpl cg_tmpl;
-  bool inplace_prop;
-};
-
-static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
-  {kGenLoad, true},    // LoadDummy
-  {kGenLoad, true},    // MultiLoad
-  {kGenLoad, true},    // Load
-  {kGenStore, false},  // PadStore
-  {kGenStore, true},   // Store
-  {kGenComm, true},    // ReduceScatter
-  {kGenComm, true},    // AllGather
-  {kGenComm, true},    // AllGatherV2
-  {kGenComm, true},    // AllReduce
-  {kGenSimd1, true},   // Reshape
-  {kGenSimd1, true},   // Copy
-  {kGenSimd1, true},   // Unary
-  {kGenSimd2, true},   // Binary
-  {kGenSimd1, true},   // Cast
-  {kGenSimd1, true},   // BinaryS
-  {kGenSimd1, false},  // BroadcastTo
-  {kGenSimd0, true},   // BroadcastS
-  {kGenFlex, false},   // Reduce
-  {kGenSimd3, true},   // Select
-  {kGenSimd1, false},  // ElemAny
-  {kGenSimd1, true},   // RemovePad
-  {kGenFlex, true},    // Power
-  {kGenFlex, true},    // Compare
-  {kGenFlex, true},    // CompareS
-};
-
 class CodeGenHelper {
  public:
   struct EventManager {
@@ -94,14 +51,12 @@ class CodeGenHelper {
       }
       comm->SetXbufSize(xbuf_size_);
     }
-    auto simd_width = kernel_.simd_width_;
     for (auto op : kernel_.objects_) {
       if (op->flags_ & OBJ_FLAG_DEAD) {
         continue;
       }
-      op->UpdateStride(simd_width);
       op->tail_insn_ = op->insn_ = code_ptr;
-      switch (g_obj_attrs[op->obj_id_].cg_tmpl) {
+      switch (NDObject::attrs_[op->obj_id_].cg_tmpl) {
         case kGenSimd0: {
           auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           code_ptr += op->Emit(kernel_);
@@ -452,7 +407,7 @@ void PropDomain::Normalize() {
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     // Make rank of all ops equal by broadcast to (..., 1, 1, .., 1)
     if (op->nd_.size() < nd_size) {
-      op->nd_.resize(nd_size, 1);
+      op->nd_.dims.resize(nd_size, 1);
     }
   }
   if (!subdoms_.empty()) {
@@ -965,11 +920,11 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
       }
     }
     oss << ") // stride=[";
-    if (!op->strides_.empty()) {
-      for (size_t i = 0; i < op->strides_.size() - 1; ++i) {
-        oss << op->strides_[i] << ",";
+    if (const auto &strides = op->nd_.data->strides; !strides.empty()) {
+      for (size_t i = 0; i < strides.size() - 1; ++i) {
+        oss << strides[i] << ",";
       }
-      oss << op->strides_.back();
+      oss << strides.back();
     }
     oss << "]" << std::endl;
   }
@@ -979,18 +934,18 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
 #define OP_GEN_S(op)   \
   do {                 \
-    op->lead_dim_ = 2; \
+    op->xbuf_ = 2; \
   } while (0)
 #define OP_GEN_D(op)   \
   do {                 \
-    op->lead_dim_ = 1; \
+    op->xbuf_ = 1; \
   } while (0)
 #define OP_KILL(op)    \
   do {                 \
-    op->lead_dim_ = 0; \
+    op->xbuf_ = 0; \
   } while (0)
-#define OP_LIVE(op) (op->lead_dim_)
-#define OP_LIVE_D(op) (op->lead_dim_ == 1)
+#define OP_LIVE(op) (op->xbuf_)
+#define OP_LIVE_D(op) (op->xbuf_ == 1)
 
 static inline bool RhsInplaceCheck(NDObject *obj) {
   switch (obj->obj_id_) {
@@ -1224,14 +1179,14 @@ class PropDomainBuilder {
         continue;
       }
       if (head1 == head) {
-        auto sdom = new ReshapeDomain(head2, op->nd_, op->lhs_->nd_);
+        auto sdom = new ReshapeDomain(head2, op->nd_.dims, op->lhs_->nd_.dims);
         dom->subdoms_.push_back(sdom);
         link_ops_[i] = nullptr;
         if (--link_num_) {
           BuildSumDomain(sdom, head2);
         }
       } else if (head2 == head) {
-        auto sdom = new ReshapeDomain(head1, op->lhs_->nd_, op->nd_);
+        auto sdom = new ReshapeDomain(head1, op->lhs_->nd_.dims, op->nd_.dims);
         dom->subdoms_.push_back(sdom);
         link_ops_[i] = nullptr;
         if (--link_num_) {
@@ -1298,7 +1253,7 @@ NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
     auto op = objects_[i];
     auto &flag = elem_flags[op->index_];
     if (op->lhs_) {
-      auto elem_type = g_obj_attrs[op->obj_id_].inplace_prop;
+      auto elem_type = NDObject::attrs_[op->obj_id_].inplace_prop;
       update_flag(elem_flags[op->lhs_->index_], elem_type, flag);
       if (op->rhs_) {
         update_flag(elem_flags[op->rhs_->index_], elem_type, flag);

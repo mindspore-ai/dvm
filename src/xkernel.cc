@@ -262,9 +262,9 @@ uint64_t MixKernel::AlignCodeGen() {
   }
   if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
     for (auto op : post_fusion_->objects_) {
-      ASSERT(op->nd_.prod() == sload_->nd_.prod());
-      op->nd_[1] = cube_op_->m_real_;
-      op->nd_.resize(2);
+      ASSERT(op->nd_.dims.prod() == sload_->nd_.dims.prod());
+      op->nd_.dims[1] = cube_op_->m_real_;
+      op->nd_.dims.resize(2);
     }
   }
   if (auto comm = post_fusion_->comm_op_) {
@@ -1064,12 +1064,17 @@ uint64_t VKernelE::CodeGen() {
       auto op = *it;
       if (GetArea(op) == -1) continue;
       SetArea(op, -1);
+      if (NDObject::attrs_[op->obj_id_].share_ndd) {
+        op->nd_.data = op->lhs_->nd_.data;
+      }
       kernel->EagerVector::Append(op);
       if (op->IsLoad()) {
         if (!(op->flags_ & OBJ_FLAG_EAGER)) {
           objects_.push_back(op);
         }
       } else if (auto store = GetStore(op)) {
+        ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
+        store->nd_.data = op->nd_.data;
         kernel->EagerVector::Append(store);
         temp_ops_.push_back(store);
       }

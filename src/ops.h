@@ -163,8 +163,10 @@ class DimArray {
     }
     return res;
   }
-  int64_t &operator[](size_t i) { return data_[i]; }
-  const int64_t &operator[](size_t i) const { return data_[i]; }
+  template <typename T>
+  int64_t &operator[](T i) { return data_[i]; }
+  template <typename T>
+  const int64_t &operator[](T i) const { return data_[i]; }
   int64_t &back() { return *(data_ + size_ - 1); }
   const int64_t &back() const { return *(data_ + size_ - 1); }
   const int64_t *data() const { return data_; }
@@ -179,17 +181,7 @@ class DimArray {
   size_t size_;
 };
 
-inline std::ostream &operator<<(std::ostream &oss, const DimArray &nd) {
-  oss << "[";
-  if (nd.size() > 0) {
-    for (size_t i = 0; i < nd.size() - 1; ++i) {
-      oss << nd[i] << ",";
-    }
-    oss << nd.back();
-  }
-  oss << "]";
-  return oss;
-}
+std::ostream &operator<<(std::ostream &oss, const DimArray &nd);
 
 template <size_t N>
 struct ShapeRefData : public ShapeRef {
@@ -208,6 +200,62 @@ struct ShapeRefData : public ShapeRef {
   int64_t shape[N];
 };
 using ShapeWithRef = ShapeRefData<DimArray::kMaxDimSize>;
+
+class NDSpaceData {
+ public:
+  NDSpaceData() = default;
+  ~NDSpaceData() = default;
+
+  void UpdateStride(const DimArray &dims, uint64_t simd_width) {
+    strides.resize(dims.size());
+    size_t i = 0;
+    while (i < dims.size() - 1 && dims[i] == 1) {
+      strides[i++] = 1;
+    }
+    lidx = i;
+    strides[i] = RoundUp<int64_t>(dims[i], simd_width);
+    for (++i; i < dims.size(); ++i) {
+      strides[i] = dims[i] * strides[i - 1];
+    }
+  }
+
+  template <typename T>
+  int64_t stride(T i) const { return strides[i]; }
+  int64_t stride_back() const { return strides.back(); }
+  int lead_idx() const { return lidx; }
+  int64_t lead_stride() const { return strides[lidx]; }
+
+  DimArray strides;
+  int lidx;
+};
+
+class NDSpace {
+ public:
+  NDSpace() = default;
+  ~NDSpace() = default;
+
+  NDSpace &operator=(const NDSpace &other) {
+    dims = other.dims;
+    data = other.data;
+    return *this;
+  }
+  template <typename T>
+  int64_t operator[](T i) const { return dims[i]; }
+  int64_t back() const { return dims.back(); }
+  template <typename T>
+  int64_t stride(T i) const { return data->strides[i]; }
+  int64_t stride_back() const { return data->stride_back(); }
+  bool empty() const { return dims.empty(); }
+  size_t size() const { return dims.size(); }
+  int lead_idx() const { return data->lidx; }
+  int64_t lead_stride() const { return data->lead_stride(); }
+  int64_t lead_dim() const { return dims[data->lidx]; }
+
+  DimArray dims; // TODO: move to NDSpaceData
+  const NDSpaceData *data{nullptr};
+};
+
+std::ostream &operator<<(std::ostream &oss, const NDSpace &nd);
 
 template <size_t BLOCK_SIZE, size_t POOL_SIZE>
 class MemPool {
@@ -272,6 +320,23 @@ class VectorKernel;
 #define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
 
+enum CodeGenTmpl {
+  kGenSimd0 = 0,
+  kGenSimd1,
+  kGenSimd2,
+  kGenComm,
+  kGenFlex,
+  kGenSimd3,
+  kGenLoad,
+  kGenStore,
+};
+
+struct NDObjectAttr {
+  CodeGenTmpl cg_tmpl;
+  bool inplace_prop;
+  bool share_ndd;
+};
+
 class NDObject {
  public:
   NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
@@ -294,13 +359,9 @@ class NDObject {
   virtual void Dump(bool verbose, std::ostringstream &oss);
 
   void *operator new(size_t size) { return mem_pool_.Get(size); }
-
   void operator delete(void *ptr) { std::free(ptr); }
 
-  void UpdateStride(uint64_t simd_width);
-
   int64_t Size();
-  int64_t LeadAlign() const { return strides_[lead_dim_]; }
   uint64_t GetBlocks(int64_t size) const { return (size * ITEM_SIZE[type_id_] + 31) >> 5; }
   ObjectType GetObjectType() const { return obj_id_; }
   // Now we have comm op, which will cross different pipe. This method should be deprecated
@@ -317,13 +378,11 @@ class NDObject {
   void Clear(int index) {
     index_ = index;
     xbuf_ = 0;
-    lead_dim_ = 0;
     reuse_dep_ = 0;
     flags_ &= 0xffff0000u;
   }
 
-  DimArray nd_;
-  DimArray strides_;
+  NDSpace nd_;
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_;
@@ -331,7 +390,7 @@ class NDObject {
   NDObject *pd_next_;  // PropDomain next
   ObjectType obj_id_;
   DType type_id_;
-  int lead_dim_;
+  int reserved_;
   int index_;
   int reuse_dep_;
   uint32_t flags_{0};
@@ -339,6 +398,7 @@ class NDObject {
   uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
 
   static MemPool<512, 8192> mem_pool_;
+  static const NDObjectAttr attrs_[];
 };
 
 class NDAccess : public NDObject {
@@ -351,10 +411,11 @@ class NDAccess : public NDObject {
 class NDLoadDummy : public NDAccess {
  public:
   NDLoadDummy(DType type_id) : NDAccess(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
-    nd_.resize(1, 1);
+    nd_.dims.resize(1, 1);
     shape_.Resize(1);
     shape_[0] = 1;
     shape_ref_ = &shape_;
+    nd_.data = &ndd_;
   }
   void Tile(const TileParam &tp) override {}
   int Emit(VectorKernel &k) override;
@@ -362,6 +423,7 @@ class NDLoadDummy : public NDAccess {
 
  private:
   ShapeWithRef shape_;
+  NDSpaceData ndd_;
 };
 
 class NDLoad : public NDAccess {
@@ -369,6 +431,7 @@ class NDLoad : public NDAccess {
   NDLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32)
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
+    nd_.data = &ndd_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
@@ -379,6 +442,7 @@ class NDLoad : public NDAccess {
   int tail_dim_{-1};
   int tail_size_{0};
   DimArray round_tile_;
+  NDSpaceData ndd_;
 };
 
 // split input to `multi_size` parts, everytime load a piece from all parts
@@ -501,6 +565,7 @@ class ReshapeOp : public CopyOp {
   ReshapeOp(NDObject *input, ShapeRef *shape_ref) : CopyOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
+    nd_.data = &ndd_;
     obj_id_ = ObjectType::kReshape;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
@@ -510,6 +575,7 @@ class ReshapeOp : public CopyOp {
  private:
   ShapeRef *dst_shape_ref_;
   ShapeWithRef shape_;
+  NDSpaceData ndd_;
 };
 
 class UnaryOp : public NDObject {
@@ -542,6 +608,7 @@ class ElementAnyOp : public NDObject {
     shape_ref_data_.data = &shape_;
     shape_ref_data_.size = 1;
     shape_ref_ = &shape_ref_data_;
+    nd_.data = &ndd_;
   }
   int Emit(VectorKernel &k) override;
   void Tile(const TileParam &tp) override;
@@ -553,6 +620,7 @@ class ElementAnyOp : public NDObject {
   ShapeRef shape_ref_data_;
   int tail_dim_{-1};
   int tail_size_{0};
+  NDSpaceData ndd_;
 };
 
 class CastOp : public NDObject {
@@ -676,7 +744,9 @@ class SelectOp : public FlexOp {
 
 class _BroadcastOp : public NDObject {
  public:
-  _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {}
+  _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
+    nd_.data = &ndd_;
+  }
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   int Emit(VectorKernel &k) override;
@@ -685,6 +755,7 @@ class _BroadcastOp : public NDObject {
  private:
   int64_t EmitBroadcastX(uint64_t *p, int end_dim);
   int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
+  NDSpaceData ndd_;
 };
 
 // expect shape is align: equal rank
@@ -709,6 +780,7 @@ class BroadcastScalarOp : public NDObject {
   BroadcastScalarOp(T scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
       : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
+    nd_.data = &ndd_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
@@ -716,13 +788,16 @@ class BroadcastScalarOp : public NDObject {
 
  private:
   T scalar_;
+  NDSpaceData ndd_;
 };
 
 class _ReduceOp : public FlexOp {
  public:
   enum { SUM, MAX, MIN };
   _ReduceOp(NDObject *input, int red_op)
-      : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {}
+      : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {
+    nd_.data = &ndd_;
+  }
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
@@ -741,6 +816,7 @@ class _ReduceOp : public FlexOp {
   int end_dim_{0};
   int tail_dim_{-1};
   int64_t tail_size_{0};
+  NDSpaceData ndd_;
 };
 
 class AtomicCleanWrap;
@@ -839,6 +915,7 @@ class CubeOp : public NDObject {
   Tactics tactics_;
   uint32_t batch_c0_{0};
   uint32_t batch_c1_{0};
+  NDSpaceData ndd_;
 
  protected:
   float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
@@ -866,6 +943,7 @@ class CommOp : public NDObject {
       : NDObject(input, nullptr, input->type_id_, obj_id), comm_(comm) {
     shape_ref_ = input->shape_ref_;
     max_type_ = type_id_;
+    nd_.data = &ndd_;
   }
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
@@ -888,6 +966,7 @@ class CommOp : public NDObject {
   CubeOp *cube_op_{nullptr};
   uint32_t xbuf_size_{0};
   bool store_lhs_{true};
+  NDSpaceData ndd_;
 };
 
 // Not Support (rank_size, 1)

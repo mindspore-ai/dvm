@@ -75,18 +75,6 @@ size_t GetInputsNum(NDObject *obj) {
   return 2;
 }
 
-NDObject *&GetInputRef(NDObject *obj, NDObject *input) {
-  if (obj->lhs_ == input) {
-    return obj->lhs_;
-  }
-  if (obj->rhs_ == input) {
-    return obj->rhs_;
-  }
-  // Now only select have more than 2 inputs
-  ASSERT(obj->flags_ & OBJ_FLAG_XHS);
-  return static_cast<FlexOp *>(obj)->xhs_;
-}
-
 size_t MaxLive(BasicBlock &bb) {
   size_t peak = 0;
   size_t current_live = 0;
@@ -479,6 +467,36 @@ BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, NDObject *obj) 
   return iterator(obj);
 }
 
+void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
+  if (obj->lhs_ == old) {
+    obj->lhs_ = update;
+    if (NDObject::attrs_[obj->obj_id_].share_ndd) {
+      auto old_ndd = obj->nd_.data;
+      auto new_ndd = update->nd_.data;
+      if (old_ndd != new_ndd) {
+        std::vector<NDObject *> stack = {obj};
+        while (!stack.empty()) {
+          auto top = stack.back();
+          stack.pop_back();
+          top->nd_.data = new_ndd;
+          auto users = GetUsers(top);
+          for (auto op : users) {
+            if (op->nd_.data == old_ndd) {
+              stack.push_back(op);
+            }
+          }
+        }
+      }
+    }
+  } else if (obj->rhs_ == old) {
+    obj->rhs_ = update;
+  } else {
+    // Now only select have more than 2 inputs
+    ASSERT(obj->flags_ & OBJ_FLAG_XHS);
+    static_cast<FlexOp *>(obj)->xhs_ = update;
+  }
+}
+
 void ReorderStore(BasicBlock &block) {
   for (auto iter = block.begin(); iter != block.end();) {
     if (iter->IsStore()) {
@@ -532,7 +550,7 @@ void InsertRemovePad(BasicBlock &block) {
   range.depth = max_depth;
   for (auto &op : block) {
     if (op.nd_.size() != max_depth) {
-      op.nd_.resize(max_depth, 1);
+      op.nd_.dims.resize(max_depth, 1);
     }
     op.AlignProp(range); // TODO: shard mode should less align
   }
@@ -711,7 +729,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
   if (need_reshape[obj->index_].has_value()) {
     return true;
   }
-  if (obj->nd_ == new_shape) {
+  if (obj->nd_.dims == new_shape) {
     return true;
   }
   DimArray forward_shape;
@@ -762,7 +780,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
     case kBroadcastTo:
     case kReduce: {
       auto shape_change =
-        is_forward ? TryReshape(obj->nd_, obj->lhs_->nd_, new_shape) : TryReshape(obj->lhs_->nd_, obj->nd_, new_shape);
+        is_forward ? TryReshape(obj->nd_.dims, obj->lhs_->nd_.dims, new_shape) : TryReshape(obj->lhs_->nd_.dims, obj->nd_.dims, new_shape);
       if (shape_change.empty()) {
         return false;
       }
@@ -787,7 +805,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
         auto new_size = new_shape.size();
         auto old_size = obj->nd_.size();
         if (new_size > old_size) {
-          backward_shape = obj->lhs_->nd_;
+          backward_shape = obj->lhs_->nd_.dims;
           while (old_size++ < new_size) {
             backward_shape.push_back(1);
           }
@@ -860,7 +878,7 @@ void EliminateReshape(BasicBlock &bb) {
       AnalysisIntermediate inter;
       inter.need_reshape.resize(bb.capacity());
       inter.visited.reserve(bb.capacity());
-      DimArray &new_shape = is_forward ? reshape.lhs_->nd_ : reshape.nd_;
+      DimArray &new_shape = is_forward ? reshape.lhs_->nd_.dims : reshape.nd_.dims;
       inter.RegisterNewShape(&reshape, new_shape);
       bool can_eliminate = true;
       if (is_forward) {
@@ -889,7 +907,7 @@ void EliminateReshape(BasicBlock &bb) {
       }
       // Reshape
       for (auto to_update : inter.visited) {
-        to_update->nd_ = inter.need_reshape[to_update->index_].value();
+        to_update->nd_.dims = inter.need_reshape[to_update->index_].value();
         // Reduce need additoinal clean up
         if (to_update->GetObjectType() == kReduce) {
           reduce_to_cleanup.insert(to_update);
@@ -897,22 +915,19 @@ void EliminateReshape(BasicBlock &bb) {
       }
       // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
       auto prev = reshape.lhs_;
-      NDObject *copy = nullptr;
       for (auto succ : bb.GetUsers(&reshape)) {
-        auto &input_ref = GetInputRef(succ, &reshape);
         if (succ->IsStore() && prev->IsLoad()) {
-          // Insert Copy Op between store and load
-          if (copy == nullptr) {
-            copy = new CopyOp(prev);
-            copy->nd_ = prev->nd_;
-            bb.Insert(BasicBlock::iterator(&reshape), copy);
-          }
-          input_ref = copy;
-          bb.AddUser(copy, succ);
-        } else {
-          input_ref = prev;
-          bb.AddUser(prev, succ);
+          auto copy = new CopyOp(prev);
+          std::vector<NDObject *> stuff_ops;
+          copy->Normalize(stuff_ops);
+          ASSERT(stuff_ops.empty());
+          bb.Insert(BasicBlock::iterator(&reshape), copy);
+          prev = copy;
         }
+      }
+      for (auto succ : bb.GetUsers(&reshape)) {
+        bb.UpdateInput(succ, &reshape, prev);
+        bb.AddUser(prev, succ);
       }
       bb.Erase(&reshape);
     }

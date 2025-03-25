@@ -149,7 +149,7 @@ NDObject *GetBroadcastOp(NDObject *obj, const DimArray &dst_shape, std::vector<N
     broadcast_op = new dvm::_BroadcastOp(obj);
     stuff_ops.push_back(broadcast_op);
   }
-  broadcast_op->nd_ = dst_shape;
+  broadcast_op->nd_.dims = dst_shape;
   stuff_idx++;
   return broadcast_op;
 }
@@ -159,7 +159,7 @@ NDObject *InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape, 
   // output shape is not dst_shape, but the last inbetween shape, which just need only one broadcast op to reach the
   // dst_shape
   bool broadcast_flag = false;
-  auto temp_shape = obj->nd_;  // TODO: inplace optimize
+  auto temp_shape = obj->nd_.dims;  // TODO: inplace optimize
   const auto &src_shape = obj->nd_;
   dvm::NDObject *output_obj = obj;
   for (size_t i = 0; i < src_shape.size(); i++) {
@@ -187,11 +187,10 @@ NDObject *InsertImplicitBroadcast(NDObject *obj, const DimArray &dst_shape, std:
 
 uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t simd_width) {
   vClearPad clr_op;
-  auto lead_dim = op->lead_dim_;
   clr_op.xd = op->xbuf_;
-  clr_op.iter_size = op->nd_[lead_dim];
-  clr_op.iter_stride = op->strides_[lead_dim];
-  clr_op.iter_num = op->strides_.back() / op->strides_[lead_dim];
+  clr_op.iter_size = op->nd_.lead_dim();
+  clr_op.iter_stride = op->nd_.lead_stride();
+  clr_op.iter_num = op->nd_.stride_back() / clr_op.iter_stride;
   clr_op.simd_width = simd_width;
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
@@ -283,7 +282,51 @@ std::ostream &operator<<(std::ostream &oss, const BFloat16 &scalar) {
   return oss;
 }
 
+std::ostream &operator<<(std::ostream &oss, const DimArray &nd) {
+  oss << "[";
+  if (nd.size() > 0) {
+    for (size_t i = 0; i < nd.size() - 1; ++i) {
+      oss << nd[i] << ",";
+    }
+    oss << nd.back();
+  }
+  oss << "]";
+  return oss;
+}
+
+std::ostream &operator<<(std::ostream &oss, const NDSpace &nd) {
+  oss << nd.dims;
+  return oss;
+}
+
 MemPool<512, 8192> NDObject::mem_pool_;
+
+const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
+  {kGenLoad, true, false},    // LoadDummy
+  {kGenLoad, true, false},    // MultiLoad
+  {kGenLoad, true, false},    // Load
+  {kGenStore, false, true},  // PadStore
+  {kGenStore, true, true},   // Store
+  {kGenComm, true, false},    // ReduceScatter
+  {kGenComm, true, false},    // AllGather
+  {kGenComm, true, false},    // AllGatherV2
+  {kGenComm, true, false},    // AllReduce
+  {kGenSimd1, true, false},   // Reshape
+  {kGenSimd1, true, true},   // Copy
+  {kGenSimd1, true, true},   // Unary
+  {kGenSimd2, true, true},   // Binary
+  {kGenSimd1, true, true},   // Cast
+  {kGenSimd1, true, true},   // BinaryS
+  {kGenSimd1, false, false},  // BroadcastTo
+  {kGenSimd0, true, false},   // BroadcastS
+  {kGenFlex, false, false},   // Reduce
+  {kGenSimd3, true, true},    // Select
+  {kGenSimd1, false, false},  // ElemAny
+  {kGenSimd1, true, true},   // RemovePad
+  {kGenFlex, true, true},    // Power
+  {kGenFlex, true, true},    // Compare
+  {kGenFlex, true, true},    // CompareS
+};
 
 class AtomicCleanWrap : public CodeWrap {
  public:
@@ -337,39 +380,23 @@ void NDObject::Tile(const TileParam &tp) {
   bool pointwise = nd_[tp.start] > 1;
   for (int i = tp.start + 1; i <= tp.end; ++i) {
     pointwise = pointwise || nd_[i] > 1;
-    nd_[i] = 1;
+    nd_.dims[i] = 1;
   }
   if (pointwise) {  // broadcast source or reduce des: all 1, donot need to tile
-    nd_[tp.start] = tp.tile;
-  }
-}
-
-void NDObject::UpdateStride(uint64_t simd_width) {
-  strides_.resize(nd_.size());
-  size_t i = 0;
-  for (; i < nd_.size() - 1; ++i) {
-    if (nd_[i] > 1) {
-      break;
-    }
-    strides_[i] = 1;
-  }
-  lead_dim_ = i;
-  int64_t align = simd_width;
-  strides_[i] = CeilDiv(nd_[i], align) * align;
-  for (++i; i < nd_.size(); ++i) {
-    strides_[i] = nd_[i] * strides_[i - 1];
+    nd_.dims[tp.start] = tp.tile;
   }
 }
 
 void NDObject::Shard(const ShardParam &sp) {
   for (size_t i = sp.base; i < nd_.size(); ++i) {
-    nd_[i] = i < static_cast<size_t>(sp.base + ShardParam::PARTIAL_SIZE) && nd_[i] != 1 ? sp.tile[i - sp.base] : 1;
+    nd_.dims[i] = i < static_cast<size_t>(sp.base + ShardParam::PARTIAL_SIZE) && nd_[i] != 1 ? sp.tile[i - sp.base] : 1;
   }
 }
 
 void NDObject::Dump(bool verbose, std::ostringstream &oss) { oss << "NDObject"; }
 
 int NDLoadDummy::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   *insn_ = vMakeHead(V_LOAD_DUMMY, 0, 1, V_PIPE_LOAD);
   return 1;
 }
@@ -387,7 +414,7 @@ void NDLoad::Shard(const ShardParam &sp) {
 }
 
 void NDLoad::Tile(const TileParam &tp) {
-  if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
+  if (CollectRoundTile(nd_.dims, tp, round_tile_) && tp.tail > 0) {
     ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
@@ -396,12 +423,14 @@ void NDLoad::Tile(const TileParam &tp) {
 }
 
 int NDLoad::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
     BuildDimRounds(round_tile_, rounds);
   }
-  int64_t lead_align = LeadAlign();
-  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  int64_t lead_align = ndd_.lead_stride();
+  int64_t lead_dim = nd_.lead_dim();
+  uint64_t src_tile_stride_ = ndd_.stride_back() / lead_align * lead_dim;
   if (auto shard = k.root_dom_.shard_) {
     constexpr int SHARD_M = 1;
     constexpr int SHARD_N = 0;
@@ -410,9 +439,9 @@ int NDLoad::Emit(VectorKernel &k) {
       op.from = addr_.gm;
       op.xn = xbuf_;
       op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
-      op.body_iter = strides_.back() / lead_align;
-      op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
-      op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+      op.body_iter = ndd_.stride_back() / lead_align;
+      op.tail_iter = tail_dim_ <= ndd_.lead_idx() ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+      op.iter_size = lead_dim * ITEM_SIZE[type_id_];
       op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
       op.pingpong = 0;
       op.pingpong_stride = shard->stride[SHARD_N] * shard->tile[SHARD_N] * shard->tile[SHARD_M] * ITEM_SIZE[type_id_];
@@ -424,7 +453,7 @@ int NDLoad::Emit(VectorKernel &k) {
       op.gm = addr_.gm;
       op.xn = xbuf_;
       op.tile_stride = src_tile_stride_;
-      op.pad_size = lead_align - nd_[lead_dim_];
+      op.pad_size = lead_align - lead_dim;
       op.slice_m = shard->tile[SHARD_M];
       op.slice_n = shard->stride[SHARD_N] * shard->tile[SHARD_N];
       op.src_n = shard->stride[SHARD_M];
@@ -442,9 +471,9 @@ int NDLoad::Emit(VectorKernel &k) {
   op.from = addr_.gm;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
-  op.body_iter = strides_.back() / lead_align;
-  op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
-  op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  op.body_iter = ndd_.stride_back() / lead_align;
+  op.tail_iter = tail_dim_ <= ndd_.lead_idx() ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+  op.iter_size = lead_dim * ITEM_SIZE[type_id_];
   op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = round_tile_.size();
   addr_.Update(insn_ + vLoad::RELOC_OFFSET);
@@ -453,9 +482,9 @@ int NDLoad::Emit(VectorKernel &k) {
 
 void NDLoad::Normalize(std::vector<NDObject *> &run_ops) {
   auto dims = shape_ref_->size;
-  nd_.resize(dims);
+  nd_.dims.resize(dims);
   for (size_t i = 0; i < shape_ref_->size; i++) {
-    nd_[i] = shape_ref_->data[dims - i - 1];
+    nd_.dims[i] = shape_ref_->data[dims - i - 1];
   }
   tail_dim_ = -1;
   tail_size_ = 0;
@@ -466,22 +495,23 @@ void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 
 void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
   auto dims = shape_ref_->size;
-  nd_.resize(dims);
+  nd_.dims.resize(dims);
   gap_ = ITEM_SIZE[type_id_];
   for (size_t i = 0; i < shape_ref_->size; i++) {
-    nd_[i] = shape_ref_->data[dims - i - 1];
-    gap_ *= nd_[i];
+    nd_.dims[i] = shape_ref_->data[dims - i - 1];
+    gap_ *= nd_.dims[i];
   }
   gap_ = gap_ / comm_->GetRankSize();
-  nd_[shape_ref_->size - 1] /= comm_->GetRankSize();
+  nd_.dims[shape_ref_->size - 1] /= comm_->GetRankSize();
   tail_dim_ = -1;
   tail_size_ = 0;
   round_tile_.resize(0);
 }
 
 int NDMultiLoad::Emit(VectorKernel &k) {
-  int64_t lead_align = LeadAlign();
-  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
+  int64_t lead_align = ndd_.lead_stride();
+  uint64_t src_tile_stride_ = ndd_.stride_back() / lead_align * nd_.lead_dim();
   vMultiLoad op;
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
@@ -491,15 +521,15 @@ int NDMultiLoad::Emit(VectorKernel &k) {
   op.gap = gap_;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
-  op.body_iter = strides_.back() / lead_align;
-  op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
-  op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  op.body_iter = ndd_.stride_back() / lead_align;
+  op.tail_iter = tail_dim_ <= ndd_.lead_idx() ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+  op.iter_size = nd_.lead_dim() * ITEM_SIZE[type_id_];
   op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = 0;
   op.peer_mem = comm_->GetPeerMemPtr(rank_id);
   op.flag_mem = comm_->GetPeerMemPtr(rank_id) + PEERMEM_FLAG_OFFSET;
   op.rank_id = rank_id;
-  op.tile_stride2 = strides_.back() * ITEM_SIZE[type_id_];
+  op.tile_stride2 = ndd_.stride_back() * ITEM_SIZE[type_id_];
 
   addr_.Update(insn_ + vMultiLoad::RELOC_OFFSET);
   k.comm_op_->id_wrap_.ids_.emplace_back(reinterpret_cast<uint32_t *>(insn_ + vMultiLoad::UNIQUEID_OFFSET));
@@ -523,14 +553,14 @@ void NDPadStore::AlignProp(PropRange &range) { range.depth = 1; }
 void NDPadStore::FoldProp(PropRange &range) { range.depth = nd_.size() - 1; }
 
 int NDPadStore::Emit(VectorKernel &k) {
-  uint64_t lead_align = LeadAlign();
-  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  uint64_t lead_align = nd_.lead_stride();
+  uint64_t src_tile_stride_ = nd_.stride_back() / lead_align * nd_.lead_dim();
   vSliceSL op;
   auto size = shape_ref_->size;
   op.gm = addr_.gm;
   op.xn = lhs_->xbuf_;
   op.tile_stride = src_tile_stride_;
-  op.pad_size = lead_align - nd_[lead_dim_];
+  op.pad_size = lead_align - nd_.lead_dim();
   op.slice_k = op.slice_m = 1;
   op.src_m = 1;
   op.src_n = shape_ref_->data[size - 1];
@@ -541,7 +571,7 @@ int NDPadStore::Emit(VectorKernel &k) {
   op.type_size = ITEM_SIZE[type_id_];
   op.offset = 0;
   op.one_flag = 0;
-  if (op.slice_n == 1 && lead_dim_ != 0) {
+  if (op.slice_n == 1 && nd_.lead_idx() != 0) {
     op.pad_size = 0;
     op.one_flag = 1;
   }
@@ -578,19 +608,20 @@ int64_t NDSliceLoad::CalcOffset() {
 }
 
 int NDSliceLoad::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
     BuildDimRounds(round_tile_, rounds);
   }
   auto reloc_offset = CalcOffset();
-  uint64_t lead_align = LeadAlign();
-  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  uint64_t lead_align = ndd_.lead_stride();
+  uint64_t src_tile_stride_ = ndd_.stride_back() / lead_align * nd_.lead_dim();
   vSliceSL op;
   auto size = size_ref_->size;
   op.gm = addr_.gm;
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_;
-  op.pad_size = lead_align - nd_[lead_dim_];
+  op.pad_size = lead_align - nd_.lead_dim();
   op.slice_k = 1;
   if (nd_.size() == 1) {
     op.slice_m = 1;
@@ -640,7 +671,7 @@ void NDStore::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 void NDStore::Tile(const TileParam &tp) {
-  if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
+  if (CollectRoundTile(nd_.dims, tp, round_tile_) && tp.tail > 0) {
     ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
@@ -649,9 +680,10 @@ void NDStore::Tile(const TileParam &tp) {
 }
 
 int NDStore::Emit(VectorKernel &k) {
-  uint64_t lead_align = LeadAlign();
-  ASSERT(lead_align == static_cast<uint64_t>(lhs_->LeadAlign()));
-  uint64_t dst_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  int64_t lead_align = nd_.lead_stride();
+  int64_t lead_dim = nd_.lead_dim();
+  ASSERT(lead_align == lhs_->nd_.lead_stride());
+  uint64_t dst_tile_stride_ = nd_.stride_back() / lead_align * lead_dim;
   if (lhs_->obj_id_ == kElementAny) {
     vStoreStatus op;
     op.xn = lhs_->xbuf_;
@@ -667,9 +699,9 @@ int NDStore::Emit(VectorKernel &k) {
       vStoreRS op;
       op.to = addr_.data;
       op.xn = lhs_->xbuf_;
-      op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+      op.iter_size = lead_dim * ITEM_SIZE[type_id_];
       op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-      op.iter_num = strides_.back() / lead_align;
+      op.iter_num = nd_.stride_back() / lead_align;
       op.rank_id = k.comm_op_->comm_->GetRankId();
       if (tail_dim_ < 0) {
         op.iter_tail = op.iter_num;
@@ -687,8 +719,8 @@ int NDStore::Emit(VectorKernel &k) {
       if (k.visit_) {
         ASSERT(tail_dim_ < 0);
         vStoreCond op;
-        uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
-        uint64_t body_iter = strides_.back() / lead_align;
+        uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
+        uint64_t body_iter = nd_.stride_back() / lead_align;
         op.xn = lhs_->xbuf_;
         op.to = addr_.data;
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
@@ -706,9 +738,9 @@ int NDStore::Emit(VectorKernel &k) {
         op.to = addr_.data;
         op.xn = lhs_->xbuf_;
         op.cum_flag = (round_tile_.size() & 1);
-        op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+        op.iter_size = lead_dim * ITEM_SIZE[type_id_];
         op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-        op.iter_num = strides_.back() / lead_align;
+        op.iter_num = nd_.stride_back() / lead_align;
         if (tail_dim_ < 0 || red_op->InRange(tail_dim_)) {
           op.iter_tail = op.iter_num;
         } else {
@@ -733,9 +765,9 @@ int NDStore::Emit(VectorKernel &k) {
     vStoreAG op;
     op.to = addr_.data;
     op.xn = k.comm_op_->xbufs_[0];
-    op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+    op.iter_size = lead_dim * ITEM_SIZE[type_id_];
     op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-    op.iter_num = strides_.back() / lead_align;
+    op.iter_num = nd_.stride_back() / lead_align;
     if (op.iter_num == 1) {
       op.iter_tail = tail_dim_ < 0 ? op.iter_size : tail_size_ * ITEM_SIZE[type_id_];
     } else {
@@ -759,7 +791,7 @@ int NDStore::Emit(VectorKernel &k) {
     op.gm = addr_.gm;
     op.xn = lhs_->xbuf_;
     op.tile_stride = dst_tile_stride_;
-    op.pad_size = lead_align - nd_[lead_dim_];
+    op.pad_size = lead_align - lead_dim;
     op.slice_m = shard->tile[SHARD_M];
     op.slice_n = shard->stride[SHARD_N] * shard->tile[SHARD_N];
     op.src_n = shard->stride[SHARD_M];
@@ -770,9 +802,9 @@ int NDStore::Emit(VectorKernel &k) {
     return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op);
   }
   vStore op;
-  uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
   uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
-  uint64_t body_iter = strides_.back() / lead_align;
+  uint64_t body_iter = nd_.stride_back() / lead_align;
   uint64_t tail_iter;
   if (lhs_->obj_id_ == ObjectType::kRemovePad) {
     if (tail_dim_ < 0) {
@@ -805,14 +837,16 @@ int NDStore::Emit(VectorKernel &k) {
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }
 
-int CopyOp::Emit(VectorKernel &k) { return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]); }
+int CopyOp::Emit(VectorKernel &k) {
+  return EmitCopy(insn_, xbuf_, lhs_->xbuf_, nd_.stride_back() * ITEM_SIZE[type_id_]);
+}
 
 void CopyOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Copy"; }
 
 void ReshapeOp::Normalize(std::vector<NDObject *> &run_ops) {
   // update nd_/shape_
   auto dims = dst_shape_ref_->size;
-  nd_.resize(dims);
+  nd_.dims.resize(dims);
   shape_.Resize(dims);
   int64_t sz = 1;
   size_t update_axis = dims;
@@ -824,7 +858,7 @@ void ReshapeOp::Normalize(std::vector<NDObject *> &run_ops) {
       update_axis = nd_i;
     } else {
       sz *= sh;
-      nd_[nd_i] = sh;
+      nd_.dims[nd_i] = sh;
     }
   }
   if (update_axis != dims) {
@@ -834,23 +868,24 @@ void ReshapeOp::Normalize(std::vector<NDObject *> &run_ops) {
       input_sz *= nd[i];
     }
     auto v = input_sz / sz;
-    nd_[update_axis] = v;
+    nd_.dims[update_axis] = v;
     shape_[dims - 1 - update_axis] = v;
   }
 }
 
 int ReshapeOp::Emit(VectorKernel &k) {
-  if (lhs_->nd_[lhs_->lead_dim_] == nd_[lead_dim_]) {
-    return CopyOp::Emit(k);
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
+  if (lhs_->nd_.lead_dim() == nd_.lead_dim()) {
+    return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
   }
   vReshape op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.xd_lead = nd_[lead_dim_];
-  op.xn_lead = lhs_->nd_[lhs_->lead_dim_];
-  op.xd_pad = strides_[lead_dim_] - op.xd_lead;
-  op.xn_pad = lhs_->strides_[lhs_->lead_dim_] - op.xn_lead;
-  op.dup_size = strides_.back() / strides_[lead_dim_];
+  op.xd_lead = nd_.lead_dim();
+  op.xn_lead = lhs_->nd_.lead_dim();
+  op.xd_pad = ndd_.lead_stride() - op.xd_lead;
+  op.xn_pad = lhs_->nd_.lead_stride() - op.xn_lead;
+  op.dup_size = ndd_.stride_back() / ndd_.lead_stride();
   return vReshape::Encode(insn_, (type_id_ == kFloat32 || type_id_ == kInt32) ? V_RESHAPE_B32 : V_RESHAPE_B32, op);
 }
 
@@ -865,7 +900,7 @@ int UnaryOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   ASSERT(size_t(op_type_) < sizeof(unary_id_list) / sizeof(InsnIdTable));
   auto id = unary_id_list[op_type_].ids[type_id_];
   ASSERT(id != V_NONE);
@@ -883,15 +918,15 @@ int UnaryOp::QueryId(const std::string &op_name) {
 
 int RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
-  if (nd_[lead_dim_] == strides_[lead_dim_] || strides_.back() == strides_[lead_dim_]) {
+  if (nd_.lead_dim() == nd_.lead_stride() || nd_.stride_back() == nd_.lead_stride()) {
     return CopyOp::Emit(k);
   }
   vRemovePad op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.repeat = strides_.back() / strides_[lead_dim_];
-  op.iter_num = nd_[lead_dim_];
-  op.rs = GetBlocks(strides_[lead_dim_]);
+  op.repeat = nd_.stride_back() / nd_.lead_stride();
+  op.iter_num = nd_.lead_dim();
+  op.rs = GetBlocks(nd_.lead_stride());
   return vRemovePad::Encode(insn_, id_list[type_id_], op);
 }
 
@@ -900,7 +935,7 @@ void RemovePadOp::Dump(bool verbose, std::ostringstream &oss) { oss << "RemovePa
 void ElementAnyOp::Normalize(std::vector<NDObject *> &run_ops) {
   tail_dim_ = -1;
   tail_size_ = 0;
-  nd_.resize(lhs_->nd_.size(), 1);
+  nd_.dims.resize(lhs_->nd_.size(), 1);
 }
 
 void ElementAnyOp::Tile(const TileParam &tp) {
@@ -912,9 +947,10 @@ void ElementAnyOp::Tile(const TileParam &tp) {
 }
 
 int ElementAnyOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   uint32_t insn_num = 1;
   uint32_t size = 0;
-  if (lhs_->nd_[lhs_->lead_dim_] != lhs_->strides_[lhs_->lead_dim_]) {
+  if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride()) {
     size = EmitClearPad(insn_, lhs_, k.simd_width_);
     tail_insn_ = insn_ + size;
     insn_num++;
@@ -922,10 +958,10 @@ int ElementAnyOp::Emit(VectorKernel &k) {
   vElementAny op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
-  op.iter_size = lhs_->strides_.back();
-  op.tail_size = tail_dim_ < 0 ? lhs_->strides_.back() : lhs_->strides_.back() / lhs_->nd_[tail_dim_] * tail_size_;
+  op.iter_size = lhs_->nd_.stride_back();
+  op.tail_size = tail_dim_ < 0 ? lhs_->nd_.stride_back() : lhs_->nd_.stride_back() / lhs_->nd_[tail_dim_] * tail_size_;
 
-  op.repeat = lhs_->strides_.back() / k.simd_width_;
+  op.repeat = lhs_->nd_.stride_back() / k.simd_width_;
   op.simd_width = k.simd_width_;
   size += vElementAny::Encode(tail_insn_, V_ELEMENT_ANY, op);
 
@@ -941,7 +977,7 @@ int CastOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   auto id = cast_id_list[lhs_->type_id_][type_id_];
   ASSERT(id != V_NONE);
   return vUnary::Encode(insn_, id, op);
@@ -960,7 +996,7 @@ int BinaryScalarOp<T>::Emit(VectorKernel &k) {
   vBinaryS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   op.scalar = EncodeScalar(scalar_, type_id_);
   ASSERT(size_t(op_type_) < sizeof(binarys_id_list) / sizeof(InsnIdTable));
   auto id = binarys_id_list[op_type_].ids[type_id_];
@@ -995,7 +1031,7 @@ int CompareScalarOp<T>::Emit(VectorKernel &k) {
   vCompareS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   op.scalar = EncodeScalar(scalar_, type_id_);
   op.ws = wss_[0];
   op.type = cmp_op_;
@@ -1059,7 +1095,7 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject *> &run_o
   // update nd_
   const auto &lhs_nd = self->lhs_->nd_;
   const auto &rhs_nd = self->rhs_->nd_;
-  auto &nd = self->nd_;
+  DimArray nd;
   auto lhs_dim = lhs_nd.size();
   auto rhs_dim = rhs_nd.size();
   auto res_dim = lhs_dim > rhs_dim ? lhs_dim : rhs_dim;
@@ -1088,22 +1124,23 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject *> &run_o
       size_t stuff_idx = run_ops.size();
       self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, run_ops, stuff_idx);
     }
-    return;
-  }
-  if (lhs_need_broadcast) {
-    size_t stuff_idx = 0;
-    self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, stuff_idx);
-    for (size_t i = 0; i < stuff_idx; ++i) {
-      run_ops.push_back(lhs_stuff_ops_[i]);
+  } else {
+    if (lhs_need_broadcast) {
+      size_t stuff_idx = 0;
+      self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, stuff_idx);
+      for (size_t i = 0; i < stuff_idx; ++i) {
+        run_ops.push_back(lhs_stuff_ops_[i]);
+      }
+    }
+    if (rhs_need_broadcast) {
+      size_t stuff_idx = 0;
+      self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, stuff_idx);
+      for (size_t i = 0; i < stuff_idx; ++i) {
+        run_ops.push_back(rhs_stuff_ops_[i]);
+      }
     }
   }
-  if (rhs_need_broadcast) {
-    size_t stuff_idx = 0;
-    self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, stuff_idx);
-    for (size_t i = 0; i < stuff_idx; ++i) {
-      run_ops.push_back(rhs_stuff_ops_[i]);
-    }
-  }
+  self->nd_ = self->lhs_->nd_;
 }
 
 BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs)
@@ -1116,7 +1153,7 @@ int BinaryOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.xm = rhs_->xbuf_;
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   ASSERT(size_t(op_type_) < sizeof(binary_id_list) / sizeof(InsnIdTable));
   auto id = binary_id_list[op_type_].ids[type_id_];
   ASSERT(id != V_NONE);
@@ -1147,7 +1184,7 @@ int CompareOp::Emit(VectorKernel &k) {
   op.xm = rhs_->xbuf_;
   op.type = cmp_op_;
   op.ws = wss_[0];
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   auto id = binary_id_list[cmp_op_].ids[type_id_];
   ASSERT(id != V_NONE);
   return vCompare::Encode(insn_, id, op);
@@ -1166,7 +1203,7 @@ int PowerOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   op.xm = rhs_->xbuf_;
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   op.ws0 = wss_[0];
   op.ws1 = wss_[1];
   return vBinaryWS::Encode(insn_, V_POW, op);
@@ -1201,19 +1238,20 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   bool rhs_bc = false;
   bool xhs_bc = false;
   auto max_dims = std::max({lhs_nd.size(), rhs_nd.size(), xhs_nd.size()});
-  nd_.resize(max_dims);
+  DimArray nd;
+  nd.resize(max_dims);
   for (size_t i = 0; i < max_dims; ++i) {
     auto lhs_dim = i < lhs_nd.size() ? lhs_nd[i] : 1;
     auto rhs_dim = i < rhs_nd.size() ? rhs_nd[i] : 1;
     auto xhs_dim = i < xhs_nd.size() ? xhs_nd[i] : 1;
-    nd_[i] = std::max({lhs_dim, rhs_dim, xhs_dim});
-    if (nd_[i] != lhs_dim) lhs_bc = true;
-    if (nd_[i] != rhs_dim) rhs_bc = true;
-    if (nd_[i] != xhs_dim) xhs_bc = true;
+    nd[i] = std::max({lhs_dim, rhs_dim, xhs_dim});
+    if (nd[i] != lhs_dim) lhs_bc = true;
+    if (nd[i] != rhs_dim) rhs_bc = true;
+    if (nd[i] != xhs_dim) xhs_bc = true;
   }
-  auto insert_broadcast = [&input, &run_ops, this](size_t idx) {
+  auto insert_broadcast = [&input, &run_ops, this, &nd](size_t idx) {
     size_t stuff_idx = 0;
-    *input[idx] = InsertImplicitBroadcast(*input[idx], nd_, stuff_ops_[idx], stuff_idx);
+    *input[idx] = InsertImplicitBroadcast(*input[idx], nd, stuff_ops_[idx], stuff_idx);
     for (size_t i = 0; i < stuff_idx; ++i) {
       run_ops.push_back(stuff_ops_[idx][i]);
     }
@@ -1221,6 +1259,7 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   if (lhs_bc) insert_broadcast(0);
   if (rhs_bc) insert_broadcast(1);
   if (xhs_bc) insert_broadcast(2);
+  nd_ = lhs_->nd_;
 }
 
 SelectOp::~SelectOp() {
@@ -1236,7 +1275,7 @@ int SelectOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_SEL_FP16, V_NONE, V_SEL, V_SEL_INT32};
-  op.count = strides_.back();
+  op.count = nd_.stride_back();
   op.xm = rhs_->xbuf_;
   op.cond = xhs_->xbuf_;
   op.ws = wss_[0];
@@ -1289,9 +1328,10 @@ void _BroadcastOp::AlignProp(PropRange &range) {
 }
 
 int _BroadcastOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   int start_dim = -1;
   int end_dim = -1;
-  for (size_t i = lead_dim_; i < nd_.size(); ++i) {
+  for (size_t i = ndd_.lead_idx(); i < nd_.size(); ++i) {
     if (start_dim == -1) {
       if (nd_[i] != lhs_->nd_[i]) {
         end_dim = i;
@@ -1304,7 +1344,7 @@ int _BroadcastOp::Emit(VectorKernel &k) {
     }
   }
   int64_t offset;
-  if (start_dim == 0 || start_dim == lead_dim_) {
+  if (start_dim == 0 || start_dim == ndd_.lead_idx()) {
     offset = EmitBroadcastX(insn_, end_dim);
   } else {
     offset = EmitBroadcastY(insn_, start_dim, end_dim);
@@ -1316,11 +1356,11 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   vBroadcastX op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  op.count = strides_[end_dim];
-  int64_t rank_size = static_cast<int64_t>(strides_.size());
+  op.count = ndd_.stride(end_dim);
+  int64_t rank_size = static_cast<int64_t>(nd_.size());
   op.lead_num = end_dim + 1 < rank_size ? nd_[end_dim + 1] : 1;
-  op.iter_num = end_dim + 2 < rank_size ? strides_.back() / strides_[end_dim + 1] : 1;
-  op.lead_pad = lhs_->strides_[lhs_->lead_dim_] - lhs_->nd_[lhs_->lead_dim_];
+  op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
+  op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();;
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_NONE, V_BROADCAST_X_B32,
                                                 V_BROADCAST_X_B32};
   ASSERT(id_list[type_id_] != V_NONE);
@@ -1332,13 +1372,13 @@ int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   if (start_dim > 0) {
-    op.iter_num = strides_.back() / strides_[end_dim];
-    op.dup_num = strides_[end_dim] / strides_[start_dim - 1];
-    op.dup_stride = strides_[start_dim - 1] * ITEM_SIZE[type_id_] / SIMD_BLOCK_SIZE;
+    op.iter_num = ndd_.stride_back() / ndd_.stride(end_dim);
+    op.dup_num = ndd_.stride(end_dim) / ndd_.stride(start_dim - 1);
+    op.dup_stride = ndd_.stride(start_dim - 1) * ITEM_SIZE[type_id_] / SIMD_BLOCK_SIZE;
   } else {
     op.iter_num = 1;
     op.dup_num = 1;
-    op.dup_stride = strides_.back() * ITEM_SIZE[type_id_] / SIMD_BLOCK_SIZE;
+    op.dup_stride = ndd_.stride_back() * ITEM_SIZE[type_id_] / SIMD_BLOCK_SIZE;
   }
   return vBroadcastY::Encode(p, V_BROADCAST_Y, op);
 }
@@ -1358,7 +1398,7 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
   // update nd_ from shape_ref_
   auto dims = dst_shape_ref_->size;
-  nd_.resize(dims);
+  nd_.dims.resize(dims);
   shape_.Resize(dims);
   auto offset = dims - lhs_->shape_ref_->size;  // dst_shape dims >= x_shape dims
   for (size_t i = 0; i < dims; ++i) {
@@ -1367,14 +1407,14 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
       // e.g. x_shape (4, 1), dst_shape (2, -1, 1) --> dst_shape (2, 4, 1)
       shape_[i] = lhs_->shape_ref_->data[i - offset];
     }
-    nd_[dims - 1 - i] = shape_[i];
+    nd_.dims[dims - 1 - i] = shape_[i];
   }
   if (flags_ & OBJ_FLAG_EAGER) {
     size_t stuff_idx = run_ops.size();
-    lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, run_ops, stuff_idx);
+    lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_.dims, run_ops, stuff_idx);
   } else {
     size_t stuff_idx = 0;
-    lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_, stuff_ops_, stuff_idx);
+    lhs_ = InsertBroadcastOpsInBetween(lhs_, nd_.dims, stuff_ops_, stuff_idx);
     for (size_t i = 0; i < stuff_idx; ++i) {
       run_ops.push_back(stuff_ops_[i]);
     }
@@ -1385,18 +1425,19 @@ template <typename T>
 void BroadcastScalarOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
   // update nd_ from shape_ref_
   auto dims = shape_ref_->size;
-  nd_.resize(dims);
+  nd_.dims.resize(dims);
   for (size_t i = 0; i < dims; ++i) {
-    nd_[i] = shape_ref_->data[dims - i - 1];
+    nd_.dims[i] = shape_ref_->data[dims - i - 1];
   }
 }
 
 template <typename T>
 int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   vBroadcastS op;
   op.scalar = EncodeScalar(scalar_, type_id_);
   op.xd = xbuf_;
-  op.count = strides_.back();
+  op.count = ndd_.stride_back();
   return vBroadcastS::Encode(insn_, ITEM_SIZE[type_id_] == sizeof(uint32_t) ? V_BROADCAST_S : V_BROADCAST_S_B16, op);
 }
 
@@ -1464,13 +1505,16 @@ void _ReduceOp::Tile(const TileParam &tp) {
 }
 
 int _ReduceOp::Emit(VectorKernel &k) {
+  if (ndd_.strides.empty()) {
+    ndd_.UpdateStride(nd_.dims, k.simd_width_);
+  }
   ASSERT(red_op_ == ReduceOp::SUM);
-  if (nd_[lhs_->lead_dim_] == lhs_->nd_[lhs_->lead_dim_] && strides_.back() == lhs_->strides_.back()) {
-    return EmitCopy(insn_, xbuf_, lhs_->xbuf_, strides_.back() * ITEM_SIZE[type_id_]);
-  } else if (start_dim_ <= lhs_->lead_dim_) {  // reduce x
+  if (nd_.lead_dim() == lhs_->nd_.lead_dim() && ndd_.stride_back() == lhs_->nd_.stride_back()) {
+    return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
+  } else if (start_dim_ <= lhs_->nd_.lead_idx()) {  // reduce x
     uint32_t size = 0;
     uint32_t insn_num = 1;
-    if (lhs_->nd_[lhs_->lead_dim_] != lhs_->strides_[lhs_->lead_dim_]) {
+    if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride()) {
       size = EmitClearPad(insn_, lhs_, k.simd_width_);
       tail_insn_ = insn_ + size;
       insn_num++;
@@ -1479,16 +1523,16 @@ int _ReduceOp::Emit(VectorKernel &k) {
     op.simd_width = k.simd_width_;
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;
-    op.red_size = lhs_->strides_[end_dim_];
+    op.red_size = lhs_->nd_.stride(end_dim_);
     if (tail_dim_ >= 0 && tail_dim_ <= end_dim_) {
       op.red_tail = op.red_size / lhs_->nd_[tail_dim_] * tail_size_;
     } else {
       op.red_tail = op.red_size;
     }
-    op.dup_size = lhs_->strides_.back() / lhs_->strides_[end_dim_];
-    if (nd_[lead_dim_] > 1) {
-      op.dup_block = nd_[lead_dim_];
-      op.dup_pad = strides_[lead_dim_] - nd_[lead_dim_];
+    op.dup_size = lhs_->nd_.stride_back() / lhs_->nd_.stride(end_dim_);
+    if (auto lead_dim = nd_.lead_dim(); lead_dim > 1) {
+      op.dup_block = lead_dim;
+      op.dup_pad = ndd_.lead_stride() - lead_dim;
     } else {
       op.dup_block = op.dup_size;
       op.dup_pad = 0;
@@ -1502,16 +1546,16 @@ int _ReduceOp::Emit(VectorKernel &k) {
     vReduceY op;
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;
-    op.iter_size = strides_[start_dim_];
+    op.iter_size = ndd_.stride(start_dim_);
     op.simd_width = k.simd_width_;
-    op.red_size = lhs_->strides_[end_dim_] / op.iter_size;
+    op.red_size = lhs_->nd_.stride(end_dim_) / op.iter_size;
     ASSERT(op.red_size > 1);
     if (InRange(tail_dim_)) {
       op.red_tail = op.red_size / lhs_->nd_[tail_dim_] * tail_size_;
     } else {
       op.red_tail = op.red_size;
     }
-    op.dup_num = strides_.back() / strides_[end_dim_];
+    op.dup_num = ndd_.stride_back() / ndd_.stride(end_dim_);
     return vReduceY::Encode(insn_, V_RSUM_Y, op);
   }
 }
@@ -1622,9 +1666,10 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
           obj = stuff_ops_[stuff_idx];
         }
         stuff_idx++;
-        obj->nd_ = input->nd_;
+        obj->nd_.dims = input->nd_.dims;
+        ndd_.strides.resize(0);
         for (int j = red_start; j <= red_end; ++j) {
-          obj->nd_[j] = 1;
+          obj->nd_.dims[j] = 1;
         }
         // align tile may revert to 0. let lead reduce to 0
         obj->SetRange(red_start == lead_dim ? 0 : red_start, red_end);
@@ -1636,11 +1681,11 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     red_end = d;
     for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
   }
-  nd_ = input->nd_;
+  nd_.dims = input->nd_.dims;
   if (red_start != -1) {
     lhs_ = input;
     for (int j = red_start; j <= red_end; ++j) {
-      nd_[j] = 1;
+      nd_.dims[j] = 1;
     }
     SetRange(red_start == lead_dim ? 0 : red_start, red_end);
   } else {
@@ -1652,11 +1697,12 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 void ReduceOp::Tile(const TileParam &tp) {
-  CollectRoundTile(nd_, tp, round_tile_);
+  CollectRoundTile(nd_.dims, tp, round_tile_);
   _ReduceOp::Tile(tp);
 }
 
 int ReduceOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   if (ws_num_ == 2) {
     return EmitDeterm(k);
   }
@@ -1672,7 +1718,7 @@ int ReduceOp::Emit(VectorKernel &k) {
   op.xd = out_xbuf;
   op.xn = xbuf_;
   xbuf_ = out_xbuf;
-  op.count = strides_.back();
+  op.count = ndd_.stride_back();
   op.round_rank = round_tile_.size();
   tail_insn_ = insn_ + size;
   size += vAtomicCum::Encode(tail_insn_, V_ATOMICCUM, op, rounds);
@@ -1745,7 +1791,7 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   }
   if (k.visit_ == nullptr) {
     k.visit_ = &visit_;
-    visit_.ws_size_ = strides_.back() * sizeof(float) * visit_.block_num_;
+    visit_.ws_size_ = ndd_.stride_back() * sizeof(float) * visit_.block_num_;
   }
   auto out_xbuf = xbuf_;
   xbuf_ = wss_[0];
@@ -1754,7 +1800,7 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   op.xd = xbuf_ = out_xbuf;
   op.xn = wss_[0];
   op.xs = wss_[1];
-  op.count = strides_.back();
+  op.count = ndd_.stride_back();
   op.ws = 0;
   tail_insn_ = insn_ + size;
   size += vReduceJoin::Encode(tail_insn_, op);
@@ -1775,6 +1821,7 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
     : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
   shape_ref_ = &shape_;
+  nd_.data = &ndd_;
 }
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias)
@@ -1821,9 +1868,9 @@ void CubeOp::NormalizeCube() {
 
 void CubeOp::NormalizeOutput() {
   size_t n = std::max(lhs_->nd_.size(), rhs_->nd_.size());
-  nd_.resize(n);
-  nd_[0] = n_real_;
-  nd_[1] = m_real_;
+  nd_.dims.resize(n);
+  nd_.dims[0] = n_real_;
+  nd_.dims[1] = m_real_;
   for (size_t i = 2; i < n; ++i) {
     auto dim1 = i < lhs_->nd_.size() ? lhs_->nd_[i] : 1;
     auto dim2 = i < rhs_->nd_.size() ? rhs_->nd_[i] : 1;
@@ -1831,7 +1878,7 @@ void CubeOp::NormalizeOutput() {
     if (dim1 != 1 && dim2 != 1 && dim2 != dim1) {
       ASSERT(0);
     }
-    nd[i] = std::max(dim1, dim2);
+    nd_.dims[i] = std::max(dim1, dim2);
   }
   shape_.Resize(n);
   for (size_t i = 0; i < nd_.size(); ++i) {
@@ -2245,7 +2292,7 @@ void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
     shape_[0] /= comm_->GetRankSize();
   } else {
     ASSERT(nd_[nd_.size() - 1] == comm_->GetRankSize());
-    nd_[nd_.size() - 1] = 1;
+    nd_.dims[nd_.size() - 1] = 1;
     shape_[0] = 1;
   }
 
@@ -2314,7 +2361,7 @@ void ReduceScatterOp::Dump(bool verbose, std::ostringstream &oss) {
 }
 
 void ReduceScatterOp::Tile(const TileParam &tp) {
-  if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
+  if (CollectRoundTile(nd_.dims, tp, round_tile_) && tp.tail > 0) {
     ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
@@ -2323,6 +2370,7 @@ void ReduceScatterOp::Tile(const TileParam &tp) {
 }
 
 int ReduceScatterOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   if (multi_load_) {
@@ -2335,7 +2383,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
   // TODO: support matmul post fusion ReduceScatter
   auto store_id = mix_ ? vAccInsnID::V_PEER_STORE_MIX : vAccInsnID::V_PEER_STORE;
   auto load_id = mix_ ? vAccInsnID::V_PEER_LOAD_MIX : vAccInsnID::V_PEER_LOAD;
-  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
@@ -2408,7 +2456,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
     add.xd = xbuf_;
     add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
     add.xm = rhs;
-    add.count = strides_.back();
+    add.count = ndd_.stride_back();
     current_insn = insn_ + code_size;
     code_size += vBinary::Encode(current_insn, add_id_, add);
     *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2423,7 +2471,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
 
 int ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
   auto load_id = vAccInsnID::V_PEER_LOAD;
-  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
@@ -2466,7 +2514,7 @@ int ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
     add.xd = xbuf_;
     add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
     add.xm = rhs;
-    add.count = strides_.back();
+    add.count = ndd_.stride_back();
     current_insn = insn_ + code_size;
     code_size += vBinary::Encode(current_insn, add_id_, add);
     *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2498,7 +2546,7 @@ void AllReduceOpBase::Dump(bool verbose, std::ostringstream &oss) { oss << "AllR
 
 void AllReduceOpBase::Normalize(std::vector<NDObject *> &run_ops) {
   nd_ = lhs_->nd_;
-  if (nd_.prod() > 128 * static_cast<uint32_t>(comm_->GetRankSize())) {
+  if (nd_.dims.prod() > 128 * static_cast<uint32_t>(comm_->GetRankSize())) {
     use_twoshot_ = true;
   }
   // init CommOp related member
@@ -2525,8 +2573,8 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
   uint64_t code_size = 0;
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
-  uint64_t lead_align = LeadAlign();
-  uint64_t tile_stride = strides_.back() / lead_align * nd_[lead_dim_];
+  uint64_t lead_align = ndd_.lead_stride();
+  uint64_t tile_stride = ndd_.stride_back() / lead_align * nd_.lead_dim();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   uint64_t forward_event = System::Instance().EventNum() - 1;
   uint64_t backward_event = System::Instance().EventNum() - 1;
@@ -2538,11 +2586,11 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
   if (use_twoshot_) {
     // Prepare variables
     // Use the fact that lead_align is divisible by simd_width
-    uint64_t nburst = strides_.back() / lead_align;
+    uint64_t nburst = ndd_.stride_back() / lead_align;
     uint64_t per_rank_nburst = nburst / rank_size;
     uint64_t last_rank_nburst = nburst - per_rank_nburst * (rank_size - 1);
     uint64_t this_rank_nburst = rank_id == rank_size - 1 ? last_rank_nburst : per_rank_nburst;
-    uint64_t lenburst = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+    uint64_t lenburst = nd_.lead_dim() * ITEM_SIZE[type_id_];
     uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - lenburst;
     uint64_t per_rank_offset = per_rank_nburst * lead_align * ITEM_SIZE[type_id_];
     uint64_t this_rank_offset = this_rank_nburst * lead_align * ITEM_SIZE[type_id_];
@@ -2706,7 +2754,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       op.xd = xbuf_;
       auto cast_id = cast_id_list[kBFloat16][kFloat32];
       op.xn = lhs_->xbuf_;
-      op.count = strides_.back();
+      op.count = ndd_.stride_back();
       current_insn = insn_ + code_size;
       code_size += vUnary::Encode(current_insn, cast_id, op);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2726,9 +2774,9 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       pp_load.from = comm_->GetPeerMemPtr(rank_id + i);
       pp_load.xn = rhs;
       pp_load.tile_stride = tile_stride_size;
-      pp_load.body_iter = strides_.back() / lead_align;
-      pp_load.tail_iter = tail_dim_ <= lead_dim_ ? pp_load.body_iter : pp_load.body_iter / nd_[tail_dim_] * tail_size_;
-      pp_load.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+      pp_load.body_iter = ndd_.stride_back() / lead_align;
+      pp_load.tail_iter = tail_dim_ <= ndd_.lead_idx() ? pp_load.body_iter : pp_load.body_iter / nd_[tail_dim_] * tail_size_;
+      pp_load.iter_size = nd_.lead_dim() * ITEM_SIZE[type_id_];
       pp_load.pad_size = lead_align * ITEM_SIZE[type_id_] - pp_load.iter_size;
       pp_load.pingpong = 0;
       pp_load.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
@@ -2757,7 +2805,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
         op.xd = rhs2;
         auto cast_id = cast_id_list[kBFloat16][kFloat32];
         op.xn = rhs;
-        op.count = strides_.back();
+        op.count = ndd_.stride_back();
         current_insn = insn_ + code_size;
         code_size += vUnary::Encode(current_insn, cast_id, op);
         *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
@@ -2767,7 +2815,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       add.xd = add_dst;
       add.xn = is_begin ? lhs : add_dst;
       add.xm = rhs2;
-      add.count = strides_.back();
+      add.count = ndd_.stride_back();
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2787,7 +2835,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       op.xd = xbuf_;
       auto cast_id = cast_id_list[kFloat32][kBFloat16];
       op.xn = add_dst;
-      op.count = strides_.back();
+      op.count = ndd_.stride_back();
       current_insn = insn_ + code_size;
       code_size += vUnary::Encode(current_insn, cast_id, op);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -2799,6 +2847,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
 
 template <bool is_bf16>
 int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   if (cube_op_ != nullptr) {
@@ -2806,7 +2855,7 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
   }
   auto store_id = mix_ ? vAccInsnID::V_PEER_STORE_MIX : vAccInsnID::V_PEER_STORE;
   auto load_id = mix_ ? vAccInsnID::V_PEER_LOAD_MIX : vAccInsnID::V_PEER_LOAD;
-  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
@@ -2847,8 +2896,8 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
 
   if (use_twoshot_) {
     uint64_t num_in_block = SIMD_BLOCK_SIZE / ITEM_SIZE[type_id_];
-    ASSERT(strides_.back() % num_in_block == 0);
-    uint64_t repeat_full = strides_.back() / num_in_block;
+    ASSERT(ndd_.stride_back() % num_in_block == 0);
+    uint64_t repeat_full = ndd_.stride_back() / num_in_block;
     // make sure block(32Byte) aligned
     uint64_t per_rank_block = (repeat_full / rank_size);
     uint64_t last_rank_block = repeat_full - per_rank_block * (rank_size - 1);
@@ -3008,7 +3057,7 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
       op.xd = xbuf_;
       auto cast_id = cast_id_list[kBFloat16][kFloat32];
       op.xn = lhs_->xbuf_;
-      op.count = strides_.back();
+      op.count = ndd_.stride_back();
       current_insn = insn_ + code_size;
       code_size += vUnary::Encode(current_insn, cast_id, op);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -3050,7 +3099,7 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
         op.xd = rhs2;
         auto cast_id = cast_id_list[kBFloat16][kFloat32];
         op.xn = rhs;
-        op.count = strides_.back();
+        op.count = ndd_.stride_back();
         current_insn = insn_ + code_size;
         code_size += vUnary::Encode(current_insn, cast_id, op);
         *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
@@ -3060,7 +3109,7 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
       add.xd = xbuf_;
       add.xn = is_begin ? lhs : xbuf_;
       add.xm = rhs2;
-      add.count = strides_.back();
+      add.count = ndd_.stride_back();
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -3077,7 +3126,7 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
       op.xd = xbuf_;
       auto cast_id = cast_id_list[kFloat32][kBFloat16];
       op.xn = xbuf_;
-      op.count = strides_.back();
+      op.count = ndd_.stride_back();
       current_insn = insn_ + code_size;
       code_size += vUnary::Encode(current_insn, cast_id, op);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -3101,12 +3150,12 @@ void AllGatherOp::Normalize(std::vector<NDObject *> &run_ops) {
   for (size_t i = 0; i < size; i++) {
     shape_[i] = lhs_->shape_ref_->data[i];
   }
-  nd_.resize(size + 1);
+  nd_.dims.resize(size + 1);
   for (size_t i = 0; i < size; i++) {
-    nd_[i] = shape_[size - i - 1];
+    nd_.dims[i] = shape_[size - i - 1];
   }
   shape_[0] *= comm_->GetRankSize();
-  nd_[size] = comm_->GetRankSize();
+  nd_.dims[size] = comm_->GetRankSize();
 
   xbuf_reserve_ = 2;
   code_reserve_ = sizeof(uint64_t) * (5 * (comm_->GetRankSize() + 1) + 6);
@@ -3165,9 +3214,10 @@ void AllGatherOp::AlignProp(PropRange &range) {
 }
 
 int AllGatherOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
-  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
@@ -3280,9 +3330,10 @@ void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 int AllGatherV2Op::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(nd_.dims, k.simd_width_);
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
-  uint64_t tile_stride = strides_.back();
+  uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();

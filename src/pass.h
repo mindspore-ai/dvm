@@ -142,6 +142,7 @@ class BasicBlock {
   iterator Insert(iterator iter, NDObject *object);
   void Erase(NDObject *object);
   iterator Move(iterator iter, NDObject *object);
+  void UpdateInput(NDObject *obj, NDObject *old, NDObject *update);
 
   void PushFront(NDObject *ptr) { Insert(begin(), ptr); }
   void PushBack(NDObject *ptr) { Insert(end(), ptr); }
@@ -182,8 +183,8 @@ class BasicBlock {
   ObjectList &List() { return list_; }
 
  protected:
-  static int GetHead(NDObject *obj) { return obj->lead_dim_; }
-  static void SetHead(NDObject *obj, int head) { obj->lead_dim_ = head; }
+  static int GetHead(NDObject *obj) { return obj->xbuf_; }
+  static void SetHead(NDObject *obj, int head) { obj->xbuf_ = head; }
 
   ObjectList list_;
   std::vector<Edge> edges_;

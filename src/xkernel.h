@@ -182,8 +182,8 @@ class VKernelE : public VKernel {
   }
 
  protected:
-  static int GetArea(NDObject *obj) { return obj->lead_dim_; }
-  static void SetArea(NDObject *obj, int area_id) { obj->lead_dim_ = area_id; }
+  static int GetArea(NDObject *obj) { return obj->reserved_; }
+  static void SetArea(NDObject *obj, int area_id) { obj->reserved_ = area_id; }
   static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t *>(store); }
   static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
   static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }

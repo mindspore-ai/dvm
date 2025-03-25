@@ -1371,6 +1371,7 @@ struct vCubeOp {
   uint32_t flags;
   uint32_t m_real, n_real, k_real;
   uint32_t m_align, n_align, k_align;
+  uint32_t ka_align, kb_align;
   uint32_t m_loop, n_loop, k_loop;
   // shape_a: [batch_a0, batch_a1, m, k], shape_b: [batch_b0, batch_b1, k, n]
   uint32_t batch_cast;
@@ -1387,7 +1388,6 @@ struct vCubeOp {
   uint64_t gm_b;
   uint64_t gm_c;
   uint64_t gm_bias;
-  uint32_t a_size, b_size;
   uint32_t offset_a, offset_b;
   // for aiv
   uint64_t subtilenum;  // subblockid1 << 32 | subblockid0

@@ -60,8 +60,8 @@ class MatMul {
     n_align = op->n_align;
     k_align = op->k_align;
     batch_cast = op->batch_cast;
-    a_size = op->a_size;
-    b_size = op->b_size;
+    ka_align = op->ka_align;
+    kb_align = op->kb_align;
     m0 = op->m0;
     n0 = op->n0;
     k0 = op->k0;
@@ -416,18 +416,17 @@ class MatMul {
         b_idx = cast_b == V_CUBE_BCAST_FLAG_BCAST_B0 ? c_idx1 : (cast_b == V_CUBE_BCAST_FLAG_BCAST_B1 ? c_idx0 : 0);
       }
     }
-    offset_a = a_idx * a_size;
-    offset_b = b_idx * b_size;
+    offset_a = a_idx * m_align * ka_align;
+    offset_b = b_idx * n_align * kb_align;
   }
 
   uint64_t n_loop, m_loop, k_loop;
   uint64_t k0_part_len;
   uint64_t m_real, n_real, k_real;
   uint64_t m_align, n_align, k_align;
+  uint64_t ka_align, kb_align;
   uint64_t batch_cast;
   uint64_t m0, n0, k0;
-  uint64_t a_size;
-  uint64_t b_size;
   uint64_t flags;
   uint64_t k_actual, shuffle_k;
 };
@@ -509,13 +508,13 @@ class TileVisitor {
 
 #define V_PINGPONG_FLAG_EVENT  0x1ul
 #define V_PINGPONG_FLAG_STORE  0x2ul
-template <typename M, typename T>
+template <typename T>
 __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end) {
   set_padding((uint64_t)0);
   uint64_t config = 0x1;
   set_nd_para(config);
-  M mat(op);
-  TileVisitor<M> visit(op, tile_end, mat);
+  MatMul<T> mat(op);
+  TileVisitor<MatMul<T>> visit(op, tile_end, mat);
   if (mat.flags & V_CUBE_FLAG_ATOMIC_ADD) {
     set_atomic_add();
     set_atomic_f32();
@@ -727,10 +726,10 @@ extern "C"  __global__ __aicore__ void vmain_mix_aic(uint64_t ffts_addr, uint64_
     if (block_idx < tile_num) {
       switch (op->flags >> V_CUBE_FLAG_DTYPE_OFFSET) {
         case vCubeOp::FP16:
-          CutMKN<MatMul<half>, half>(op, tile_num);
+          CutMKN<half>(op, tile_num);
           break;
         case vCubeOp::BF16:
-          CutMKN<MatMul<bfloat16_t>, bfloat16_t>(op, tile_num);
+          CutMKN<bfloat16_t>(op, tile_num);
           break;
         default: break;
       }

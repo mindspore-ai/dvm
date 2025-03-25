@@ -300,7 +300,8 @@ class AtomicCleanWrap : public CodeWrap {
   }
 
   void CodeGen(Code &code, NDAccess *store) {
-    clear_shape_data_ = std::accumulate(store->shape_ref_->data, store->shape_ref_->data + store->shape_ref_->size, 1LL, std::multiplies{});
+    clear_shape_data_ = std::accumulate(store->shape_ref_->data, store->shape_ref_->data + store->shape_ref_->size, 1LL,
+                                        std::multiplies{});
     if (System::Instance().deterministic_) {
       clear_shape_data_ += 32 / sizeof(float);
     }
@@ -1771,34 +1772,10 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   return size;
 }
 
-void CubeOp::ComputeBroadcastShape(NDObject *lhs, NDObject *rhs) {
-  int n = std::max(lhs->nd_.size(), rhs->nd_.size());
-  nd_.resize(n);
-  nd_[0] = n_real_;
-  nd_[1] = m_real_;
-  for (int i = 2; i < n; ++i) {
-    auto dim1 = i < static_cast<int>(lhs->nd_.size()) ? lhs_->nd_[i] : 1;
-    auto dim2 = i < static_cast<int>(rhs->nd_.size()) ? rhs_->nd_[i] : 1;
-    // TODO: nd_[2] = dim1 >= dim2 ? dim1 : dim2;
-    if (dim1 == dim2) {
-      nd_[i] = dim1;
-    } else if (dim1 == 1) {
-      nd_[i] = dim2;
-    } else if (dim2 == 1) {
-      nd_[i] = dim1;
-    } else {
-      // should not reach here, because this case can not be broadcasted.
-      ASSERT(0);
-    }
-  }
-  shape_.resize(n);
-  for (size_t i = 0; i < nd_.size(); ++i) {
-    shape_[i] = nd_[nd_.size() - 1 - i];
-  }
-}
-
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b)
-    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {}
+    : NDObject(lhs, rhs, lhs->type_id_, kCubeOp), trans_a_(trans_a), trans_b_(trans_b) {
+  shape_ref_ = &shape_;
+}
 
 CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias)
     : CubeOp(lhs, rhs, trans_a, trans_b) {
@@ -1832,7 +1809,9 @@ void CubeOp::NormalizeCube() {
   m_align_ = trans_a_ ? lhs_->nd_[0] : lhs_->nd_[1];
   // Only pad the rows, which may result in matrices A and B where some K matrices are padded and some are not.
   // Therefore, we take the maximum among them.
-  k_align_ = std::max(trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0], trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1]);
+  ka_align_ = trans_a_ ? lhs_->nd_[1] : lhs_->nd_[0];
+  kb_align_ = trans_b_ ? rhs_->nd_[0] : rhs_->nd_[1];
+  k_align_ = std::max(ka_align_, kb_align_);
   n_align_ = trans_b_ ? rhs_->nd_[1] : rhs_->nd_[0];
   m_real_ = m_align_;
   k_real_ = k_align_;
@@ -1841,16 +1820,23 @@ void CubeOp::NormalizeCube() {
 }
 
 void CubeOp::NormalizeOutput() {
-  if (lhs_->nd_.size() == 2 && rhs_->nd_.size() == 2) {
-    nd_.resize(2);
-    nd_[0] = n_real_;
-    nd_[1] = m_real_;
-    shape_ = {m_real_, n_real_};
-  } else {
-    ComputeBroadcastShape(lhs_, rhs_);
+  size_t n = std::max(lhs_->nd_.size(), rhs_->nd_.size());
+  nd_.resize(n);
+  nd_[0] = n_real_;
+  nd_[1] = m_real_;
+  for (size_t i = 2; i < n; ++i) {
+    auto dim1 = i < lhs_->nd_.size() ? lhs_->nd_[i] : 1;
+    auto dim2 = i < rhs_->nd_.size() ? rhs_->nd_[i] : 1;
+    // TODO: nd_[2] = dim1 >= dim2 ? dim1 : dim2;
+    if (dim1 != 1 && dim2 != 1 && dim2 != dim1) {
+      ASSERT(0);
+    }
+    nd[i] = std::max(dim1, dim2);
   }
-  shape_ref_data_ = shape_;
-  shape_ref_ = &shape_ref_data_;
+  shape_.Resize(n);
+  for (size_t i = 0; i < nd_.size(); ++i) {
+    shape_[i] = nd_[nd_.size() - 1 - i];
+  }
 }
 
 float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
@@ -2138,11 +2124,11 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->m_align = m_align_;
   op->n_align = n_align_;
   op->k_align = k_align_;
+  op->ka_align = ka_align_;
+  op->kb_align = kb_align_;
   op->m_real = m_real_;
   op->n_real = n_real_;
   op->k_real = k_real_;
-  op->a_size = lhs_->nd_[0] * lhs_->nd_[1];
-  op->b_size = rhs_->nd_[0] * rhs_->nd_[1];
   op->offset_a = offset_a_;
   op->offset_b = offset_b_;
   auto a = static_cast<NDAccess *>(lhs_);
@@ -2160,7 +2146,6 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
     if (!batch_fold_) {
       op->m_align = m_align_ *= batch_fold;
       op->m_real = m_real_ *= batch_fold;
-      op->a_size *= batch_fold;
       batch_fold_ = true;
     }
   }
@@ -2208,7 +2193,7 @@ static void ReserveCommEvent(VectorKernel &k) {
 
 std::atomic<uint32_t> CommIdWrap::unique_id_ = 0;
 int CommIdWrap::LaunchWrap(void *workspace, void *stream) {
-  uint32_t cur_id = ++unique_id_ ;
+  uint32_t cur_id = ++unique_id_;
   for (auto id : ids_) {
     *id = cur_id;
   }
@@ -2576,7 +2561,8 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       ppp_load.peer_mem_offset = rank_id * per_rank_load_offset;
       current_insn = insn_ + code_size;
       code_size += vPingPongPeerLoad::Encode(current_insn, vAccInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
-      k.comm_op_->id_wrap_.ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
+      k.comm_op_->id_wrap_.ids_.emplace_back(
+        reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
       if (is_begin && rank_size > 2) {
         *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | backward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
@@ -2676,7 +2662,8 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       }
       current_insn = insn_ + code_size;
       code_size += vPingPongPeerLoad::Encode(current_insn, vAccInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
-      k.comm_op_->id_wrap_.ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
+      k.comm_op_->id_wrap_.ids_.emplace_back(
+        reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
       if (is_begin && rank_size > 2) {
         *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | backward_event << V_M_HEAD_WAIT_EVENT_OFFSET;

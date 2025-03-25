@@ -822,6 +822,8 @@ class CubeOp : public NDObject {
   int64_t m_align_{0};
   int64_t n_align_{0};
   int64_t k_align_{0};
+  int64_t ka_align_{0};
+  int64_t kb_align_{0};
   int64_t m_real_{0};
   int64_t n_real_{0};
   int64_t k_real_{0};
@@ -839,7 +841,6 @@ class CubeOp : public NDObject {
   uint32_t batch_c1_{0};
 
  protected:
-  void ComputeBroadcastShape(NDObject *lhs, NDObject *rhs);
   float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
   void Tile(vCubeOp *code);
   void GetSwizzleConfig(vCubeOp *code);
@@ -848,8 +849,7 @@ class CubeOp : public NDObject {
 
   size_t offset_a_{0};
   size_t offset_b_{0};
-  std::vector<int64_t> shape_;
-  ShapeRef shape_ref_data_;
+  ShapeWithRef shape_;
 };
 
 class CommIdWrap : public CodeWrap {

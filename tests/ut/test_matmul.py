@@ -40,7 +40,7 @@ def test_matmul_split_k(m, n, k, trans):
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[2, 4, 256, 256], [2, 4, 256, 256]],  # no broadcast
-    [[256, 256], [3, 1, 256, 256]],        # different dim, broadcast A
+    [[256, 444], [3, 1, 444, 256]],        # different dim, broadcast A
     [[1, 1, 256, 256], [3, 4, 256, 256]],  # same dim, broadcast A
     [[3, 4, 256, 256], [1, 4, 256, 256]],  # same dim, broadcast B
     [[3, 4, 256, 256], [256, 256]],        # differnet dim, broadcast B

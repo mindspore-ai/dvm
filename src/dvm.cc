@@ -569,7 +569,12 @@ NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
 }
 
 NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
-  NDObject *obj = new AllReduceOp(input, comm->GetImpl());
+  NDObject *obj;
+  if (input->type_id_ == DType::kBFloat16) {
+    obj = new AllReduceOp<true>(input, comm->GetImpl());
+  } else {
+    obj = new AllReduceOp<false>(input, comm->GetImpl());
+  }
   kernel_->Append(obj);
   return obj;
 }

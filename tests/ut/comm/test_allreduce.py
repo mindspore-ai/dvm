@@ -43,6 +43,32 @@ def test_allreduce(comm, rank, size, shape_size):
     assert res
 
 
+@pytest.mark.parametrize(
+    "shape_size",
+    [6400, 64232, 3123, 343535],
+)
+def test_allreduce_bf16(comm, rank, size, shape_size):
+    np.random.seed(2)
+
+    t = Tester(comm=comm)
+    inputs = []
+    for i in range(size):
+        inputs.append(np.random.normal(0.1, 1, [shape_size]).astype(np.float32))
+
+    expect = inputs[0].copy()
+    for i in range(1, size):
+        expect += inputs[i]
+
+    x1 = t.load(inputs[rank], "bfloat16")
+    x2 = t.allreduce(x1)
+    x2 = t.cast(x2, "float32")
+    x3 = t.unary("Abs", x2)
+
+    t.store_expect(x3, np.abs(expect), 0.05)
+    res = t.run_check()
+    assert res
+
+
 @pytest.mark.parametrize("shape_size", [54857612])
 def test_allreduce_big_shape(comm, rank, size, shape_size):
     np.random.seed(1)
@@ -87,6 +113,38 @@ def test_matmul_allreduce(comm, rank, size, m, k, n):
 
     x1 = t.load(inputs_a[rank])
     x2 = t.load(inputs_b[rank])
+    c = t.matmul(x1, x2, False, False)
+    x3 = t.allreduce(c)
+    t.store_expect(x3, expect, 0.01)
+    res = t.run_check()
+    assert res
+
+
+@pytest.mark.parametrize("m", [1024, 32])
+@pytest.mark.parametrize("k", [512])
+@pytest.mark.parametrize("n", [1024, 22])
+def test_matmul_allreduce_bf16(comm, rank, size, m, k, n):
+    np.random.seed(1)
+
+    t = Tester("mix", comm=comm)
+    shape_a = [m, k]
+    shape_b = [k, n]
+
+    inputs_a = []
+    inputs_b = []
+    for i in range(size):
+        inputs_a.append(np.random.normal(0, 0.01, shape_a).astype(np.float32))
+        inputs_b.append(np.random.normal(0, 0.01, shape_b).astype(np.float32))
+    expect = np.matmul(
+        inputs_a[0].astype(np.float32), inputs_b[0].astype(np.float32)
+    ).astype(np.float16)
+    for i in range(1, size):
+        expect = expect + np.matmul(
+            inputs_a[i].astype(np.float32), inputs_b[i].astype(np.float32)
+        ).astype(np.float16)
+
+    x1 = t.load(inputs_a[rank], "bfloat16")
+    x2 = t.load(inputs_b[rank], "bfloat16")
     c = t.matmul(x1, x2, False, False)
     x3 = t.allreduce(c)
     t.store_expect(x3, expect, 0.01)

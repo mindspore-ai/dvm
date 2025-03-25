@@ -2479,11 +2479,13 @@ int ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
   return code_size;
 }
 
-AllReduceOp::AllReduceOp(NDObject *input, const Communicator *comm) : CommOp(input, comm, ObjectType::kAllReduce) {
-  add_id_ = binary_id_list[kAdd].ids[type_id_];
+AllReduceOpBase::AllReduceOpBase(NDObject *input, const Communicator *comm)
+    : CommOp(input, comm, ObjectType::kAllReduce) {
+  add_id_ = binary_id_list[kAdd].ids[type_id_ == kBFloat16 ? kFloat32 : type_id_];
+  max_type_ = type_id_ == kBFloat16 ? kFloat32 : type_id_;
 }
 
-void AllReduceOp::Tile(const TileParam &tp) {
+void AllReduceOpBase::Tile(const TileParam &tp) {
   if (tp.tail > 0) {
     // ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
     tail_dim_ = tp.start;
@@ -2492,7 +2494,9 @@ void AllReduceOp::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-void AllReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
+void AllReduceOpBase::Dump(bool verbose, std::ostringstream &oss) { oss << "AllReduce"; }
+
+void AllReduceOpBase::Normalize(std::vector<NDObject *> &run_ops) {
   nd_ = lhs_->nd_;
   if (nd_.prod() > 128 * static_cast<uint32_t>(comm_->GetRankSize())) {
     use_twoshot_ = true;
@@ -2505,7 +2509,18 @@ void AllReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
                                : sizeof(uint64_t) * ((vPeerDMA::ROUND_OFFSET + 2) * comm_->GetRankSize() + 1);
 }
 
-int AllReduceOp::MatmulEmit(VectorKernel &k) {
+template <bool is_bf16>
+void AllReduceOp<is_bf16>::Normalize(std::vector<NDObject *> &run_ops) {
+  AllReduceOpBase::Normalize(run_ops);
+  if constexpr (is_bf16) {
+    // cast to and from f32 in Emit()
+    xbuf_reserve_ += 1;
+    code_reserve_ += sizeof(uint64_t) * (comm_->GetRankSize() + 1) * 2;
+  }
+}
+
+template <bool is_bf16>
+int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
   uint64_t *current_insn = insn_;
   uint64_t code_size = 0;
   auto rank_size = comm_->GetRankSize();
@@ -2530,6 +2545,7 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
     uint64_t lenburst = nd_[lead_dim_] * ITEM_SIZE[type_id_];
     uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - lenburst;
     uint64_t per_rank_offset = per_rank_nburst * lead_align * ITEM_SIZE[type_id_];
+    uint64_t this_rank_offset = this_rank_nburst * lead_align * ITEM_SIZE[type_id_];
     uint64_t per_rank_load_offset = per_rank_nburst * lenburst;
     ASSERT(per_rank_offset % 32 == 0);
     // Should be 32Byte aligned in UB
@@ -2544,8 +2560,26 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
     bool is_begin = true;
     uint64_t add_dst = xbufs_[1] + per_rank_offset * rank_id;
     uint64_t rhs = xbufs_[0];
+    uint64_t rhs2 = 0;
+    uint64_t lhs = lhs_->xbuf_ + per_rank_offset * rank_id;
+    // bf16 would be cast to f32 to be added
+    if constexpr (is_bf16) {
+      // avoid address after cast
+      ASSERT(xbuf_size_ % (2 * SIMD_BLOCK_SIZE) == 0);
+      add_dst = xbufs_[1] + xbuf_size_ / 2;
+      vUnary op;
+      op.xd = add_dst;
+      auto cast_id = cast_id_list[kBFloat16][kFloat32];
+      op.xn = lhs;
+      op.count = this_rank_count;
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      lhs = add_dst;
+    }
+
     for (int i = 1; i < rank_size; ++i) {
-      rhs += per_rank_offset;
+      rhs2 = rhs;
       vPingPongPeerLoad ppp_load;
       vPingPongLoad &pp_load = ppp_load.base;
       pp_load.from = comm_->GetPeerMemPtr(rank_id + i);
@@ -2567,20 +2601,50 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
       if (is_begin && rank_size > 2) {
         *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | backward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
       }
+
+      if constexpr (is_bf16) {
+        rhs2 = xbufs_[2];
+        vUnary op;
+        op.xd = rhs2;
+        auto cast_id = cast_id_list[kBFloat16][kFloat32];
+        op.xn = rhs;
+        op.count = this_rank_count;
+        current_insn = insn_ + code_size;
+        code_size += vUnary::Encode(current_insn, cast_id, op);
+        *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
+
       vBinary add;
       add.xd = add_dst;
-      add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
-      add.xm = rhs;
+      add.xn = is_begin ? lhs : add_dst;
+      add.xm = rhs2;
       add.count = this_rank_count;
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      if (type_id_ != kBFloat16) {
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
       is_begin = false;
+      rhs += this_rank_offset;
     }
     // Last Add backsync first PingPongPeerLoad
     if (rank_size > 2) {
       *current_insn |= 0x1ul << V_HEAD_BACK_SET_OFFSET | backward_event << V_HEAD_B_SET_EVENT_OFFSET;
+    }
+
+    // f32 will be casted back to bf16
+    if constexpr (is_bf16) {
+      vUnary op;
+      op.xd = xbufs_[1] + per_rank_offset * rank_id;
+      auto cast_id = cast_id_list[kFloat32][kBFloat16];
+      op.xn = add_dst;
+      op.count = this_rank_count;
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      add_dst = xbufs_[1] + per_rank_offset * rank_id;
     }
 
     // TwoShot stage 2
@@ -2634,12 +2698,29 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
 
   } else {
     // OneShot
+    uint64_t lhs = lhs_->xbuf_;
+
+    // bf16 would be cast to f32 to be added
+    if constexpr (is_bf16) {
+      vUnary op;
+      op.xd = xbuf_;
+      auto cast_id = cast_id_list[kBFloat16][kFloat32];
+      op.xn = lhs_->xbuf_;
+      op.count = strides_.back();
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      lhs = xbuf_;
+    }
+
     bool is_begin = true;
     uint64_t add_dst = xbuf_;
     uint64_t rhs = 0;
+    uint64_t rhs2 = 0;
     bool is_ping = true;
     for (int i = 1; i < rank_size; ++i) {
       rhs = xbufs_[is_ping ? 0 : 1];
+      rhs2 = rhs;
       vPingPongPeerLoad ppp_load;
       vPingPongLoad &pp_load = ppp_load.base;
       pp_load.from = comm_->GetPeerMemPtr(rank_id + i);
@@ -2669,15 +2750,30 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
         *current_insn |= 0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET | backward_event << V_M_HEAD_WAIT_EVENT_OFFSET;
       }
 
+      // bf16 would be cast to f32 to be added
+      if constexpr (is_bf16) {
+        rhs2 = xbufs_[2];
+        vUnary op;
+        op.xd = rhs2;
+        auto cast_id = cast_id_list[kBFloat16][kFloat32];
+        op.xn = rhs;
+        op.count = strides_.back();
+        current_insn = insn_ + code_size;
+        code_size += vUnary::Encode(current_insn, cast_id, op);
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
+
       vBinary add;
       add.xd = add_dst;
-      add.xn = is_begin ? lhs_->xbuf_ : add_dst;
-      add.xm = rhs;
+      add.xn = is_begin ? lhs : add_dst;
+      add.xm = rhs2;
       add.count = strides_.back();
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      if (type_id_ != kBFloat16) {
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
       is_begin = false;
       is_ping = !is_ping;
     }
@@ -2685,12 +2781,24 @@ int AllReduceOp::MatmulEmit(VectorKernel &k) {
     if (rank_size > 2) {
       *current_insn |= 0x1ul << V_HEAD_BACK_SET_OFFSET | backward_event << V_HEAD_B_SET_EVENT_OFFSET;
     }
+    // f32 will be casted back to bf16
+    if constexpr (is_bf16) {
+      vUnary op;
+      op.xd = xbuf_;
+      auto cast_id = cast_id_list[kFloat32][kBFloat16];
+      op.xn = add_dst;
+      op.count = strides_.back();
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+    }
   }
   tail_insn_ = current_insn;
   return code_size;
 }
 
-int AllReduceOp::Emit(VectorKernel &k) {
+template <bool is_bf16>
+int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   if (cube_op_ != nullptr) {
@@ -2746,6 +2854,7 @@ int AllReduceOp::Emit(VectorKernel &k) {
     uint64_t last_rank_block = repeat_full - per_rank_block * (rank_size - 1);
     uint64_t this_rank_block = rank_id == rank_size - 1 ? last_rank_block : per_rank_block;
     uint64_t per_rank_offset = per_rank_block * SIMD_BLOCK_SIZE;
+    uint64_t this_rank_offset = this_rank_block * SIMD_BLOCK_SIZE;
     ASSERT(per_rank_offset % 32 == 0);  // Should be 32Byte aligned in UB
 
     // TwoShot stage 1:
@@ -2753,9 +2862,28 @@ int AllReduceOp::Emit(VectorKernel &k) {
     // Reduce the data this rank is responsible for
     bool is_begin = true;
     uint64_t rhs = xbufs_[0];
+    uint64_t rhs2 = 0;
+    auto lhs = lhs_->xbuf_ + per_rank_offset * rank_id;
     uint64_t add_dst = xbufs_[1] + per_rank_offset * rank_id;  // used as destnation of add
+
+    // bf16 would be cast to f32 to be added
+    if constexpr (is_bf16) {
+      // avoid address after cast
+      ASSERT(xbuf_size_ % (2 * SIMD_BLOCK_SIZE) == 0);
+      add_dst = xbufs_[1] + xbuf_size_ / 2;
+      vUnary op;
+      op.xd = add_dst;
+      auto cast_id = cast_id_list[kBFloat16][kFloat32];
+      op.xn = lhs;
+      op.count = this_rank_block * num_in_block;
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      lhs = add_dst;
+    }
+
     for (int i = 1; i < rank_size; ++i) {
-      rhs += per_rank_offset;
+      rhs2 = rhs;
       // PeerLoad
       vPeerDMA p_load;
       p_load.flag_mem = comm_->GetPeerMemPtr(i + rank_id) + PEERMEM_FLAG_OFFSET;
@@ -2771,16 +2899,46 @@ int AllReduceOp::Emit(VectorKernel &k) {
       k.comm_op_->id_wrap_.ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
 
+      // bf16 would be cast to f32 to be added
+      if constexpr (is_bf16) {
+        rhs2 = xbufs_[3];
+        vUnary op;
+        op.xd = rhs2;
+        auto cast_id = cast_id_list[kBFloat16][kFloat32];
+        op.xn = rhs;
+        op.count = this_rank_block * num_in_block;
+        current_insn = insn_ + code_size;
+        code_size += vUnary::Encode(current_insn, cast_id, op);
+        *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
+
       vBinary add;
       add.xd = add_dst;
-      add.xn = is_begin ? lhs_->xbuf_ + per_rank_offset * rank_id : add_dst;
-      add.xm = rhs;
+      add.xn = is_begin ? lhs : add_dst;
+      add.xm = rhs2;
       add.count = this_rank_block * num_in_block;
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      if (type_id_ != kBFloat16) {
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
       is_begin = false;
+      rhs += this_rank_offset;
+    }
+
+    // f32 will be casted back to bf16
+    if constexpr (is_bf16) {
+      vUnary op;
+      op.xd = xbufs_[1] + per_rank_offset * rank_id;
+      auto cast_id = cast_id_list[kFloat32][kBFloat16];
+      op.xn = add_dst;
+      op.count = this_rank_block * num_in_block;
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      add_dst = xbufs_[1] + per_rank_offset * rank_id;
     }
 
     // TwoShot stage 2
@@ -2843,11 +3001,27 @@ int AllReduceOp::Emit(VectorKernel &k) {
 
   } else {
     // OneShot
+    auto lhs = lhs_->xbuf_;
+    // bf16 would be cast to f32 to be added
+    if constexpr (is_bf16) {
+      vUnary op;
+      op.xd = xbuf_;
+      auto cast_id = cast_id_list[kBFloat16][kFloat32];
+      op.xn = lhs_->xbuf_;
+      op.count = strides_.back();
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+      lhs = xbuf_;
+    }
+
     bool is_begin = true;
     bool is_ping = true;
     uint64_t rhs = 0;
+    uint64_t rhs2 = 0;
     for (int i = 1; i < rank_size; ++i) {
       rhs = xbufs_[is_ping ? 0 : 1];
+      rhs2 = rhs;
       // PeerLoad
       vPeerDMA p_load;
       p_load.peer_mem = comm_->GetPeerMemPtr(i + rank_id);
@@ -2869,24 +3043,52 @@ int AllReduceOp::Emit(VectorKernel &k) {
       k.comm_op_->id_wrap_.ids_.emplace_back(reinterpret_cast<uint32_t *>(current_insn + vPeerDMA::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;
 
+      // bf16 would be cast to f32 to be added
+      if constexpr (is_bf16) {
+        rhs2 = xbufs_[3];
+        vUnary op;
+        op.xd = rhs2;
+        auto cast_id = cast_id_list[kBFloat16][kFloat32];
+        op.xn = rhs;
+        op.count = strides_.back();
+        current_insn = insn_ + code_size;
+        code_size += vUnary::Encode(current_insn, cast_id, op);
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
+
       vBinary add;
       add.xd = xbuf_;
-      add.xn = is_begin ? lhs_->xbuf_ : xbuf_;
-      add.xm = rhs;
+      add.xn = is_begin ? lhs : xbuf_;
+      add.xm = rhs2;
       add.count = strides_.back();
       current_insn = insn_ + code_size;
       code_size += vBinary::Encode(current_insn, add_id_, add);
       *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-      *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      if (type_id_ != kBFloat16) {
+        *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
+      }
       is_begin = false;
       is_ping = !is_ping;
+    }
+
+    // f32 will be casted back to bf16
+    if constexpr (is_bf16) {
+      vUnary op;
+      op.xd = xbuf_;
+      auto cast_id = cast_id_list[kFloat32][kBFloat16];
+      op.xn = xbuf_;
+      op.count = strides_.back();
+      current_insn = insn_ + code_size;
+      code_size += vUnary::Encode(current_insn, cast_id, op);
+      *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
     }
   }
   tail_insn_ = current_insn;
   return code_size;
 }
 
-void AllReduceOp::Dump(bool verbose, std::ostringstream &oss) { oss << "AllReduce"; }
+template class AllReduceOp<false>;
+template class AllReduceOp<true>;
 
 AllGatherOp::AllGatherOp(NDObject *input, const Communicator *comm) : CommOp(input, comm, ObjectType::kAllGather) {
   shape_ref_ = &shape_;

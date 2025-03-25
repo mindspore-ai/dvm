@@ -865,6 +865,7 @@ class CommOp : public NDObject {
   CommOp(NDObject *input, const Communicator *comm, ObjectType obj_id)
       : NDObject(input, nullptr, input->type_id_, obj_id), comm_(comm) {
     shape_ref_ = input->shape_ref_;
+    max_type_ = type_id_;
   }
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
@@ -877,6 +878,7 @@ class CommOp : public NDObject {
   std::vector<uint64_t> forward_events_;
   std::vector<uint64_t> backward_events_;
   bool mix_{false};
+  DType max_type_;
   const Communicator *comm_;
   CommIdWrap id_wrap_;
 
@@ -913,24 +915,28 @@ class ReduceScatterOp : public CommOp {
   ShapeWithRef reshape_shape_;
 };
 
-// Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore
-class AllReduceOp : public CommOp {
+class AllReduceOpBase : public CommOp {
  public:
-  AllReduceOp(NDObject *input, const Communicator *comm);
-  // ~AllReduceOp() = default;
+  AllReduceOpBase(NDObject *input, const Communicator *comm);
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
-  int MatmulEmit(VectorKernel &k);  // used when lhs_ is Matmul
 
  protected:
   int tail_dim_{-1};
   int tail_size_{0};
   bool use_twoshot_{false};
-
- private:
   vSimdInsnID add_id_;
+};
+
+// Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore
+template <bool is_bf16>
+class AllReduceOp : public AllReduceOpBase {
+ public:
+  AllReduceOp(NDObject *input, const Communicator *comm) : AllReduceOpBase(input, comm) {};
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  int Emit(VectorKernel &k) override;
+  int MatmulEmit(VectorKernel &k);  // used when lhs_ is Matmul
 };
 
 class AllGatherOp : public CommOp {

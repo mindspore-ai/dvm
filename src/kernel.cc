@@ -57,7 +57,7 @@ static const NDObjectAttr g_obj_attrs[ObjectType::kObjectBulk] = {
   {kGenSimd1, false},  // BroadcastTo
   {kGenSimd0, true},   // BroadcastS
   {kGenFlex, false},   // Reduce
-  {kGenSimd3, true},    // Select
+  {kGenSimd3, true},   // Select
   {kGenSimd1, false},  // ElemAny
   {kGenSimd1, true},   // RemovePad
   {kGenFlex, true},    // Power
@@ -74,7 +74,7 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VectorKernel &kernel) :kernel_(kernel) {}
+  CodeGenHelper(VectorKernel &kernel) : kernel_(kernel) {}
   uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
     static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserve;
@@ -656,8 +656,7 @@ class ReshapeDomain : public PropDomain {
 class ShapeTiling {
  public:
   ShapeTiling(VectorKernel *kernel, RootDomain &prim_dom, int64_t core_limit)
-      : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {
-  }
+      : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {}
   ~ShapeTiling() = default;
   void Run(int64_t tile_size_limit) {
     tile_size_limit_ = tile_size_limit;
@@ -1140,7 +1139,7 @@ int VectorKernel::Analyze() {
         if (cur_live + ws_num > live_peak) {
           live_peak = cur_live + ws_num;
         }
-      } // end flexop
+      }  // end flexop
       if (reuse_flag == REUSE_READY) {
         cur_live--;
       }
@@ -1247,7 +1246,7 @@ class PropDomainBuilder {
 
 void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
   static_ops_.clear();
-  max_type_ = objects.front()->type_id_;
+  max_type_ = comm_op_ ? comm_op_->max_type_ : objects.front()->type_id_;
   min_type_ = objects.front()->type_id_;
   bool slow_build_path = false;
   for (auto op : objects) {
@@ -1431,7 +1430,7 @@ VKernelP::~VKernelP() {
 
 void VKernelP::Append(NDObject *obj) { children_.back()->Append(obj); }
 
-uint64_t VKernelP::UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t* &summaries) {
+uint64_t VKernelP::UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t *&summaries) {
   uint64_t lenburst = CeilDiv(code_size, 32ul);
   uint64_t summary = lenburst << 58 | ((code_offset - Code::HeadSize()) >> 5) << 49;
   uint64_t block_dim = k->code_.block_dim_;

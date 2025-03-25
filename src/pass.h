@@ -103,9 +103,8 @@ class BasicBlockContext {
   // Will fail when object is not exist in the context.
   // And users may duplicate
   std::vector<NDObject *> GetUsers(NDObject *object) const {
-    ASSERT(object->index_ < static_cast<int>(head_.size()));
     std::vector<NDObject *> res;
-    auto idx = head_[object->index_];
+    auto idx = GetHead(object);
     while (idx != -1) {
       res.push_back(edges_[idx].user);
       idx = edges_[idx].next;
@@ -117,13 +116,14 @@ class BasicBlockContext {
   void Erase(NDObject *object);
 
   inline void AddUser(NDObject *obj, NDObject *new_user) {
-    ASSERT(obj->index_ < static_cast<int>(head_.size()));
-    edges_.push_back({head_[obj->index_], new_user});
-    head_[obj->index_] = edges_.size() - 1;
+    edges_.push_back({GetHead(obj), new_user});
+    SetHead(obj, static_cast<int>(edges_.size() - 1));
   }
 
  protected:
-  std::vector<int64_t> head_;
+  static int GetHead(NDObject *obj) { return obj->lead_dim_; }
+  static void SetHead(NDObject *obj, int head) { obj->lead_dim_ = head; }
+
   std::vector<Edge> edges_;
 };
 

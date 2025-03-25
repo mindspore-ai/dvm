@@ -380,7 +380,6 @@ __attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb)
 
 void BasicBlockContext::Init(const std::vector<NDObject *> &objects) {
   // users_.resize(objects.size());
-  head_.resize(objects.size(), -1);
   for (auto obj : objects) {
     ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
   }
@@ -388,7 +387,6 @@ void BasicBlockContext::Init(const std::vector<NDObject *> &objects) {
 
 void BasicBlockContext::Init(NDObjectIterator<false> begin, NDObjectIterator<false> end, size_t capcity) {
   edges_.clear();
-  head_.resize(capcity, -1);
   while (begin != end) {
     auto obj = begin.get();
     ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
@@ -396,14 +394,14 @@ void BasicBlockContext::Init(NDObjectIterator<false> begin, NDObjectIterator<fal
 }
 
 void BasicBlockContext::Erase(NDObject *object) {
-  head_[object->index_] = -1;
+  SetHead(object, -1);
   for (auto pred : GetPreds(object)) {
-    auto idx = head_[pred->index_];
+    auto idx = GetHead(pred);
     auto last = idx;
     while (idx != -1) {
       if (edges_[idx].user == object) {
-        if (idx == head_[pred->index_]) {
-          head_[pred->index_] = edges_[idx].next;
+        if (idx == GetHead(pred)) {
+          SetHead(pred, edges_[idx].next);
         } else {
           edges_[last].next = edges_[idx].next;
         }
@@ -420,6 +418,9 @@ BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObj
     : sentinel_(kTypeEnd), size_(objects.size()), capacity_(objects.size()), objects_owner_(owner) {
   // build linked list from objects
   ReOrder(objects, true);
+  for (auto obj : objects) {
+    context_.SetHead(obj, -1);
+  }
   context_.Init(objects);
 }
 
@@ -489,6 +490,7 @@ BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *obj
   if (iter.get() == object) {
     return iter;
   }
+  context_.SetHead(object, -1);
   auto prev = PREV_OBJ(iter);
   ASSIGN_PREV_OBJ(object, prev);
   ASSIGN_NEXT_OBJ(object, iter.get());
@@ -935,10 +937,22 @@ void EliminateReshape(BasicBlock &bb) {
       // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
       auto &context = bb.context();
       auto prev = reshape.lhs_;
+      NDObject *copy = nullptr;
       for (auto succ : GetSuccs(&reshape, bb)) {
         auto &input_ref = GetInputRef(succ, &reshape);
-        input_ref = prev;
-        context.AddUser(prev, succ);
+        if (succ->IsStore() && prev->IsLoad()) {
+          // Insert Copy Op between store and load
+          if (copy == nullptr) {
+            copy = new CopyOp(prev);
+            copy->nd_ = prev->nd_;
+            bb.Insert(BasicBlock::iterator(&reshape), copy);
+          }
+          input_ref = copy;
+          context.AddUser(copy, succ);
+        } else {
+          input_ref = prev;
+          context.AddUser(prev, succ);
+        }
       }
       bb.Erase(BasicBlock::iterator(&reshape));
       context.Erase(&reshape);

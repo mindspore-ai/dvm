@@ -219,3 +219,36 @@ def test_matmul_post_fusion_sload():
     t.store_expect(f, np.reshape(np_c, shape_c) + cx, 2e-3)
     t.set_passes("EliminateReshape")
     assert (t.run_check())
+
+@pytest.mark.mix
+def test_matmul_post_fusion_forward():
+    t = Tester("mix")
+    shape_a = [1020, 3072]
+
+    shape_b = [3072, 3072]
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16)
+    a = t.load(ax)
+    b = t.load(bx)
+    c = t.matmul(a, b, False, False)
+    e = t.reshape(c, (2, 510, 48, 64))
+    expect = np.reshape(np_c,(2, 510, 48, 64))
+    t.store_expect(e, expect, 2e-3)
+    t.set_passes("EliminateReshape")
+    assert (t.run_check())
+
+@pytest.mark.mix
+def test_multi_store():
+    t = Tester()
+    shape_a = [1024, 512]
+    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    a = t.load(ax)
+    e = t.reshape(a, (2, 512, 256, 2))
+    e2 = t.cast(e, "float32")
+    expect = np.reshape(ax,(2, 512, 256, 2))
+    expect2 = expect.astype(np.float32)
+    t.store_expect(e, expect, 2e-3)
+    t.store_expect(e2, expect2, 2e-3)
+    t.set_passes("EliminateReshape")
+    assert (t.run_check())

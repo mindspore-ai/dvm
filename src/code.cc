@@ -954,9 +954,8 @@ class DisAssembler {
     oss << indent << "parallel(block_num=" << block_dim << ") {" << std::endl;
     for (uint64_t i = 0; i < summays.size(); ++i) {
       auto &summary = summays[i];
-      oss << " kernel_" << i << "(block_range=[" << summary.block_start << ", "
-          << summary.block_end << "], block_step=" << summary.block_step << ", block_tail=" << summary.block_tail
-          << ") {" << std::endl;
+      oss << " kernel_" << i << "(block_range=[" << summary.block_start << ", " << summary.block_end
+          << "], block_step=" << summary.block_step << ", block_tail=" << summary.block_tail << ") {" << std::endl;
       DasVecBody(summary.bcode, summary.code_size, indent + "  ");
       oss << indent << " }" << std::endl;
     }
@@ -997,18 +996,14 @@ class DisAssembler {
   std::ostringstream &oss;
 };
 
-int CodeWrap::LaunchWrap(void *workspace, void *stream) {
-  return next_->LaunchWrap(workspace, stream);
-}
+int CodeWrap::LaunchWrap(void *workspace, void *stream) { return next_->LaunchWrap(workspace, stream); }
 
 void CodeWrap::CombineWrap(Code *to, uint64_t ws_base) {
   to->InsertWrap(this);
   next_->CombineWrap(to, ws_base);
 }
 
-bool CodeWrap::DasWrap(std::ostringstream &oss) {
-  return next_->DasWrap(oss);
-}
+bool CodeWrap::DasWrap(std::ostringstream &oss) { return next_->DasWrap(oss); }
 
 Code::~Code() {
   if (data_) {
@@ -1071,7 +1066,7 @@ void Code::Alloc(size_t size) {
 
 void Code::DisAssemble(std::ostringstream &oss) { DisAssembler(oss).Run(this, "vmain"); }
 
-void Code::Combine(const Code &code, uint64_t ws_base) {
+void Code::CombineBind(const Code &code, uint64_t ws_base) {
   if (auto op = code.bind_wss_) {
     for (auto next = op->bind_list_; next != nullptr; next = next->bind_list_) {
       BindWorkspace(*op, op->ws + ws_base);
@@ -1086,6 +1081,10 @@ void Code::Combine(const Code &code, uint64_t ws_base) {
     }
     BindOp(*op, *(op->op));
   }
+}
+
+void Code::Combine(const Code &code, uint64_t ws_base) {
+  CombineBind(code, ws_base);
   if (code.wrap_) {
     code.wrap_->CombineWrap(this, ws_base);
   }
@@ -1125,9 +1124,7 @@ uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
   return workspace_size + offset;
 }
 
-int Code::LaunchWrap(void *workspace, void *stream) {
-  return DoLaunch(workspace, stream);
-}
+int Code::LaunchWrap(void *workspace, void *stream) { return DoLaunch(workspace, stream); }
 
 void Code::CombineWrap(Code *code, uint64_t ws_base) {}
 bool Code::DasWrap(std::ostringstream &oss) { return true; }

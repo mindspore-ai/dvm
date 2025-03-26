@@ -58,7 +58,7 @@ class Code;
 class CodeWrap {
  public:
   CodeWrap() = default;
-  virtual ~CodeWrap(){}
+  virtual ~CodeWrap() {}
   virtual int LaunchWrap(void *workspace, void *stream);
   virtual void CombineWrap(Code *to, uint64_t ws_base);
   virtual bool DasWrap(std::ostringstream &oss);
@@ -141,6 +141,7 @@ class Code : public CodeWrap {
     return wrap_->LaunchWrap(workspace, stream);
   }
 
+  void CombineBind(const Code &code, uint64_t ws_base);
   void Combine(const Code &code, uint64_t ws_base);
   void DisAssemble(std::ostringstream &oss);
   bool DasWrap(std::ostringstream &oss) override;

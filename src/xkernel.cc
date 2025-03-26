@@ -399,7 +399,7 @@ uint64_t StagesKernel::CodeGen() {
   uint64_t ws_size = AllocWorkspace();
   for (auto s : stages_) {
     auto &code = s->kernel->code_;
-    code_.Combine(code, s->ws_offset);
+    code_.CombineBind(code, s->ws_offset);
     for (auto op : s->ios) {
       if (!op->CheckFlag(OBJ_FLAG_STAGE_IO)) continue;
       if (op->IsStore()) {

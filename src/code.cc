@@ -818,6 +818,14 @@ class DisAssembler {
     DumpVal("trans_b", bool(op->flags & V_CUBE_FLAG_TRANS_B), oss);
     oss << ", ";
     DumpVal("swizzle", op->swizzle, oss);
+  
+    if (op->flags & V_CUBE_FLAG_GROUPED_LIST) {
+      oss << ", ";
+      DumpVal("group_list", reinterpret_cast<void *>(op->gm_group_list), oss);
+      oss << ", ";
+      DumpVal("group_list_size", op->group_list_size, oss);
+    }
+
     if (op->flags & V_CUBE_FLAG_WITH_BIAS) {
       oss << ", ";
       DumpVal("gm_bias", reinterpret_cast<void *>(op->gm_bias), oss);

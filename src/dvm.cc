@@ -463,6 +463,7 @@ NDObject *Kernel::Cast(NDObject *input, DType type) {
     {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
     {kFloat16, -1, -1, -1, -1},              // V_FLOAT32
     {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
+    {-1, -1, -1, -1, -1},                    // V_INT64
   };
   if (input->type_id_ == type) {
     return input;
@@ -601,6 +602,15 @@ NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
 
 NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
   CubeOp *obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
+  if (kernel_->KType() == KernelType::kEager) {
+    return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
+  }
+  kernel_->Append(obj);
+  return obj;
+}
+
+NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list) {
+  GmmOp *obj = new GmmOp(lhs, rhs, bias, group_list);
   if (kernel_->KType() == KernelType::kEager) {
     return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }

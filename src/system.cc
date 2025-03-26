@@ -56,8 +56,8 @@ extern unsigned int g_vkernel_c220_bin_len;
 
 namespace dvm {
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
-const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t)};
-const char *DTYPE_NAMES[dvm::kTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32"};
+const uint64_t ITEM_SIZE[dvm::kTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t), sizeof(int64_t)};
+const char *DTYPE_NAMES[dvm::kTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32", "int64"};
 
 static std::string GetSocName() {
   std::string res;

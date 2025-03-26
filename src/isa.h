@@ -1353,6 +1353,7 @@ struct vStoreStatus {
 #define V_CUBE_FLAG_WITH_BIAS 128
 #define V_CUBE_FLAG_BIAS_FP16 256
 #define V_CUBE_FLAG_PEER_STORE 512
+#define V_CUBE_FLAG_GROUPED_LIST 1024
 #define V_CUBE_FLAG_DTYPE_OFFSET 30 // [30, 31]
 
 #define V_CUBE_SWIZ_VISIT_nZ 0
@@ -1368,6 +1369,12 @@ struct vStoreStatus {
 struct vCubeOp {
   enum { FP16, BF16 };
 
+  uint64_t gm_a;
+  uint64_t gm_b;
+  uint64_t gm_c;
+  uint64_t gm_bias;
+  uint64_t gm_group_list;
+
   uint32_t flags;
   uint32_t m_real, n_real, k_real;
   uint32_t m_align, n_align, k_align;
@@ -1378,16 +1385,12 @@ struct vCubeOp {
   uint32_t m0, n0, k0;
   uint32_t unique_id{1};
   uint32_t rank_size{0};
-  uint32_t reserved;
   // format: visit_type(16) << 16 | data(16)
   // data:
   //  nZ: swizzle_cnt(16)
   //  zN: swizzle_cnt(16)
   uint32_t swizzle;
-  uint64_t gm_a;
-  uint64_t gm_b;
-  uint64_t gm_c;
-  uint64_t gm_bias;
+  uint32_t group_list_size{0};
   uint32_t offset_a, offset_b;
   // for aiv
   uint64_t subtilenum;  // subblockid1 << 32 | subblockid0

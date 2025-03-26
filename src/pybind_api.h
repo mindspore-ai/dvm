@@ -93,6 +93,8 @@ class KernelPy {
   py::object AllGatherV2(const py::object &input);
   py::object ReduceScatter(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b, const py::object &bias);
+  py::object GroupedMatMul(const py::object &lhs, const py::object &rhs, const py::object &bias,
+                           const py::object &group_list);
   py::object ConvertToBF16(const py::object &input);
   py::object ConvertFromBF16(const py::object &input);
   void ParallelNext();

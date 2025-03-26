@@ -71,8 +71,9 @@ DType StringToTypeID(const std::string &type) {
 
 std::string GetBufferFormat(const DType type) {
   const std::string formats[kTypeEnd] = {
-    py::format_descriptor<bool>::format(), "e", py::format_descriptor<uint16_t>::format(),
-    py::format_descriptor<float>::format(), py::format_descriptor<int32_t>::format()};
+    py::format_descriptor<bool>::format(),     "e",
+    py::format_descriptor<uint16_t>::format(), py::format_descriptor<float>::format(),
+    py::format_descriptor<int32_t>::format(),  py::format_descriptor<int64_t>::format()};
   return formats[type];
 }
 
@@ -365,6 +366,16 @@ py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool t
   auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
   auto op =
     kernel_.MatMul(lhs_obj, rhs_obj, trans_a, trans_b, bias.is_none() ? nullptr : bias.cast<NDOpPyPtr>()->Get());
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
+py::object KernelPy::GroupedMatMul(const py::object &lhs, const py::object &rhs, const py::object &bias,
+                                   const py::object &group_list) {
+  auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
+  auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
+  NDObject *bias_obj = bias.is_none() ? nullptr : bias.cast<NDOpPyPtr>()->Get();
+  NDObject *group_list_obj = group_list.is_none() ? nullptr : group_list.cast<NDOpPyPtr>()->Get();
+  auto op = kernel_.GroupedMatMul(lhs_obj, rhs_obj, bias_obj, group_list_obj);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -783,6 +794,8 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("reducescatter", &KernelPy::ReduceScatter, "emit reducescatter op")
     .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
          py::arg("trans_b"), py::arg("bias") = py::none())
+    .def("gmm", &KernelPy::GroupedMatMul, "emit grouped_matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("bias"),
+         py::arg("group_list"))
     .def("convert_to_bf16", &KernelPy::ConvertToBF16, "convert f32 array to bf16 array")
     .def("convert_from_bf16", &KernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("p_next", &KernelPy::ParallelNext, "parallel next")

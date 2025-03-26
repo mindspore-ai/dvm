@@ -305,27 +305,27 @@ const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
   {kGenLoad, true, false},    // LoadDummy
   {kGenLoad, true, false},    // MultiLoad
   {kGenLoad, true, false},    // Load
-  {kGenStore, false, true},  // PadStore
-  {kGenStore, true, true},   // Store
+  {kGenStore, false, true},   // PadStore
+  {kGenStore, true, true},    // Store
   {kGenComm, true, false},    // ReduceScatter
   {kGenComm, true, false},    // AllGather
   {kGenComm, true, false},    // AllGatherV2
   {kGenComm, true, false},    // AllReduce
   {kGenSimd1, true, false},   // Reshape
-  {kGenSimd1, true, true},   // Copy
-  {kGenSimd1, true, true},   // Unary
-  {kGenSimd2, true, true},   // Binary
-  {kGenSimd1, true, true},   // Cast
-  {kGenSimd1, true, true},   // BinaryS
+  {kGenSimd1, true, true},    // Copy
+  {kGenSimd1, true, true},    // Unary
+  {kGenSimd2, true, true},    // Binary
+  {kGenSimd1, true, true},    // Cast
+  {kGenSimd1, true, true},    // BinaryS
   {kGenSimd1, false, false},  // BroadcastTo
   {kGenSimd0, true, false},   // BroadcastS
   {kGenFlex, false, false},   // Reduce
   {kGenSimd3, true, true},    // Select
   {kGenSimd1, false, false},  // ElemAny
-  {kGenSimd1, true, true},   // RemovePad
-  {kGenFlex, true, true},    // Power
-  {kGenFlex, true, true},    // Compare
-  {kGenFlex, true, true},    // CompareS
+  {kGenSimd1, true, true},    // RemovePad
+  {kGenFlex, true, true},     // Power
+  {kGenFlex, true, true},     // Compare
+  {kGenFlex, true, true},     // CompareS
 };
 
 class AtomicCleanWrap : public CodeWrap {
@@ -1360,7 +1360,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   int64_t rank_size = static_cast<int64_t>(nd_.size());
   op.lead_num = end_dim + 1 < rank_size ? nd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
-  op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();;
+  op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_NONE, V_BROADCAST_X_B32,
                                                 V_BROADCAST_X_B32};
   ASSERT(id_list[type_id_] != V_NONE);
@@ -2229,6 +2229,39 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->k_loop = CeilDiv(op->k_real, op->k0);
 }
 
+GmmOp::GmmOp(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list)
+    : CubeOp(lhs, rhs, false, false, bias), group_list_(group_list) {
+  obj_id_ = kGmmOp;
+}
+
+void GmmOp::NormalizeOutput() {
+  ASSERT(rhs_->shape_ref_->size == 3);
+  ASSERT(group_list_->shape_ref_->size == rhs_->shape_ref_->data[0]);
+  nd_.dims.resize(2);
+  nd_.dims[0] = n_real_;
+  nd_.dims[1] = m_real_;
+  shape_.Resize(2);
+  for (size_t i = 0; i < nd_.size(); ++i) {
+    shape_[i] = nd_[nd_.size() - 1 - i];
+  }
+}
+
+void GmmOp::GenTiling(vCubeOp *op) {
+  Tile(op);
+  core_loop_ = block_dim_ = System::Instance().CoreNum(CoreType::kCube);
+  op->swizzle = vCubeOp::SwizzleEncode(1, DEFAULT_SWIZZLE_COUNT);
+}
+
+void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
+  CubeOp::CodeGen(op, nullptr);
+  batch_c0_ = 1;
+  batch_c1_ = 1;
+  op->batch_cast = 0;
+  op->flags |= V_CUBE_FLAG_GROUPED_LIST;
+  op->gm_group_list = static_cast<NDAccess *>(group_list_)->addr_.data;
+  op->group_list_size = group_list_->shape_ref_->data[0];
+}
+
 static void ReserveCommEvent(VectorKernel &k) {
   if (k.forward_event_num_ > 7) {
     k.forward_event_num_ = 7;
@@ -2775,7 +2808,8 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       pp_load.xn = rhs;
       pp_load.tile_stride = tile_stride_size;
       pp_load.body_iter = ndd_.stride_back() / lead_align;
-      pp_load.tail_iter = tail_dim_ <= ndd_.lead_idx() ? pp_load.body_iter : pp_load.body_iter / nd_[tail_dim_] * tail_size_;
+      pp_load.tail_iter =
+        tail_dim_ <= ndd_.lead_idx() ? pp_load.body_iter : pp_load.body_iter / nd_[tail_dim_] * tail_size_;
       pp_load.iter_size = nd_.lead_dim() * ITEM_SIZE[type_id_];
       pp_load.pad_size = lead_align * ITEM_SIZE[type_id_] - pp_load.iter_size;
       pp_load.pingpong = 0;

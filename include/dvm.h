@@ -27,6 +27,7 @@ enum DType {
   kBFloat16,
   kFloat32,
   kInt32,
+  kInt64,
   kTypeEnd,
 };
 
@@ -186,6 +187,7 @@ class Kernel {
   NDObject *ElemAny(NDObject *input);
 
   NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
+  NDObject *GroupedMatMul(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list);
 
   // collective communication
   NDObject *AllReduce(NDObject *input, const Comm *comm);

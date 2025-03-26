@@ -35,6 +35,7 @@ class MixKernel : public VKernel {
 
  protected:
   void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
+  void Release();
   uint64_t SplitKCodeGen();
   uint64_t UnAlignCodeGen();
   uint64_t AlignCodeGen();

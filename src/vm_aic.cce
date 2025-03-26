@@ -53,6 +53,10 @@ template <typename T>
 class MatMul {
  public:
   __aicore__ MatMul(__gm__ vCubeOp *__restrict__ op) {
+    gm_a = reinterpret_cast<__gm__ T *>(op->gm_a) + op->offset_a;
+    gm_b = reinterpret_cast<__gm__ T *>(op->gm_b) + op->offset_b;
+    gm_c = reinterpret_cast<__gm__ T *>(op->gm_c);
+    gm_bias = reinterpret_cast<__gm__ uint8_t*>(op->gm_bias);
     m_real = op->m_real;
     n_real = op->n_real;
     k_real = op->k_real;
@@ -420,6 +424,10 @@ class MatMul {
     offset_b = b_idx * n_align * kb_align;
   }
 
+  __gm__ T *__restrict__ gm_a;
+  __gm__ T *__restrict__ gm_b;
+  __gm__ T *__restrict__ gm_c;
+  __gm__ uint8_t *__restrict__ gm_bias;
   uint64_t n_loop, m_loop, k_loop;
   uint64_t k0_part_len;
   uint64_t m_real, n_real, k_real;
@@ -438,23 +446,66 @@ class MatMul {
 #define V_MM_POS_C_OFFSET 44
 #define V_MM_POS_C_BITS 20
 
+#define V_GMM_BLOCK_OFF_OFFSET 32
+#define V_GMM_BLOCK_OFF_BIT 32
+#define V_GMM_LAST_OFFSET 8
+#define V_GMM_LAST_BIT 24
+#define V_GMM_G_SIZE_OFFSET 0
+#define V_GMM_G_SIZE_BITS 8
+
 template <typename M>
 class TileVisitor {
  public:
   static constexpr uint64_t INVALID_TILE_POS = uint64_t(-1);
-  __aicore__ TileVisitor(__gm__ vCubeOp *__restrict__ op, uint64_t tile_num, const M &m) {
-    pos_ = pos_last_ = INVALID_TILE_POS;
+  __aicore__ TileVisitor(__gm__ vCubeOp *__restrict__ op, uint64_t tile_num, M &m) {
     swizzle_ = op->swizzle;
-    tile_loop_ = tile_num << 32 | block_idx;
+    if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {
+      group_info_ = op->group_list_size << V_GMM_G_SIZE_OFFSET;
+      gm_group_list_ = reinterpret_cast<__gm__ int64_t *>(op->gm_group_list);
+      InitGmm(m, true);
+    } else {
+      group_info_ = 0;
+      Init(tile_num, m);
+    }
     UpdateNext(m);
   }
 
-  __force_inline__ __aicore__ bool Forward(const M &m) {
+  __force_inline__ __aicore__ void Init(uint64_t tile_num, M &m) {
+    uint64_t _block_idx = (block_idx + block_num - BlockIdxOffset()) % block_num;
+    pos_ = pos_last_ = INVALID_TILE_POS;
+    tile_loop_ = tile_num << 32 | _block_idx;
+  }
+
+  __force_inline__ __aicore__ void InitGmm(M &m, bool init) {
+    uint64_t block_idx_offset = BlockIdxOffset();
+    if (!init) {
+      m.gm_a += m.m_real * m.ka_align;
+      m.gm_b += m.kb_align * m.n_align;
+      m.gm_c += m.m_real * m.n_real;
+      m.gm_bias += m.n_real * m.BiasTypeSize();
+      block_idx_offset += m.m_loop * m.n_loop;
+      block_idx_offset %= block_num;
+    }
+
+    int64_t cur_list = *gm_group_list_;
+    m.m_real = m.m_align = static_cast<uint64_t>(cur_list - LastList());
+    m.m_loop = CeilDiv(m.m_real, m.m0);
+    gm_group_list_++;
+    group_info_ = block_idx_offset << V_GMM_BLOCK_OFF_OFFSET | cur_list << V_GMM_LAST_OFFSET |
+                  (GroupListSize() - 1) << V_GMM_G_SIZE_OFFSET;
+    Init(m.m_loop * m.n_loop, m);
+  }
+
+  __force_inline__ __aicore__ bool Forward(M &m) {
     if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
       if (pos_last_ != INVALID_TILE_POS) {
         wait_flag_dev(1);
       }
+    }
+    while (GroupListSize() > 0 && !HasNext()) {
+      InitGmm(m, false);
+      UpdateNext(m);
     }
     if (!HasNext()) {
       return false;
@@ -499,11 +550,24 @@ class TileVisitor {
   __force_inline__ __aicore__ uint64_t LastM() const { return vGetBitRange(pos_last_, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS); }
   __force_inline__ __aicore__ uint64_t LastN() const { return vGetBitRange(pos_last_, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS); }
 
+  __force_inline__ __aicore__ uint64_t GroupListSize() const {
+    return vGetBitRange(group_info_, V_GMM_G_SIZE_OFFSET, V_GMM_G_SIZE_BITS);
+  }
+  __force_inline__ __aicore__ uint64_t BlockIdxOffset() const {
+    return vGetBitRange(group_info_, V_GMM_BLOCK_OFF_OFFSET, V_GMM_BLOCK_OFF_BIT);
+  }
+  __force_inline__ __aicore__ uint64_t LastList() const {
+    return vGetBitRange(group_info_, V_GMM_LAST_OFFSET, V_GMM_LAST_BIT);
+  }
+
   uint64_t pos_;
   uint64_t pos_next_;
   uint64_t pos_last_;
   uint64_t swizzle_;
   uint64_t tile_loop_;
+  
+  __gm__ int64_t *__restrict__ gm_group_list_;
+  uint64_t group_info_;
 };
 
 #define V_PINGPONG_FLAG_EVENT  0x1ul
@@ -521,10 +585,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   } else {
     set_atomic_none();
   }
-  __gm__ T *__restrict__ gm_a = reinterpret_cast<__gm__ T*>(op->gm_a) + op->offset_a;
-  __gm__ T *__restrict__ gm_b = reinterpret_cast<__gm__ T*>(op->gm_b) + op->offset_b;
-  __gm__ T *__restrict__ gm_c = reinterpret_cast<__gm__ T*>(op->gm_c);
-  __gm__ uint8_t *__restrict__ gm_bias = reinterpret_cast<__gm__ uint8_t*>(op->gm_bias);
   uint64_t offset_mk = RoundUp(op->m0 * op->k0 * sizeof(T), 256);  // TODO: int8 is 512
   uint64_t offset_nk = RoundUp(op->n0 * op->k0 * sizeof(T), 256);  // TODO: int8 is 512
   __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);
@@ -559,16 +619,16 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     if (!visit.HasLast()) {
       auto event_id = pingpong_flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
-      mat.LoadA(l1a, gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
+      mat.LoadA(l1a, mat.gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
-      mat.LoadB(l1b, gm_b + offset_b, mat.shuffle_k, nidx, mat.k_actual, n_actual);
+      mat.LoadB(l1b, mat.gm_b + offset_b, mat.shuffle_k, nidx, mat.k_actual, n_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
     }
     if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
       wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
       if (nidx != visit.LastN()) {
-        mat.LoadBias(bias_l1, gm_bias + mat.BiasTypeSize() * nidx * mat.n0, n_actual);
+        mat.LoadBias(bias_l1, mat.gm_bias + mat.BiasTypeSize() * nidx * mat.n0, n_actual);
       }
       set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
     }
@@ -589,10 +649,10 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         shuffle_k = (shuffle_k + 1) % mat.k_loop;
         uint64_t k_actual_next = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
-        mat.LoadA(n_l1a, gm_a + offset_a, midx, shuffle_k, m_actual, k_actual_next);
+        mat.LoadA(n_l1a, mat.gm_a + offset_a, midx, shuffle_k, m_actual, k_actual_next);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
-        mat.LoadB(n_l1b, gm_b + offset_b, shuffle_k, nidx, k_actual_next, n_actual);
+        mat.LoadB(n_l1b, mat.gm_b + offset_b, shuffle_k, nidx, k_actual_next, n_actual);
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       } else if (visit.HasNext()) {
         uint64_t n_cidx = visit.NextC();
@@ -612,12 +672,12 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         }
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
         if (!load_a_flag) {
-          mat.LoadA(n_l1a, gm_a + offset_a, n_midx, mat.shuffle_k, m_actual_next, mat.k_actual);
+          mat.LoadA(n_l1a, mat.gm_a + offset_a, n_midx, mat.shuffle_k, m_actual_next, mat.k_actual);
         }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
         wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
         if (!load_b_flag) {
-          mat.LoadB(n_l1b, gm_b + offset_b, mat.shuffle_k, n_nidx, mat.k_actual, n_actual_next);
+          mat.LoadB(n_l1b, mat.gm_b + offset_b, mat.shuffle_k, n_nidx, mat.k_actual, n_actual_next);
         }
         set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
       }
@@ -658,7 +718,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
           set_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);     // bias ready, mmad can begin
           wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);    // wait move bias fron L1 to BT
           mat.MAD(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
-        } else{
+        } else {
           mat.MM(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
         }
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
@@ -671,21 +731,22 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
       uint64_t pingpong_offset = pingpong_flags & V_PINGPONG_FLAG_STORE ? block_num + block_idx : block_idx;
       pingpong_flags ^= V_PINGPONG_FLAG_STORE;
-      mat.StoreC_PingPong(gm_c, l0c, unit_flag, m_actual, n_actual, pingpong_offset);
+      mat.StoreC_PingPong(mat.gm_c, l0c, unit_flag, m_actual, n_actual, pingpong_offset);
       if (mat.flags & V_CUBE_FLAG_PEER_STORE) {
         // result of GetCubeOffset()
         uint64_t group_offset = midx * mat.m0 * mat.n_real + nidx * mat.n0;
         set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
         wait_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
         __gm__ uint64_t *peer_flag_mem =
-          (__gm__ uint64_t *)((__gm__ uint8_t *)gm_c + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
+          (__gm__ uint64_t *)((__gm__ uint8_t *)mat.gm_c + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
         *peer_flag_mem = ((uint64_t)(op->unique_id) << 32) | (group_offset + 1);
         dcci(peer_flag_mem, 0);
       }
     } else if (mat.flags & V_CUBE_FLAG_OUT_FP32) {
-      mat.StoreC_Fp32((__gm__ float *__restrict__)gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual, n_actual);
+      mat.StoreC_Fp32((__gm__ float *__restrict__)mat.gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual,
+                      n_actual);
     } else {
-      mat.StoreC(gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual, n_actual);
+      mat.StoreC(mat.gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual, n_actual);
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);

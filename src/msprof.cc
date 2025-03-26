@@ -45,8 +45,8 @@ constexpr uint32_t kTensorInfoBytes = 44UL;
 constexpr uint32_t kTensorInfoBytesWithCap = 56U;
 
 namespace dvm {
-const TensorDtypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {BOOL_,    FLOAT16_, DT_BF16,
-                                                                 FLOAT32_, INT32_,   NUMBER_TYPE_END_};
+const TensorDtypeMs MAP_DTYPE_TO_MSDTYPE[DType::kTypeEnd + 1] = {BOOL_,  FLOAT16_, DT_BF16,         FLOAT32_,
+                                                                 INT32_, INT64_,   NUMBER_TYPE_END_};
 class MsProfHolder {
  public:
   MsProfHolder();

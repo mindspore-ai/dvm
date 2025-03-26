@@ -59,6 +59,7 @@ enum ObjectType {
   kCompare,
   kCompareS,
   kCubeOp,
+  kGmmOp,
   kObjectBulk
 };
 
@@ -369,6 +370,7 @@ class NDObject {
   bool IsLoad() const { return obj_id_ <= kLoad; }
   bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
   bool IsComm() const { return obj_id_ > kStore && obj_id_ <= kAllReduce; }
+  bool IsCube() const { return obj_id_ == kCubeOp || obj_id_ == kGmmOp; }
   // Comm op is considered a simd op, remember use !IsComm() to exclude comm op
   bool IsSimd() const { return obj_id_ > kStore; }
   bool NeedTailCopy() const { return obj_id_ > kReduceScatter && obj_id_ <= kAllReduce; }
@@ -869,11 +871,11 @@ class CubeOp : public NDObject {
 
   int Emit(VectorKernel &k) override { return 0; }
   void Dump(bool verbose, std::ostringstream &oss) override;
-  void CodeGen(vCubeOp *code, CubeTuner *tuner);
   void NormalizeCube();
-  void NormalizeOutput();
   void InferCubeConfig();
-  void GenTiling(vCubeOp *code);
+  virtual void CodeGen(vCubeOp *code, CubeTuner *tuner);
+  virtual void NormalizeOutput();
+  virtual void GenTiling(vCubeOp *code);
 
   uint64_t PostFusionWorkSpace() const {
     uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];
@@ -927,6 +929,16 @@ class CubeOp : public NDObject {
   size_t offset_a_{0};
   size_t offset_b_{0};
   ShapeWithRef shape_;
+};
+
+class GmmOp : public CubeOp {
+ public:
+  GmmOp(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list);
+
+  void NormalizeOutput() override;
+  void CodeGen(vCubeOp *code, CubeTuner *tuner) override;
+  void GenTiling(vCubeOp *code) override;
+  NDObject *group_list_;
 };
 
 class CommIdWrap : public CodeWrap {

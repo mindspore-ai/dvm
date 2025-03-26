@@ -348,8 +348,12 @@ int NDLoad::Emit(VectorKernel &k) {
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
   op.body_iter = strides_.back() / lead_align;
-  op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
   op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+  if (op.body_iter == 1) {
+    op.tail_iter = tail_dim_ < 0 ? op.iter_size : tail_size_ * ITEM_SIZE[type_id_];
+  } else {
+    op.tail_iter = tail_dim_ < 0 ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+  }
   op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = round_tile_.size();
   addr_.Update(insn_ + vLoad::RELOC_OFFSET);

@@ -1234,9 +1234,16 @@ static inline [aicore] void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     }
   }
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + op.tile_stride * tile_idx;
+  if (IsLastTile(tile)) {
+    if (op.body_iter == 1) {
+      op.iter_size = op.tail_iter;
+    } else {
+      op.body_iter = op.tail_iter;
+    }
+  }
   __ubuf__ uint8_t* dst = (__ubuf__ uint8_t*)(op.xn);
-  uint64_t truck_num = IsLastTile(tile) ? op.tail_iter : op.body_iter;
-  copy_gm_to_ubuf_align_b8(dst, src, 0, truck_num, op.iter_size, 0, 0, 0, op.pad_size >> 5);
+  copy_gm_to_ubuf_align_b8(dst, src, 0, op.body_iter, op.iter_size, 0, 0, 0, op.pad_size >> 5);
+  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.body_iter * op.iter_size);
 }
 
 __aicore_inline__ void MultiLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {

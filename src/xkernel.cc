@@ -359,6 +359,74 @@ void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
+DynMixKernel::DynMixKernel() : MixKernel() {
+  ktype_ = kDynMix;
+  tuner_ = nullptr;
+}
+
+uint64_t DynMixKernel::CodeGen() {
+  if (cube_op_->output_ == nullptr) {
+    auto output = new NDStore(nullptr, cube_op_);
+    output->SetFlag(OBJ_FLAG_STAGE_IO);
+    cube_op_->output_ = output;
+  }
+  std::vector<NDObject *> empty_run_ops;
+  cube_op_->lhs_->Normalize(empty_run_ops);
+  cube_op_->rhs_->Normalize(empty_run_ops);
+  cube_op_->NormalizeCube();
+  cube_op_->output_->Normalize(empty_run_ops);
+  cube_op_->InferCubeConfig();
+  if (cube_op_->tactics_.enable_bias_cast) {
+    return BiasBF16CodeGen();
+  }
+  if (cube_op_->tactics_.enable_pad) {
+    return UnAlignCodeGen();
+  }
+  if (cube_op_->tactics_.enable_splitk) {
+    return SplitKCodeGen();
+  }
+  return AlignCodeGen();
+}
+
+void DynMixKernel::Append(NDObject *obj) {
+  const uint32_t LOAD_PENDING = 1;
+  if (obj->IsLoad()) {
+    obj->xbuf_ = LOAD_PENDING;
+  } else if (obj->obj_id_ == kCubeOp) {
+    EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
+    cube_op_ = static_cast<CubeOp *>(obj);
+  } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
+    cube_op_->output_ = static_cast<NDAccess *>(obj);
+  } else {
+    if (post_fusion_ == nullptr) {
+      post_fusion_ = new VKernelS();
+    }
+    auto WorkLoad = [this](NDObject *&op) {
+      if (op == cube_op_) {
+        if (sload_ == nullptr) {
+          sload_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
+          sload_->flags_ |= OBJ_FLAG_LOAD_FROM_CUBE;
+          post_fusion_->build_ops_.emplace_back(sload_);
+        }
+        op = sload_;
+      } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
+        op->xbuf_ = 0;
+        post_fusion_->build_ops_.emplace_back(op);
+      }
+    };
+    if (obj->lhs_) {
+      WorkLoad(obj->lhs_);
+      if (obj->rhs_) {
+        WorkLoad(obj->rhs_);
+        if (obj->flags_ & OBJ_FLAG_XHS) {
+          WorkLoad(static_cast<FlexOp *>(obj)->xhs_);
+        }
+      }
+    }
+    post_fusion_->build_ops_.emplace_back(obj);
+  }
+}
+
 int StageCodeWrap::LaunchWrap(void *workspace, void *stream) {
   for (auto s : kernel_->stages_) {
     s->kernel->code_.Launch(workspace, stream);
@@ -1210,7 +1278,7 @@ void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
         auto children = GetParallelRange(k, num);
         for (int j = 0; j < num; ++j) {
           auto ck = children[j];
-          if (ck->code_.data_ == nullptr) { // TRICK: force dump vgraph
+          if (ck->code_.data_ == nullptr) {  // TRICK: force dump vgraph
             ck->code_.data_ = reinterpret_cast<uint8_t *>(1);
             ck->Dump(oss, body_indent);
             ck->code_.data_ = nullptr;

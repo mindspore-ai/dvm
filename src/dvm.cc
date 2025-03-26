@@ -311,6 +311,8 @@ void Kernel::Reset(KernelType type) {
     kernel_ = new MixKernel();
   } else if (type == kStaticStages) {
     kernel_ = new StagesKernel();
+  } else if (type == kDynMix) {
+    kernel_ = new DynMixKernel();
   } else {
     ASSERT(0);
   }

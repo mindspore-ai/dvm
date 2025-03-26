@@ -97,9 +97,8 @@ std::pair<bool, T> GetScalar(const py::object &obj) {
 }
 
 std::unordered_map<std::string, KernelType> kernel_type_map = {
-  {"", kStaticShape},  {"static", kStaticShape},      {"dyn", kDynShape},
-  {"mix", kStaticMix}, {"parallel", kStaticParallel}, {"stages", kStaticStages},
-  {"eager", kEager}};
+  {"", kStaticShape},   {"static", kStaticShape},      {"dyn", kDynShape},        {"mix", kStaticMix},
+  {"dyn_mix", kDynMix}, {"parallel", kStaticParallel}, {"stages", kStaticStages}, {"eager", kEager}};
 
 void *WsAllocCallback(uint64_t size, void *user_data) {
   void *dev_addr = nullptr;
@@ -589,7 +588,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   size_t size = buf.itemsize * buf.size;
   ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
   ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
-  if (kernel_.GetImpl()->KType() == kDynShape) {
+  if (kernel_.GetImpl()->KType() == kDynShape || kernel_.GetImpl()->KType() == kDynMix) {
     info.shape.resize(buf.ndim);
     for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
       info.shape[i] = buf.shape[i];

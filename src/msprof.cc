@@ -145,9 +145,10 @@ void MsProfHelper::InitReportNode() {
   prof_node_basic_info.opName = opName_hash_id;
   prof_node_basic_info.blockDim = info_.block_dim;
   prof_node_basic_info.opType = GetMsprofHashId(info_.op_name);
-  prof_node_basic_info.taskType = (info_.kernel_type == kStaticMix || info_.kernel_type == kStaticStages)
-                                    ? static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC)
-                                    : static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
+  prof_node_basic_info.taskType =
+    (info_.kernel_type == kStaticMix || info_.kernel_type == kDynMix || info_.kernel_type == kStaticStages)
+      ? static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC)
+      : static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
   size_t total_size = info_.input_size + info_.output_size;
   for (size_t i = 0U; i < total_size; i += MSPROF_GE_TENSOR_DATA_NUM) {
     TensorInfoWrapper tensor_info_wrapper;

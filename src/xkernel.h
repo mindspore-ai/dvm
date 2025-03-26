@@ -48,6 +48,14 @@ class MixKernel : public VKernel {
   CubeTuner *tuner_;
 };
 
+class DynMixKernel : public MixKernel {
+ public:
+  DynMixKernel();
+
+  void Append(NDObject *obj) override;
+  uint64_t CodeGen() override;
+};
+
 class StagesKernel;
 class StageCodeWrap : public CodeWrap {
  public:

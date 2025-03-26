@@ -74,6 +74,7 @@ enum KernelType {
   kDynShape,
   kStaticParallel,
   kStaticMix,
+  kDynMix,
   kStaticStages,
   kEager,
   kKernelTypelEnd,

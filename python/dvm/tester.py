@@ -52,7 +52,7 @@ class Tester(Kernel):
         self.comm = comm
         dev_id = int(os.getenv("DEVICE_ID"))
         Kernel.__init__(self, dev_id, ker_type)
-        self.is_dyn = ker_type == "dyn"
+        self.is_dyn = "dyn" in ker_type
         self.is_codegen = False
         self.expects = []  # [(op, expect, eps)]
         self.passes = None if use_pass_opt else []

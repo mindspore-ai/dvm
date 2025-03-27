@@ -132,10 +132,68 @@ def test_broadcast_s():
     t.store_expect(x, 0.2)
     assert(t.run_check())
 
-def test_broadcast_bool():
+@pytest.mark.parametrize('lead_dim', [1024, 511])
+def test_broadcast_store_rank_1(lead_dim):
     t = Tester()
-    a0 = np.array([[True]]).astype(bool)
-    x0 = t.load(a0)
-    x1 = t.broadcast(x0, [2,3])
-    t.store_expect(x1, True)
+    a0 = np.random.normal(0, 1, [2, 1,lead_dim]).astype(np.float32)
+    la0 = t.load(a0)
+    la0 = t.binary("Add", la0, 0.5)
+    e1 = a0 + 0.5
+    t.store_expect(la0, e1)
+    z0 = t.broadcast(la0, [2, 96, lead_dim])
+    e2 = np.broadcast_to(e1, (2, 96, lead_dim))
+    t.store_expect(z0, e2)
+    t.tile(2, 2, 2)
+    t.tile(1, 1, 48)
+    assert(t.run_check())
+
+@pytest.mark.parametrize('lead_dim', [1024, 511])
+def test_broadcast_store_rank_2(lead_dim):
+    t = Tester()
+    a0 = np.random.normal(0, 1, [2, 1, 4*lead_dim]).astype(np.float32)
+    la0 = t.load(a0)
+    la0 = t.binary("Add", la0, 0.5)
+    e1 = a0 + 0.5
+    t.store_expect(la0, e1)
+    z0 = t.broadcast(la0, [2, 3, 4*lead_dim])
+    e2 = np.broadcast_to(e1, (2, 3, 4*lead_dim))
+    t.store_expect(z0, e2)
+    t.tile(2, 2, 2)
+    t.tile(1, 1, 3)
+    t.tile(0, 0, 4)
+    assert(t.run_check())
+
+@pytest.mark.parametrize('lead_dim', [1024, 511])
+def test_broadcast_store_rank_3(lead_dim):
+    t = Tester()
+    a0 = np.random.normal(0, 1, [2, 1, 4, 1, lead_dim]).astype(np.float32)
+    la0 = t.load(a0)
+    la0 = t.binary("Add", la0, 0.5)
+    e1 = a0 + 0.5
+    t.store_expect(la0, e1)
+    z0 = t.broadcast(la0, [2, 3, 4, 6, lead_dim])
+    e2 = np.broadcast_to(e1, (2, 3, 4, 6, lead_dim))
+    t.store_expect(z0, e2)
+    t.tile(4, 4, 2)
+    t.tile(3, 3, 3)
+    t.tile(2, 2, 4)
+    t.tile(1, 1, 3)
+    assert(t.run_check())
+
+@pytest.mark.parametrize('lead_dim', [1024, 511])
+def test_broadcast_store_rank_4(lead_dim):
+    t = Tester()
+    a0 = np.random.normal(0, 1, [2, 1, 4, 1, 2*lead_dim]).astype(np.float32)
+    la0 = t.load(a0)
+    la0 = t.binary("Add", la0, 0.5)
+    e1 = a0 + 0.5
+    t.store_expect(la0, e1)
+    z0 = t.broadcast(la0, [2, 3, 4, 5, 2*lead_dim])
+    e2 = np.broadcast_to(e1, (2, 3, 4, 5, 2*lead_dim))
+    t.store_expect(z0, e2)
+    t.tile(4, 4, 2)
+    t.tile(3, 3, 3)
+    t.tile(2, 2, 4)
+    t.tile(1, 1, 5)
+    t.tile(0, 1, 2)
     assert(t.run_check())

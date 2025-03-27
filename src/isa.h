@@ -521,7 +521,6 @@ struct vReduceY {
     uint64_t size = 2;
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
     pc[1] = op.dup_num << 48 | op.red_tail << 32 | op.red_size << 16 | op.iter_size;
-    pc[2] = op.xn;
     return size;
   }
 };
@@ -881,10 +880,44 @@ struct vPingPongLoad {
 // tiling lead_dim:   [iter_size/iter_tail+pad_size]
 struct vStore {
   enum { RELOC_OFFSET = 2 };
-  uint64_t head;   // tile_stride(18) << 13 | c_xn(13)
-  uint64_t config; // lead_tiling(1) << 62 | pad_size(8) << 54 | iter_size(18) << 36 | iter_tail(18) << 18 | iter_num(18)
-  __gm__ void *to;
-}INSN_ATTR;
+  enum { ROUND_OFFSET = 3 };
+  uint64_t xn;
+  uint64_t to;
+  uint64_t tile_stride;
+  uint64_t iter_num;
+  uint64_t iter_tail;
+  uint64_t iter_size;
+  uint64_t pad_size;
+  uint64_t round_rank;
+  bool lead_tiling;
+  // pc[0]: lead_tiling(1) << 31 | tile_stride(18) << 13 | c_xn(13)
+  // pc[1]: round_rank(4) << 60 | pad_size(8) << 52 | iter_size(18) << 34 | iter_tail(18) << 16 | iter_num(16)
+  // pc[2]: to
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStore &op) {
+    op.lead_tiling = bool(vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS + 18, 1));
+    op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
+    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
+    uint64_t data = pc[1];
+    op.iter_num = data & 0xfffful;
+    op.iter_tail = (data >> 16) & 0x3fffful;
+    op.iter_size = (data >> 34) & 0x3fffful;
+    op.pad_size = (data >> 52) & 0xfful;
+    op.round_rank = data >> 60;
+    op.to = pc[2];
+  }
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStore &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vStore::ROUND_OFFSET + round_size;
+    uint64_t ext = uint64_t(op.lead_tiling) << 31 | op.tile_stride << 13 | vCompactX(op.xn);
+    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[1] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.iter_tail << 16 | op.iter_num;
+    pc[2] = op.to;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vStore::ROUND_OFFSET + i] = rounds[i];
+    }
+    return size;
+  }
+};
 
 // [iter_num/iter_tail, iter_size+pad_size]
 struct vStoreAtomic {

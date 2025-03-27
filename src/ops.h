@@ -243,6 +243,7 @@ class NDStore : public NDAccess {
     nd_ = lhs_->nd_;
     tail_dim_ = -1;
     tail_size_ = 0;
+    round_tile_.clear();
   }
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
@@ -250,6 +251,7 @@ class NDStore : public NDAccess {
  private:
   int tail_dim_{-1};
   int tail_size_{0};
+  std::vector<int64_t> round_tile_;
 };
 
 class NDPadStore : public NDAccess {

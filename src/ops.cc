@@ -2215,7 +2215,7 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
   if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
   if (bias_) {
-    ASSERT(bias_->shape_ref_->size == 1 && (bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16));
+    ASSERT(bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16);
     op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
     op->gm_bias = static_cast<NDAccess *>(bias_)->addr_.data;
@@ -2240,7 +2240,8 @@ GmmOp::GmmOp(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list)
 
 void GmmOp::NormalizeOutput() {
   ASSERT(rhs_->shape_ref_->size == 3);
-  ASSERT(group_list_->shape_ref_->size == rhs_->shape_ref_->data[0]);
+  ASSERT(group_list_->shape_ref_->data[0] == rhs_->shape_ref_->data[0]);
+  ASSERT(bias_ == nullptr || bias_->shape_ref_->data[0] == rhs_->shape_ref_->data[0]);
   nd_.dims.resize(2);
   nd_.dims[0] = n_real_;
   nd_.dims[1] = m_real_;

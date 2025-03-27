@@ -384,7 +384,7 @@ def test_matmul_n_big(shape_a, shape_b):
     o = t.store_expect(d, np_c + zx, 2e-3)
     assert (t.run_check())
 
-def test_matmul():
+def test_dyn_matmul():
     t = Tester('dyn_mix')
     x = t.load([-1, -1], "float16")
     y = t.load([-1, -1], "float16")

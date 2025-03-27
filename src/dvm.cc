@@ -319,10 +319,6 @@ void Kernel::Reset(KernelType type) {
 }
 
 NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
-  auto ktype = kernel_->KType();
-  if (ktype == kStaticStages) {
-    ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
-  }
   NDObject *obj = new NDLoad(addr, shape, type);
   kernel_->Append(obj);
   return obj;
@@ -553,8 +549,6 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
       store->flags_ |= OBJ_FLAG_EAGER;
       return store;
     }
-  } else if (ktype == kStaticStages) {
-    ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
   }
   NDObject *obj = new NDStore(addr, input);
   kernel_->Append(obj);

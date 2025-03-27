@@ -93,6 +93,29 @@ def test_gmm_bias(m, n, k, group_list):
     t.store_expect(res, expect)
     assert (t.run_check())
 
+
+@pytest.mark.mix
+@pytest.mark.parametrize('m, n, k, group_list', [[1024, 4096, 512, [512, 1024]]])
+def test_gmm_bias_bf16(m, n, k, group_list):
+    b = len(group_list)
+    x_shape = [m, k]
+    w_shape = [b, k, n]
+    bias_shape = [b, n]
+    x = np.random.normal(0, 0.01, x_shape).astype(np.float32)
+    w = np.random.normal(0, 0.01, w_shape).astype(np.float32)
+    bias = np.random.normal(0, 0.01, bias_shape).astype(np.float32)
+    group_list = np.array(group_list).astype(np.int64)
+    expect = np_gmm(x, w, bias, group_list)
+    t = Tester("mix")
+    x_d = t.load(x, "bfloat16")
+    w_d = t.load(w, "bfloat16")
+    bias_d = t.load(bias, "bfloat16")
+    group_list_d = t.load(group_list)
+    res = t.gmm(x_d, w_d, bias_d, group_list_d)
+    t.store_expect(res, expect, 3e-3)
+    assert (t.run_check())
+
+
 def test_dyn_gmm():
     t = Tester('dyn_mix')
     x = t.load([-1, 256], "float16")

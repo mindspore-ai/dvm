@@ -227,8 +227,8 @@ uint64_t MixKernel::BiasBF16CodeGen() {
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
   stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
-  auto bias_bf16 = stage_kernel_->Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
-  auto bias_fp32 = stage_kernel_->StageStore(stage_kernel_->Cast(bias_bf16, kFloat32));
+  stage_kernel_->GetImpl()->Append(cube_op_->bias_);
+  auto bias_fp32 = stage_kernel_->StageStore(stage_kernel_->Cast(cube_op_->bias_, kFloat32));
 
   stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
   auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
@@ -257,7 +257,6 @@ uint64_t MixKernel::BiasBF16CodeGen() {
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
   src_lhs->addr_.Update(static_cast<NDAccess *>(x)->addr_);
   src_rhs->addr_.Update(static_cast<NDAccess *>(y)->addr_);
-  static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_bf16)->addr_);
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
   }
@@ -395,6 +394,10 @@ DynMixKernel::DynMixKernel() : MixKernel() {
 }
 
 uint64_t DynMixKernel::CodeGen() {
+  delete stage_kernel_;
+  code_.~Code();
+  code_.data_ = nullptr;
+  code_ = std::move(Code());
   if (cube_op_->output_ == nullptr) {
     auto output = new NDStore(nullptr, cube_op_);
     output->SetFlag(OBJ_FLAG_STAGE_IO);

@@ -925,16 +925,16 @@ struct vLoad {
   uint64_t round_rank;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
   // pc[1]: from
-  // pc[2]: // round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
+  // pc[2]: round_rank(4) << 60 | pad_size(8) << 52 | iter_size(18) << 34 | tail_iter(18) << 16 | body_iter(16)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vLoad &op) {
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + 13, 18);
     op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13));
     op.from = reinterpret_cast<__gm__ void *>(pc[1]);
     uint64_t data = pc[2];
     op.round_rank = data >> 60;
-    op.pad_size = (data >> 50) & 0xfful;
-    op.iter_size = (data >> 32) & 0x3fffful;
-    op.tail_iter = (data >> 16) & 0xfffful;
+    op.pad_size = (data >> 52) & 0xfful;
+    op.iter_size = (data >> 34) & 0x3fffful;
+    op.tail_iter = (data >> 16) & 0x3fffful;
     op.body_iter = data & 0xfffful;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vLoad &op, const uint64_t *rounds) {
@@ -942,7 +942,7 @@ struct vLoad {
     uint64_t size = vLoad::ROUND_OFFSET + round_size;
     pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, V_PIPE_LOAD);
     pc[1] = reinterpret_cast<uint64_t>(op.from);
-    pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
+    pc[2] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.tail_iter << 16 | op.body_iter;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vLoad::ROUND_OFFSET + i] = rounds[i];
     }

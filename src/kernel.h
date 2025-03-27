@@ -59,7 +59,7 @@ class RootDomain : public PropDomain {
   void Align(int depth, int64_t space);
   void Shard(const ShardParam &sp);
 
-  const DimArray &DimSpace() const { return dom_->nd_.dims; }
+  const DimArray &DimSpace() const { return dom_->nd_.dims(); }
   int64_t TileNum() const { return tile_num_; }
   int64_t TileSize() const { return tile_size_; }
 
@@ -146,6 +146,7 @@ class VectorKernel : public VKernel {
   uint64_t DoCodeGen(uint64_t core_limit) {
     auto code_reserve = ReserveCodeSize();
     code_.Alloc(code_reserve + code_.HeadSize());
+    root_dom_.PrepareTiling(this);
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
     code_.data_size_ = code_end - code_.data_;
     if (!visit_) {

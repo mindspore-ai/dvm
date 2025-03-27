@@ -139,7 +139,7 @@ class DimArray {
     if (size_ > 0) _DimCopy(data_, other.data(), size_);
     return *this;
   }
-  bool operator==(const DimArray &other) {
+  bool operator==(const DimArray &other) const {
     if (size_ != other.size()) return false;
     for (size_t i = 0; i < size_; ++i) {
       if (data_[i] != other[i]) return false;
@@ -221,11 +221,18 @@ class NDSpaceData {
   }
 
   template <typename T>
+  int64_t operator[](T i) const { return dims[i]; }
+  int64_t back() const { return dims.back(); }
+  template <typename T>
   int64_t stride(T i) const { return strides[i]; }
   int64_t stride_back() const { return strides.back(); }
+  bool empty() const { return dims.empty(); }
+  size_t size() const { return dims.size(); }
   int lead_idx() const { return lidx; }
   int64_t lead_stride() const { return strides[lidx]; }
+  int64_t lead_dim() const { return dims[lidx]; }
 
+  DimArray dims;
   DimArray strides;
   int lidx;
 };
@@ -236,23 +243,22 @@ class NDSpace {
   ~NDSpace() = default;
 
   NDSpace &operator=(const NDSpace &other) {
-    dims = other.dims;
     data = other.data;
     return *this;
   }
   template <typename T>
-  int64_t operator[](T i) const { return dims[i]; }
-  int64_t back() const { return dims.back(); }
+  int64_t operator[](T i) const { return data->dims[i]; }
+  int64_t back() const { return data->back(); }
   template <typename T>
   int64_t stride(T i) const { return data->strides[i]; }
   int64_t stride_back() const { return data->stride_back(); }
-  bool empty() const { return dims.empty(); }
-  size_t size() const { return dims.size(); }
+  bool empty() const { return data->empty(); }
+  size_t size() const { return data->size(); }
   int lead_idx() const { return data->lidx; }
   int64_t lead_stride() const { return data->lead_stride(); }
-  int64_t lead_dim() const { return dims[data->lidx]; }
+  int64_t lead_dim() const { return data->lead_dim(); }
+  const DimArray &dims() const { return data->dims; }
 
-  DimArray dims; // TODO: move to NDSpaceData
   const NDSpaceData *data{nullptr};
 };
 
@@ -376,6 +382,7 @@ class NDObject {
   bool NeedTailCopy() const { return obj_id_ > kReduceScatter && obj_id_ <= kAllReduce; }
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
+  NDSpaceData *Ndd() const { return attrs_[obj_id_].share_ndd ? nullptr : const_cast<NDSpaceData *>(nd_.data); }
 
   void Clear(int index) {
     index_ = index;
@@ -413,7 +420,7 @@ class NDAccess : public NDObject {
 class NDLoadDummy : public NDAccess {
  public:
   NDLoadDummy(DType type_id) : NDAccess(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
-    nd_.dims.resize(1, 1);
+    ndd_.dims.resize(1, 1);
     shape_.Resize(1);
     shape_[0] = 1;
     shape_ref_ = &shape_;
@@ -510,11 +517,21 @@ class NDStore : public NDAccess {
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  void UpdateDimMask() {
+    elem_dim_mask_ = 0xffffffffu;
+    for (size_t i = 0; i < nd_.size(); ++i) {
+      if (nd_[i] == 1) {
+        elem_dim_mask_ ^= 1u << i;
+      }
+    }
+  }
+
   DimArray round_tile_;
 
  private:
   int tail_dim_{-1};
   int tail_size_{0};
+  uint32_t elem_dim_mask_;
 };
 
 class NDPadStore : public NDAccess {
@@ -754,10 +771,11 @@ class _BroadcastOp : public NDObject {
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  NDSpaceData ndd_;
+
  private:
   int64_t EmitBroadcastX(uint64_t *p, int end_dim);
   int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
-  NDSpaceData ndd_;
 };
 
 // expect shape is align: equal rank

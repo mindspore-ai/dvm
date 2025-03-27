@@ -549,8 +549,8 @@ void InsertRemovePad(BasicBlock &block) {
   range.base = 0;
   range.depth = max_depth;
   for (auto &op : block) {
-    if (op.nd_.size() != max_depth) {
-      op.nd_.dims.resize(max_depth, 1);
+    if (auto ndd = op.Ndd(); ndd != nullptr && ndd->dims.size() != max_depth) {
+      ndd->dims.resize(max_depth, 1);
     }
     op.AlignProp(range); // TODO: shard mode should less align
   }
@@ -729,7 +729,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
   if (need_reshape[obj->index_].has_value()) {
     return true;
   }
-  if (obj->nd_.dims == new_shape) {
+  if (obj->nd_.dims() == new_shape) {
     return true;
   }
   DimArray forward_shape;
@@ -779,8 +779,15 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
     }
     case kBroadcastTo:
     case kReduce: {
-      auto shape_change =
-        is_forward ? TryReshape(obj->nd_.dims, obj->lhs_->nd_.dims, new_shape) : TryReshape(obj->lhs_->nd_.dims, obj->nd_.dims, new_shape);
+      DimArray shape_to_change, shape_ori;
+      if (is_forward) {
+        shape_to_change = obj->nd_.dims();
+        shape_ori = obj->lhs_->nd_.dims();
+      } else {
+        shape_to_change = obj->lhs_->nd_.dims();
+        shape_ori = obj->nd_.dims();
+      }
+      auto shape_change = TryReshape(shape_to_change, shape_ori, new_shape);
       if (shape_change.empty()) {
         return false;
       }
@@ -805,7 +812,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
         auto new_size = new_shape.size();
         auto old_size = obj->nd_.size();
         if (new_size > old_size) {
-          backward_shape = obj->lhs_->nd_.dims;
+          backward_shape = obj->lhs_->nd_.dims();
           while (old_size++ < new_size) {
             backward_shape.push_back(1);
           }
@@ -869,8 +876,8 @@ void CleanUpReduce(NDObject *obj) {
 void EliminateReshape(BasicBlock &bb) {
   using namespace eliminate_reshape;
 
-  std::unordered_set<NDObject *> reduce_to_cleanup;
-  auto eliminate_reshape_impl = [&bb, &reduce_to_cleanup](bool is_forward) {
+  std::unordered_set<NDObject *> cleanup_ops;
+  auto eliminate_reshape_impl = [&bb, &cleanup_ops](bool is_forward) {
     for (auto &reshape : bb) {
       if (reshape.GetObjectType() != kReshape) {
         continue;
@@ -878,7 +885,7 @@ void EliminateReshape(BasicBlock &bb) {
       AnalysisIntermediate inter;
       inter.need_reshape.resize(bb.capacity());
       inter.visited.reserve(bb.capacity());
-      DimArray &new_shape = is_forward ? reshape.lhs_->nd_.dims : reshape.nd_.dims;
+      const DimArray &new_shape = is_forward ? reshape.lhs_->nd_.dims() : reshape.nd_.dims();
       inter.RegisterNewShape(&reshape, new_shape);
       bool can_eliminate = true;
       if (is_forward) {
@@ -907,10 +914,11 @@ void EliminateReshape(BasicBlock &bb) {
       }
       // Reshape
       for (auto to_update : inter.visited) {
-        to_update->nd_.dims = inter.need_reshape[to_update->index_].value();
-        // Reduce need additoinal clean up
-        if (to_update->GetObjectType() == kReduce) {
-          reduce_to_cleanup.insert(to_update);
+        if (auto ndd = to_update->Ndd(); ndd != nullptr) {
+          ndd->dims = inter.need_reshape[to_update->index_].value();
+        }
+        if (to_update->obj_id_ == kStore || to_update->obj_id_ == kReduce) {
+            cleanup_ops.insert(to_update);
         }
       }
       // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
@@ -935,8 +943,12 @@ void EliminateReshape(BasicBlock &bb) {
 
   eliminate_reshape_impl(true);
   eliminate_reshape_impl(false);
-  for (auto obj : reduce_to_cleanup) {
-    CleanUpReduce(obj);
+  for (auto obj : cleanup_ops) {
+    if (obj->obj_id_ == kReduce) {
+      CleanUpReduce(obj);
+    } else if (obj->obj_id_ == kStore) {
+      static_cast<NDStore *>(obj)->UpdateDimMask();
+    }
   }
 }
 

@@ -414,8 +414,8 @@ void PropDomain::Normalize() {
   ASSERT(dom_ != nullptr);
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     // Make rank of all ops equal by broadcast to (..., 1, 1, .., 1)
-    if (op->nd_.size() < nd_size) {
-      op->nd_.dims.resize(nd_size, 1);
+    if (auto ndd = op->Ndd(); ndd != nullptr && ndd->dims.size() < nd_size) {
+      ndd->dims.resize(nd_size, 1);
     }
   }
   if (!subdoms_.empty()) {
@@ -854,7 +854,6 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);  // max tile_size for each op
   // tiling
-  root_dom_.PrepareTiling(this);
   ShapeTiling tiling(this, root_dom_, core_limit);
   if (tiles_.empty()) {
     tiling.Run(tile_size_limit);
@@ -1187,14 +1186,14 @@ class PropDomainBuilder {
         continue;
       }
       if (head1 == head) {
-        auto sdom = new ReshapeDomain(head2, op->nd_.dims, op->lhs_->nd_.dims);
+        auto sdom = new ReshapeDomain(head2, op->nd_.dims(), op->lhs_->nd_.dims());
         dom->subdoms_.push_back(sdom);
         link_ops_[i] = nullptr;
         if (--link_num_) {
           BuildSumDomain(sdom, head2);
         }
       } else if (head2 == head) {
-        auto sdom = new ReshapeDomain(head1, op->lhs_->nd_.dims, op->nd_.dims);
+        auto sdom = new ReshapeDomain(head1, op->lhs_->nd_.dims(), op->nd_.dims());
         dom->subdoms_.push_back(sdom);
         link_ops_[i] = nullptr;
         if (--link_num_) {
@@ -1418,6 +1417,7 @@ uint64_t VKernelP::CodeGen() {
     k->Optimize();
     k->BuildDomain(k->objects_);
     k->NormalizeDomain();
+    k->root_dom_.PrepareTiling(k);
     total_workload += WorkLoad(k);
     code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);
   }

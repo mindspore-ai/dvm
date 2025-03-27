@@ -291,9 +291,11 @@ uint64_t MixKernel::AlignCodeGen() {
   }
   if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
     for (auto op : post_fusion_->objects_) {
-      ASSERT(op->nd_.dims.prod() == sload_->nd_.dims.prod());
-      op->nd_.dims[1] = cube_op_->m_real_;
-      op->nd_.dims.resize(2);
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        ASSERT(ndd->dims.prod() == sload_->nd_.dims().prod());
+        ndd->dims[1] = cube_op_->m_real_;
+        ndd->dims.resize(2);
+      }
     }
   }
   if (auto comm = post_fusion_->comm_op_) {
@@ -339,6 +341,7 @@ uint64_t MixKernel::AlignCodeGen() {
   shard.stride[0] = 1;
   shard.stride[1] = cube_op_->n_real_;
   post_fusion_->root_dom_.Shard(shard);
+  post_fusion_->root_dom_.PrepareTiling(post_fusion_);
   auto code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
   uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
   uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
@@ -799,6 +802,7 @@ class EagerVector : public VectorKernel {
     shard.stride[0] = 1;
     shard.stride[1] = mm->n_real_;
     root_dom_.Shard(shard);
+    root_dom_.PrepareTiling(this);
     auto code_end = DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
     uint64_t subtile_0 = (tile_num_ + 1) / 2;
     uint64_t subtile_1 = tile_num_ - subtile_0;
@@ -818,6 +822,7 @@ class EagerVector : public VectorKernel {
     if (other_num == 0) {
       return DoCodeGen(core_total);
     }
+    root_dom_.PrepareTiling(this);
     auto GetWorkLoad = [](EagerVector *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
     uint64_t child_offset = Code::HeadSize() + RoundUp(core_total * sizeof(uint64_t), 32ul);
     uint64_t code_reserve = child_offset + RoundUp(ReserveCodeSize(), 32ul);
@@ -828,6 +833,7 @@ class EagerVector : public VectorKernel {
       auto k = others[i];
       k->root_dom_.SetHead(k->next_);
       k->NormalizeDomain();
+      k->root_dom_.PrepareTiling(k);
       other_loads[i] = GetWorkLoad(k);
       total_load += other_loads[i];
       code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);

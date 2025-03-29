@@ -51,7 +51,6 @@ enum vAccInsnID {
   V_PEER_LOAD_MIX,
   V_STORE,
   V_STORE_ATOMIC,
-  V_STORE_STATUS,
   V_STORE_COND,
   V_SSTORE,
   V_SLICE_STORE,
@@ -719,6 +718,7 @@ struct vClearPad {
 };
 
 struct vElementAny {
+  enum { STORE_COND_OFFSET = 2 };
   uint64_t xd;
   uint64_t xn;
   uint64_t iter_size;
@@ -727,6 +727,7 @@ struct vElementAny {
   uint64_t simd_width;
   // pc[0]: c_xd(13) << 13 | c_xn(13)
   // pc[1]: simd_width(8) << 48 | tail_size(16) << 32 | iter_size(16) << 16 | repeat(16)
+  // pc[2]: store_cond
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vElementAny &op) {
     op.xd = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET + V_C_X_BITS, V_C_X_BITS));
     op.xn = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET, V_C_X_BITS));
@@ -738,9 +739,10 @@ struct vElementAny {
   }
 
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vElementAny &op) {
-    uint64_t size = 2;
+    uint64_t size = 3;
     pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
     pc[1] = op.simd_width << 48 | op.tail_size << 32 | op.iter_size << 16 | op.repeat;
+    pc[2] = 0;
     return size;
   }
 };
@@ -1334,24 +1336,6 @@ struct vStoreAG {
     pc[2] = op.pad_size << 52 | op.iter_size << 34 | op.tile_stride << 16 | op.iter_num;
     pc[3] = op.iter_tail << 32 | op.xbuf_size;
     pc[4] = op.shard_stride;
-    return size;
-  }
-};
-
-struct vStoreStatus {
-  enum { RELOC_OFFSET = 1 };
-  uint64_t xn;
-  uint64_t to;
-  // pc[0]: // xn(18)
-  // pc[1]: // to
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreStatus &op) {
-    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.to = pc[1];
-  }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreStatus &op) {
-    uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_STORE);
-    pc[1] = op.to;
     return size;
   }
 };

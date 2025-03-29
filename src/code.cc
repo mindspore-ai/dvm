@@ -280,12 +280,6 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-void DumpStoreStatus(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vStoreStatus op;
-  vStoreStatus::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "store_status." << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
-}
-
 void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
 
 void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -571,7 +565,6 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_PEER_LOAD_MIX, &DumpPeerDMA<name_peer_load_mix>},
   {V_STORE, &DumpStore},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
-  {V_STORE_STATUS, &DumpStoreStatus},
   {V_STORE_COND, &DumpStoreCond},
   {V_SSTORE, &DumpSStore},
   {V_STORE_AG, &DumpStoreAG},

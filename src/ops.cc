@@ -708,11 +708,17 @@ int NDStore::Emit(VectorKernel &k) {
   ASSERT(lead_align == lhs_->nd_.lead_stride());
   uint64_t dst_tile_stride_ = nd_.stride_back() / lead_align * lead_dim;
   if (lhs_->obj_id_ == kElementAny) {
-    vStoreStatus op;
+    vStoreCond op;
     op.xn = lhs_->xbuf_;
     op.to = addr_.data;
-    addr_.Update(insn_ + vStoreStatus::RELOC_OFFSET);
-    return vStoreStatus::Encode(insn_, V_STORE_STATUS, op);
+    op.tile_stride = 0;
+    op.dtype_shift = 2;
+    op.pad_size = 0;
+    op.iter_size = 0;
+    op.round_rank = 0;
+    op.cond_offset = insn_ - lhs_->tail_insn_ - vElementAny::STORE_COND_OFFSET;
+    addr_.Update(insn_ + vStoreCond::RELOC_OFFSET);
+    return vStoreCond::Encode(insn_, vAccInsnID::V_STORE_COND, op, nullptr);
   }
   uint64_t rounds[2];
   if (!round_tile_.empty()) {

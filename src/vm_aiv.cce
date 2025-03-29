@@ -402,6 +402,12 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   vCMax(xd, xd, 1, 1, 0);
   set_mask_count();
+  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  __ubuf__ uint32_t *result = (__ubuf__ uint32_t *)(op.xd);
+  if (*result != 0) {
+    vStoreCond::EncodeCond(pc + vElementAny::STORE_COND_OFFSET, 0, 1);
+  }
 }
 
 #define UNARY(pc, builtin, head, tile, VTYPE)       \
@@ -1388,14 +1394,6 @@ __aicore_inline__ void CondStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-__aicore_inline__ void CopyUbufToGmAtomic(__gm__ uint8_t* gm, const vStoreAtomic &op) {
-  if (op.pad_size == 0) {
-    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
-  } else {
-    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
-  }
-}
-
 __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStoreAtomic op;
   vStoreAtomic::Decode(pc, head, op);
@@ -1413,20 +1411,13 @@ __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   }
   __gm__ uint8_t* gm = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
   set_atomic_f32();
-  CopyUbufToGmAtomic(gm, op);
+  if (op.pad_size == 0) {
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);
+  } else {
+    copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, op.pad_size >> 5, 0);
+  }
   set_atomic_none();
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
-}
-
-__aicore_inline__ void StoreStatus(bcodeptr_t pc, uint64_t head) {
-  vStoreStatus op;
-  vStoreStatus::Decode(pc, head, op);
-  __ubuf__ uint32_t *x = (__ubuf__ uint32_t *)(op.xn);
-  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  if (static_cast<uint32_t>(*x) != 0) {
-    copy_ubuf_to_gm((__gm__ void *)op.to, (__ubuf__ void *)x, 0, 1, 1, 0, 0);
-  }
 }
 
 /******************************************************
@@ -2066,7 +2057,6 @@ DEF_DISP_LOAD(V_PEER_LOAD_MIX, PeerLoad<true>(pc, head, tile))
 
 DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
-DEF_DISP_STORE(V_STORE_STATUS, StoreStatus(pc, head))
 DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
 DEF_DISP_STORE(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))

@@ -246,16 +246,17 @@ void DumpStore(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 void DumpStoreCond(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreCond op;
-  vStoreCond::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "store_cond.u8." << op.iter_size << "x" << op.iter_num;
+  vStoreCond::Decode<false>(dump_info.insn, *dump_info.insn, op);
+  oss << "store_cond.u8." << op.tile_stride;
   oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn);
   oss << " //";
-  DumpVal("tile_stride", op.tile_stride, oss);
+  DumpVal("iter_size", op.iter_size, oss);
   oss << ", ";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
   DumpVal("cond_offset", op.cond_offset, oss);
   oss << ", ";
+  DumpVal("dtype_shift", op.dtype_shift, oss);
   if (op.round_rank > 0) {
     oss << ", ";
     DumpRounds(op.round_rank, dump_info.insn + vStoreCond::ROUND_OFFSET, oss);
@@ -431,7 +432,8 @@ void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpReduceJoin(const DumpInfo &dump_info, std::ostringstream &oss) {
   vReduceJoin op;
   vReduceJoin::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << op.count << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  oss << op.iter_stride << "x" << op.iter_num;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("xs", reinterpret_cast<void *>(op.xs), oss);
   oss << ", ";
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);

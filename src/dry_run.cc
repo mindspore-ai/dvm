@@ -244,7 +244,7 @@ void DryRunEntry(uint64_t core_idx, bool is_cube) {
   } else {
     block_idx = core_idx / 2;
     g_subblockid = core_idx & 1;
-    block_num = sys.CoreNum(CoreType::kVector);
+    block_num = sys.CoreNum(CoreType::kVector) / 2;
   }
 }
 

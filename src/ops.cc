@@ -742,15 +742,18 @@ int NDStore::Emit(VectorKernel &k) {
       if (k.visit_) {
         ASSERT(tail_dim_ < 0);
         vStoreCond op;
-        uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
-        uint64_t body_iter = nd_.stride_back() / lead_align;
         op.xn = lhs_->xbuf_;
         op.to = addr_.data;
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
-        op.iter_num = body_iter;
-        op.iter_size = iter_size;
-        op.pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
-        op.cond_offset = insn_ - red_op->tail_insn_ - vReduceJoin::STORE_FLAG_OFFSET;
+        op.dtype_shift = ITEM_SIZE[type_id_] == 4 ? 2 : 1;
+        if (lead_align == lead_dim || nd_.stride_back() == lead_align) {
+          op.pad_size = 0;
+          op.iter_size = 0;
+        } else {
+          op.iter_size = lead_dim * ITEM_SIZE[type_id_];
+          op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+        }
+        op.cond_offset = insn_ - red_op->tail_insn_ - vReduceJoin::STORE_COND_OFFSET;
         op.round_rank = round_tile_.size();
         addr_.Update(insn_ + vStoreCond::RELOC_OFFSET);
         return vStoreCond::Encode(insn_, vAccInsnID::V_STORE_COND, op, rounds);
@@ -1823,7 +1826,16 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   op.xd = xbuf_ = out_xbuf;
   op.xn = wss_[0];
   op.xs = wss_[1];
-  op.count = ndd_.stride_back();
+  if (ndd_.lead_stride() == ndd_.lead_dim()) {
+    op.iter_num = 1;
+    op.iter_stride = ndd_.stride_back();
+  } else if (ndd_.lead_stride() == ndd_.stride_back()) {
+    op.iter_num = 1;
+    op.iter_stride = ndd_.lead_dim();
+  } else {
+    op.iter_stride = ndd_.lead_stride();
+    op.iter_num = ndd_.stride_back() / op.iter_stride;
+  }
   op.ws = 0;
   tail_insn_ = insn_ + size;
   size += vReduceJoin::Encode(tail_insn_, op);

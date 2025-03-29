@@ -633,35 +633,36 @@ struct vReduceY {
 };
 
 struct vReduceJoin {
-  enum { STORE_FLAG_OFFSET = 1 };
+  enum { STORE_COND_OFFSET = 3 };
   enum { RELOC_OFFSET = 2 };
-  uint64_t count;
+  uint64_t iter_num;
+  uint64_t iter_stride;
   uint64_t xd;
   uint64_t xn;
   uint64_t xs;
   uint64_t ws;
   uint64_t seg_tile_rel;
   // pc[0]: c_xd(13) << 13 | seg_tile_rel(12)
-  // pc[1]: count(16) << 48 | xs(18) << 30 | xn(18) << 12 | store_flag(8)
+  // pc[1]: iter_num(16) << 48 | iter_stride(17) << 31 | c_xs(13) << 18 | xn(18)
   // pc[2]: ws
+  // pc[3]: store_cond
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vReduceJoin &op) {
     op.seg_tile_rel = vGetBitRange(head, V_HEAD_EXT_OFFSET, 12);
     op.xd = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET + V_C_X_BITS, V_C_X_BITS));
     uint64_t data = pc[1];
-    op.count = data >> 48;
-    op.xs = vGetBitRange(data, 30, 18);
-    op.xn = vGetBitRange(data, 12, 18);
+    op.iter_num = data >> 48;
+    op.iter_stride = vGetBitRange(data, 31, 17);
+    op.xs = vDeCompactX(vGetBitRange(data, 18, 13));
+    op.xn = vGetBitRange(data, 0, 18);
     op.ws = pc[2];
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, const vReduceJoin &op) {
-    uint64_t size = 3;
+    uint64_t size = 4;
     pc[0] = vMakeHead(V_RSUM_JOIN, vCompactX(op.xd) << V_C_X_BITS, size, V_PIPE_SIMD);
-    pc[1] = op.count << 48 | op.xs << 30 | op.xn << 12;
+    pc[1] = op.iter_num << 48 | op.iter_stride << 31 | vCompactX(op.xs) << 18 | op.xn;
     pc[2] = op.ws;
+    pc[3] = 0;
     return size;
-  }
-  __aicore_inline__ void SetStoreCond(bcodeptr_t pc, uint8_t cond) {
-    *(reinterpret_cast<__bcode__ uint8_t *>(pc + 1)) = cond;
   }
 };
 
@@ -1165,37 +1166,51 @@ struct vStoreCond {
   uint64_t xn;
   uint64_t to;
   uint64_t tile_stride;
-  uint64_t iter_num;
+  uint64_t iter_offset;
+  uint64_t iter_range;
   uint64_t iter_size;
   uint64_t pad_size;
   uint64_t round_rank;
   uint64_t cond_offset;
+  uint64_t dtype_shift;
   // pc[0]: tile_stride(18) << 13 | cond_offset(13)
-  // pc[1]: round_rank(4) << 60 | pad_size(8) << 52 | iter_size(18) << 34 | xn(18) << 16 | iter_num(16)
+  // pc[1]: round_rank(4) << 60 | dtype_shift(8) << 52 | iter_size(18) << 34 | xn(18) << 16 | pad_size(16)
   // pc[2]: to
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreCond &op) {
+  template <bool check>
+  __aicore_inline__ bool Decode(bcodeptr_t pc, uint64_t head, vStoreCond &op) {
+    bcodeptr_t cond = pc - vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13);
+    uint64_t cond_data = *cond;
+    op.iter_range = cond_data & 0x3fffful;
+    if (check) {
+      if (op.iter_range == 0) return false;
+      *cond = 0;
+    }
+    op.iter_offset = cond_data >> 32;
     op.cond_offset = vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 13);
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
-    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
     uint64_t data = pc[1];
-    op.iter_num = data & 0xfffful;
+    op.pad_size = data & 0xfful;
     op.xn = (data >> 16) & 0x3fffful;
     op.iter_size = (data >> 34) & 0x3fffful;
-    op.pad_size = (data >> 52) & 0xfful;
+    op.dtype_shift = (data >> 52) & 0xfful;
     op.round_rank = data >> 60;
     op.to = pc[2];
+    return true;
   }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreCond &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vStore::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | op.cond_offset;
     pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
-    pc[1] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.xn << 16 | op.iter_num;
+    pc[1] = op.round_rank << 60 | op.dtype_shift << 52 | op.iter_size << 34 | op.xn << 16 | op.pad_size;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vStore::ROUND_OFFSET + i] = rounds[i];
     }
     return size;
+  }
+  __aicore_inline__ void EncodeCond(bcodeptr_t cond, uint64_t iter_offset, uint64_t iter_range) {
+    cond[0] = iter_offset << 32 | iter_range;
   }
 };
 

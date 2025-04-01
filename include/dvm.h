@@ -46,6 +46,13 @@ enum UnaryOpType {
   kUnaryOpEnd,
 };
 
+enum GroupType {
+  kSplit_M = 0,
+  kSplit_N,
+  kSplit_K,
+  kGroupTypeEnd,
+};
+
 enum BinaryOpType {
   kEqual = 0,
   kNotEqual,
@@ -187,7 +194,8 @@ class Kernel {
   NDObject *ElemAny(NDObject *input);
 
   NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
-  NDObject *GroupedMatMul(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list);
+  NDObject *GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias,
+                          NDObject *group_list, GroupType group_type);
 
   // collective communication
   NDObject *AllReduce(NDObject *input, const Comm *comm);

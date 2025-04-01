@@ -78,7 +78,7 @@ class KernelPy {
                               const py::object &step, const std::string &type);
   py::object MultiLoad(const py::object &shape, const std::string &type);
   py::object Store(const py::object &obj);
-  py::object PadStore(const py::object &obj, const py::object &pad_shape);
+  py::object PadStore(const py::object &obj, int64_t pad_shape);
   py::object Unary(const std::string &op_name, const py::object &input);
   py::object Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs);
   py::object Broadcast(const py::object &input, const py::object &shape, const std::string &dtype, bool dummy_load);
@@ -93,8 +93,8 @@ class KernelPy {
   py::object AllGatherV2(const py::object &input);
   py::object ReduceScatter(const py::object &input);
   py::object MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b, const py::object &bias);
-  py::object GroupedMatMul(const py::object &lhs, const py::object &rhs, const py::object &bias,
-                           const py::object &group_list);
+  py::object GroupedMatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b,
+                           const py::object &bias, const py::object &group_list, int64_t group_type);
   py::object ConvertToBF16(const py::object &input);
   py::object ConvertFromBF16(const py::object &input);
   void ParallelNext();

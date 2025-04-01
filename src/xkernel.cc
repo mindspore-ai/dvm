@@ -135,8 +135,9 @@ uint64_t MixKernel::UnAlignCodeGen() {
   if (cube_op_->GetObjectType() == kCubeOp) {
     matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, cube_op_->bias_);
   } else {
-    matmul_op =
-      stage_kernel_->GroupedMatMul(inputs[0], inputs[1], cube_op_->bias_, static_cast<GmmOp *>(cube_op_)->group_list_);
+    matmul_op = stage_kernel_->GroupedMatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_,
+                                             cube_op_->bias_, static_cast<GmmOp *>(cube_op_)->group_list_,
+                                             static_cast<GmmOp *>(cube_op_)->group_type_);
   }
   Release();
   static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
@@ -186,7 +187,9 @@ uint64_t MixKernel::SplitKCodeGen() {
     if (cube_op_->GetObjectType() == kCubeOp) {
       matmul_op = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op);
     } else {
-      matmul_op = stage_kernel_->GroupedMatMul(x, y, bias_op, static_cast<GmmOp *>(cube_op_)->group_list_);
+      matmul_op = stage_kernel_->GroupedMatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op,
+                                               static_cast<GmmOp *>(cube_op_)->group_list_,
+                                               static_cast<GmmOp *>(cube_op_)->group_type_);
     }
     static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_,
                                                    i + 1 == split_num ? k_tail : k_stride, offset_a, offset_b);
@@ -238,8 +241,9 @@ uint64_t MixKernel::BiasBF16CodeGen() {
     matmul_op =
       stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32));
   } else {
-    matmul_op = stage_kernel_->GroupedMatMul(x, y, stage_kernel_->StageLoad(bias_fp32),
-                                             static_cast<GmmOp *>(cube_op_)->group_list_);
+    matmul_op = stage_kernel_->GroupedMatMul(
+      x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32),
+      static_cast<GmmOp *>(cube_op_)->group_list_, static_cast<GmmOp *>(cube_op_)->group_type_);
   }
   Release();
   if (post_fusion_) {

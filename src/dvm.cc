@@ -603,8 +603,9 @@ NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_
   return obj;
 }
 
-NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list) {
-  GmmOp *obj = new GmmOp(lhs, rhs, bias, group_list);
+NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias,
+                                NDObject *group_list, GroupType group_type) {
+  GmmOp *obj = new GmmOp(lhs, rhs, trans_a, trans_b, bias, group_list, group_type);
   if (kernel_->KType() == KernelType::kEager) {
     return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }

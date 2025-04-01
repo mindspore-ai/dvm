@@ -2270,19 +2270,28 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->k_loop = CeilDiv(op->k_real, op->k0);
 }
 
-GmmOp::GmmOp(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list)
-    : CubeOp(lhs, rhs, false, false, bias), group_list_(group_list) {
+GmmOp::GmmOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias, NDObject *group_list,
+             GroupType group_type)
+    : CubeOp(lhs, rhs, trans_a, trans_b, bias), group_list_(group_list), group_type_(group_type) {
   obj_id_ = kGmmOp;
 }
 
 void GmmOp::NormalizeOutput() {
-  ASSERT(rhs_->shape_ref_->size == 3);
-  ASSERT(group_list_->shape_ref_->data[0] == rhs_->shape_ref_->data[0]);
-  ASSERT(bias_ == nullptr || bias_->shape_ref_->data[0] == rhs_->shape_ref_->data[0]);
-  ndd_.dims.resize(2);
-  ndd_.dims[0] = n_real_;
-  ndd_.dims[1] = m_real_;
-  shape_.Resize(2);
+  if (group_type_ == kSplit_M) {
+    ASSERT(rhs_->shape_ref_->size == 3);
+    ASSERT(group_list_->shape_ref_->data[0] == rhs_->shape_ref_->data[0]);
+    ASSERT(bias_ == nullptr || bias_->shape_ref_->data[0] == rhs_->shape_ref_->data[0]);
+    ndd_.dims.resize(2);
+    ndd_.dims[0] = n_real_;
+    ndd_.dims[1] = m_real_;
+  }
+  if (group_type_ == kSplit_K) {
+    ndd_.dims.resize(3);
+    ndd_.dims[0] = n_real_;
+    ndd_.dims[1] = m_real_;
+    ndd_.dims[2] = group_list_->shape_ref_->data[0];
+  }
+  shape_.Resize(ndd_.dims.size());
   for (size_t i = 0; i < ndd_.size(); ++i) {
     shape_[i] = ndd_[ndd_.size() - 1 - i];
   }
@@ -2300,8 +2309,18 @@ void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   batch_c1_ = 1;
   op->batch_cast = 0;
   op->flags |= V_CUBE_FLAG_GROUPED_LIST;
+  if (group_type_ == kSplit_K) {
+    op->flags |= V_CUBE_FLAG_GROUP_K;
+  }
   op->gm_group_list = static_cast<NDAccess *>(group_list_)->addr_.data;
   op->group_list_size = group_list_->shape_ref_->data[0];
+}
+
+void GmmOp::InferCubeConfig() {
+  CubeOp::InferCubeConfig();
+  if (group_type_ == kSplit_K) {
+    tactics_.enable_splitk = false;
+  }
 }
 
 static void ReserveCommEvent(VectorKernel &k) {

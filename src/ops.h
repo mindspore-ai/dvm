@@ -165,9 +165,13 @@ class DimArray {
     return res;
   }
   template <typename T>
-  int64_t &operator[](T i) { return data_[i]; }
+  int64_t &operator[](T i) {
+    return data_[i];
+  }
   template <typename T>
-  const int64_t &operator[](T i) const { return data_[i]; }
+  const int64_t &operator[](T i) const {
+    return data_[i];
+  }
   int64_t &back() { return *(data_ + size_ - 1); }
   const int64_t &back() const { return *(data_ + size_ - 1); }
   const int64_t *data() const { return data_; }
@@ -221,10 +225,14 @@ class NDSpaceData {
   }
 
   template <typename T>
-  int64_t operator[](T i) const { return dims[i]; }
+  int64_t operator[](T i) const {
+    return dims[i];
+  }
   int64_t back() const { return dims.back(); }
   template <typename T>
-  int64_t stride(T i) const { return strides[i]; }
+  int64_t stride(T i) const {
+    return strides[i];
+  }
   int64_t stride_back() const { return strides.back(); }
   bool empty() const { return dims.empty(); }
   size_t size() const { return dims.size(); }
@@ -247,10 +255,14 @@ class NDSpace {
     return *this;
   }
   template <typename T>
-  int64_t operator[](T i) const { return data->dims[i]; }
+  int64_t operator[](T i) const {
+    return data->dims[i];
+  }
   int64_t back() const { return data->back(); }
   template <typename T>
-  int64_t stride(T i) const { return data->strides[i]; }
+  int64_t stride(T i) const {
+    return data->strides[i];
+  }
   int64_t stride_back() const { return data->stride_back(); }
   bool empty() const { return data->empty(); }
   size_t size() const { return data->size(); }
@@ -890,7 +902,7 @@ class CubeOp : public NDObject {
   int Emit(VectorKernel &k) override { return 0; }
   void Dump(bool verbose, std::ostringstream &oss) override;
   void NormalizeCube();
-  void InferCubeConfig();
+  virtual void InferCubeConfig();
   virtual void CodeGen(vCubeOp *code, CubeTuner *tuner);
   virtual void NormalizeOutput();
   virtual void GenTiling(vCubeOp *code);
@@ -951,12 +963,16 @@ class CubeOp : public NDObject {
 
 class GmmOp : public CubeOp {
  public:
-  GmmOp(NDObject *lhs, NDObject *rhs, NDObject *bias, NDObject *group_list);
+  GmmOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias, NDObject *group_list,
+        GroupType group_type);
 
+  void InferCubeConfig();
   void NormalizeOutput() override;
   void CodeGen(vCubeOp *code, CubeTuner *tuner) override;
   void GenTiling(vCubeOp *code) override;
+
   NDObject *group_list_;
+  GroupType group_type_;
 };
 
 class CommIdWrap : public CodeWrap {

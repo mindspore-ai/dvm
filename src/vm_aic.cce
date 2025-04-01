@@ -462,7 +462,7 @@ class TileVisitor {
     if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {
       group_info_ = op->group_list_size << V_GMM_G_SIZE_OFFSET;
       gm_group_list_ = reinterpret_cast<__gm__ int64_t *>(op->gm_group_list);
-      InitGmm(m, true);
+      InitGmm<true>(m);
     } else {
       group_info_ = 0;
       Init(tile_num, m);
@@ -476,20 +476,35 @@ class TileVisitor {
     tile_loop_ = tile_num << 32 | _block_idx;
   }
 
-  __force_inline__ __aicore__ void InitGmm(M &m, bool init) {
+  template <bool init>
+  __force_inline__ __aicore__ void InitGmm(M &m) {
     uint64_t block_idx_offset = BlockIdxOffset();
-    if (!init) {
-      m.gm_a += m.m_real * m.ka_align;
-      m.gm_b += m.kb_align * m.n_align;
+    if constexpr (!init) {
+      uint64_t tile_num = vGetBitRange(tile_loop_, 32, 32);
+      if (m.flags & V_CUBE_FLAG_GROUP_K) {
+        m.gm_a += (m.flags & V_CUBE_FLAG_TRANS_A) ? m.k_real * m.m_align : m.k_real;
+        m.gm_b += (m.flags & V_CUBE_FLAG_TRANS_B) ? m.k_real : m.k_real * m.n_align;
+        m.gm_bias += m.n_real * m.BiasTypeSize();
+      } else {
+        m.gm_a += (m.flags & V_CUBE_FLAG_TRANS_A) ? m.m_real : m.m_real * m.ka_align;
+        m.gm_b += m.kb_align * m.n_align;
+        m.gm_bias += m.n_real * m.BiasTypeSize();
+      }
       m.gm_c += m.m_real * m.n_real;
-      m.gm_bias += m.n_real * m.BiasTypeSize();
-      block_idx_offset += m.m_loop * m.n_loop;
+      block_idx_offset += tile_num;
       block_idx_offset %= block_num;
     }
-
     int64_t cur_list = *gm_group_list_;
-    m.m_real = m.m_align = static_cast<uint64_t>(cur_list - LastList());
-    m.m_loop = CeilDiv(m.m_real, m.m0);
+    if (m.flags & V_CUBE_FLAG_GROUP_K) {
+      m.k_real = static_cast<uint64_t>(cur_list - LastList());
+      m.k_loop = CeilDiv(m.k_real, m.k0);
+      m.shuffle_k = block_idx % m.k_loop;
+      m.k_actual = (m.shuffle_k == m.k_loop - 1) ? (m.k_real - m.shuffle_k * m.k0) : m.k0;
+    } else {
+      m.m_real = static_cast<uint64_t>(cur_list - LastList());
+      m.m_loop = CeilDiv(m.m_real, m.m0);
+    }
+
     gm_group_list_++;
     group_info_ = block_idx_offset << V_GMM_BLOCK_OFF_OFFSET | cur_list << V_GMM_LAST_OFFSET |
                   (GroupListSize() - 1) << V_GMM_G_SIZE_OFFSET;
@@ -504,7 +519,7 @@ class TileVisitor {
       }
     }
     while (GroupListSize() > 0 && !HasNext()) {
-      InitGmm(m, false);
+      InitGmm<false>(m);
       UpdateNext(m);
     }
     if (!HasNext()) {

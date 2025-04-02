@@ -199,3 +199,18 @@ def test_reduce_insert_accumulate_rank_3():
     t.store_expect(y, expect)
     t.store(x)
     assert(t.run_check())
+
+@pytest.mark.parametrize('shape, num, factor',[
+   [[256*50+100], 51, 256],  # tail clear
+   [[249*50+223], 51, 249],  # body and tail clear
+   [[501*20], 20, 501]  # body clear
+])
+def test_reduce_x_clean_pad(shape, num, factor):
+    t = Tester()
+    a = np.random.normal(0.0, 1.0, shape).astype(np.float32)
+    x = t.load(a)
+    y = t.reduce("sum", x, (0,), True)
+    expect = np.sum(a, axis=(0,), keepdims=True)
+    t.store_expect(y, expect)
+    t.tile(0, 0, num, factor)
+    assert (t.run_check())

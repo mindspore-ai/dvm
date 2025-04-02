@@ -201,19 +201,23 @@ uint64_t g_subblockid{0};
 bool g_cube_core{false};
 void *g_bytecode{nullptr};
 rtError_t (*g_origin_launch)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
-std::unordered_map<uint8_t *, uint8_t *> g_functable;
+std::unordered_map<uint8_t *, std::pair<const char *, uint8_t *>> g_functable;
 
 uint64_t get_subblockdim() { return 2; }
 uint64_t get_subblockid() { return g_subblockid; }
 void *get_para_base() { return g_bytecode; }
-uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) { return g_functable[base_addr + id]; }
+uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
+  auto &func = g_functable[base_addr + id];
+  std::cout << "[" << func.first << "]" << std::endl;
+  return func.second;
+}
 
 struct FuncRegister {
-  FuncRegister(const uint64_t offsets[], int op_id, void *func) {
-    g_functable[reinterpret_cast<uint8_t *>(offsets[op_id])] = reinterpret_cast<uint8_t *>(func);
+  FuncRegister(const uint64_t offsets[], int op_id, const char *name, void *func) {
+    g_functable.emplace(reinterpret_cast<uint8_t *>(offsets[op_id]), std::make_pair(name, reinterpret_cast<uint8_t *>(func)));
   }
 };
-#define DEF_DRY_FUNC(offsets, OP, func) FuncRegister g_dryfunc_##OP(offsets, OP, (void *)(&func));
+#define DEF_DRY_FUNC(offsets, OP, func) FuncRegister g_dryfunc_##OP(offsets, OP, #OP, (void *)(&func));
 
 #include "vm_aiv.cce"
 #include "vm_aic.cce"

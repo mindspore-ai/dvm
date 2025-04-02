@@ -109,7 +109,7 @@ class KernelPy {
   void Input(const py::object &load, const py::object &array);
   py::object Output(const py::object &store);
   void ClearStoreMemory(const py::object &store);
-  void Tile(int start, int end, int64_t num);
+  void Tile(int start, int end, int64_t num, int64_t factor);
   void CodeGen(const py::object &pass_names);
   void Run();
   void InitComm(int rank_id, int rank_size);

@@ -131,6 +131,7 @@ constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 
 extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kTypeEnd];
+extern const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd];
 
 template <typename T>
 static inline __attribute__((always_inline)) T CeilDiv(T a, T b) {

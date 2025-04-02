@@ -355,41 +355,17 @@ template <typename T>
 __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vElementAny op;
   vElementAny::Decode(pc, head, op);
+  if (IsLastTile(tile)) {
+    op.repeat = op.repeat_tail;
+  }
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint64_t simd_width = op.simd_width;
-  uint64_t rs = op.simd_width >> BlockDataShift(T);
   set_mask_norm();
   SetVectorMask(simd_width);
-  copy_ubuf_to_ubuf((__ubuf__ void *)xd, (__ubuf__ void *)xn, 0, 1, GetBlock(op.iter_size, sizeof(T)), 0, 0);
+  copy_ubuf_to_ubuf((__ubuf__ void *)xd, (__ubuf__ void *)xn, 0, 1, (op.repeat * simd_width) >> BlockDataShift(T), 0, 0);
   pipe_barrier(PIPE_V);
-  if (IsLastTile(tile) && op.iter_size != op.tail_size) {
-    uint64_t end = op.repeat;
-    uint64_t start = op.tail_size / simd_width + 1;
-    uint64_t mod = op.tail_size - (start - 1) * simd_width;
-    if (end > start) {
-      repeat_vector_dup(xd + start * simd_width, (T)0, end - start, 1, 1, rs, rs);
-    }
-    uint64_t lmask, rmask;
-    if (simd_width > 64) {
-      lmask = 0xffffffffffffffffllu >> (128 - simd_width);
-      rmask = 0xffffffffffffffffllu;
-    } else {
-      lmask = 0;
-      rmask = 0xffffffffffffffffllu;
-    }
-    if (mod > 64) {
-      lmask &= (0xffffffffffffffffllu << (mod - 64));
-      rmask = 0;
-    } else {
-      lmask = 0;
-      rmask &= (0xffffffffffffffffllu << mod);
-    }
-    set_vector_mask(lmask, rmask);
-    vDup(xd + op.tail_size - mod, (T)0, 1, 8);
-    pipe_barrier(PIPE_V);
-    SetVectorMask(simd_width);
-  }
+  uint64_t rs = op.simd_width >> BlockDataShift(T);
   while (op.repeat != 1) {
     if (op.repeat & 1) {
       uint64_t offset_repeat = (op.repeat / 2) * 2;
@@ -736,23 +712,11 @@ __aicore_inline__ void ReduceSumX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   __ubuf__ float *xn = (__ubuf__ float*)(op.xn);
   __ubuf__ float *xd = (__ubuf__ float*)(op.xd);
-  uint64_t red_size = op.red_size;
   uint64_t simd_width = op.simd_width;
+  uint64_t red_size = op.red_size / simd_width; // TODO: calc by host
   uint64_t rs = op.simd_width >> BlockDataShift(float);
   set_mask_norm();
   SetVectorMask(simd_width);
-  uint64_t mod = red_size % simd_width;
-  if (mod) {
-    red_size -= mod;
-    uint64_t simd_mask = 0xffffffffffffffffllu >> (64 - simd_width);
-    set_vector_mask(0, simd_mask & (0xffffffffffffffffllu << mod));
-    repeat_vector_dup(xn + red_size, 0.0f, op.dup_size, 1, 1, op.red_size >> BlockDataShift(float),
-                      op.red_size >> BlockDataShift(float));
-    set_vector_mask(0, simd_mask);
-    red_size += simd_width;
-    pipe_barrier(PIPE_V);
-  }
-  red_size = red_size / simd_width;
   while (red_size > 1) {
     uint64_t iter_tail = red_size & 1ul;
     red_size >>= 1;
@@ -941,9 +905,16 @@ __aicore_inline__ void Copy(bcodeptr_t pc, uint64_t head) {
   }
 }
 
-__aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head) {
+__aicore_inline__ void ClearPad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vClearPad op;
   vClearPad::Decode(pc, head, op);
+  if (IsLastTile(tile) && op.iter_tail) {
+    op.iter_size = op.iter_tail;
+    op.iter_stride = op.iter_tail + op.simd_width - (op.iter_tail % op.simd_width);
+  }
+  if (op.iter_size == op.iter_stride) {
+    return;
+  }
   uint64_t simd_mask = 0xffffffffffffffffllu >> (64 - op.simd_width);
   uint64_t simd_valid = op.iter_size - (op.iter_stride - op.simd_width);
   set_mask_norm();
@@ -2097,7 +2068,7 @@ DEF_DISP_SIMD(V_RSUM_Y, ReduceSumY(pc, head, tile))
 DEF_DISP_SIMD(V_RSUM_JOIN, ReduceJoin(pc, head, tile))
 DEF_DISP_SIMD(V_SEL, Select<float>(pc, head, tile))
 DEF_DISP_SIMD(V_POW, Power(pc, head, tile))
-DEF_DISP_SIMD(V_CLR_PAD, ClearPad(pc, head))
+DEF_DISP_SIMD(V_CLR_PAD, ClearPad(pc, head, tile))
 DEF_DISP_SIMD(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile))
 
 DEF_DISP_SIMD(V_BROADCAST_X_B16, BroadcastX<uint16_t>(pc, head, tile))

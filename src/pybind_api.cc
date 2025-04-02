@@ -433,8 +433,8 @@ py::object KernelPy::StagePadStore(const py::object &input, const py::object &pa
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-void KernelPy::Tile(int start, int end, int64_t num) {
-  static_cast<VectorKernel *>(kernel_.GetImpl())->SetTile(start, end, num);
+void KernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
+  static_cast<VectorKernel *>(kernel_.GetImpl())->SetTile(start, end, num, factor);
 }
 
 void KernelPy::CodeGen(const py::object &pass_names) {
@@ -808,7 +808,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("input", &KernelPy::Input, "get ouput array")
     .def("output", &KernelPy::Output, "get ouput array")
     .def("clear_store_memory", &KernelPy::ClearStoreMemory, "clear store memory")
-    .def("tile", &KernelPy::Tile, "set tiling")
+    .def("tile", &KernelPy::Tile, "set tiling", py::arg("start"), py::arg("end"), py::arg("num"), py::arg("factor") = 0)
     .def("codegen", &KernelPy::CodeGen, "generate code")
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")

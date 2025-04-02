@@ -55,7 +55,19 @@ class RootDomain : public PropDomain {
   RootDomain() = default;
   void SetHead(NDObject *head) { head_ = head; }
   void PrepareTiling(VectorKernel *kernel);
-  int64_t Tile(int start, int end, int64_t space, int64_t num);
+  int64_t Tile(const TileParam tp, int64_t space) {
+    PropDomain::TileProp(tp);
+    tile_size_ = tile_size_ / space * tp.tile;
+    tile_num_ *= tp.num;
+    return tile_size_;
+  }
+  int64_t TileLead(const TileParam tp, int64_t lead_align) {
+    PropDomain::TileProp(tp);
+    tile_size_ = RoundUp<int64_t>(tp.tile, lead_align);
+    align_.space = tile_size_;
+    tile_num_ *= tp.num;
+    return tile_size_;
+  }
   void Align(int depth, int64_t space);
   void Shard(const ShardParam &sp);
 
@@ -67,7 +79,6 @@ class RootDomain : public PropDomain {
   const ShardParam *shard_{nullptr};
 
  private:
-  int block_align_;    // min block align
   int64_t tile_size_;  // shape size of object tile size
   int64_t tile_num_;   // current tile num. multiply by tile
 };
@@ -104,10 +115,10 @@ class VectorKernel : public VKernel {
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
-  void SetTile(int start, int end, int64_t num) { tiles_.emplace_back(DimTile{start, end, num}); }
+  void SetTile(int start, int end, int64_t num, int64_t factor) { tiles_.emplace_back(DimTile{start, end, num, factor}); }
   int MaxType() const { return max_type_; }
   int MinType() const { return min_type_; }
-  uint64_t BlockAlign() const { return SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_]; }
+  uint64_t LeadAlign() const { return lead_align_; }
   inline uint64_t ReserveCodeSize() const {
     auto res = objects_.size() * V_INSN_SIZE_MAX;
     if (comm_op_) {
@@ -123,6 +134,7 @@ class VectorKernel : public VKernel {
     for (auto op : objects_) {  // clear status
       op->Clear(op_index++);
     }
+    block_align_ = SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_];
   }
   void Normalize() {
     for (auto op : build_ops_) {
@@ -167,9 +179,12 @@ class VectorKernel : public VKernel {
   RootDomain root_dom_;
 
   uint64_t tile_num_{0};
-  uint64_t simd_width_{0};
   TileVisitCoder *visit_{nullptr};
 
+  union {
+    uint64_t block_align_;  // tiling
+    uint64_t lead_align_;   // codegen
+  };
   int forward_event_num_;
   int backward_event_num_;
 
@@ -183,6 +198,7 @@ class VectorKernel : public VKernel {
     int start;
     int end;
     int64_t num;
+    int64_t factor;
   };
   std::vector<DimTile> tiles_;
   friend CodeGenHelper;

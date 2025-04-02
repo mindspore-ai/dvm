@@ -453,6 +453,8 @@ void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("iter_stride", op.iter_stride, oss);
   oss << ", ";
   DumpVal("simd_width", op.simd_width, oss);
+  oss << ", ";
+  DumpVal("iter_tail", op.iter_tail, oss);
 }
 
 void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -460,9 +462,7 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   vElementAny::Decode(dump_info.insn, *dump_info.insn, op);
   oss << op.simd_width << "x" << op.repeat << " " << reinterpret_cast<void *>(op.xd) << ", "
       << reinterpret_cast<void *>(op.xn) << " //";
-  DumpVal("iter_size", op.iter_size, oss);
-  oss << ", ";
-  DumpVal("tail_size", op.tail_size, oss);
+  DumpVal("repeat_tail", op.repeat_tail, oss);
 }
 
 void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {

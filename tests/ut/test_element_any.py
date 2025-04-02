@@ -64,3 +64,21 @@ def test_element_any_03():
     t.clear_store_memory(b)
     t.run()
     assert t.output(b)[0] == 1
+
+@pytest.mark.parametrize("shape, num, factor",[
+  [[128*9+20], 10, 128], # clear tail
+  [[101*9+20],10, 101], # clear body and tail
+  [[501*10], 10, 501]   # clear body
+])
+def test_element_any_clean_pad(shape, num, factor):
+    t = Tester()
+    a = np.full(shape, 1.0, np.float32)
+    x = t.load(a)
+    x = t.binary("Add", x, 1.0)
+    x = t.binary("Sub", x, 2.0)
+    x = t.element_any(x)
+    x = t.store(x)
+    t.clear_store_memory(x)
+    t.tile(0, 0, num, factor)
+    t.run()
+    assert t.output(x)[0] == 0

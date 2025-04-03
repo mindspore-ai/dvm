@@ -712,7 +712,7 @@ class ShapeTiling {
         int64_t align_tile = RoundUp(start_num, core_limit_);
         start_num = align_tile + core_limit_;
         int64_t align_factor = CeilDiv(space, align_tile);
-        if (align_factor == factor) continue;
+        if (align_factor >= factor) continue;
         factor = align_factor;
         int64_t t_num = CeilDiv(space, factor);
         int64_t cost = CostMeasure(factor, t_num);
@@ -761,20 +761,21 @@ class ShapeTiling {
       auto best_cost = CostMeasure2(factor / block_size, tile_num);
       tp.num = tile_num;
       tp.tile = factor;
-      auto start_num = tile_num + 1;
-      while (factor > min_factor) {
-        auto align_num = RoundUp(start_num, core_limit_);
-        start_num = align_num + core_limit_;
+      auto align_num = RoundUp(tile_num + 1, core_limit_);
+      while (align_num < core_limit_ * 5) {
         auto factor_min = CeilDiv(space, align_num);
-        factor = RoundUp(factor_min, align_width);
-        tile_num = CeilDiv(space, factor);
-        auto cost = CostMeasure2(factor / block_size, tile_num);
-        if (cost < best_cost) {
-          best_cost = cost;
-          tp.num = tile_num;
-          tp.tile = factor;
+        if (auto align_factor = RoundUp(factor_min, align_width); align_factor < factor) {
+          if (align_factor < min_factor) break;
+          factor = align_factor;
+          tile_num = CeilDiv(space, factor);
+          auto cost = CostMeasure2(factor / block_size, tile_num);
+          if (cost < best_cost) {
+            best_cost = cost;
+            tp.num = tile_num;
+            tp.tile = factor;
+          }
         }
-        if (align_num > core_limit_ * 4) break;
+        align_num = RoundUp(align_num + core_limit_, core_limit_);
       }
       tp.tail = space % tp.tile;
     }
@@ -883,7 +884,7 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
     int64_t tile_outer = root_dom_.TileSize() / block_lead;
     int64_t lead_limit = tile_size_limit / tile_outer;
     int64_t simd_width = std::min(static_cast<int64_t>(ITEM_SIMD_WIDTH_MAX[max_type_]), block_lead);
-    while (simd_width >= block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
+    while (simd_width > block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
       simd_width -= block_sw;
     }
     lead_align_ = simd_width;

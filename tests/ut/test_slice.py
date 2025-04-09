@@ -68,6 +68,7 @@ def test_slice_load_3d(type, shape, start, size):
 @pytest.mark.parametrize('type', [np.float32, np.float16, np.int32])
 @pytest.mark.parametrize('shape, start, end', [((32, 32, 4), 1, -2),
                                                ((32, 7, 7), -30, 12),
+                                               ((32, 7, 7), -30, 100),
                                                ((14, 4097, 20), -4, -1)])
 def test_slice_start_end(type, shape, start, end):
     t = Tester()

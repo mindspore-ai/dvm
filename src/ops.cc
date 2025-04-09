@@ -692,7 +692,7 @@ void NDStridedSliceLoad::Normalize(std::vector<NDObject *> &run_ops) {
     int64_t start = start_ref_ == nullptr
                       ? 0
                       : (start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i]);
-    shape_[i] = end - start;
+    shape_[i] = std::min(end, src_ref_->data[i]) - start;
   }
   size_ref_ = shape_ref_;
   NDSliceLoad::Normalize(run_ops);

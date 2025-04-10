@@ -115,7 +115,9 @@ class VectorKernel : public VKernel {
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
-  void SetTile(int start, int end, int64_t num, int64_t factor) { tiles_.emplace_back(DimTile{start, end, num, factor}); }
+  void SetTile(int start, int end, int64_t num, int64_t factor) {
+    tiles_.emplace_back(DimTile{start, end, num, factor});
+  }
   int MaxType() const { return max_type_; }
   int MinType() const { return min_type_; }
   uint64_t LeadAlign() const { return lead_align_; }
@@ -127,6 +129,8 @@ class VectorKernel : public VKernel {
     return (res + 511ul) & ~511ul;  // 512B align
   }
 
+  virtual void Optimize() = 0;
+  uint64_t CodeGen() override;
   void BuildDomain(const std::vector<NDObject *> &objects);
   void NormalizeDomain() {
     root_dom_.Normalize();
@@ -208,8 +212,7 @@ class VKernelS : public VectorKernel {
  public:
   VKernelS() : VectorKernel(KernelType::kStaticShape) {}
   void Append(NDObject *obj) override;
-  void Optimize();
-  uint64_t CodeGen() override;
+  void Optimize() override;
 
   static std::vector<pass::Pass> passes;
 };
@@ -218,7 +221,7 @@ class VKernelD : public VectorKernel {
  public:
   VKernelD() : VectorKernel(KernelType::kDynShape) {}
   void Append(NDObject *obj) override;
-  uint64_t CodeGen() override;
+  void Optimize() override;
 
  private:
   void RecordOpRelation();
@@ -241,7 +244,7 @@ class VKernelP : public VKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
-  static uint64_t UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t* &summaries);
+  static uint64_t UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t *&summaries);
 
  protected:
   std::vector<VKernelS *> children_;

@@ -41,7 +41,7 @@ class MixKernel : public VKernel {
   uint64_t AlignCodeGen();
   uint64_t BiasBF16CodeGen();
 
-  VKernelS *post_fusion_{nullptr};
+  VectorKernel *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
   NDAccess *sload_{nullptr};
 
@@ -107,7 +107,6 @@ class StagesKernel : public VKernel {
   }
 
   VKernel *Current() const { return stages_.back()->kernel; }
-
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;

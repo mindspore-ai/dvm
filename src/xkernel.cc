@@ -309,8 +309,6 @@ uint64_t MixKernel::AlignCodeGen() {
     }
   }
   post_fusion_->Optimize();
-  post_fusion_->BuildDomain(post_fusion_->objects_);
-  post_fusion_->NormalizeDomain();
   uint64_t ws_size = 0;
   if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
     cube_op_->pingpong_store_ = true;
@@ -439,19 +437,19 @@ void DynMixKernel::Append(NDObject *obj) {
     cube_op_->output_ = static_cast<NDAccess *>(obj);
   } else {
     if (post_fusion_ == nullptr) {
-      post_fusion_ = new VKernelS();
+      post_fusion_ = new VKernelD();
     }
     auto WorkLoad = [this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
           sload_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
           sload_->flags_ |= OBJ_FLAG_LOAD_FROM_CUBE;
-          post_fusion_->build_ops_.emplace_back(sload_);
+          post_fusion_->Append(sload_);
         }
         op = sload_;
       } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
         op->xbuf_ = 0;
-        post_fusion_->build_ops_.emplace_back(op);
+        post_fusion_->Append(op);
       }
     };
     if (obj->lhs_) {
@@ -463,7 +461,7 @@ void DynMixKernel::Append(NDObject *obj) {
         }
       }
     }
-    post_fusion_->build_ops_.emplace_back(obj);
+    post_fusion_->Append(obj);
   }
 }
 
@@ -760,6 +758,11 @@ class EagerVector : public VectorKernel {
     } else if (obj->IsStore()) {
       static_ops_.push_back(obj->lhs_);
     }
+  }
+
+  uint64_t Optimizegst() override {
+    ASSERT(0);
+    return 0;
   }
 
   uint64_t CodeGen() override {

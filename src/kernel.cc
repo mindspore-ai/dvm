@@ -917,7 +917,7 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   auto dump_op = [&oss](NDObject *op) {
     oss << "%" << op->index_ << op->nd_ << "<" << DTYPE_NAMES[op->type_id_] << ">";
   };
-  oss << indent << "vgraph(tile_num=" << tile_num_ <<  ") {" << std::endl;
+  oss << indent << "vgraph(tile_num=" << tile_num_ << ") {" << std::endl;
   std::string body_indent = indent + "  ";
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
@@ -950,17 +950,17 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 }
 
 // lead_dim_ is used only in codegen phase. so we reuse it for liveness analyze
-#define OP_GEN_S(op)   \
-  do {                 \
-    op->xbuf_ = 2; \
+#define OP_GEN_S(op) \
+  do {               \
+    op->xbuf_ = 2;   \
   } while (0)
-#define OP_GEN_D(op)   \
-  do {                 \
-    op->xbuf_ = 1; \
+#define OP_GEN_D(op) \
+  do {               \
+    op->xbuf_ = 1;   \
   } while (0)
-#define OP_KILL(op)    \
-  do {                 \
-    op->xbuf_ = 0; \
+#define OP_KILL(op) \
+  do {              \
+    op->xbuf_ = 0;  \
   } while (0)
 #define OP_LIVE(op) (op->xbuf_)
 #define OP_LIVE_D(op) (op->xbuf_ == 1)
@@ -1288,6 +1288,11 @@ NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
   return nullptr;
 }
 
+uint64_t VectorKernel::CodeGen() {
+  Optimize();
+  return DoCodeGen(System::Instance().CoreNum());
+}
+
 void VKernelS::Append(NDObject *obj) {
   build_ops_.push_back(obj);
   obj->Normalize(objects_);
@@ -1304,13 +1309,8 @@ void VKernelS::Optimize() {
     pass(bb);
   }
   bb.Export(objects_);
-}
-
-uint64_t VKernelS::CodeGen() {
-  Optimize();
   BuildDomain(objects_);
   NormalizeDomain();
-  return DoCodeGen(System::Instance().CoreNum());
 }
 
 void VKernelD::Append(NDObject *obj) {
@@ -1355,7 +1355,7 @@ void VKernelD::RecoverOpRelation() {
   }
 }
 
-uint64_t VKernelD::CodeGen() {
+void VKernelD::Optimize() {
   objects_.clear();
   code_.Clear();
   if (elim_reshape_) {
@@ -1367,7 +1367,7 @@ uint64_t VKernelD::CodeGen() {
     bb.Export(objects_);
     BuildDomain(objects_);
     NormalizeDomain();
-    return DoCodeGen(System::Instance().CoreNum());
+    return;
   }
   if (pd_nexts_.empty()) {  // first
     BuildDomain(build_ops_);
@@ -1392,7 +1392,7 @@ uint64_t VKernelD::CodeGen() {
     start = size + 1;
   }
   NormalizeDomain();
-  return DoCodeGen(System::Instance().CoreNum());
+  return;
 }
 
 VKernelP::~VKernelP() {
@@ -1426,8 +1426,6 @@ uint64_t VKernelP::CodeGen() {
   uint64_t total_workload = 0;
   for (auto k : children_) {
     k->Optimize();
-    k->BuildDomain(k->objects_);
-    k->NormalizeDomain();
     k->root_dom_.PrepareTiling(k);
     total_workload += WorkLoad(k);
     code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);

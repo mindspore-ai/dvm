@@ -459,28 +459,22 @@ class TileVisitor {
   static constexpr uint64_t INVALID_TILE_POS = uint64_t(-1);
   __aicore__ TileVisitor(__gm__ vCubeOp *__restrict__ op, uint64_t tile_num, M &m) {
     swizzle_ = op->swizzle;
+    pos_last_ = pos_ = INVALID_TILE_POS;
     if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {
       group_info_ = op->group_list_size << V_GMM_G_SIZE_OFFSET;
       gm_group_list_ = reinterpret_cast<__gm__ int64_t *>(op->gm_group_list);
-      InitGmm<true>(m);
+      tile_loop_ = block_idx;
+      UpdateGmm<true>(m);
     } else {
       group_info_ = 0;
-      Init(tile_num, m);
+      tile_loop_ = tile_num << 32 | block_idx;
     }
     UpdateNext(m);
   }
 
-  __force_inline__ __aicore__ void Init(uint64_t tile_num, M &m) {
-    uint64_t _block_idx = (block_idx + block_num - BlockIdxOffset()) % block_num;
-    pos_ = pos_last_ = INVALID_TILE_POS;
-    tile_loop_ = tile_num << 32 | _block_idx;
-  }
-
   template <bool init>
-  __force_inline__ __aicore__ void InitGmm(M &m) {
-    uint64_t block_idx_offset = BlockIdxOffset();
+  __force_inline__ __aicore__ void UpdateGmm(M &m) {
     if constexpr (!init) {
-      uint64_t tile_num = vGetBitRange(tile_loop_, 32, 32);
       if (m.flags & V_CUBE_FLAG_GROUP_K) {
         m.gm_a += (m.flags & V_CUBE_FLAG_TRANS_A) ? m.k_real * m.m_align : m.k_real;
         m.gm_b += (m.flags & V_CUBE_FLAG_TRANS_B) ? m.k_real : m.k_real * m.n_align;
@@ -490,36 +484,38 @@ class TileVisitor {
         m.gm_b += m.kb_align * m.n_align;
         m.gm_bias += m.n_real * m.BiasTypeSize();
       }
-      m.gm_c += m.m_real * m.n_real;
-      block_idx_offset += tile_num;
-      block_idx_offset %= block_num;
+      if (!(m.flags & V_CUBE_FLAG_PINGPONG_STORE)) {
+        m.gm_c += m.m_real * m.n_real * (m.flags & V_CUBE_FLAG_OUT_FP32 ? 2 : 1);
+      }
+      group_info_ += (m.m_loop * m.n_loop) << V_GMM_BLOCK_OFF_OFFSET;
     }
-    int64_t cur_list = *gm_group_list_;
+    uint64_t stride = static_cast<uint64_t>(*gm_group_list_ - LastList());
+    group_info_ += stride << V_GMM_LAST_OFFSET;
+    group_info_--;
     if (m.flags & V_CUBE_FLAG_GROUP_K) {
-      m.k_real = static_cast<uint64_t>(cur_list - LastList());
+      m.k_real = stride;
       m.k_loop = CeilDiv(m.k_real, m.k0);
       m.shuffle_k = block_idx % m.k_loop;
       m.k_actual = (m.shuffle_k == m.k_loop - 1) ? (m.k_real - m.shuffle_k * m.k0) : m.k0;
     } else {
-      m.m_real = static_cast<uint64_t>(cur_list - LastList());
+      m.m_real = stride;
       m.m_loop = CeilDiv(m.m_real, m.m0);
     }
-
     gm_group_list_++;
-    group_info_ = block_idx_offset << V_GMM_BLOCK_OFF_OFFSET | cur_list << V_GMM_LAST_OFFSET |
-                  (GroupListSize() - 1) << V_GMM_G_SIZE_OFFSET;
-    Init(m.m_loop * m.n_loop, m);
+    pos_last_ = pos_ = INVALID_TILE_POS;
+    tile_loop_ += (m.m_loop * m.n_loop) << 32;
   }
 
   __force_inline__ __aicore__ bool Forward(M &m) {
     if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
-      if (pos_last_ != INVALID_TILE_POS) {
+      uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
+      if (tile_idx > block_idx + block_num) {
         wait_flag_dev(1);
       }
     }
     while (GroupListSize() > 0 && !HasNext()) {
-      InitGmm<false>(m);
+      UpdateGmm<false>(m);
       UpdateNext(m);
     }
     if (!HasNext()) {
@@ -536,6 +532,7 @@ class TileVisitor {
     uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
     uint64_t tile_num = vGetBitRange(tile_loop_, 32, 32);
     if (tile_idx < tile_num) {
+      tile_idx -= BlockIdxOffset();
       uint64_t cidx = tile_idx / (m.m_loop * m.n_loop);
       uint64_t sidx = tile_idx - cidx * (m.m_loop * m.n_loop);
       uint64_t v_type = swizzle_ >> 16;

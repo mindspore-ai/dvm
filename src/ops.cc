@@ -2328,7 +2328,6 @@ void GmmOp::NormalizeOutput() {
 
 void GmmOp::GenTiling(vCubeOp *op) {
   Tile(op);
-  core_loop_ = block_dim_ = System::Instance().CoreNum(CoreType::kCube);
   op->swizzle = vCubeOp::SwizzleEncode(1, DEFAULT_SWIZZLE_COUNT);
 }
 
@@ -2343,6 +2342,14 @@ void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   }
   op->gm_group_list = static_cast<NDAccess *>(group_list_)->addr_.data;
   op->group_list_size = group_list_->shape_ref_->data[0];
+
+  block_dim_ = System::Instance().CoreNum(CoreType::kCube);
+  if (group_type_ == kSplit_K) {
+    core_loop_ = op->m_loop * op->n_loop * op->group_list_size;
+  }
+  if (group_type_ == kSplit_M) {
+    core_loop_ = block_dim_;
+  }
 }
 
 void GmmOp::InferCubeConfig() {

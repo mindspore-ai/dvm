@@ -204,12 +204,45 @@ def test_gmm_type2(m, n, k, group_list, trans):
     assert t.run_check()
 
 
+@pytest.mark.mix
+@pytest.mark.parametrize(
+    "m, n, k, group_list",
+    [
+        [1280, 2560, 1024, [256, 512, 800, 1024]],
+        [4096, 4096, 4096, [10, 256, 3000, 4096]],
+    ],
+)
+def test_gmm_type2_postfusion(m, n, k, group_list):
+    b = len(group_list)
+    x_shape = [m, k]
+    w_shape = [k, n]
+    d_shape = [b, m, n]
+    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
+    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
+    d = np.random.normal(0, 0.01, d_shape).astype(np.float32)
+    group_list = np.array(group_list).astype(np.int64)
+    expect = np_gmm_split_k(
+        x, w, None, group_list)
+    t = Tester("mix")
+    x_d = t.load(x)
+    w_d = t.load(w)
+    d_d = t.load(d)
+    group_list_d = t.load(group_list)
+    res = t.gmm(x_d, w_d, False, False,  None, group_list_d, 2)
+    res = t.cast(res, "float32")
+    res = t.binary("Add", d_d, res)
+    t.store_expect(res, expect.astype(np.float16).astype(np.float32) + d, 1e-3)
+    assert t.run_check()
+
+
 def test_dyn_gmm_type2():
     t = Tester("dyn_mix")
     x = t.load([4096, -1], "float16")
     w = t.load([-1, 2048], "float16")
     group_list = t.load([-1], "int64")
     c = t.gmm(x, w, False, False, None, group_list, 2)
+    c = t.cast(c, "float32")
+    c = t.binary("Add", c, 1)
     out = t.store(c)
     iterations = [
         [[4096, 256], [256, 2048], [10, 100, 200, 256]],
@@ -224,4 +257,4 @@ def test_dyn_gmm_type2():
         t.input(w, w_data)
         t.input(group_list, group_list_data)
         t.run()
-        t.check(out, expect, 1e-3)
+        t.check(out, expect + 1, 1e-3)

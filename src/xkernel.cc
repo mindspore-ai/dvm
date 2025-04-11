@@ -760,9 +760,9 @@ class EagerVector : public VectorKernel {
     }
   }
 
-  uint64_t Optimizegst() override {
+  void Optimize() override {
     ASSERT(0);
-    return 0;
+    return;
   }
 
   uint64_t CodeGen() override {

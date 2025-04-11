@@ -277,7 +277,6 @@ uint64_t MixKernel::AlignCodeGen() {
   code_.Alloc(head_reserve + post_reserve);
   vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
   cube_op_->CodeGen(cube_code, tuner_);
-  cube_code->subtilenum = 0;
   static_cast<NDAccess *>(cube_op_->lhs_)->addr_.Update(&cube_code->gm_a);
   static_cast<NDAccess *>(cube_op_->rhs_)->addr_.Update(&cube_code->gm_b);
   if (cube_code->flags & V_CUBE_FLAG_WITH_BIAS) {
@@ -290,7 +289,7 @@ uint64_t MixKernel::AlignCodeGen() {
   code_.block_dim_ = cube_op_->block_dim_;
   if (!post_fusion_) {
     code_.data_size_ = head_reserve;
-    code_.UpdateC(cube_op_->core_loop_);
+    code_.UpdateC();
     return 0;
   }
   if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
@@ -309,7 +308,9 @@ uint64_t MixKernel::AlignCodeGen() {
     }
   }
   post_fusion_->Optimize();
-  uint64_t ws_size = 0;
+  uint64_t ws_size = sizeof(vMixGroupMsg) * code_.block_dim_;
+  gm_pos_.reloc_ = &cube_code->gm_pos;
+  code_.BindWorkspace(gm_pos_, 0);
   if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
     cube_op_->pingpong_store_ = true;
     static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
@@ -327,9 +328,9 @@ uint64_t MixKernel::AlignCodeGen() {
       cube_op_->pingpong_store_ = true;
       static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
       cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      code_.BindWorkspace(cube_op_->output_->addr_, 0);
-      code_.BindWorkspace(sload_->addr_, 0);
-      ws_size = cube_op_->PostFusionWorkSpace();
+      code_.BindWorkspace(cube_op_->output_->addr_, ws_size);
+      code_.BindWorkspace(sload_->addr_, ws_size);
+      ws_size += cube_op_->PostFusionWorkSpace();
     }
   } else {
     code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
@@ -347,10 +348,9 @@ uint64_t MixKernel::AlignCodeGen() {
   auto code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
   uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
   uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
-  cube_code->subtilenum = subtile_1 << 32 | subtile_0;
   cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   code_.data_size_ = code_end - code_.data_;
-  code_.UpdateMix(cube_op_->core_loop_, V_ENTRY_FLAG_PRE_WAIT);
+  code_.UpdateMix(subtile_0, subtile_1);
   code_.Combine(post_fusion_->code_, 0);
   return ws_size;
 }
@@ -547,7 +547,13 @@ uint64_t StagesKernel::AllocWorkspace() {
         down = i;
       }
     }
-    return up >= 0 ? up : down;
+    if (up >= 0) {
+      return up;
+    } else if (down >= 0) {
+      groups[down].size = size;
+      return down;
+    }
+    return -1;
   };
   for (auto it = stages_.rbegin(); it != stages_.rend(); ++it) {
     auto stage = *it;
@@ -784,16 +790,15 @@ class EagerVector : public VectorKernel {
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
     mm->CodeGen(body, System::Instance().lazy_tuner_);
-    body->subtilenum = 0;
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
-    code_.UpdateC(mm->core_loop_);
+    code_.UpdateC();
     next_ = mm;
   }
 
-  void CodeGenMix(CubeOp *mm) {
+  vCubeOp *CodeGenMix(CubeOp *mm) {
     size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
-    size_t post_reserve = ReserveCodeSize();
+    size_t post_reserve = ReserveCodeSize(); // TODO: visit size
     code_.Alloc(head_reserve + post_reserve);
     vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
     mm->CodeGen(cube_code, System::Instance().lazy_tuner_);
@@ -813,12 +818,12 @@ class EagerVector : public VectorKernel {
     auto code_end = DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
     uint64_t subtile_0 = (tile_num_ + 1) / 2;
     uint64_t subtile_1 = tile_num_ - subtile_0;
-    cube_code->subtilenum = subtile_1 << 32 | subtile_0;
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
     code_.data_size_ = code_end - code_.data_;
     code_.block_dim_ = mm->block_dim_;
-    code_.UpdateMix(mm->core_loop_, V_ENTRY_FLAG_PRE_WAIT);
+    code_.UpdateMix(subtile_0, subtile_1);
     next_ = mm;
+    return cube_code;
   }
 
   enum { kMaxPvNum = 8 };
@@ -1230,7 +1235,16 @@ uint64_t VKernelE::CodeGen() {
         kernel->CodeGenCube(mm);
       } else {
         AllocVectorWSS(kernel, obj_size);
-        kernel->CodeGenMix(mm);
+        auto cube_code = kernel->CodeGenMix(mm);
+        uint64_t pos_size = sizeof(vMixGroupMsg) * mm->block_dim_;
+        void *pos_mem;
+        if (auto it = wss_.upper_bound(pos_size - 1); it != wss_.end()) {
+          pos_mem = it->second;
+        } else {
+          pos_mem = ws_alloc_(pos_size, user_data_);
+          wss_.insert({pos_size, pos_mem});
+        }
+        cube_code->gm_pos = reinterpret_cast<uint64_t>(pos_mem);
       }
       if (auto output = mm->output_; !mm->atomic_add_ && !(output->flags_ & OBJ_FLAG_EAGER)) {
         wss_.insert({GetStoreSize(output), output->addr_.gm});

@@ -118,14 +118,19 @@ class Code : public CodeWrap {
     UpdateHead(static_cast<uint64_t>(block_dim_) << V_ENTRY_VP_BLOCK_SUM_OFFSET, 0, V_ENTRY_TYPE_VP);
   }
 
-  void UpdateC(uint64_t group_num) {
+  void UpdateC() {
     target_ = kTargetCube;
-    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, 0, V_ENTRY_TYPE_C);
+    UpdateHead(0, V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_C);
   }
 
-  void UpdateMix(uint64_t group_num, uint64_t flags) {
+  void UpdateMix(uint64_t subtile0, uint64_t subtile1) {
     target_ = kTargetMix;
-    UpdateHead(group_num << V_ENTRY_M_GROUP_NUM_OFFSET, flags, V_ENTRY_TYPE_MIX);
+    uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
+    data_size_ += vVisitMix::Encode(visit_code, subtile0, subtile1) * sizeof(uint64_t);
+    uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - (HeadSize() + sizeof(vCubeOp)) / sizeof(uint64_t);
+    uint64_t data =
+      g_visit_func_offset[V_VISIT_MIX] << V_ENTRY_VE_VISIT_ID_OFFSET | offset << V_ENTRY_VE_VISIT_OFFSET_OFFSET;
+    UpdateHead(data, V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_VE);
   }
 
   static constexpr uint64_t HeadSize() { return sizeof(uint64_t) * 2; }  // ffts + entry

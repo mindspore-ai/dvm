@@ -2297,6 +2297,7 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->m_loop = CeilDiv(op->m_real, op->m0);
   op->n_loop = CeilDiv(op->n_real, op->n0);
   op->k_loop = CeilDiv(op->k_real, op->k0);
+  op->group_num = core_loop_;
 }
 
 GmmOp::GmmOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias, NDObject *group_list,
@@ -2350,6 +2351,7 @@ void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   if (group_type_ == kSplit_M) {
     core_loop_ = block_dim_;
   }
+  op->group_num = core_loop_;
 }
 
 void GmmOp::InferCubeConfig() {

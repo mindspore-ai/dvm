@@ -47,6 +47,7 @@ class MixKernel : public VKernel {
 
   Kernel *stage_kernel_{nullptr};
   CubeTuner *tuner_;
+  RelocAddr gm_pos_;
 };
 
 class DynMixKernel : public MixKernel {

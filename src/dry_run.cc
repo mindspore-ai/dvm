@@ -189,7 +189,7 @@ void wait_flag(int, int, int) {}
 #define half int16_t
 #define bfloat16_t int32_t
 #define VMAIN_OFFSET  0
-#define VA_BCODE_BASE_UB  (reinterpret_cast<uint64_t *>(g_bytecode) + 2)
+#define VA_BCODE_BASE_UB  g_bytecode_ub
 #define get_pc()  VMAIN_OFFSET
 #define min(x,y) (x > y ? y : x)
 #define max(x,y) (x < y ? y : x)
@@ -200,6 +200,7 @@ uint64_t block_num{0};
 uint64_t g_subblockid{0};
 bool g_cube_core{false};
 void *g_bytecode{nullptr};
+void *g_bytecode_ub{nullptr};
 rtError_t (*g_origin_launch)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
 std::unordered_map<uint8_t *, std::pair<const char *, uint8_t *>> g_functable;
 
@@ -229,7 +230,14 @@ rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size,
   uint64_t ffts_addr = *(reinterpret_cast<uint64_t*>(g_bytecode));
   uint64_t entry = *(reinterpret_cast<uint64_t*>(g_bytecode) + 1);
   if (!g_cube_core) {
+    g_bytecode_ub = std::malloc(size);
+    uint64_t head_size = sizeof(uint64_t) * 2;
+    if (entry & V_ENTRY_FLAG_CUBE_MIX) {
+      head_size += sizeof(vCubeOp);
+    }
+    std::memcpy(g_bytecode_ub, static_cast<uint8_t *>(g_bytecode) + head_size, size - head_size);
     vmain_mix_aiv(ffts_addr, entry);
+    std::free(g_bytecode_ub);
   } else {
     vmain_mix_aic(ffts_addr, entry);
   }

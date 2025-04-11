@@ -152,6 +152,7 @@ enum vVisitID {
   V_VISIT_RED_2,
   V_VISIT_RED_3,
   V_VISIT_RED_4,
+  V_VISIT_MIX,
   V_VISIT_NONE,
 };
 
@@ -1341,18 +1342,17 @@ struct vStoreAG {
 
 #define V_INSN_SIZE_MAX (4 * sizeof(uint64_t))
 
-#define V_CUBE_FLAG_TRANS_A 1
-#define V_CUBE_FLAG_TRANS_B 2
-#define V_CUBE_FLAG_GROUP_SET 4
-#define V_CUBE_FLAG_PRE_WAIT 8
-#define V_CUBE_FLAG_PINGPONG_STORE 16
-#define V_CUBE_FLAG_OUT_FP32 32
-#define V_CUBE_FLAG_ATOMIC_ADD 64
-#define V_CUBE_FLAG_WITH_BIAS 128
-#define V_CUBE_FLAG_BIAS_FP16 256
-#define V_CUBE_FLAG_PEER_STORE 512
-#define V_CUBE_FLAG_GROUPED_LIST 1024
-#define V_CUBE_FLAG_GROUP_K 2048
+#define V_CUBE_FLAG_TRANS_A (1ul << 4)
+#define V_CUBE_FLAG_TRANS_B (1ul << 5)
+#define V_CUBE_FLAG_GROUP_SET (1ul << 6)
+#define V_CUBE_FLAG_PINGPONG_STORE (1ul << 7)
+#define V_CUBE_FLAG_OUT_FP32 (1ul << 8)
+#define V_CUBE_FLAG_ATOMIC_ADD (1ul << 9)
+#define V_CUBE_FLAG_WITH_BIAS (1ul << 10)
+#define V_CUBE_FLAG_BIAS_FP16 (1ul << 11)
+#define V_CUBE_FLAG_PEER_STORE (1ul << 12)
+#define V_CUBE_FLAG_GROUPED_LIST (1ul << 13)
+#define V_CUBE_FLAG_GROUP_K (1ul << 14)
 #define V_CUBE_FLAG_DTYPE_OFFSET 30 // [30, 31]
 
 #define V_CUBE_SWIZ_VISIT_nZ 0
@@ -1368,6 +1368,7 @@ struct vStoreAG {
 struct vCubeOp {
   enum { FP16, BF16 };
 
+  uint64_t group_num;
   uint64_t gm_a;
   uint64_t gm_b;
   uint64_t gm_c;
@@ -1392,60 +1393,10 @@ struct vCubeOp {
   uint32_t group_list_size{0};
   uint32_t offset_a, offset_b;
   // for aiv
-  uint64_t subtilenum;  // subblockid1 << 32 | subblockid0
+  uint64_t gm_pos;
 
   __aicore_inline__ uint32_t SwizzleEncode(uint32_t visit_type, uint32_t data) {
     return visit_type << 16 | data;
-  }
-
-  __aicore_inline__ uint64_t GetCubeOffset(__gm__ vCubeOp *__restrict__ op, uint32_t block_tile) {
-    uint64_t midx, nidx;
-    uint64_t visit_type = op->swizzle >> 16;
-    uint64_t swizzle_cnt = op->swizzle & 0xffff;
-    uint64_t cidx = block_tile / (op->m_loop * op->n_loop);
-    uint64_t sub_tile_idx = block_tile - (op->m_loop * op->n_loop) * cidx;
-    if (visit_type == V_CUBE_SWIZ_VISIT_nZ) {
-      TileMap_nZ(sub_tile_idx, op->m_loop, op->n_loop, swizzle_cnt, midx, nidx);
-    } else {
-      TileMap_zN(sub_tile_idx, op->m_loop, op->n_loop, swizzle_cnt, midx, nidx);
-    }
-    uint64_t m_end = op->m_real / op->m0;
-    uint64_t n_end = op->n_real / op->n0;
-    uint64_t tile_flag = (midx == m_end) << 1 | (nidx == n_end);
-    midx *= op->m0;
-    nidx *= op->n0;
-    uint64_t batch_offset = cidx * op->n_real * op->m_real;
-    return tile_flag << V_GROUP_OFFSET_SIZE | (midx * op->n_real + nidx + batch_offset);
-  }
-
-  __aicore_inline__ void TileMap_nZ(uint32_t sub_tile_idx, uint32_t m_loop, uint32_t n_loop,
-                                 uint64_t swizzle_cnt, uint64_t &midx, uint64_t &nidx) {
-    uint32_t tile_block_idx = sub_tile_idx / (swizzle_cnt * n_loop);
-    uint32_t in_tile_block_idx = sub_tile_idx - tile_block_idx * (swizzle_cnt * n_loop);
-    uint32_t n_row = swizzle_cnt;
-    if (m_loop < (tile_block_idx + 1) * swizzle_cnt) {
-      n_row = m_loop - swizzle_cnt * tile_block_idx;
-    }
-    nidx = in_tile_block_idx / n_row;
-    midx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_row * nidx;
-    if (tile_block_idx & 1) {
-      nidx = n_loop - nidx - 1;
-    }
-  }
-
-  __aicore_inline__ void TileMap_zN(uint32_t sub_tile_idx, uint32_t m_loop, uint32_t n_loop,
-                                 uint64_t swizzle_cnt, uint64_t &midx, uint64_t &nidx) {
-    uint32_t tile_block_idx = sub_tile_idx / (swizzle_cnt * m_loop);
-    uint32_t in_tile_block_idx = sub_tile_idx - tile_block_idx * (swizzle_cnt * m_loop);
-    uint32_t n_col = swizzle_cnt;
-    if (n_loop < (tile_block_idx + 1) * swizzle_cnt) {
-      n_col = n_loop - swizzle_cnt * tile_block_idx;
-    }
-    midx = in_tile_block_idx / n_col;
-    nidx = tile_block_idx * swizzle_cnt + in_tile_block_idx - n_col * midx;
-    if (tile_block_idx & 1) {
-      midx = m_loop - midx - 1;
-    }
   }
 };
 
@@ -1547,12 +1498,63 @@ struct vVisitRed4 {
   uint64_t e2_r2;
 };
 
+#define V_MM_POS_M_OFFSET 0
+#define V_MM_POS_M_BITS 22
+#define V_MM_POS_N_OFFSET 22
+#define V_MM_POS_N_BITS 22
+#define V_MM_POS_C_OFFSET 44
+#define V_MM_POS_C_BITS 20
+
+struct vMixGroupMsg {
+  uint64_t pos[2];
+  uint64_t reserved[62]; //  align to 512 cache line
+};
+
+struct vVisitMix {
+  enum { CODE_SIZE = 3};
+  uint64_t subtile0;
+  uint64_t subtile1;
+  __gm__ vCubeOp *cube;
+  uint64_t group_idx;
+  uint64_t pingpong;
+
+  // pc[0]: pos
+  // pc[1]: suttile0 << 48 | suttile1 << 32 | group_idx(31) | pingpong(1)
+  // pc[2]: cube
+  __aicore_inline__ void DecodePos(uint64_t pos, uint64_t &cidx, uint64_t &midx, uint64_t &nidx) {
+    cidx = vGetBitRange(pos, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS);
+    midx = vGetBitRange(pos, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS);
+    nidx = vGetBitRange(pos, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS);
+  }
+  __aicore_inline__ void Decode(bcodeptr_t pc, vVisitMix &op) {
+    uint64_t data1 = pc[1];
+    op.subtile0 = (data1 >> 48) & 0xfffful;
+    op.subtile1 = (data1 >> 32) & 0xfffful;
+    op.group_idx = vGetBitRange(data1, 1, 31);
+    op.pingpong = data1 & 0x1ul;
+    op.cube = reinterpret_cast<__gm__ vCubeOp *>(pc[2]);
+  }
+  __aicore_inline__ void Update(bcodeptr_t pc, uint64_t pos, uint64_t group_idx, uint64_t pingpong) {
+    pc[0] = pos;
+    *reinterpret_cast<__bcode__ uint32_t *>(pc + 1) = static_cast<uint32_t>(group_idx << 1 | pingpong);
+  }
+  __aicore_inline__ void UpdateCube(bcodeptr_t pc, __gm__ void *cube) {
+    pc[2] = reinterpret_cast<uint64_t>(cube);
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t subtile0, uint64_t subtile1) {
+    pc[0] = 0;
+    pc[1] = subtile0 << 48 | subtile1 << 32;
+    pc[2] = 0;
+    return CODE_SIZE;
+  }
+};
+
 // [entry]
 // common:
-//  data(36) << 28 | simd_width(8) << 20 | code_size_8B(12) << 8 | next_stage(reserve: 1) << 5 | extern_code(1) << 4 |
-//  pre_wait(1) << 3 | type(3)
+//  data(36) << 28 | reserved(8) << 20 | code_size_8B(12) << 8 | next_stage(reserve: 1) << 5 | extern_code(1) << 4 |
+//  cube_mix(1) << 3 | type(3)
 // data:
-//  mix/cube: group_num(32) << 32 | reserved(4) << 28 | common(28)
+//  cube: reserved(36) << 28 | common(28)
 //  parallel: block_sum(16) << 48 | reserved(20) << 28 | common(28)
 //  vector:   tile_body(24) << 40 | tail_tail(6) << 34 | block_num(6) << 28 | common(28)
 //  vectorEx: visit_offset_8B(16) << 48 | visit_id(16) << 32 | reserve(4) << 28 | common(28)
@@ -1561,20 +1563,13 @@ struct vVisitRed4 {
 #define V_ENTRY_TYPE_VE 1  // vector ext
 #define V_ENTRY_TYPE_VP 2  // vector parallel
 #define V_ENTRY_TYPE_C 3
-#define V_ENTRY_TYPE_MIX 4
 
 #define V_ENTRY_MASK_TYPE 7ul
-#define V_ENTRY_FLAG_PRE_WAIT 8
+#define V_ENTRY_FLAG_CUBE_MIX 8
 #define V_ENTRY_FLAG_EXTERN_CODE 16
 #define V_ENTRY_FLAG_NEXT_STAGE 32
 #define V_ENTRY_CODE_SIZE_OFFSET 8
 #define V_ENTRY_CODE_SIZE_BITS 12
-
-// mix
-#define V_ENTRY_M_GROUP_NUM_OFFSET 32
-#define V_ENTRY_M_GROUP_NUM_BITS 32
-#define V_ENTRY_M_GROUP_IDX_OFFSET 4
-#define V_ENTRY_M_GROUP_IDX_BITS 28
 
 // parallel
 #define V_ENTRY_VP_BLOCK_SUM_OFFSET 48

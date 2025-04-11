@@ -35,6 +35,10 @@ constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
 constexpr uint64_t BIAS_ADDR = 0;
 constexpr uint64_t BLOCK_SIZE = 16;
 
+#define V_PINGPONG_FLAG_EVENT  0x1ul
+#define V_PINGPONG_FLAG_STORE  0x2ul
+#define V_PINGPONG_FLAG_GROUP_MSG 0x4ul
+
 template <typename S>
 struct QuantPRE {};
 
@@ -439,13 +443,6 @@ class MatMul {
   uint64_t k_actual, shuffle_k;
 };
 
-#define V_MM_POS_M_OFFSET 0
-#define V_MM_POS_M_BITS 22
-#define V_MM_POS_N_OFFSET 22
-#define V_MM_POS_N_BITS 22
-#define V_MM_POS_C_OFFSET 44
-#define V_MM_POS_C_BITS 20
-
 #define V_GMM_BLOCK_OFF_OFFSET 32
 #define V_GMM_BLOCK_OFF_BIT 32
 #define V_GMM_LAST_OFFSET 8
@@ -459,6 +456,7 @@ class TileVisitor {
   static constexpr uint64_t INVALID_TILE_POS = uint64_t(-1);
   __aicore__ TileVisitor(__gm__ vCubeOp *__restrict__ op, uint64_t tile_num, M &m) {
     swizzle_ = op->swizzle;
+    gm_msg_ = reinterpret_cast<__gm__ vMixGroupMsg *>(op->gm_pos + sizeof(vMixGroupMsg) * block_idx);
     pos_last_ = pos_ = INVALID_TILE_POS;
     if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {
       group_info_ = op->group_list_size << V_GMM_G_SIZE_OFFSET;
@@ -508,6 +506,15 @@ class TileVisitor {
 
   __force_inline__ __aicore__ bool Forward(M &m) {
     if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
+      uint64_t pos = pos_;
+      if (m.flags & V_CUBE_FLAG_GROUPED_LIST) { // NOTICE: only for splik-k mode
+        pos += (BlockIdxOffset() / (m.m_loop * m.n_loop)) << V_MM_POS_C_OFFSET;
+      }
+      gm_msg_->pos[m.flags & V_PINGPONG_FLAG_GROUP_MSG ? 1 : 0] = pos;
+      m.flags ^= V_PINGPONG_FLAG_GROUP_MSG;
+      dcci(gm_msg_, 0);
+      set_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
+      wait_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
       ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
       uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
       if (tile_idx > block_idx + block_num) {
@@ -539,15 +546,34 @@ class TileVisitor {
       uint64_t swiz_cnt = swizzle_ & 0xffff;
       uint64_t midx, nidx;
       if (v_type == V_CUBE_SWIZ_VISIT_nZ) {
-        vCubeOp::TileMap_nZ(sidx, m.m_loop, m.n_loop, swiz_cnt, midx, nidx);
+        uint32_t tile_block_idx = sidx / (swiz_cnt * m.n_loop);
+        uint32_t in_tile_block_idx = sidx - tile_block_idx * (swiz_cnt * m.n_loop);
+        uint32_t n_row = swiz_cnt;
+        if (m.m_loop < (tile_block_idx + 1) * swiz_cnt) {
+          n_row = m.m_loop - swiz_cnt * tile_block_idx;
+        }
+        nidx = in_tile_block_idx / n_row;
+        midx = tile_block_idx * swiz_cnt + in_tile_block_idx - n_row * nidx;
+        if (tile_block_idx & 1) {
+          nidx = m.n_loop - nidx - 1;
+        }
       } else {
-        vCubeOp::TileMap_zN(sidx, m.m_loop, m.n_loop, swiz_cnt, midx, nidx);
+        uint32_t tile_block_idx = sidx / (swiz_cnt * m.m_loop);
+        uint32_t in_tile_block_idx = sidx - tile_block_idx * (swiz_cnt * m.m_loop);
+        uint32_t n_col = swiz_cnt;
+        if (m.n_loop < (tile_block_idx + 1) * swiz_cnt) {
+          n_col = m.n_loop - swiz_cnt * tile_block_idx;
+        }
+        midx = in_tile_block_idx / n_col;
+        nidx = tile_block_idx * swiz_cnt + in_tile_block_idx - n_col * midx;
+        if (tile_block_idx & 1) {
+          midx = m.m_loop - midx - 1;
+        }
       }
       pos_next_ = cidx << V_MM_POS_C_OFFSET | midx << V_MM_POS_M_OFFSET | nidx << V_MM_POS_N_OFFSET;
     } else {
       pos_next_  = INVALID_TILE_POS;
     }
-
   }
 
   __force_inline__ __aicore__ bool HasNext() const { return pos_next_ != INVALID_TILE_POS; }
@@ -577,13 +603,11 @@ class TileVisitor {
   uint64_t pos_last_;
   uint64_t swizzle_;
   uint64_t tile_loop_;
-  
+  __gm__ vMixGroupMsg *gm_msg_;
   __gm__ int64_t *__restrict__ gm_group_list_;
   uint64_t group_info_;
 };
 
-#define V_PINGPONG_FLAG_EVENT  0x1ul
-#define V_PINGPONG_FLAG_STORE  0x2ul
 template <typename T>
 __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end) {
   set_padding((uint64_t)0);
@@ -608,7 +632,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
   __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
   __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
-  uint64_t pingpong_flags = 0;
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
   set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
@@ -629,7 +652,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     uint64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
 
     if (!visit.HasLast()) {
-      auto event_id = pingpong_flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
+      auto event_id = mat.flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
       wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
       mat.LoadA(l1a, mat.gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
       set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
@@ -650,7 +673,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
       uint64_t k_part_loop = CeilDiv(k_actual, mat.k0_part_len);
       event_t event_id, event_id_next;
-      if (pingpong_flags & V_PINGPONG_FLAG_EVENT) {
+      if (mat.flags & V_PINGPONG_FLAG_EVENT) {
         event_id = EVENT_ID0;
         event_id_next = EVENT_ID1;
       } else {
@@ -735,14 +758,14 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         }
         set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
       }
-      pingpong_flags ^= V_PINGPONG_FLAG_EVENT;
+      mat.flags ^= V_PINGPONG_FLAG_EVENT;
       Swap(l1a, n_l1a);
       Swap(l1b, n_l1b);
     }
     uint8_t unit_flag = 0b11;
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
-      uint64_t pingpong_offset = pingpong_flags & V_PINGPONG_FLAG_STORE ? block_num + block_idx : block_idx;
-      pingpong_flags ^= V_PINGPONG_FLAG_STORE;
+      uint64_t pingpong_offset = mat.flags & V_PINGPONG_FLAG_STORE ? block_num + block_idx : block_idx;
+      mat.flags ^= V_PINGPONG_FLAG_STORE;
       mat.StoreC_PingPong(mat.gm_c, l0c, unit_flag, m_actual, n_actual, pingpong_offset);
       if (mat.flags & V_CUBE_FLAG_PEER_STORE) {
         // result of GetCubeOffset()
@@ -777,12 +800,11 @@ extern "C"  __global__ __aicore__ void vmain_mix_aic(uint64_t ffts_addr, uint64_
     ffts_addr = *ext_addr;
     body_addr = ext_addr + 2;
   }
-  uint64_t ktype = entry & V_ENTRY_MASK_TYPE;
-  if (ktype >= V_ENTRY_TYPE_C) {
+  if (entry & V_ENTRY_FLAG_CUBE_MIX) {
     set_ffts_base_addr(ffts_addr);
     __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
     uint64_t flags = op->flags;
-    uint64_t tile_num = entry >> V_ENTRY_M_GROUP_NUM_OFFSET;
+    uint64_t tile_num = op->group_num;
     // Clear backsync area
     if (flags & V_CUBE_FLAG_PEER_STORE) {
       __gm__ int32_t *peer_mem =
@@ -797,7 +819,7 @@ extern "C"  __global__ __aicore__ void vmain_mix_aic(uint64_t ffts_addr, uint64_
       wait_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
     }
     if (block_idx < tile_num) {
-      switch (op->flags >> V_CUBE_FLAG_DTYPE_OFFSET) {
+      switch (flags >> V_CUBE_FLAG_DTYPE_OFFSET) {
         case vCubeOp::FP16:
           CutMKN<half>(op, tile_num);
           break;
@@ -805,10 +827,6 @@ extern "C"  __global__ __aicore__ void vmain_mix_aic(uint64_t ffts_addr, uint64_
           CutMKN<bfloat16_t>(op, tile_num);
           break;
         default: break;
-      }
-    } else {
-      if (flags & V_CUBE_FLAG_GROUP_SET) {
-        ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
       }
     }
   }

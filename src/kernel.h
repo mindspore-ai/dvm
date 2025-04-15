@@ -110,7 +110,10 @@ class VKernel {
 class CodeGenHelper;
 class VectorKernel : public VKernel {
  public:
-  VectorKernel(KernelType ktype) : VKernel(ktype) {}
+  VectorKernel(KernelType ktype) : VKernel(ktype) {
+    MESS(max_type_, 100);
+    MESS(min_type_, 200);
+  }
   virtual ~VectorKernel();
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
@@ -193,8 +196,8 @@ class VectorKernel : public VKernel {
   int backward_event_num_;
 
  protected:
-  int max_type_{-1};
-  int min_type_{-1};
+  int max_type_;
+  int min_type_;
 
   std::vector<NDObject *> static_ops_;
 

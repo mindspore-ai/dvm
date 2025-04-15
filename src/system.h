@@ -36,8 +36,11 @@ namespace dvm {
       exit(0);                                                                                                  \
     }                                                                                                           \
   } while (0)
+
+#define MESS(var, init)  do { var = init; } while (0)
 #else
 #define ASSERT(cond)
+#define MESS(var, init)
 #endif
 
 #define EXCEPTION_IF(cond, error_str)       \

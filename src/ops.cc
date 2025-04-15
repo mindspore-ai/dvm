@@ -1568,6 +1568,7 @@ int _ReduceOp::Emit(VectorKernel &k) {
   if (ndd_.lead_dim() == lhs_->nd_.lead_dim() && ndd_.stride_back() == lhs_->nd_.stride_back()) {
     return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
   } else if (start_dim_ <= lhs_->nd_.lead_idx()) {  // reduce x
+    ASSERT(start_dim_ >= 0 && end_dim_ >= 0);
     vReduceX op;
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;

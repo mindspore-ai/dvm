@@ -1005,8 +1005,9 @@ class DisAssembler {
 int CodeWrap::LaunchWrap(void *workspace, void *stream) { return next_->LaunchWrap(workspace, stream); }
 
 void CodeWrap::CombineWrap(Code *to, uint64_t ws_base) {
+  auto next = next_;
   to->InsertWrap(this);
-  next_->CombineWrap(to, ws_base);
+  next->CombineWrap(to, ws_base);
 }
 
 bool CodeWrap::DasWrap(std::ostringstream &oss) { return next_->DasWrap(oss); }

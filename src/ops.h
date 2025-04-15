@@ -361,6 +361,8 @@ class NDObject {
  public:
   NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
     type_id_ = type_id;
+    MESS(index_, 10);
+    MESS(reuse_dep_, 200);
   }
   NDObject(const NDObject &) = delete;
   NDObject &operator=(const NDObject &) = delete;
@@ -454,6 +456,8 @@ class NDLoad : public NDAccess {
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
+    MESS(tail_dim_, 100);
+    MESS(tail_size_, 10000);
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
@@ -461,8 +465,8 @@ class NDLoad : public NDAccess {
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  int tail_dim_{-1};
-  int tail_size_{0};
+  int tail_dim_;
+  int tail_size_;
   DimArray round_tile_;
   NDSpaceData ndd_;
 };
@@ -524,6 +528,9 @@ class NDStore : public NDAccess {
   NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) { shape_ref_ = src->shape_ref_; }
   NDStore(void *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
+    MESS(tail_dim_, 100);
+    MESS(tail_size_, 10000);
+    MESS(elem_dim_mask_, 0);
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
@@ -542,8 +549,8 @@ class NDStore : public NDAccess {
   DimArray round_tile_;
 
  private:
-  int tail_dim_{-1};
-  int tail_size_{0};
+  int tail_dim_;
+  int tail_size_;
   uint32_t elem_dim_mask_;
 };
 
@@ -641,6 +648,8 @@ class ElementAnyOp : public NDObject {
     shape_ref_data_.size = 1;
     shape_ref_ = &shape_ref_data_;
     nd_.data = &ndd_;
+    MESS(tail_dim_, 100);
+    MESS(tail_size_, 10000);
   }
   int Emit(VectorKernel &k) override;
   void Tile(const TileParam &tp) override;
@@ -650,8 +659,8 @@ class ElementAnyOp : public NDObject {
  private:
   int64_t shape_{1};
   ShapeRef shape_ref_data_;
-  int tail_dim_{-1};
-  int tail_size_{0};
+  int tail_dim_;
+  int tail_size_;
   NDSpaceData ndd_;
 };
 
@@ -830,6 +839,10 @@ class _ReduceOp : public FlexOp {
   _ReduceOp(NDObject *input, int red_op)
       : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {
     nd_.data = &ndd_;
+    MESS(start_dim_, 100);
+    MESS(end_dim_, 80);
+    MESS(tail_dim_, 100);
+    MESS(tail_size_, 10000);
   }
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
@@ -845,10 +858,10 @@ class _ReduceOp : public FlexOp {
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
   int red_op_;
-  int start_dim_{0};
-  int end_dim_{0};
-  int tail_dim_{-1};
-  int64_t tail_size_{0};
+  int start_dim_;
+  int end_dim_;
+  int tail_dim_;
+  int64_t tail_size_;
   NDSpaceData ndd_;
 };
 

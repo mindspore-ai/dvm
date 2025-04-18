@@ -209,19 +209,19 @@ uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t iter_tail) {
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
 
-void UpdateRoundTile(bool pointwise, const TileParam &tp, DimArray &round_tile) {
+void UpdateRoundTile(bool pointwise, int64_t num, DimArray &round_tile) {
   if (!pointwise) {
     if (round_tile.size() % 2 == 0) {
-      round_tile.push_back(tp.num);
+      round_tile.push_back(num);
     } else {
-      round_tile.back() *= tp.num;
+      round_tile.back() *= num;
     }
   } else {
     if (!round_tile.empty()) {
       if (round_tile.size() % 2 == 0) {
-        round_tile.back() *= tp.num;
+        round_tile.back() *= num;
       } else {
-        round_tile.push_back(tp.num);
+        round_tile.push_back(num);
       }
     }
   }
@@ -231,7 +231,7 @@ bool CollectRoundTile(uint32_t elem_mask, const TileParam &tp, DimArray &round_t
   bool pointwise = false;
   if (tp.num > 1) {
     pointwise = (elem_mask >> tp.start) & ((2u << (tp.end - tp.start)) - 1);
-    UpdateRoundTile(pointwise, tp, round_tile);
+    UpdateRoundTile(pointwise, tp.num, round_tile);
   }
   return pointwise;
 }
@@ -245,7 +245,7 @@ bool CollectRoundTile(const DimArray &nd, const TileParam &tp, DimArray &round_t
         break;
       }
     }
-    UpdateRoundTile(pointwise, tp, round_tile);
+    UpdateRoundTile(pointwise, tp.num, round_tile);
   }
   return pointwise;
 }
@@ -437,6 +437,12 @@ int NDLoadDummy::Emit(VectorKernel &k) {
 void NDLoadDummy::Dump(bool verbose, std::ostringstream &oss) { oss << "LoadDummy"; }
 
 void NDLoad::Shard(const ShardParam &sp) {
+  for (int i = ndd_.size() - 1; i > sp.base + 1; --i) {
+    if (auto factor = sp.dom->operator[](i); factor > 1) {
+      UpdateRoundTile(ndd_[i] > 1, factor, round_tile_);
+    }
+  }
+  flags_ |= OBJ_FLAG_LOAD_SHARD_ROUND;
   if (ndd_[sp.base + 1] == 1 && sp.tile[sp.base + 1] > 1) {
     flags_ |= OBJ_FLAG_LOAD_SHARD_BCAST1;
   }
@@ -447,7 +453,7 @@ void NDLoad::Shard(const ShardParam &sp) {
 }
 
 void NDLoad::Tile(const TileParam &tp) {
-  if (CollectRoundTile(ndd_.dims, tp, round_tile_) && tp.tail > 0) {
+  if (!(flags_ & OBJ_FLAG_LOAD_SHARD_ROUND) && CollectRoundTile(ndd_.dims, tp, round_tile_) && tp.tail > 0) {
     ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
@@ -477,7 +483,7 @@ int NDLoad::Emit(VectorKernel &k) {
       op.iter_size = lead_dim * ITEM_SIZE[type_id_];
       op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
       op.pingpong = 0;
-      op.pingpong_stride = shard->stride[SHARD_N] * shard->tile[SHARD_N] * shard->tile[SHARD_M] * ITEM_SIZE[type_id_];
+      op.pingpong_stride = shard->tile[SHARD_N] * shard->tile[SHARD_M] * ITEM_SIZE[type_id_];
       op.round_rank = round_tile_.size();
       addr_.Update(insn_ + vPingPongLoad::RELOC_OFFSET);
       return vPingPongLoad::Encode(insn_, vAccInsnID::V_PINGPONG_LOAD, op, rounds);
@@ -487,17 +493,13 @@ int NDLoad::Emit(VectorKernel &k) {
       op.xn = xbuf_;
       op.tile_stride = src_tile_stride_;
       op.pad_size = lead_align - lead_dim;
-      op.slice_m = shard->tile[SHARD_M];
-      op.slice_n = shard->stride[SHARD_N] * shard->tile[SHARD_N];
-      op.src_n = shard->stride[SHARD_M];
-      op.tail_m = shard->tail[SHARD_M];
-      op.tail_n = shard->stride[SHARD_N] * shard->tail[SHARD_N];
-      uint64_t broadcast_m = flags_ & OBJ_FLAG_LOAD_SHARD_BCAST1 ? 1 : 0;
-      uint64_t broadcast_n = flags_ & OBJ_FLAG_LOAD_SHARD_BCAST0 ? 1 : 0;
-      op.flags = broadcast_m << 1 | broadcast_n;
+      op.broadcast_m = flags_ & OBJ_FLAG_LOAD_SHARD_BCAST1;
+      op.broadcast_n = flags_ & OBJ_FLAG_LOAD_SHARD_BCAST0;
+      op.round_rank = round_tile_.size();
       op.type_size = ITEM_SIZE[type_id_];
       addr_.Update(insn_ + vSLoad::RELOC_OFFSET);
-      return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op);
+      k.GetVisitor<MixVisitCoder>()->AddReloc(insn_, vSLoad::SHARD_OFFSET);
+      return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op, rounds);
     }
   }  // end shard_
   vLoad op;
@@ -708,8 +710,24 @@ void NDStore::Normalize(std::vector<NDObject *> &run_ops) {
   UpdateDimMask();
 }
 
+void NDStore::Shard(const ShardParam &sp) {
+  for (int i = nd_.size() - 1; i > sp.base + 1; --i) {
+    if (auto factor = sp.dom->operator[](i); factor > 1) {
+      UpdateRoundTile(elem_dim_mask_ & (1u << i), factor, round_tile_);
+    }
+  }
+  flags_ |= OBJ_FLAG_STORE_SHARD_ROUND;
+  if ((elem_dim_mask_ & 1u << (sp.base + 1)) == 0 && sp.tile[sp.base + 1] > 1) {
+    flags_ |= OBJ_FLAG_STORE_SHARD_BCAST1;
+  }
+  if ((elem_dim_mask_ & 1u << (sp.base)) == 0 && sp.tile[sp.base] > 1) {
+    flags_ |= OBJ_FLAG_STORE_SHARD_BCAST0;
+  }
+  NDObject::Shard(sp);
+}
+
 void NDStore::Tile(const TileParam &tp) {
-  if (CollectRoundTile(elem_dim_mask_, tp, round_tile_) && tp.tail > 0) {
+  if (!(flags_ & OBJ_FLAG_STORE_SHARD_ROUND) && CollectRoundTile(elem_dim_mask_, tp, round_tile_) && tp.tail > 0) {
     ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
@@ -759,7 +777,7 @@ int NDStore::Emit(VectorKernel &k) {
     }
     if (lhs_->obj_id_ == kReduce) {
       auto red_op = static_cast<ReduceOp *>(lhs_);
-      if (k.visit_) {
+      if (k.GetVisitor<RedVisitCoder>()) {
         ASSERT(tail_dim_ < 0);
         vStoreCond op;
         op.xn = lhs_->xbuf_;
@@ -830,22 +848,19 @@ int NDStore::Emit(VectorKernel &k) {
     addr_.Update(insn_ + vStoreAG::RELOC_OFFSET);
     return vStoreAG::Encode(insn_, V_STORE_AG, op);
   }
-  if (auto shard = k.root_dom_.shard_) {
-    constexpr int SHARD_M = 1;
-    constexpr int SHARD_N = 0;
+  if (k.root_dom_.shard_) {
     vSStore op;
     op.gm = addr_.gm;
     op.xn = lhs_->xbuf_;
     op.tile_stride = dst_tile_stride_;
     op.pad_size = lead_align - lead_dim;
-    op.slice_m = shard->tile[SHARD_M];
-    op.slice_n = shard->stride[SHARD_N] * shard->tile[SHARD_N];
-    op.src_n = shard->stride[SHARD_M];
-    op.tail_m = shard->tail[SHARD_M];
-    op.tail_n = shard->stride[SHARD_N] * shard->tail[SHARD_N];
+    op.broadcast_m = flags_ & OBJ_FLAG_STORE_SHARD_BCAST1;
+    op.broadcast_n = flags_ & OBJ_FLAG_STORE_SHARD_BCAST0;
+    op.round_rank = round_tile_.size();
     op.type_size = ITEM_SIZE[type_id_];
     addr_.Update(insn_ + vSStore::RELOC_OFFSET);
-    return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op);
+    k.GetVisitor<MixVisitCoder>()->AddReloc(insn_, vSStore::SHARD_OFFSET);
+    return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op, rounds);
   }
   vStore op;
   uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
@@ -1788,7 +1803,7 @@ int ReduceOp::Emit(VectorKernel &k) {
   return size;
 }
 
-static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, TileVisitCoder &coder) {
+static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCoder &coder) {
   auto round_depth = round_tile.size();
   if (round_depth == 0) {
     return false;
@@ -1851,8 +1866,8 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   if (!GenTileVisit(k, round_tile_, visit_)) {
     return _ReduceOp::Emit(k);
   }
-  if (k.visit_ == nullptr) {
-    k.visit_ = &visit_;
+  if (!k.GetVisitor<RedVisitCoder>()) {
+    k.AddVisitor(&visit_);
     visit_.ws_size_ = ndd_.stride_back() * sizeof(float) * visit_.block_num_;
   }
   auto out_xbuf = xbuf_;
@@ -1876,7 +1891,7 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   tail_insn_ = insn_ + size;
   size += vReduceJoin::Encode(tail_insn_, op);
   *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
-  k.visit_->rel_relocs_.push_back(tail_insn_);
+  k.GetVisitor<RedVisitCoder>()->AddReloc(tail_insn_, 0);
   ws_reloc_.ws = 0;
   ws_reloc_.Update(tail_insn_ + vReduceJoin::RELOC_OFFSET);
   k.code_.BindWorkspace(ws_reloc_, 0);  // TODO: mutli workspace
@@ -2257,14 +2272,13 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->gm_b = b->addr_.data;
   uint32_t batch_b1 = b->nd_.size() > 2 ? static_cast<uint32_t>(b->nd_[2]) : 1;
   uint32_t batch_b0 = b->nd_.size() > 3 ? static_cast<uint32_t>(b->nd_[3]) : 1;
-  if (!trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2) {
+  if (batch_fold_) {
     auto batch_fold = batch_a1 * batch_a0;
     batch_a1 = 1;
     batch_a0 = 1;
-    if (!batch_fold_) {
+    if (m_real_ == ndd_[1]) {
       op->m_align = m_align_ *= batch_fold;
       op->m_real = m_real_ *= batch_fold;
-      batch_fold_ = true;
     }
   }
   batch_c0_ = std::max(batch_a0, batch_b0);
@@ -2776,6 +2790,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       ppp_load.peer_mem_offset = rank_id * per_rank_load_offset;
       current_insn = insn_ + code_size;
       code_size += vPingPongPeerLoad::Encode(current_insn, vAccInsnID::V_PINGPONG_PEER_LOAD, ppp_load, nullptr);
+      k.GetVisitor<MixVisitCoder>()->AddReloc(current_insn, vPingPongPeerLoad::SHARD_OFFSET);
       k.comm_op_->id_wrap_.ids_.emplace_back(
         reinterpret_cast<uint32_t *>(current_insn + vPingPongPeerLoad::UNIQUEID_OFFSET));
       *current_insn |= 0x1ul << V_M_HEAD_SET_FLAG_OFFSET | forward_event << V_M_HEAD_SET_EVENT_OFFSET;

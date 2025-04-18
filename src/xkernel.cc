@@ -270,9 +270,27 @@ uint64_t MixKernel::BiasBF16CodeGen() {
 uint64_t MixKernel::AlignCodeGen() {
   size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
   size_t post_reserve = 0;
+  cube_op_->batch_fold_ = cube_op_->CanBatchFold();
   if (post_fusion_) {
     post_fusion_->Normalize();
     post_reserve = post_fusion_->ReserveCodeSize();
+    if (cube_op_->batch_fold_) {
+      auto fold_check = [this]() -> bool {
+        NDSpaceData &cube_nd = cube_op_->ndd_;
+        for (auto op : post_fusion_->objects_) {
+          if (auto ndd = op->Ndd(); ndd != nullptr) {
+            if (ndd->dims.size() != cube_nd.size()) return false;
+            for (size_t i = 1; i < cube_nd.size(); ++i) {
+              if (ndd->dims[i] != cube_nd[i]) return false;
+            }
+          }
+        }
+        return true;
+      };
+      if (!fold_check()) {
+        cube_op_->batch_fold_ = false;
+      }
+    }
   }
   code_.Alloc(head_reserve + post_reserve);
   vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
@@ -292,12 +310,15 @@ uint64_t MixKernel::AlignCodeGen() {
     code_.UpdateC();
     return 0;
   }
-  if (cube_op_->batch_fold_) {  // Todo: Support BatchMatMul Broadcast
+  if (cube_op_->batch_fold_) {
     for (auto op : post_fusion_->objects_) {
       if (auto ndd = op->Ndd(); ndd != nullptr) {
         ASSERT(ndd->dims.prod() == sload_->nd_.dims().prod());
         ndd->dims[1] = cube_op_->m_real_;
         ndd->dims.resize(2);
+      }
+      if (op->obj_id_ == kStore) {
+        static_cast<NDStore *>(op)->UpdateDimMask();
       }
     }
   }
@@ -337,20 +358,23 @@ uint64_t MixKernel::AlignCodeGen() {
   }
   ShardParam shard;
   shard.base = 0;
+  shard.dom = &cube_op_->ndd_.dims;
   shard.tile[0] = cube_op_->n0_;
   shard.tail[0] = cube_op_->n_real_ % cube_op_->n0_;
   shard.tile[1] = cube_op_->m0_;
   shard.tail[1] = cube_op_->m_real_ % cube_op_->m0_;
-  shard.stride[0] = 1;
-  shard.stride[1] = cube_op_->n_real_;
+  shard.stride[0] = cube_op_->n_real_;
+  shard.stride[1] = cube_op_->n_real_ * cube_op_->m_real_;
   post_fusion_->root_dom_.Shard(shard);
   post_fusion_->root_dom_.PrepareTiling(post_fusion_);
+  MixVisitCoder visit;
+  post_fusion_->AddVisitor(&visit);
   auto code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
   uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
   uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
   cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   code_.data_size_ = code_end - code_.data_;
-  code_.UpdateMix(subtile_0, subtile_1);
+  code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile_0, subtile_1);
   code_.Combine(post_fusion_->code_, 0);
   return ws_size;
 }
@@ -807,21 +831,24 @@ class EagerVector : public VectorKernel {
     NormalizeDomain();
     ShardParam shard;
     shard.base = 0;
+    shard.dom = &mm->ndd_.dims;
     shard.tile[0] = mm->n0_;
     shard.tail[0] = mm->n_real_ % mm->n0_;
     shard.tile[1] = mm->m0_;
     shard.tail[1] = mm->m_real_ % mm->m0_;
-    shard.stride[0] = 1;
-    shard.stride[1] = mm->n_real_;
+    shard.stride[0] = mm->n_real_;
+    shard.stride[1] = mm->n_real_ * mm->m_real_;
     root_dom_.Shard(shard);
     root_dom_.PrepareTiling(this);
+    MixVisitCoder visit;
+    AddVisitor(&visit);
     auto code_end = DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
     uint64_t subtile_0 = (tile_num_ + 1) / 2;
     uint64_t subtile_1 = tile_num_ - subtile_0;
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
     code_.data_size_ = code_end - code_.data_;
     code_.block_dim_ = mm->block_dim_;
-    code_.UpdateMix(subtile_0, subtile_1);
+    code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile_0, subtile_1);
     next_ = mm;
     return cube_code;
   }
@@ -1166,8 +1193,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   }
   int aid = area_used_++;
   auto area = EagerArea::Assign(this, aid);
-  // TODO: support bmm batch axis broadcast
-  area->ResetMix(mm, mm->nd_.size() == 2 ? EagerArea::kPending : EagerArea::kSubmitted);
+  area->ResetMix(mm, EagerArea::kPending);
   area->depend_mask_ |= dep_mask;
   SetArea(mm, aid);
   SetStore(mm, output);

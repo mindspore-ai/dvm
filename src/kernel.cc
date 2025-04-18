@@ -891,7 +891,6 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
     tile_size = RoundUp(lead_dim, simd_width) * tile_outer;
   }
   // codegen
-  visit_ = nullptr;
   code_.block_dim_ = core_limit;
   forward_event_num_ = backward_event_num_ = System::Instance().EventNum();
   CodeGenHelper helper(*this);
@@ -902,7 +901,7 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
 }
 
 void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (code_.data_ == nullptr) {
+  if (tile_num_ == 0) {
     DumpRefHelper helper(oss);
     oss << indent << "rgraph.vec() {" << std::endl;
     std::string body_indent = indent + "  ";

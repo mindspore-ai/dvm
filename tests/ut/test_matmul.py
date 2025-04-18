@@ -399,3 +399,34 @@ def test_dyn_matmul():
         t.input(y, y_data)
         t.run()
         t.check(out, np_c, 1e-3)
+
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b, broadcast_shape', [
+    [[2000, 512], [512, 3000], [1, 3000]],
+    [[2000, 512], [512, 3000], [2000, 1]],
+    [[2048, 512], [512, 4096], [2048, 1]],
+    [[2048, 512], [512, 4096], [1, 1]],
+    [[3,4,256, 512], [3,4,512, 512], [1,4,256, 512]],
+    [[3,4,256, 512], [3,4,512, 512], [3,1,256, 512]],
+    [[3,4,256, 512], [3,4,512, 512], [256, 512]],
+    [[3,4,256, 512], [512, 512], [1,1,256, 512]],
+    [[3,4,256, 512], [3,4,512, 512], [3,1,1, 512]],
+    [[3,4,256, 512], [3,4,512, 512], [3,1,256, 1]],
+    [[3,4,256, 512], [3,4,512, 512], [1]],
+])
+def test_post_fusion_broadcast(shape_a, shape_b, broadcast_shape):
+    t = Tester("mix")
+    a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    c = np.random.normal(0, 0.01, broadcast_shape).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.load(c)
+    x4 = t.binary("Add", x3, 0.2)
+    x5 = t.binary("Mul", x4, x2)
+    x4_expect = c + 0.2
+    x5_expect = np.matmul(a.astype(np.float32), b.astype(np.float32)) * x4_expect
+    t.store_expect(x5, x5_expect, 1e-3)
+    t.store_expect(x4, x4_expect, 1e-3)
+    assert(t.run_check())

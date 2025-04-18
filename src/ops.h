@@ -86,12 +86,14 @@ struct PropRange {
 };
 
 // shard map(low axis left): [a0, a1,.. s0, s1, s2, ...] -> [a0, a1,...tile[0], tile[1], 1, 1, ..]
+class DimArray;
 struct ShardParam {
   enum { PARTIAL_SIZE = 2 };
   int base;
-  int64_t tile[PARTIAL_SIZE];
-  int64_t tail[PARTIAL_SIZE];
-  int64_t stride[PARTIAL_SIZE];
+  const DimArray *dom;
+  uint64_t tile[PARTIAL_SIZE];
+  uint64_t tail[PARTIAL_SIZE];
+  uint64_t stride[PARTIAL_SIZE];
 };
 
 std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape);
@@ -329,6 +331,10 @@ class VectorKernel;
 #define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
 #define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 14)
 #define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 15)
+#define OBJ_FLAG_LOAD_SHARD_ROUND (1u << 16)
+#define OBJ_FLAG_STORE_SHARD_BCAST0 (1u << 14)
+#define OBJ_FLAG_STORE_SHARD_BCAST1 (1u << 15)
+#define OBJ_FLAG_STORE_SHARD_ROUND (1u << 16)
 
 // static flags
 #define OBJ_FLAG_WORKSPACE (1u << 16)
@@ -533,12 +539,13 @@ class NDStore : public NDAccess {
     MESS(elem_dim_mask_, 0);
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Shard(const ShardParam &sp) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   void UpdateDimMask() {
-    elem_dim_mask_ = 0xffffffffu;
+    elem_dim_mask_ = (0x1u << nd_.size()) - 1;
     for (size_t i = 0; i < nd_.size(); ++i) {
       if (nd_[i] == 1) {
         elem_dim_mask_ ^= 1u << i;
@@ -882,7 +889,7 @@ class ReduceOp : public _ReduceOp {
 
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  TileVisitCoder visit_;
+  RedVisitCoder visit_;
   AtomicCleanWrap *clean_wrap_{nullptr};
 
  private:
@@ -937,6 +944,8 @@ class CubeOp : public NDObject {
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }
+
+  bool CanBatchFold() { return !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2; }
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};

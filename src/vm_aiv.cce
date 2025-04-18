@@ -31,29 +31,19 @@ const uint64_t UB_WORKSPACE_SIZE = 512;
 #define MaxRepeat(num, x)  ((num + BlockNum(x) - 1) / BlockNum(x))   
 
 // tile format:
-// comm: data(52) << 4 | discont_flag(1) << 3| tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
-// data:
-//   mix: | is_last_tile_m(1) << 53 | is_last_tile_n(1) << 52 | group_idx_offset(32) << 20 | tile_idx(16) << 4 |
-//   vec: | ------------------------------------------------------------------------------ | tile_idx(32) << 4 |
+//  reserved(28) << 36 | tile_idx(32) << 4 | discont_flag(1) << 3| tail_flag(1) << 2 | end_flag(1) << 1 | not_begin_flag(1)
 #define V_TILE_N_BEGIN_FLAG_OFFSET  0
 #define V_TILE_END_FLAG_OFFSET      1
 #define V_TILE_TAIL_FLAG_OFFSET     2
 #define V_TILE_DISCONT_FLAG_OFFSET  3
 #define V_TILE_CUR_IDX_OFFSET       4
 #define V_TILE_GROUP_IDX_OFFSET     20
-#define V_SLOAD_FLAG_BROADCAST_N    1
-#define V_SLOAD_FLAG_BROADCAST_M    2
 
 #define TileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 32)
 #define IsLastTile(tile)      (((tile) & 6ul) == 6ul)
 #define IsBeginTile(tile)     ((tile & (1ul << V_TILE_N_BEGIN_FLAG_OFFSET)) == 0)
 #define IsEndTile(tile)       ((tile) &(1ul << V_TILE_END_FLAG_OFFSET))
 #define IsDisContTile(tile)       ((tile) &(1ul << V_TILE_DISCONT_FLAG_OFFSET))
-
-#define MixTileIdx(tile)         vGetBitRange(tile, V_TILE_CUR_IDX_OFFSET, 16)
-#define MixTileGroupOffset(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET, V_GROUP_OFFSET_SIZE)
-#define MixTileIsLastN(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + V_GROUP_OFFSET_SIZE, 1)
-#define MixTileIsLastM(tile)    vGetBitRange(tile, V_TILE_GROUP_IDX_OFFSET + V_GROUP_OFFSET_SIZE + 1, 1)
 
 __aicore_inline__ uint64_t vBlockIdx() {
   return get_subblockdim() * block_idx + get_subblockid();
@@ -1093,68 +1083,108 @@ __aicore_inline__ void SliceStore2D(__gm__ uint8_t *dst, __ubuf__ uint8_t *src, 
 
 __aicore_inline__ void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSLoad op;
+  vShard2D shard;
   vSLoad::Decode(pc, head, op);
-  uint64_t tile_idx = MixTileIdx(tile);
+  vShard2D::Decode(pc + op.shard_rel, shard);
+  uint64_t tile_idx = TileIdx(tile);
   uint64_t begin_tmp = op.tile_stride * tile_idx;
   uint64_t end_tmp = begin_tmp + op.tile_stride - 1;
   __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
   __gm__ uint8_t *src = (__gm__ uint8_t *)op.gm;
-  if (op.flags & V_SLOAD_FLAG_BROADCAST_M) {
-    uint64_t start_n = (op.flags & V_SLOAD_FLAG_BROADCAST_N) ? 0 : MixTileGroupOffset(tile) % op.src_n;
-    src += start_n * op.type_size;
-    copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, 0, 0);
-  } else if (op.flags & V_SLOAD_FLAG_BROADCAST_N) {
-    uint64_t start_m = MixTileGroupOffset(tile) / op.src_n;
-    src += (start_m + begin_tmp) * op.type_size;
-    copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, 0, 0);
+  uint64_t shard_offset = shard.offset;
+  uint64_t cidx = vGetBitRange(shard.pos, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS);
+  if (op.round_rank) {
+    cidx = RoundUpTileIdx<kRoundCacheNone>(tile, cidx, op.round_rank, pc + vSLoad::ROUND_OFFSET);
+    shard_offset = cidx * shard.stride_m + shard_offset % shard.stride_m;
+  }
+  if (op.broadcast_m) {
+    if (op.broadcast_n) {
+      src += cidx * op.type_size;
+      copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.type_size, 0, 0, 0, 0);
+    } else {
+      src += (cidx * shard.stride_n + shard_offset % shard.stride_n) * op.type_size;
+      copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, 0, 0); // TODO: tail overflow
+    }
+  } else if (op.broadcast_n) {
+    src += (shard_offset / shard.stride_n + begin_tmp) * op.type_size;
+    copy_gm_to_ubuf_align_b8(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, 0, 0); // TODO: tail overflow
   } else {
-    uint64_t begin_m = begin_tmp / op.slice_n;
-    uint64_t end_m = IsLastTile(tile) ? op.slice_m - 1 : end_tmp / op.slice_n;
-    uint64_t begin_n = begin_tmp % op.slice_n;
-    uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % op.slice_n;
-
-    uint64_t slice_n = op.slice_n;
+    uint64_t slice_m = shard.slice_m;
+    uint64_t slice_n = shard.slice_n;
+    uint64_t begin_m = begin_tmp / slice_n;
+    uint64_t end_m = IsLastTile(tile) ? slice_m - 1 : end_tmp / slice_n;
+    uint64_t begin_n = begin_tmp % slice_n;
+    uint64_t end_n = IsLastTile(tile) ? slice_n - 1 : end_tmp % slice_n;
     uint64_t pad_size = op.pad_size;
-    if (MixTileIsLastM(tile)) {
-      end_m = min(end_m, op.tail_m - 1);
+    if (shard.last_m) {
+      end_m = min(end_m, shard.tail_m - 1);
     }
-    if (MixTileIsLastN(tile)) {
-      end_n = min(end_n, op.tail_n - 1);
-      slice_n = op.tail_n;
-      pad_size += op.slice_n - op.tail_n;
+    if (shard.last_n) {
+      uint64_t tail_n = shard.tail_n;
+      end_n = min(end_n, tail_n - 1);
+      pad_size += slice_n - tail_n;
+      slice_n = tail_n;
     }
-    uint64_t offset_slice = begin_m * op.src_n + begin_n + MixTileGroupOffset(tile);
+    uint64_t offset_slice = begin_m * shard.stride_n + begin_n + shard_offset;
     src += offset_slice * op.type_size;
-    SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
+    SliceLoad2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, shard.stride_n, pad_size, op.type_size);
   }
 }
 
 __aicore_inline__ void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vSStore op;
+  vShard2D shard;
   vSStore::Decode(pc, head, op);
-  uint64_t tile_idx = MixTileIdx(tile);
+  vShard2D::Decode(pc + op.shard_rel, shard);
+  uint64_t tile_idx = TileIdx(tile);
   uint64_t begin_tmp = op.tile_stride * tile_idx;
+  __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)op.xn;
+  __gm__ uint8_t *dst = (__gm__ uint8_t *)op.gm;
+  uint64_t cidx = vGetBitRange(shard.pos, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS);
+  uint64_t shard_offset = shard.offset;
+  if (op.round_rank) {
+    cidx = RoundUpTileIdx<kRoundCacheNone>(tile, cidx, op.round_rank, pc + vSStore::ROUND_OFFSET);
+    shard_offset = cidx * shard.stride_m + shard_offset % shard.stride_m;
+  }
+  if (op.broadcast_m || op.broadcast_n) {
+    uint64_t midx = vGetBitRange(shard.pos, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS);
+    uint64_t nidx = vGetBitRange(shard.pos, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS);
+    if (!op.broadcast_m) {
+      if (uint64_t end_m = shard.last_m ? shard.tail_m : shard.slice_m; begin_tmp < end_m && nidx == 0) {
+        dst += (shard_offset / shard.stride_n + begin_tmp) * op.type_size;
+        copy_ubuf_to_gm_align_b8(dst, src, 0, 1, min(end_m - begin_tmp, op.tile_stride) * op.type_size, 0, 0, 0, 0);
+      }
+    } else if (!op.broadcast_n) {
+      if (uint64_t end_n = shard.last_n ? shard.tail_n : shard.slice_n; begin_tmp < end_n && midx == 0) {
+        dst += (cidx * shard.stride_n + shard_offset % shard.stride_n) * op.type_size;
+        copy_ubuf_to_gm_align_b8(dst, src, 0, 1, min(end_n - begin_tmp, op.tile_stride) * op.type_size, 0, 0, 0, 0);
+      }
+    } else if (midx == 0 && nidx == 0 && tile_idx == 0) {
+      dst += cidx * op.type_size;
+      copy_ubuf_to_gm_align_b8(dst, src, 0, 1, op.type_size, 0, 0, 0, 0);
+    }
+    return;
+  }
   uint64_t end_tmp = begin_tmp + op.tile_stride - 1;
-
-  uint64_t begin_m = begin_tmp  / op.slice_n;
-  uint64_t end_m = IsLastTile(tile) ? op.slice_m - 1 : end_tmp  / op.slice_n;
-  uint64_t begin_n = begin_tmp % op.slice_n;
-  uint64_t end_n = IsLastTile(tile) ? op.slice_n - 1 : end_tmp % op.slice_n;
-
-  uint64_t slice_n = op.slice_n;
+  uint64_t slice_m = shard.slice_m;
+  uint64_t slice_n = shard.slice_n;
+  uint64_t begin_m = begin_tmp  / slice_n;
+  uint64_t end_m = IsLastTile(tile) ? slice_m - 1 : end_tmp  / slice_n;
+  uint64_t begin_n = begin_tmp % slice_n;
+  uint64_t end_n = IsLastTile(tile) ? slice_n - 1 : end_tmp % slice_n;
+  if (shard.last_m) {
+    end_m = min(end_m, shard.tail_m - 1);
+  }
   uint64_t pad_size = op.pad_size;
-  if (MixTileIsLastM(tile)) {
-    end_m = min(end_m, op.tail_m - 1);
+  if (shard.last_n) {
+    uint64_t tail_n = shard.tail_n;
+    end_n = min(end_n, tail_n - 1);
+    pad_size += slice_n - tail_n;
+    slice_n = tail_n;
   }
-  if (MixTileIsLastN(tile)) {
-    end_n = min(end_n, op.tail_n - 1);
-    slice_n = op.tail_n;
-    pad_size += op.slice_n - op.tail_n;
-  }
-  uint64_t offset_slice = begin_m * op.src_n + begin_n + MixTileGroupOffset(tile);
-  __gm__ uint8_t *dst = (__gm__ uint8_t *)op.gm + offset_slice * op.type_size;
-  __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
-  SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, op.src_n, pad_size, op.type_size);
+  uint64_t offset_slice = begin_m * shard.stride_n + begin_n + shard_offset;
+  dst += offset_slice * op.type_size;
+  SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, shard.stride_n, pad_size, op.type_size);
 }
 
 __aicore_inline__ void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1305,7 +1335,7 @@ __aicore_inline__ void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile)
   if (IsEndTile(tile)) {
     vPingPongLoad::PingPongSwitch(pc);
   }
-  uint64_t tile_idx = MixTileIdx(tile);
+  uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vPingPongLoad::ROUND_OFFSET);
     if (tile_idx == INVALID_INT) {
@@ -1465,7 +1495,7 @@ __aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint32_t tile_idx;
   if constexpr (MIX) {
     // pingpong2(2) << 16 | tile_idx(16)
-    tile_idx = ((op.pingpong) << 16) | (MixTileIdx(tile) & 0xfffful);
+    tile_idx = ((op.pingpong) << 16) | (TileIdx(tile) & 0xfffful);
   } else {
     tile_idx = TileIdx(tile);
   }
@@ -1506,7 +1536,7 @@ __aicore_inline__ void PeerStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint32_t tile_idx;
   if constexpr (MIX) {
     // pingpong2(2) << 16 | tile_idx(16)
-    tile_idx = ((op.pingpong) << 16) | (MixTileIdx(tile) & 0xfffful);
+    tile_idx = ((op.pingpong) << 16) | (TileIdx(tile) & 0xfffful);
   } else {
     tile_idx = TileIdx(tile);
   }
@@ -1537,7 +1567,7 @@ __aicore_inline__ void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t t
     set_flag(PIPE_V, PIPE_MTE2, speer_load.event_id);
   }
 
-  uint64_t tile_idx = MixTileIdx(tile);
+  uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vPingPongPeerLoad::ROUND_OFFSET);
     if (tile_idx == INVALID_INT) {
@@ -1548,7 +1578,7 @@ __aicore_inline__ void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t t
   __gm__ uint64_t *flag_mem =
     (__gm__ uint64_t *)((__gm__ uint8_t *)op.from + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
 
-  uint32_t group_offset = MixTileGroupOffset(tile);
+  uint32_t group_offset = vShard2D::DecodeOffset(pc + speer_load.shard_rel);
   uint64_t sync_flag = (speer_load.unique_id << 32) | (group_offset + 1);
   WaitBuffFlag(sync_flag, flag_mem);
   set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
@@ -1826,12 +1856,14 @@ __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc, uint64_t &tile) {
   __gm__ vMixGroupMsg *msg = reinterpret_cast<__gm__ vMixGroupMsg *>(cube->gm_pos + sizeof(vMixGroupMsg) * block_idx);
   dcci(msg, 0);
   uint64_t pos = msg->pos[op.pingpong];
-  vVisitMix::Update(pc, pos, group_idx + block_num, op.pingpong ^ 1ul);
-  uint64_t cidx, midx, nidx;
-  vVisitMix::DecodePos(pos, cidx, midx, nidx);
-  uint64_t tile_flag = uint64_t((midx + 1) * cube->m0 > cube->m_real) << 1 | uint64_t((nidx + 1) * cube->n0 > cube->n_real);
-  uint64_t tile_offset = (cidx * cube->m_real + midx * cube->m0) * cube->n_real + nidx * cube->n0;
-  tile |= (tile_flag << V_GROUP_OFFSET_SIZE | tile_offset) << V_TILE_GROUP_IDX_OFFSET;
+  uint64_t cidx = vGetBitRange(pos, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS);
+  uint64_t midx = vGetBitRange(pos, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS);
+  uint64_t nidx = vGetBitRange(pos, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS);
+  bool last_m = (midx + 1) * cube->m0 > cube->m_real; // TODO: use shard
+  bool last_n = (nidx + 1) * cube->n0 > cube->n_real;
+  uint64_t offset = (cidx * cube->m_real + midx * cube->m0) * cube->n_real + nidx * cube->n0;
+  vVisitMix::UpdateShard(pc, pos, offset, last_m, last_n);
+  vVisitMix::Update(pc, group_idx + block_num, op.pingpong ^ 1ul);
   return tile_loops;
 }
 

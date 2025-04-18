@@ -113,6 +113,7 @@ class VectorKernel : public VKernel {
   VectorKernel(KernelType ktype) : VKernel(ktype) {
     MESS(max_type_, 100);
     MESS(min_type_, 200);
+    MESS(visit_, reinterpret_cast<VisitCoder *>(100));
   }
   virtual ~VectorKernel();
 
@@ -142,6 +143,7 @@ class VectorKernel : public VKernel {
       op->Clear(op_index++);
     }
     block_align_ = SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_];
+    visit_ = nullptr;
   }
   void Normalize() {
     for (auto op : build_ops_) {
@@ -168,17 +170,29 @@ class VectorKernel : public VKernel {
     root_dom_.PrepareTiling(this);
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
     code_.data_size_ = code_end - code_.data_;
-    if (!visit_) {
-      code_.block_dim_ = CompactBlockDim(core_limit);
-      code_.UpdateV(tile_num_);
-      return 0;
+    if (auto visit = GetVisitor<RedVisitCoder>(); visit != nullptr) {
+      code_.block_dim_ = CeilDiv<uint32_t>(visit->block_num_, 2);
+      code_.UpdateVE(visit);
+      return visit->ws_size_;
     }
-    code_.block_dim_ = CeilDiv<uint32_t>(visit_->block_num_, 2);
-    code_.UpdateVE(visit_);
-    return visit_->ws_size_;
+    code_.block_dim_ = CompactBlockDim(core_limit);
+    code_.UpdateV(tile_num_);
+    return 0;
   }
 
   NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
+
+  template <typename T>
+  T *GetVisitor() {
+    // TODO(multi visitor):
+    //   if (type_id_ != T::ID) return next_->GetCoder<T>();
+    return static_cast<T *>(visit_);
+  }
+
+  void AddVisitor(VisitCoder *visit) {
+    ASSERT(visit_ == nullptr);
+    visit_ = visit;
+  }
 
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> build_ops_;
@@ -186,7 +200,7 @@ class VectorKernel : public VKernel {
   RootDomain root_dom_;
 
   uint64_t tile_num_{0};
-  TileVisitCoder *visit_{nullptr};
+  VisitCoder *visit_;
 
   union {
     uint64_t block_align_;  // tiling

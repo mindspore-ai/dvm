@@ -340,19 +340,24 @@ def test_eager_cv_0():
     assert(t.run_check())
 
 @pytest.mark.mix
-@pytest.mark.parametrize('broadcast_dim', [0, 1])
-def test_eager_cv_broadcast(broadcast_dim):
+@pytest.mark.parametrize('shape_a, shape_b, shape_broadcast', [
+    [[1024, 512], [512, 1024], [1, 1024]],
+    [[512, 512], [512, 1024], [512, 1]],
+    [[2,4, 512, 512], [512, 256], [2, 1, 512, 1]],
+    [[2,4, 512, 512], [2, 1, 512, 256], [256]],
+])
+def test_eager_cv_broadcast(shape_a, shape_b, shape_broadcast):
     t = Tester("eager")
-    a = np.random.normal(0, 0.01, [1024, 512]).astype(np.float16)
-    b = np.random.normal(0, 0.01, [512, 1024]).astype(np.float16)
+    a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
     x0 = t.load(a)
     x1 = t.load(b)
     x2 = t.matmul(x0, x1, False, False)
-    expect_x2 = np.matmul(a, b)
-    c_shape = list(expect_x2.shape)
-    c_shape[broadcast_dim] = 1
-    c = np.random.normal(0, 0.01, c_shape).astype(np.float16)
+    expect_x2 = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16)
+    c = np.random.normal(0, 0.01, shape_broadcast).astype(np.float16)
     x3 = t.load(c)
-    x4 = t.binary("Add", x2, x3)
-    t.store_expect(x4, expect_x2 + c)
+    x4 = t.binary("Add", x3, 0.1)
+    x5 = t.binary("Add", x2, x4)
+    t.store_expect(x5, expect_x2 + c + 0.1)
+    t.store_expect(x4, c + 0.1)
     assert(t.run_check())

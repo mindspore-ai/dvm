@@ -112,10 +112,18 @@ class Tester(Kernel):
         self.expects.append([op, e, eps])
         return op
 
-    def codegen(self):
+    def codegen(self, verbose=False):
         if self.is_codegen:
             return
+        if verbose:
+            print("******* before tiling *******")
+            print(self.dump())
         Kernel.codegen(self, self.passes)
+        if verbose:
+            print("******* after tiling *******")
+            print(self.dump())
+            print("********* bytecode *********")
+            print(self.das())
         if not self.is_dyn:
             self.is_codegen = True
 

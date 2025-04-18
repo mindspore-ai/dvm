@@ -71,17 +71,16 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
-  DumpVal("cube_m", op.slice_m, oss);
+  DumpVal("broadcast_m", op.broadcast_m, oss);
   oss << ", ";
-  DumpVal("cube_n", op.slice_n, oss);
-  oss << ", ";
-  DumpVal("src_n", op.src_n, oss);
-  oss << ", ";
-  DumpVal("tail_m", op.tail_m, oss);
-  oss << ", ";
-  DumpVal("tail_n", op.tail_n, oss);
-  oss << ", ";
-  DumpVal("flags", op.flags, oss);
+  DumpVal("broadcast_n", op.broadcast_n, oss);
+  vShard2D shard;
+  vVisitMix::DecodeShard(dump_info.insn + op.shard_rel, shard);
+  oss << ", shard.slice(" << shard.slice_m << "," << shard.slice_n << ")";
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vSLoad::ROUND_OFFSET, oss);
+  }
 }
 
 void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -92,9 +91,16 @@ void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " //";
   DumpVal("pad_size", op.pad_size, oss);
   oss << ", ";
-  DumpVal("cube_m", op.slice_m, oss);
+  DumpVal("broadcast_m", op.broadcast_m, oss);
   oss << ", ";
-  DumpVal("cube_n", op.slice_n, oss);
+  DumpVal("broadcast_n", op.broadcast_n, oss);
+  vShard2D shard;
+  vVisitMix::DecodeShard(dump_info.insn + op.shard_rel, shard);
+  oss << ", shard.slice(" << shard.slice_m << "," << shard.slice_n << ")";
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vSStore::ROUND_OFFSET, oss);
+  }
 }
 
 void DumpAtomicCum(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -221,6 +227,9 @@ void DumpPingpongPeerLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("wait_flag", reinterpret_cast<void *>(p_load.wait_flag), oss);
   oss << ", ";
   DumpVal("event_id", reinterpret_cast<void *>(p_load.event_id), oss);
+  vShard2D shard;
+  vVisitMix::DecodeShard(dump_info.insn + p_load.shard_rel, shard);
+  oss << ", shard.slice(" << shard.slice_m << "," << shard.slice_n << ")";
   if (op.round_rank > 0) {
     oss << ", ";
     DumpRounds(op.round_rank, dump_info.insn + vPingPongPeerLoad::ROUND_OFFSET, oss);
@@ -912,10 +921,15 @@ class DisAssembler {
     bcode += sizeof(vCubeOp);
     bcode_size -= sizeof(vCubeOp);
     auto offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);
+    auto visit_code = reinterpret_cast<bcodeptr_t>(bcode + offset * sizeof(uint64_t));
     vVisitMix visit;
-    vVisitMix::Decode(reinterpret_cast<bcodeptr_t>(bcode + offset * sizeof(uint64_t)), visit);
-    oss << sub_indent << "aiv(sub_tile_num=[" << visit.subtile0 << ", " << visit.subtile1 << "]";
-    oss << ") {" << std::endl;
+    vVisitMix::Decode(visit_code , visit);
+    vShard2D shard;
+    vVisitMix::DecodeShard(visit_code, shard);
+    oss << sub_indent << "aiv(sub_tile_num=[" << visit.subtile0 << ", " << visit.subtile1 << "], "
+        << "shard.slice=[" << shard.slice_m << ", " << shard.slice_n << "], "
+        << "shard.tail=[" << shard.tail_m << ", " << shard.tail_n << "], "
+        << "shard.stride=[" << shard.stride_m << ", " << shard.stride_n << "]) {" << std::endl;
     DasVecBody(bcode, bcode_size, sub_indent + "  ");
     oss << sub_indent << "}" << std::endl;
     oss << indent << "}";

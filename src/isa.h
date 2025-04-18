@@ -777,88 +777,49 @@ struct vReshape {
 };
 
 struct vSLoad {
-  enum { RELOC_OFFSET = 1 };
+  enum { SHARD_OFFSET = 1 };
+  enum { RELOC_OFFSET = 2 };
+  enum { ROUND_OFFSET = 3 };
   __gm__ void *gm;
   uint64_t xn;
   uint64_t tile_stride;
-  uint64_t src_n;
-  uint64_t slice_n;
-  uint64_t slice_m;
-  uint64_t tail_n;
-  uint64_t tail_m;
   uint64_t pad_size;
+  bool broadcast_m;
+  bool broadcast_n;
+  uint64_t round_rank;
+  uint64_t shard_rel;
   uint64_t type_size;
-  uint64_t flags;
   // pc[0]: xn(18)
-  // pc[1]: src
-  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(24) << 8 | pad_size(8);
-  // pc[3]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | op.flags(4) << 4 | type_size(4)
+  // pc[1]: tile_stride(24) << 40 | reserved(8) << 32 | type_size(4) << 28 | pad_size(8) << 20 | round_rank(4) << 14 |
+  //        broadcast_m(1) << 13 | broadcast_n(1) << 12 | shard_rel(12)
+  // pc[2]: gm
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSLoad &op) {
     op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.gm = reinterpret_cast<__gm__ void *>(pc[1]);
-    uint64_t data = pc[2];
-    op.src_n = (data >> 8) & 0xfffffful;
-    op.slice_m = (data >> 32) & 0xfffful;
-    op.slice_n = (data >> 48) & 0xfffful;
-    op.pad_size = data & 0xfful;
-    data = pc[3];
-    op.tail_n = (data >> 48) & 0xfffful;
-    op.tail_m = (data >> 32) & 0xfffful;
-    op.tile_stride = (data >> 8) & 0xfffffful;
-    op.flags = (data >> 4) & 0xful;
-    op.type_size = data & 0xful;
+    uint64_t data = pc[1];
+    op.tile_stride = data >> 40;
+    op.type_size = (data >> 28) & 0xful;
+    op.pad_size = (data >> 20) & 0xfful;
+    op.round_rank = (data >> 14) & 0xful;
+    op.broadcast_m = (data >> 13) & 0x1ul;
+    op.broadcast_n = (data >> 12) & 0x1ul;
+    op.shard_rel = data & 0xffful;
+    op.gm = reinterpret_cast<__gm__ void *>(pc[2]);
   }
-
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSLoad &op) {
-    uint64_t size = 4;
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSLoad &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vSLoad::ROUND_OFFSET + round_size;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
-    pc[1] = reinterpret_cast<uint64_t>(op.gm);
-    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 8 | op.pad_size;
-    pc[3] = op.tail_n << 48 | op.tail_m << 32 | op.tile_stride << 8 | op.flags << 4 | op.type_size;
+    pc[1] = op.tile_stride << 40 | op.type_size << 28 | op.pad_size <<20 | op.round_rank << 14 |
+            uint64_t(op.broadcast_m) << 13 | uint64_t(op.broadcast_n) << 12;
+    pc[2] = reinterpret_cast<uint64_t>(op.gm);
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vSLoad::ROUND_OFFSET + i] = rounds[i];
+    }
     return size;
   }
 };
 
-struct vSStore {
-  enum { RELOC_OFFSET = 1 };
-  __gm__ void *gm;
-  uint64_t xn;
-  uint64_t tile_stride;
-  uint64_t src_n;
-  uint64_t slice_n;
-  uint64_t slice_m;
-  uint64_t tail_n;
-  uint64_t tail_m;
-  uint64_t pad_size;
-  uint64_t type_size;
-  // pc[0]: xn(18)
-  // pc[1]: dst
-  // pc[2]: slice_n(16) << 48 | slice_m(16) << 32 | src_n(24) << 8 | pad_size(8);
-  // pc[2]: tail_n(16) << 48 | tail_m(16) << 32 | tile_stride(24) << 8 | type_size(4)
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vSStore &op) {
-    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-    op.gm = reinterpret_cast<__gm__ void *>(pc[1]);
-    uint64_t data = pc[2];
-    op.src_n = (data >> 8) & 0xfffffful;
-    op.slice_m = (data >> 32) & 0xfffful;
-    op.slice_n = (data >> 48) & 0xfffful;
-    op.pad_size = data & 0xfful;
-    data = pc[3];
-    op.tail_n = (data >> 48) & 0xfffful;
-    op.tail_m = (data >> 32) & 0xfffful;
-    op.tile_stride = (data >> 8) & 0xfffffful;
-    op.type_size = data & 0xful;
-  }
-
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSStore &op) {
-    uint64_t size = 4;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_STORE);
-    pc[1] = reinterpret_cast<uint64_t>(op.gm);
-    pc[2] = op.slice_n << 48 | op.slice_m << 32 | op.src_n << 8 | op.pad_size;
-    pc[3] = op.tail_n << 48 | op.tail_m << 32 | op.tile_stride << 8 | op.type_size;
-    return size;
-  }
-};
+using vSStore = vSLoad;
 
 struct vSliceSL {
   enum { ROUND_OFFSET = 5 };
@@ -1073,27 +1034,31 @@ struct vPingPongLoad {
 struct vPingPongPeerLoad {
   enum { ROUND_OFFSET = 6 };
   enum { UNIQUEID_OFFSET = 5 };
+  enum { SHARD_OFFSET = 4 };
   vPingPongLoad base;
   uint64_t peer_mem_offset;
   uint64_t unique_id;
   uint64_t event_id{0};
   bool set_flag{false};
   bool wait_flag{false};
+  uint64_t shard_rel;
   __bcode__ int32_t *__restrict__ step_addr;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
   // pc[1]: from
   // pc[2]: round_rank(4) << 60 | pad_size(8) << 50 | iter_size(18) << 32 | tail_iter(16) << 16 | body_iter(16)
   // pc[3]: pingpong_stride(32) << 32 | pingpong(16)
-  // pc[4]: peer_mem_offset(32) << 32 | step(32)
-  // pc[5]: wait_flag(1) << 36 | set_flag(1) << 35 | event_id(3) << 32 | unique_id(32)
+  // pc[4]: peer_mem_offset(32) << 32 | wait_flag(1) << 16 | set_flag(1) << 15 | event_id(3) << 12 | shard_rel(12)
+  // pc[5]: step(32) << 32 | unique_id(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vPingPongPeerLoad &op) {
     vPingPongLoad::Decode(pc, head, op.base);
-    op.peer_mem_offset = pc[4] >> 32;
-    op.step_addr = reinterpret_cast<__bcode__ int32_t *>(pc + 4);
+    uint64_t data = pc[4];
+    op.peer_mem_offset = data >> 32;
+    op.event_id = (data >> 12) & 0x7ul;
+    op.set_flag = (data >> 15) & 0x1ul;
+    op.wait_flag = (data >> 16) & 0x1ul;
+    op.shard_rel = data & 0xffful;
+    op.step_addr = reinterpret_cast<__bcode__ int32_t *>(pc) + 11;
     op.unique_id = pc[5] & 0xfffffffful;
-    op.event_id = (pc[5] >> 32) & 0x7ul;
-    op.set_flag = (pc[5] >> 35) & 0x1ul;
-    op.wait_flag = (pc[5] >> 36) & 0x1ul;
   }
   __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) { pc[3] ^= 0x1ul; }
   __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongPeerLoad &op, const uint64_t *rounds) {
@@ -1104,16 +1069,8 @@ struct vPingPongPeerLoad {
     pc[2] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.tail_iter << 16 |
             op.base.body_iter;
     pc[3] = op.base.pingpong_stride << 32 | (op.base.pingpong & 0xfffful);
-    pc[4] = (op.peer_mem_offset & 0xfffffffful) << 32;
-    pc[5] = op.event_id << 32 | 0x1ul;
-    if (op.set_flag) {
-      pc[5] |= 0x1ul << 35;
-    }
-    if (op.wait_flag) {
-      pc[5] |= 0x1ul << 36;
-    }
-    __bcode__ int32_t *int_data = reinterpret_cast<__bcode__ int32_t *>(pc + 4);
-    int_data[0] = 1;
+    pc[4] = (op.peer_mem_offset & 0xfffffffful) << 32 | uint64_t(op.wait_flag) << 16 | uint64_t(op.set_flag) << 15 | op.event_id << 12;
+    pc[5] =  0x1ul << 32 | 0x1ul;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vPingPongPeerLoad::ROUND_OFFSET + i] = rounds[i];
     }
@@ -1510,42 +1467,80 @@ struct vMixGroupMsg {
   uint64_t reserved[62]; //  align to 512 cache line
 };
 
+struct vShard2D {
+  enum { CODE_SIZE = 4 };
+  uint64_t slice_m, slice_n;
+  uint64_t tail_m, tail_n;
+  uint64_t stride_m, stride_n;
+  uint64_t pos; // device only
+  uint64_t offset; // device only
+  bool last_m, last_n; // device only
+  // pc[0]: pos
+  // pc[1]: offset(32) << 32 | last_m(1) << 1 | last_n(1)
+  // pc[2]: slice_m(16) << 48 | slice_n(16) << 32 | tail_m(16) << 16 | tail_n(16)
+  // pc[3]: stride_m(32) << 32 | stride_n(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, vShard2D &op) {
+    op.pos = pc[0];
+    uint64_t data = pc[1];
+    op.offset = data >> 32;
+    op.last_m = (data >> 1) & 0x1ul;
+    op.last_n = data & 0x1ul;
+    uint64_t data1 = pc[2];
+    op.slice_m = data1 >> 48;
+    op.slice_n = (data1 >> 32) & 0xfffful;
+    op.tail_m = (data1 >> 16) & 0xfffful;
+    op.tail_n = data1 & 0xfffful;
+    uint64_t data2 = pc[3];
+    op.stride_m = data2 >> 32;
+    op.stride_n = vGetBitRange(data2, 0, 32);
+  }
+  __aicore_inline__ uint64_t DecodeOffset(bcodeptr_t pc) { return pc[1] >> 32; }
+  __aicore_inline__ void Update(bcodeptr_t pc, uint64_t pos, uint64_t offset, bool last_m, bool last_n) {
+    pc[0] = pos;
+    pc[1] = offset << 32 | uint64_t(last_m) << 1 | uint64_t(last_n);
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t slice[], uint64_t tail[], uint64_t stride[]) {
+    pc[0] = 0;
+    pc[1] = 0;
+    pc[2] = slice[1] << 48 | slice[0] << 32 | tail[1] << 16 | tail[0];
+    pc[3] = stride[1] << 32 | stride[0];
+    return CODE_SIZE;
+  }
+};
+
 struct vVisitMix {
-  enum { CODE_SIZE = 3};
+  enum { CODE_SIZE = 6 };
   uint64_t subtile0;
   uint64_t subtile1;
   __gm__ vCubeOp *cube;
   uint64_t group_idx;
   uint64_t pingpong;
-
-  // pc[0]: pos
-  // pc[1]: suttile0 << 48 | suttile1 << 32 | group_idx(31) | pingpong(1)
-  // pc[2]: cube
-  __aicore_inline__ void DecodePos(uint64_t pos, uint64_t &cidx, uint64_t &midx, uint64_t &nidx) {
-    cidx = vGetBitRange(pos, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS);
-    midx = vGetBitRange(pos, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS);
-    nidx = vGetBitRange(pos, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS);
-  }
+  // pc[0-3]: shard2d
+  // pc[4]: suttile0 << 48 | suttile1 << 32 | group_idx(31) | pingpong(1)
+  // pc[5]: cube
   __aicore_inline__ void Decode(bcodeptr_t pc, vVisitMix &op) {
-    uint64_t data1 = pc[1];
+    uint64_t data1 = pc[4];
     op.subtile0 = (data1 >> 48) & 0xfffful;
     op.subtile1 = (data1 >> 32) & 0xfffful;
     op.group_idx = vGetBitRange(data1, 1, 31);
     op.pingpong = data1 & 0x1ul;
-    op.cube = reinterpret_cast<__gm__ vCubeOp *>(pc[2]);
+    op.cube = reinterpret_cast<__gm__ vCubeOp *>(pc[5]);
   }
-  __aicore_inline__ void Update(bcodeptr_t pc, uint64_t pos, uint64_t group_idx, uint64_t pingpong) {
-    pc[0] = pos;
-    *reinterpret_cast<__bcode__ uint32_t *>(pc + 1) = static_cast<uint32_t>(group_idx << 1 | pingpong);
+  __aicore_inline__ void Update(bcodeptr_t pc, uint64_t group_idx, uint64_t pingpong) {
+    *reinterpret_cast<__bcode__ uint32_t *>(pc + 4) = static_cast<uint32_t>(group_idx << 1 | pingpong);
   }
   __aicore_inline__ void UpdateCube(bcodeptr_t pc, __gm__ void *cube) {
-    pc[2] = reinterpret_cast<uint64_t>(cube);
+    pc[5] = reinterpret_cast<uint64_t>(cube);
   }
-  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t subtile0, uint64_t subtile1) {
-    pc[0] = 0;
-    pc[1] = subtile0 << 48 | subtile1 << 32;
-    pc[2] = 0;
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t slice[], uint64_t tail[], uint64_t stride[], uint64_t subtile0, uint64_t subtile1) {
+    vShard2D::Encode(pc, slice, tail, stride);
+    pc[4] = subtile0 << 48 | subtile1 << 32;
+    pc[5] = 0;
     return CODE_SIZE;
+  }
+  __aicore_inline__ void DecodeShard(bcodeptr_t pc, vShard2D &op) { vShard2D::Decode(pc, op); }
+  __aicore_inline__ void UpdateShard(bcodeptr_t pc, uint64_t pos, uint64_t offset, bool last_m, bool last_n) {
+    vShard2D::Update(pc, pos, offset, last_m, last_n);
   }
 };
 

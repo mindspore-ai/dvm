@@ -25,15 +25,27 @@ extern const uint64_t g_visit_func_offset[];
 
 namespace dvm {
 
-struct TileVisitCoder {
+class VisitCoder {
+ public:
+  void AddReloc(uint64_t *pc, uint64_t offset) {
+    rel_relocs_.emplace_back(pc, offset);
+  }
   void Clear() { rel_relocs_.clear(); }
+  std::vector<std::pair<uint64_t *, uint64_t >> rel_relocs_;
+ protected:
+  ~VisitCoder() = default;
+};
+
+struct RedVisitCoder : public VisitCoder {
+ public:
   uint32_t block_num_;
   uint32_t ws_size_;
   uint32_t visit_id_;
   uint32_t code_size_;
   uint64_t *code_{nullptr};
-  std::vector<uint64_t *> rel_relocs_;
 };
+
+class MixVisitCoder : public VisitCoder {};
 
 struct RelocAddr {
   void Reloc(void *dst) {
@@ -99,13 +111,13 @@ class Code : public CodeWrap {
     UpdateHead(data, 0, V_ENTRY_TYPE_V);
   }
 
-  void UpdateVE(const TileVisitCoder *visit) {
+  void UpdateVE(const RedVisitCoder *visit) {
     target_ = kTargetMix;
     uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
     data_size_ += visit->code_size_;
     std::memcpy(visit_code, visit->code_, visit->code_size_);
-    for (auto head : visit->rel_relocs_) {
-      *head |= static_cast<uint64_t>(visit_code - head) << V_HEAD_EXT_OFFSET;
+    for (auto &r : visit->rel_relocs_) {
+      *r.first |= static_cast<uint64_t>(visit_code - r.first) << V_HEAD_EXT_OFFSET;
     }
     uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - 2;
     uint64_t data =
@@ -123,10 +135,13 @@ class Code : public CodeWrap {
     UpdateHead(0, V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_C);
   }
 
-  void UpdateMix(uint64_t subtile0, uint64_t subtile1) {
+  void UpdateMix(const MixVisitCoder *visit, uint64_t slice[], uint64_t tail[], uint64_t stride[], uint64_t subtile0, uint64_t subtile1) {
     target_ = kTargetMix;
     uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
-    data_size_ += vVisitMix::Encode(visit_code, subtile0, subtile1) * sizeof(uint64_t);
+    data_size_ += vVisitMix::Encode(visit_code, slice, tail, stride, subtile0, subtile1) * sizeof(uint64_t);
+    for (auto &r : visit->rel_relocs_) {
+      *(r.first + r.second) |= static_cast<uint64_t>(visit_code - r.first);
+    }
     uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - (HeadSize() + sizeof(vCubeOp)) / sizeof(uint64_t);
     uint64_t data =
       g_visit_func_offset[V_VISIT_MIX] << V_ENTRY_VE_VISIT_ID_OFFSET | offset << V_ENTRY_VE_VISIT_OFFSET_OFFSET;

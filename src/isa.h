@@ -1340,8 +1340,6 @@ struct vCubeOp {
   // shape_a: [batch_a0, batch_a1, m, k], shape_b: [batch_b0, batch_b1, k, n]
   uint32_t batch_cast;
   uint32_t m0, n0, k0;
-  uint32_t unique_id{1};
-  uint32_t rank_size{0};
   // format: visit_type(16) << 16 | data(16)
   // data:
   //  nZ: swizzle_cnt(16)
@@ -1351,6 +1349,8 @@ struct vCubeOp {
   uint32_t offset_a, offset_b;
   // for aiv
   uint64_t gm_pos;
+  uint32_t unique_id;
+  uint32_t rank_size;
 
   __aicore_inline__ uint32_t SwizzleEncode(uint32_t visit_type, uint32_t data) {
     return visit_type << 16 | data;
@@ -1516,7 +1516,7 @@ struct vVisitMix {
   uint64_t group_idx;
   uint64_t pingpong;
   // pc[0-3]: shard2d
-  // pc[4]: suttile0 << 48 | suttile1 << 32 | group_idx(31) | pingpong(1)
+  // pc[4]: suttile0(16) << 48 | suttile1(16) << 32 | group_idx(31) << 1 | pingpong(1)
   // pc[5]: cube
   __aicore_inline__ void Decode(bcodeptr_t pc, vVisitMix &op) {
     uint64_t data1 = pc[4];

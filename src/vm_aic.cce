@@ -767,16 +767,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
       uint64_t pingpong_offset = mat.flags & V_PINGPONG_FLAG_STORE ? block_num + block_idx : block_idx;
       mat.flags ^= V_PINGPONG_FLAG_STORE;
       mat.StoreC_PingPong(mat.gm_c, l0c, unit_flag, m_actual, n_actual, pingpong_offset);
-      if (mat.flags & V_CUBE_FLAG_PEER_STORE) {
-        // result of GetCubeOffset()
-        uint64_t group_offset = midx * mat.m0 * mat.n_real + nidx * mat.n0;
-        set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
-        wait_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
-        __gm__ uint64_t *peer_flag_mem =
-          (__gm__ uint64_t *)((__gm__ uint8_t *)mat.gm_c + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
-        *peer_flag_mem = ((uint64_t)(op->unique_id) << 32) | (group_offset + 1);
-        dcci(peer_flag_mem, 0);
-      }
     } else if (mat.flags & V_CUBE_FLAG_OUT_FP32) {
       mat.StoreC_Fp32((__gm__ float *__restrict__)mat.gm_c + batch_offset, l0c, midx, nidx, unit_flag, m_actual,
                       n_actual);

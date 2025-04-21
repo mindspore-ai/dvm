@@ -1042,6 +1042,7 @@ void VKernelE::Split(NDObject *root) {
                 temp_ops_.push_back(update);
               }
               area->dom_ = a->dom_;
+              pv_black_mask_ |= 1ul << area->area_id_;
             }
             area->fused_.push_back(a);
             areas_[a->area_id_].second = area;

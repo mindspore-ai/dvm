@@ -333,10 +333,28 @@ def test_eager_cv_0():
     x2 = t.matmul(x0, x1, False, False)
     x3 = t.binary("Add", x2, 0.1)
     x4 = t.binary("Add", x3, 0.1)
-    expect_x2 = np.matmul(a, b)
+    expect_x2 = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16)
     t.store_expect(x4, expect_x2 + 0.2)
     x5 = t.binary("Sub", x3, 0.05)
     t.store_expect(x5, expect_x2 + 0.05)
+    assert(t.run_check())
+
+@pytest.mark.mix
+def test_eager_cv_1():
+    ''' matmul -> {area1, area2} '''
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [256, 512]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [512, 256]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.binary("Add", x2, 0.1)
+    x4 = t.binary("Add", x3, 0.1)
+    expect_x2 = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16)
+    t.store_expect(x4, expect_x2 + 0.2)
+    c = np.random.normal(0, 0.01, [2, 256, 256]).astype(np.float16)
+    x5 = t.binary("Sub", x2, t.load(c))
+    t.store_expect(x5, expect_x2 - c)
     assert(t.run_check())
 
 @pytest.mark.mix

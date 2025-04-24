@@ -2344,7 +2344,13 @@ void GmmOp::NormalizeOutput() {
 
 void GmmOp::GenTiling(vCubeOp *op) {
   Tile(op);
-  op->swizzle = vCubeOp::SwizzleEncode(1, DEFAULT_SWIZZLE_COUNT);
+  if (group_type_ == kSplit_M) {
+    op->swizzle = vCubeOp::SwizzleEncode(1, DEFAULT_SWIZZLE_COUNT);
+  }
+  if (group_type_ == kSplit_K) {
+    op->swizzle = vCubeOp::SwizzleEncode(op->m_real > op->n_real ? V_CUBE_SWIZ_VISIT_nZ : V_CUBE_SWIZ_VISIT_zN,
+                                         DEFAULT_SWIZZLE_COUNT);
+  }
 }
 
 void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {

@@ -498,6 +498,11 @@ class TileVisitor {
     } else {
       m.m_real = stride;
       m.m_loop = CeilDiv(m.m_real, m.m0);
+      if (m.m_real >= m.n_real) {
+        swizzle_ = V_CUBE_SWIZ_VISIT_nZ << 16 | (swizzle_ & 0xffff);
+      } else {
+        swizzle_ = V_CUBE_SWIZ_VISIT_zN << 16 | (swizzle_ & 0xffff);
+      }
     }
     gm_group_list_++;
     pos_last_ = pos_ = INVALID_TILE_POS;

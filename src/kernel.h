@@ -70,6 +70,7 @@ class RootDomain : public PropDomain {
   }
   void Align(int depth, int64_t space);
   void Shard(const ShardParam &sp);
+  void ClearShard() { shard_ = nullptr; }
 
   const DimArray &DimSpace() const { return dom_->nd_.dims(); }
   int64_t TileNum() const { return tile_num_; }

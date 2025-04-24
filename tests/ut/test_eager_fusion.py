@@ -205,7 +205,7 @@ def test_eager_mm_bias_fp16():
     t.store_expect(x3, expect, 5e-3)
     assert(t.run_check())
 
-def test_eager_kernel_reuse():
+def test_eager_cube_vec_reuse():
     ''' 2 vec -> 1 cube -> 1 vec '''
     t = Tester("eager")
     # round 1
@@ -223,6 +223,38 @@ def test_eager_kernel_reuse():
     assert(t.run_check())
     t.reset_eager()
     # round 3
+    a = np.random.normal(0, 0.1, [256, 512]).astype(np.float32)
+    x = t.binary("Add", t.load(a), 0.2)
+    x = t.binary("Add", x, 0.2)
+    t.store_expect(x, a + 0.4)
+    assert(t.run_check())
+    t.reset_eager()
+
+def test_eager_pv_reuse():
+    t = Tester("eager")
+    x0 = np.full([32, 1024], 0.1, np.float32)
+    x1 = np.full([32, 1024], 0.2, np.float32)
+    x2 = np.full([10, 1024], 0.4, np.float32)
+    x3 = np.full([10, 1024], 0.1, np.float32)
+    for dtype in range(3):
+        y0 = t.binary("Mul", t.load(x0), t.load(x1))
+        y1 = t.binary("Sub", t.load(x2), t.load(x3))
+        t.store_expect(y0, 0.02)
+        t.store_expect(y1, 0.3)
+        assert(t.run_check())
+        t.reset_eager()
+
+def test_eager_mix_vec_reuse():
+    t = Tester("eager")
+    # round 1
+    a = np.random.normal(0, 0.01, [256, 512]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [512, 256]).astype(np.float16)
+    x = t.matmul(t.load(a), t.load(b), False, False)
+    x = t.binary("Add", x, 0.1)
+    t.store_expect(x, np.matmul(a.astype(np.float32), b.astype(np.float32)) + 0.1, 2e-3)
+    assert(t.run_check())
+    t.reset_eager()
+    # round 2
     a = np.random.normal(0, 0.1, [256, 512]).astype(np.float32)
     x = t.binary("Add", t.load(a), 0.2)
     x = t.binary("Add", x, 0.2)

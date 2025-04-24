@@ -843,6 +843,7 @@ class EagerVector : public VectorKernel {
     MixVisitCoder visit;
     AddVisitor(&visit);
     auto code_end = DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
+    root_dom_.ClearShard();
     uint64_t subtile_0 = (tile_num_ + 1) / 2;
     uint64_t subtile_1 = tile_num_ - subtile_0;
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
@@ -900,7 +901,6 @@ class EagerVector : public VectorKernel {
     code_.data_size_ = child_offset;
     code_.block_dim_ = core_total - core_free;
     code_.UpdateVP();
-    VKernelE::SetParallelRange(this, reinterpret_cast<VectorKernel **>(others), other_num);
     return 0;
   }
 
@@ -1354,27 +1354,17 @@ void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
   if (kernel_begin_ < kernel_used_) {
     oss << "vgraph.eager() {" << std::endl;
     std::string body_indent = indent + "  ";
+    for (int i = 0; i < kernel_begin_; ++i) {
+      auto k = kernels_[i];
+      oss << body_indent << "// pv_merged " << i << std::endl;
+      k->Dump(oss, body_indent);
+      oss << std::endl;
+    }
     for (int i = kernel_begin_; i < kernel_used_; ++i) {
       auto k = kernels_[i];
       oss << body_indent << "// eager " << i << std::endl;
       k->Dump(oss, body_indent);
       oss << std::endl;
-      auto entry = *reinterpret_cast<uint64_t *>(k->code_.data_ + sizeof(uint64_t));
-      if ((entry & V_ENTRY_MASK_TYPE) == V_ENTRY_TYPE_VP) {
-        int num = 0;
-        auto children = GetParallelRange(k, num);
-        for (int j = 0; j < num; ++j) {
-          auto ck = children[j];
-          if (ck->code_.data_ == nullptr) {  // TRICK: force dump vgraph
-            ck->code_.data_ = reinterpret_cast<uint8_t *>(1);
-            ck->Dump(oss, body_indent);
-            ck->code_.data_ = nullptr;
-          } else {
-            ck->Dump(oss, body_indent);
-          }
-          oss << std::endl;
-        }
-      }
     }
   } else {
     EagerDumpRef helper(oss);

@@ -181,15 +181,6 @@ class VKernelE : public VKernel {
 
   static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
 
-  static void SetParallelRange(VectorKernel *k, VectorKernel **kernels, int num) {
-    k->comm_op_ = reinterpret_cast<CommOp *>(kernels);
-    k->forward_event_num_ = num;
-  }
-  static VectorKernel **GetParallelRange(VectorKernel *k, int &num) {
-    num = k->forward_event_num_;
-    return reinterpret_cast<VectorKernel **>(k->comm_op_);
-  }
-
  protected:
   static int GetArea(NDObject *obj) { return obj->reserved_; }
   static void SetArea(NDObject *obj, int area_id) { obj->reserved_ = area_id; }

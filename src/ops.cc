@@ -34,6 +34,7 @@ constexpr uint32_t AXES_ALIGN_SIZE = 512;
 constexpr uint32_t CUBE_BLOCK_SIZE = 256;
 constexpr uint32_t CONST_512 = 512;
 constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
+constexpr uint32_t DEFAULT_DIAGONAL_SWIZZLE_COUNT = 8;
 constexpr uint32_t MAX_BIAS_SIZE = 1024;
 constexpr int64_t MAX_SPLIT_K = 20480;
 constexpr int64_t MIN_SPLIT_K = 4096;
@@ -2344,13 +2345,7 @@ void GmmOp::NormalizeOutput() {
 
 void GmmOp::GenTiling(vCubeOp *op) {
   Tile(op);
-  if (group_type_ == kSplit_M) {
-    op->swizzle = vCubeOp::SwizzleEncode(1, DEFAULT_SWIZZLE_COUNT);
-  }
-  if (group_type_ == kSplit_K) {
-    op->swizzle = vCubeOp::SwizzleEncode(op->m_real > op->n_real ? V_CUBE_SWIZ_VISIT_nZ : V_CUBE_SWIZ_VISIT_zN,
-                                         DEFAULT_SWIZZLE_COUNT);
-  }
+  op->swizzle = vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_DIAGONAL_Z, DEFAULT_DIAGONAL_SWIZZLE_COUNT);
 }
 
 void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {

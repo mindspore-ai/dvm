@@ -23,8 +23,6 @@ __aicore_inline__ void Swap(T &x, T &y) {
   y = t;
 }
 
-__aicore_inline__ uint64_t RoundUp(uint64_t val, uint64_t rnd) { return (val + rnd - 1) / rnd * rnd; }
-__aicore_inline__ uint64_t CeilDiv(uint64_t val, uint64_t rnd) { return (val + rnd - 1) / rnd; }
 
 #define __force_inline__ inline __attribute__((always_inline))
 
@@ -289,7 +287,7 @@ class MatMul {
       src,                                // src
       0,                                  // sid
       1,                                  // nBurst
-      CeilDiv(n_actual * BiasTypeSize(), 32),  // lenBurst
+      CeilDiv(n_actual * BiasTypeSize(), 32UL),  // lenBurst
       0,                                  // srcGap
       0,                                  // dstGap
       PAD_NONE                            // padMode
@@ -302,7 +300,7 @@ class MatMul {
       src,                                      // src
       (flags & V_CUBE_FLAG_BIAS_FP16) ? 1 : 0,  // convControl
       1,                                        // nBurst
-      CeilDiv(n_actual * BiasTypeSize(), 64),   // lenBurst
+      CeilDiv(n_actual * BiasTypeSize(), 64UL),   // lenBurst
       0,                                        // srcGap
       0                                         // dstGap
     );
@@ -498,11 +496,6 @@ class TileVisitor {
     } else {
       m.m_real = stride;
       m.m_loop = CeilDiv(m.m_real, m.m0);
-      if (m.m_real >= m.n_real) {
-        swizzle_ = V_CUBE_SWIZ_VISIT_nZ << 16 | (swizzle_ & 0xffff);
-      } else {
-        swizzle_ = V_CUBE_SWIZ_VISIT_zN << 16 | (swizzle_ & 0xffff);
-      }
     }
     gm_group_list_++;
     pos_last_ = pos_ = INVALID_TILE_POS;
@@ -545,39 +538,14 @@ class TileVisitor {
     uint64_t tile_num = vGetBitRange(tile_loop_, 32, 32);
     if (tile_idx < tile_num) {
       tile_idx -= BlockIdxOffset();
-      uint64_t cidx = tile_idx / (m.m_loop * m.n_loop);
-      uint64_t sidx = tile_idx - cidx * (m.m_loop * m.n_loop);
-      uint64_t v_type = swizzle_ >> 16;
-      uint64_t swiz_cnt = swizzle_ & 0xffff;
+      uint64_t core_loop = m.m_loop * m.n_loop;
+      uint64_t cidx = tile_idx / core_loop;
+      tile_idx -= cidx * core_loop;
       uint64_t midx, nidx;
-      if (v_type == V_CUBE_SWIZ_VISIT_nZ) {
-        uint32_t tile_block_idx = sidx / (swiz_cnt * m.n_loop);
-        uint32_t in_tile_block_idx = sidx - tile_block_idx * (swiz_cnt * m.n_loop);
-        uint32_t n_row = swiz_cnt;
-        if (m.m_loop < (tile_block_idx + 1) * swiz_cnt) {
-          n_row = m.m_loop - swiz_cnt * tile_block_idx;
-        }
-        nidx = in_tile_block_idx / n_row;
-        midx = tile_block_idx * swiz_cnt + in_tile_block_idx - n_row * nidx;
-        if (tile_block_idx & 1) {
-          nidx = m.n_loop - nidx - 1;
-        }
-      } else {
-        uint32_t tile_block_idx = sidx / (swiz_cnt * m.m_loop);
-        uint32_t in_tile_block_idx = sidx - tile_block_idx * (swiz_cnt * m.m_loop);
-        uint32_t n_col = swiz_cnt;
-        if (m.n_loop < (tile_block_idx + 1) * swiz_cnt) {
-          n_col = m.n_loop - swiz_cnt * tile_block_idx;
-        }
-        midx = in_tile_block_idx / n_col;
-        nidx = tile_block_idx * swiz_cnt + in_tile_block_idx - n_col * midx;
-        if (tile_block_idx & 1) {
-          midx = m.m_loop - midx - 1;
-        }
-      }
+      vCubeOp::IndexCompute(tile_idx, swizzle_, m.m_loop, m.n_loop, midx, nidx);
       pos_next_ = cidx << V_MM_POS_C_OFFSET | midx << V_MM_POS_M_OFFSET | nidx << V_MM_POS_N_OFFSET;
     } else {
-      pos_next_  = INVALID_TILE_POS;
+      pos_next_ = INVALID_TILE_POS;
     }
   }
 
@@ -626,8 +594,8 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
   } else {
     set_atomic_none();
   }
-  uint64_t offset_mk = RoundUp(op->m0 * op->k0 * sizeof(T), 256);  // TODO: int8 is 512
-  uint64_t offset_nk = RoundUp(op->n0 * op->k0 * sizeof(T), 256);  // TODO: int8 is 512
+  uint64_t offset_mk = RoundUp(op->m0 * op->k0 * sizeof(T), 256UL);  // TODO: int8 is 512
+  uint64_t offset_nk = RoundUp(op->n0 * op->k0 * sizeof(T), 256UL);  // TODO: int8 is 512
   __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);
   __cbuf__ T *__restrict__ l1b = reinterpret_cast<__cbuf__ T*>(offset_mk);
   __cbuf__ T *__restrict__ n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE);

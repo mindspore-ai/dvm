@@ -229,6 +229,10 @@ __aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vP
     return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_access_func_offset[id] << V_HEAD_ID_OFFSET;
   }
 }
+template <typename T>
+__aicore_inline__ T min(T a, T b) {
+  return a < b ? a : b;
+}
 #else
 __aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) { return 0; }
 #endif
@@ -244,6 +248,42 @@ __aicore_inline__ void vClrBitRange(uint64_t &x, uint64_t offset, uint64_t len) 
 template <typename T>
 __aicore_inline__ T DecodeScalar(__bcode__ uint32_t *scalr_offset) {
   return *(__bcode__ T *)(scalr_offset);
+}
+
+template <typename T>
+__aicore_inline__ T CeilDiv(T a, T b) {
+  return (a - 1) / b + 1;
+}
+
+template <typename T>
+__aicore_inline__ T RoundUp(T num, T rnd) {
+  if (rnd == 0) {
+    return 0;
+  }
+  return (num + rnd - 1) / rnd * rnd;
+}
+
+template <typename T>
+__aicore_inline__ T RoundDown(T num, T rnd) {
+  if (rnd == 0) {
+    return 0;
+  }
+  return num / rnd * rnd;
+}
+
+template <typename T>
+__aicore__ inline T Gcd(T a, T b) {
+  while (b != 0) {
+    T c = b;
+    b = a % b;
+    a = c;
+  }
+  return a;
+}
+
+template <typename T>
+__aicore__ inline T Lcm(T a, T b) {
+  return a * b / Gcd(a, b);
 }
 
 struct vUnary {
@@ -809,7 +849,7 @@ struct vSLoad {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vSLoad::ROUND_OFFSET + round_size;
     pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
-    pc[1] = op.tile_stride << 40 | op.type_size << 28 | op.pad_size <<20 | op.round_rank << 14 |
+    pc[1] = op.tile_stride << 40 | op.type_size << 28 | op.pad_size << 20 | op.round_rank << 14 |
             uint64_t(op.broadcast_m) << 13 | uint64_t(op.broadcast_n) << 12;
     pc[2] = reinterpret_cast<uint64_t>(op.gm);
     for (uint64_t i = 0; i < round_size; ++i) {
@@ -1069,8 +1109,9 @@ struct vPingPongPeerLoad {
     pc[2] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.tail_iter << 16 |
             op.base.body_iter;
     pc[3] = op.base.pingpong_stride << 32 | (op.base.pingpong & 0xfffful);
-    pc[4] = (op.peer_mem_offset & 0xfffffffful) << 32 | uint64_t(op.wait_flag) << 16 | uint64_t(op.set_flag) << 15 | op.event_id << 12;
-    pc[5] =  0x1ul << 32 | 0x1ul;
+    pc[4] = (op.peer_mem_offset & 0xfffffffful) << 32 | uint64_t(op.wait_flag) << 16 | uint64_t(op.set_flag) << 15 |
+            op.event_id << 12;
+    pc[5] = 0x1ul << 32 | 0x1ul;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vPingPongPeerLoad::ROUND_OFFSET + i] = rounds[i];
     }
@@ -1310,10 +1351,13 @@ struct vStoreAG {
 #define V_CUBE_FLAG_PEER_STORE (1ul << 12)
 #define V_CUBE_FLAG_GROUPED_LIST (1ul << 13)
 #define V_CUBE_FLAG_GROUP_K (1ul << 14)
-#define V_CUBE_FLAG_DTYPE_OFFSET 30 // [30, 31]
+#define V_CUBE_FLAG_DTYPE_OFFSET 30  // [30, 31]
 
 #define V_CUBE_SWIZ_VISIT_nZ 0
 #define V_CUBE_SWIZ_VISIT_zN 1
+#define V_CUBE_SWIZ_VISIT_DIAGONAL_Z 2
+#define V_CUBE_SWIZ_VISIT_DIAGONAL_N 3
+#define V_CUBE_DIAGONAL_MIN_DIM 6
 
 #define V_CUBE_BCAST_FLAG_BCAST_A0 (1u << 0)
 #define V_CUBE_BCAST_FLAG_BCAST_A1 (1u << 1)
@@ -1352,8 +1396,61 @@ struct vCubeOp {
   uint32_t unique_id;
   uint32_t rank_size;
 
-  __aicore_inline__ uint32_t SwizzleEncode(uint32_t visit_type, uint32_t data) {
-    return visit_type << 16 | data;
+  __aicore_inline__ uint32_t SwizzleEncode(uint32_t visit_type, uint32_t data) { return visit_type << 16 | data; }
+
+  __aicore_inline__ void SwizzleDiagonalZ(uint64_t tile_idx, uint64_t swiz_cnt, uint64_t m_loop, uint64_t n_loop,
+                                         uint64_t &midx, uint64_t &nidx) {
+    uint64_t m_block_idx = tile_idx / (swiz_cnt * n_loop);
+    tile_idx -= m_block_idx * (swiz_cnt * n_loop);
+    uint64_t m_row = min(swiz_cnt, m_loop - m_block_idx * swiz_cnt);
+
+    uint64_t mn_block_idx = tile_idx / (m_row * swiz_cnt);
+    tile_idx -= mn_block_idx * (m_row * swiz_cnt);
+    uint64_t n_col = min(swiz_cnt, n_loop - mn_block_idx * swiz_cnt);
+
+    uint64_t diagonal_size = m_row * n_col;
+    uint64_t in_tile_block_idx = tile_idx % diagonal_size;
+
+    midx = in_tile_block_idx % m_row + m_block_idx * swiz_cnt;
+    nidx = (in_tile_block_idx + in_tile_block_idx / Lcm(m_row, n_col)) % n_col + mn_block_idx * swiz_cnt;
+  }
+
+  __aicore_inline__ void SwizzlezN(uint64_t tile_idx, uint64_t swiz_cnt, uint64_t m_loop, uint64_t n_loop,
+                                   uint64_t &midx, uint64_t &nidx) {
+    uint64_t tile_block_idx = tile_idx / (swiz_cnt * m_loop);
+    uint64_t in_tile_block_idx = tile_idx - tile_block_idx * (swiz_cnt * m_loop);
+    uint64_t n_col = min(swiz_cnt, n_loop - swiz_cnt * tile_block_idx);
+    midx = in_tile_block_idx / n_col;
+    nidx = tile_block_idx * swiz_cnt + in_tile_block_idx - n_col * midx;
+    if (tile_block_idx & 1) {
+      midx = m_loop - midx - 1;
+    }
+  }
+
+  __aicore_inline__ void IndexCompute(uint64_t tile_idx, uint64_t swizzle, uint64_t m_loop, uint64_t n_loop,
+                                      uint64_t &midx, uint64_t &nidx) {
+    uint64_t swiz_cnt = swizzle & 0xffff;
+    uint64_t swiz_type = swizzle >> 16;
+    if ((swiz_type == V_CUBE_SWIZ_VISIT_DIAGONAL_Z || V_CUBE_SWIZ_VISIT_DIAGONAL_N) &&
+        (m_loop < V_CUBE_DIAGONAL_MIN_DIM || n_loop < V_CUBE_DIAGONAL_MIN_DIM)) {
+      swiz_type = m_loop < n_loop ? V_CUBE_SWIZ_VISIT_zN : V_CUBE_SWIZ_VISIT_nZ;
+    }
+    switch (swiz_type) {
+      case V_CUBE_SWIZ_VISIT_nZ:
+        vCubeOp::SwizzlezN(tile_idx, swiz_cnt, n_loop, m_loop, nidx, midx);
+        break;
+      case V_CUBE_SWIZ_VISIT_zN:
+        vCubeOp::SwizzlezN(tile_idx, swiz_cnt, m_loop, n_loop, midx, nidx);
+        break;
+      case V_CUBE_SWIZ_VISIT_DIAGONAL_Z:
+        vCubeOp::SwizzleDiagonalZ(tile_idx, swiz_cnt, m_loop, n_loop, midx, nidx);
+        break;
+      case V_CUBE_SWIZ_VISIT_DIAGONAL_N:
+        vCubeOp::SwizzleDiagonalZ(tile_idx, swiz_cnt, n_loop, m_loop, nidx, midx);
+        break;
+      default:
+        break;
+    }
   }
 };
 
@@ -1464,7 +1561,7 @@ struct vVisitRed4 {
 
 struct vMixGroupMsg {
   uint64_t pos[2];
-  uint64_t reserved[62]; //  align to 512 cache line
+  uint64_t reserved[62];  //  align to 512 cache line
 };
 
 struct vShard2D {
@@ -1472,9 +1569,9 @@ struct vShard2D {
   uint64_t slice_m, slice_n;
   uint64_t tail_m, tail_n;
   uint64_t stride_m, stride_n;
-  uint64_t pos; // device only
-  uint64_t offset; // device only
-  bool last_m, last_n; // device only
+  uint64_t pos;         // device only
+  uint64_t offset;      // device only
+  bool last_m, last_n;  // device only
   // pc[0]: pos
   // pc[1]: offset(32) << 32 | last_m(1) << 1 | last_n(1)
   // pc[2]: slice_m(16) << 48 | slice_n(16) << 32 | tail_m(16) << 16 | tail_n(16)
@@ -1529,10 +1626,9 @@ struct vVisitMix {
   __aicore_inline__ void Update(bcodeptr_t pc, uint64_t group_idx, uint64_t pingpong) {
     *reinterpret_cast<__bcode__ uint32_t *>(pc + 4) = static_cast<uint32_t>(group_idx << 1 | pingpong);
   }
-  __aicore_inline__ void UpdateCube(bcodeptr_t pc, __gm__ void *cube) {
-    pc[5] = reinterpret_cast<uint64_t>(cube);
-  }
-  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t slice[], uint64_t tail[], uint64_t stride[], uint64_t subtile0, uint64_t subtile1) {
+  __aicore_inline__ void UpdateCube(bcodeptr_t pc, __gm__ void *cube) { pc[5] = reinterpret_cast<uint64_t>(cube); }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t slice[], uint64_t tail[], uint64_t stride[],
+                                    uint64_t subtile0, uint64_t subtile1) {
     vShard2D::Encode(pc, slice, tail, stride);
     pc[4] = subtile0 << 48 | subtile1 << 32;
     pc[5] = 0;

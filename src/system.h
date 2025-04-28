@@ -136,27 +136,6 @@ extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kTypeEnd];
 extern const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd];
 
-template <typename T>
-static inline __attribute__((always_inline)) T CeilDiv(T a, T b) {
-  ASSERT(b != 0);
-  return (a - 1) / b + 1;
-}
-
-template <typename T>
-static inline __attribute__((always_inline)) T RoundUp(T num, T rnd) {
-  if (rnd == 0) {
-    return 0;
-  }
-  return (num + rnd - 1) / rnd * rnd;
-}
-
-template <typename T>
-static inline __attribute__((always_inline)) T RoundDown(T num, T rnd) {
-  if (rnd == 0) {
-    return 0;
-  }
-  return num / rnd * rnd;
-}
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)

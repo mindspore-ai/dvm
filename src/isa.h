@@ -94,6 +94,7 @@ enum vSimdInsnID {
   V_POW,
   V_CLR_PAD,
   V_ELEMENT_ANY,
+  V_ONE_HOT,
   V_BROADCAST_X_B16,
   V_BROADCAST_S_B16,
   V_SQRT_FP16,
@@ -116,6 +117,7 @@ enum vSimdInsnID {
   V_CMP_FP16,
   V_SEL_FP16,
   V_ISFINITE_FP16,
+  V_ONE_HOT_B16,
   V_CAST_BOOL_TO_FP16,
   V_BROADCAST_X_B32,
   V_ADD_INT32,
@@ -783,6 +785,55 @@ struct vElementAny {
     pc[0] = vMakeHead(id, op.simd_width << V_X_BITS | op.xn, size, V_PIPE_SIMD);
     pc[1] = op.xd << 32 | op.repeat_tail << 16 | op.repeat;
     pc[2] = 0;
+    return size;
+  }
+};
+
+struct vOneHot {
+  enum {
+    MODE_X = 0,
+    MODE_X_TILE,
+    MODE_Y,
+    MODE_Y_TILE,
+    MODE_Y_TILE_2,
+  };
+  uint64_t xn;
+  uint64_t xd;
+  uint64_t data_size;
+  uint64_t iter_num;
+  uint64_t depth;
+  uint64_t dup_round; // Y: dup_num. TILE_xx: tile_round
+  uint64_t mode;
+  // pc[0]: reserved(26)
+  // pc[1]: data_size(18) << 36 | xd(18) << 18 | xn(18)
+  // pc[2]: mode(8) << 48 | dup_round(16) << 32 | depth(16) << 16 | iter_num(16)
+  // pc[3]: off_value(32) << 32 | on_value(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, vOneHot &op) {
+    uint64_t data = pc[1];
+    op.data_size = data >> 36;
+    op.xd = vGetBitRange(data, 18, 18);
+    op.xn = vGetBitRange(data, 0, 18);
+    data = pc[2];
+    op.mode = data >> 48;
+    op.dup_round = (data >> 32) & 0xfffful;
+    op.depth = (data >> 16) & 0xfffful;
+    op.iter_num = data & 0xfffful;
+  }
+
+  template <typename T>
+  __aicore_inline__ void DecodeValue(bcodeptr_t pc, T &on_value, T &off_value) {
+    uint64_t data = pc[3];
+    off_value = data >> 32;
+    on_value = (data << 32) >> 32;
+  }
+
+  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, uint32_t on_value, uint32_t off_value,
+                                    const vOneHot &op) {
+    uint64_t size = 4;
+    pc[0] = vMakeHead(id, 0, size, V_PIPE_SIMD);
+    pc[1] = op.data_size << 36 | op.xd << 18 | op.xn;
+    pc[2] = op.mode << 48 | op.dup_round << 32 | op.depth << 16 | op.iter_num;
+    pc[3] = uint64_t(off_value) << 32 | on_value;
     return size;
   }
 };

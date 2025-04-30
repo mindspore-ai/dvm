@@ -354,6 +354,7 @@ const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
   {kGenFlex, true, true},     // Power
   {kGenFlex, true, true},     // Compare
   {kGenFlex, true, true},     // CompareS
+  {kGenSimd1, false, false},  // OneHot
 };
 
 class AtomicCleanWrap : public CodeWrap {
@@ -1803,6 +1804,142 @@ int ReduceOp::Emit(VectorKernel &k) {
   *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
   return size;
 }
+
+template <typename T>
+void OneHotOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
+  int64_t depth = depth_->data[0];
+  int64_t axis = axis_;
+  // updae shape_ref
+  shape_.Resize(lhs_->shape_ref_->size + 1);
+  if (axis < 0) {
+    axis = shape_.size + axis;
+  }
+  size_t in_idx = 0;
+  for (size_t i = 0; i < shape_.size; ++i) {
+    if (i == static_cast<size_t>(axis)) {
+      shape_[i] = depth;
+    } else {
+      shape_[i] = lhs_->shape_ref_->data[in_idx++];
+    }
+  }
+  // update input ndd
+  depth_dim_ = shape_.size - axis - 1;
+  size_t init_stack_size = run_ops.size();
+  run_ops.push_back(lhs_);
+  while (run_ops.size() > init_stack_size) {
+    auto top = run_ops.back();
+    run_ops.pop_back();
+    if (auto ndd = top->Ndd(); ndd != nullptr) {
+      auto top_size = ndd->size();
+      ndd->dims.resize(top_size + 1);
+      for (int64_t i = top_size; i > depth_dim_; --i) {
+        ndd->dims[i] = ndd->dims[i - 1];
+      }
+      ndd->dims[depth_dim_] = 1;
+    }
+    if (top->lhs_) {
+      run_ops.push_back(top->lhs_);
+      if (top->rhs_) {
+        run_ops.push_back(top->rhs_);
+        ASSERT(!(top->flags_ & OBJ_FLAG_XHS));
+      }
+    }
+  }
+  // update ndd
+  ndd_.dims.resize(lhs_->nd_.size());
+  for (int64_t i = 0; i < static_cast<int64_t>(ndd_.size()); ++i) {
+    ndd_.dims[i] = i == depth_dim_ ? depth : lhs_->nd_[i];
+  }
+  tile_dim_ = ndd_.size();
+}
+
+template <typename T>
+void OneHotOp<T>::FoldProp(PropRange &range) {
+  if (range.base > depth_dim_) {
+    if (auto depth_len = range.base - depth_dim_; depth_len < range.depth) {
+      range.depth = depth_len;
+    }
+  } else if (range.base == depth_dim_) {
+    range.depth = 1;
+  }
+}
+
+template <typename T>
+void OneHotOp<T>::AlignProp(PropRange &range) {
+  if (depth_dim_ == 0) {
+    range.depth = 1;
+  } else if (range.depth > depth_dim_) {
+    range.depth = depth_dim_;
+  }
+}
+
+template <typename T>
+void OneHotOp<T>::Tile(const TileParam &tp) {
+  if (tp.start <= tile_dim_) {
+    tile_dim_ = tp.start;
+    if (depth_dim_ == tp.end) {
+      depth_tile_ = tp.num;
+    } else {
+      depth_tile_ *= tp.num;
+    }
+  }
+  NDObject::Tile(tp);
+}
+
+template <typename T>
+int OneHotOp<T>::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
+  vOneHot op;
+  op.xn = lhs_->xbuf_;
+  op.xd = xbuf_;
+  op.data_size = ndd_.stride_back();
+  if (depth_dim_ == 0) {
+    if (tile_dim_ > 0) {
+      op.depth = ndd_.lead_stride();
+      op.iter_num = ndd_.stride_back() / op.depth;
+      op.dup_round = 0;
+      op.mode = vOneHot::MODE_X;
+    } else {
+      op.depth = ndd_.lead_dim();
+      op.dup_round = depth_tile_;
+      op.iter_num = 0;
+      op.mode = vOneHot::MODE_X_TILE;
+    }
+  } else {
+    if (tile_dim_ > depth_dim_) {
+      op.dup_round = ndd_.stride_back() / ndd_.stride(depth_dim_);
+      op.iter_num = ndd_.stride(depth_dim_ - 1);
+      op.depth = ndd_[depth_dim_];
+      op.mode = vOneHot::MODE_Y;
+    } else if (tile_dim_ == depth_dim_) {
+      op.dup_round = depth_tile_;
+      op.iter_num = ndd_.stride(depth_dim_ - 1);
+      op.depth = ndd_[depth_dim_];
+      op.mode = vOneHot::MODE_Y_TILE;
+    } else {
+      op.dup_round = depth_tile_;
+      op.iter_num = ndd_.stride_back();
+      op.depth = depth_tile_ / shape_[shape_.size - depth_dim_ - 1];
+      op.mode = vOneHot::MODE_Y_TILE_2;
+    }
+  }
+  auto on_value = EncodeScalar(on_value_, type_id_);
+  auto off_value = EncodeScalar(off_value_, type_id_);
+  return vOneHot::Encode(insn_, ITEM_SIZE[type_id_] == 2 ? V_ONE_HOT_B16 : V_ONE_HOT, on_value, off_value, op);
+}
+
+template <typename T>
+void OneHotOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "OneHot";
+  if (verbose) {
+    oss << "<" << axis_ << "," << depth_->data[0] << "," << on_value_ << "," << off_value_ << ">";
+  }
+}
+
+template class OneHotOp<float>;
+template class OneHotOp<int32_t>;
+template class OneHotOp<Float16>;
+template class OneHotOp<BFloat16>;
 
 static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCoder &coder) {
   auto round_depth = round_tile.size();

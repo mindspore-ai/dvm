@@ -474,6 +474,20 @@ void DumpElementAny(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("repeat_tail", op.repeat_tail, oss);
 }
 
+void DumpOneHot(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vOneHot op;
+  vOneHot::Decode(dump_info.insn, op);
+  oss << op.data_size << " " << reinterpret_cast<void *>(op.xd) << ", "
+      << reinterpret_cast<void *>(op.xn) << " //";
+  DumpVal("mode", op.mode, oss);
+  oss << ", ";
+  DumpVal("iter_num", op.iter_num, oss);
+  oss << ", ";
+  DumpVal("depth", op.depth, oss);
+  oss << ", ";
+  DumpVal("dup_round", op.dup_round, oss);
+}
+
 void DumpReshape(const DumpInfo &dump_info, std::ostringstream &oss) {
   vReshape op;
   vReshape::Decode(dump_info.insn, *dump_info.insn, op);
@@ -666,6 +680,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_ATOMICCUM, {&DumpAtomicCum, "AtomicCum", "fp32"}},
   {V_RESHAPE_B32, {&DumpReshape, "Reshape", "u32"}},
   {V_RESHAPE_B16, {&DumpReshape, "Reshape", "u16"}},
+  {V_ONE_HOT, {&DumpOneHot, "OneHot", "b32"}},
+  {V_ONE_HOT_B16, {&DumpOneHot, "OneHot", "b16"}},
 };
 
 size_t DumpInsn(uint64_t *insn, std::ostringstream &oss, uint64_t &pipe) {

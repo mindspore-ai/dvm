@@ -778,6 +778,7 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
       return true;
     }
     case kBroadcastTo:
+    case kOneHot:
     case kReduce: {
       DimArray shape_to_change, shape_ori;
       if (is_forward) {
@@ -917,7 +918,7 @@ void EliminateReshape(BasicBlock &bb) {
         if (auto ndd = to_update->Ndd(); ndd != nullptr) {
           ndd->dims = inter.need_reshape[to_update->index_].value();
         }
-        if (to_update->obj_id_ == kStore || to_update->obj_id_ == kReduce) {
+        if (to_update->obj_id_ == kStore || to_update->obj_id_ == kReduce || to_update->obj_id_ == kOneHot) {
             cleanup_ops.insert(to_update);
         }
       }
@@ -948,6 +949,18 @@ void EliminateReshape(BasicBlock &bb) {
       CleanUpReduce(obj);
     } else if (obj->obj_id_ == kStore) {
       static_cast<NDStore *>(obj)->UpdateDimMask();
+    } else {
+      ASSERT(obj->obj_id_ == kOneHot);
+      for (size_t i = 0; i < obj->nd_.size(); ++i) {
+        if (obj->lhs_->nd_[i] == 1 && obj->nd_[i] > 1) {
+          if (ITEM_SIZE[obj->type_id_] == 2) {
+            static_cast<OneHotOp<uint16_t> *>(obj)->UpdateDepthDim(i);
+          } else {
+            static_cast<OneHotOp<uint32_t> *>(obj)->UpdateDepthDim(i);
+          }
+          break;
+        }
+      }
     }
   }
 }

@@ -1222,10 +1222,9 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
   min_type_ = objects.front()->type_id_;
   bool slow_build_path = false;
   for (auto op : objects) {
-    auto type = op->GetObjectType();
-    if (type == kReshape) {
+    if (op->GetObjectType() == kReshape) {
       slow_build_path = true;
-    } else if (type == kCast || op->IsLoad()) {
+    } else {
       int type = op->type_id_;
       if (type > max_type_) {
         max_type_ = type;

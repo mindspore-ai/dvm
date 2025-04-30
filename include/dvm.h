@@ -191,6 +191,9 @@ class Kernel {
   NDObject *Reshape(NDObject *input, ShapeRef *shape);
   NDObject *Copy(NDObject *input);
 
+  template <typename T>
+  NDObject *OneHot(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value);
+
   NDObject *ElemAny(NDObject *input);
 
   NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);

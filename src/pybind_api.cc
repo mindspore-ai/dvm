@@ -273,6 +273,29 @@ py::object KernelPy::Copy(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
+py::object KernelPy::OneHot(const py::object &indices, int depth, int axis, const py::object &on_value,
+                           const py::object &off_value, const std::string &dtype) {
+  auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
+  auto depth_ref = shape_.emplace_back(new ShapeRef(shape_vec_.emplace_back(1, depth)));
+  auto type_id = StringToTypeID(dtype);
+  NDObject *op;
+  if (type_id == kInt32) {
+    op = kernel_.OneHot(indices_obj, depth_ref, axis, py::cast<int32_t>(on_value), py::cast<int32_t>(off_value));
+  } else {
+    auto on_float = py::cast<float>(on_value);
+    auto off_float = py::cast<float>(off_value);
+    if (type_id == kFloat16) {
+      op = kernel_.OneHot(indices_obj, depth_ref, axis, Float16(on_float), Float16(off_float));
+    } else if (type_id == kBFloat16) {
+      op = kernel_.OneHot(indices_obj, depth_ref, axis, BFloat16(on_float), BFloat16(off_float));
+    } else {
+      ASSERT(type_id == kFloat32);
+      op = kernel_.OneHot(indices_obj, depth_ref, axis, on_float, off_float);
+    }
+  }
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
 py::object KernelPy::Load(const py::object &shape, const std::string &type) {
   LoadInfo info;
   info.shape = GetVector(shape);
@@ -789,6 +812,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
     .def("reduce", &KernelPy::Reduce, "emit reduce op")
     .def("copy", &KernelPy::Copy, "emit copy op")
+    .def("one_hot", &KernelPy::OneHot, "emit onehot op")
     .def("allreduce", &KernelPy::AllReduce, "emit allreduce op")
     .def("allgather", &KernelPy::AllGather, "emit allgather op")
     .def("allgatherv2", &KernelPy::AllGatherV2, "emit allgatherv2 op")

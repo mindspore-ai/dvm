@@ -37,6 +37,27 @@ static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
   kMuls,   kDivs,      kBinarySOpEnd, kMaximums,   kMinimums, kBinarySOpEnd,  kBinarySOpEnd,
 };
 
+template <typename T>
+struct TypeTrait {
+  static constexpr DType ID = kTypeEnd;
+};
+template <>
+struct TypeTrait<int32_t> {
+  static constexpr DType ID = kInt32;
+};
+template <>
+struct TypeTrait<float> {
+  static constexpr DType ID = kFloat32;
+};
+template <>
+struct TypeTrait<Float16> {
+  static constexpr DType ID = kFloat16;
+};
+template <>
+struct TypeTrait<BFloat16> {
+  static constexpr DType ID = kBFloat16;
+};
+
 union Union32 {
   uint32_t u;
   float f;
@@ -522,6 +543,18 @@ NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
   kernel_->Append(obj);
   return obj;
 }
+
+template <typename T>
+NDObject *Kernel::OneHot(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value) {
+  auto obj = new OneHotOp<T>(indices, depth, axis, on_value, off_value, TypeTrait<T>::ID);
+  kernel_->Append(obj);
+  return obj;
+}
+
+template NDObject *Kernel::OneHot<float>(NDObject *, ShapeRef *, int, float, float);
+template NDObject *Kernel::OneHot<int32_t>(NDObject *, ShapeRef *, int, int32_t, int32_t);
+template NDObject *Kernel::OneHot<Float16>(NDObject *, ShapeRef *, int, Float16, Float16);
+template NDObject *Kernel::OneHot<BFloat16>(NDObject *, ShapeRef *, int, BFloat16, BFloat16);
 
 NDObject *Kernel::Reshape(NDObject *input, ShapeRef *shape) {
   auto obj = new ReshapeOp(input, shape);

@@ -775,13 +775,11 @@ class EagerVector : public VectorKernel {
     objects_.push_back(obj);
     obj->pd_next_ = next_;
     next_ = obj;
-    if (obj->obj_id_ == kCast || obj->IsLoad()) {
-      int type = obj->type_id_;
-      if (type > max_type_) {
-        max_type_ = type;
-      } else if (type < min_type_) {
-        min_type_ = type;
-      }
+    int type = obj->type_id_;
+    if (type > max_type_) {
+      max_type_ = type;
+    } else if (type < min_type_) {
+      min_type_ = type;
     }
     if (obj->IsLoad()) {
       static_ops_.push_back(obj);

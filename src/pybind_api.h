@@ -88,6 +88,8 @@ class KernelPy {
   py::object Select(const py::object &cond, const py::object &lhs, const py::object &rhs);
   py::object ElementAny(const py::object &input);
   py::object Copy(const py::object &input);
+  py::object OneHot(const py::object &indices, int depth, int axis, const py::object &on_value,
+                    const py::object &off_value, const std::string &dtype);
   py::object AllReduce(const py::object &input);
   py::object AllGather(const py::object &input);
   py::object AllGatherV2(const py::object &input);

@@ -58,6 +58,7 @@ enum ObjectType {
   kPower,
   kCompare,
   kCompareS,
+  kOneHot,
   kCubeOp,
   kGmmOp,
   kObjectBulk
@@ -902,6 +903,38 @@ class ReduceOp : public _ReduceOp {
   DimArray round_tile_;
 
   RelocAddr ws_reloc_;
+};
+
+template <typename T>
+class OneHotOp : public NDObject {
+ public:
+  OneHotOp(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value, DType type_id)
+    : NDObject(indices, nullptr, type_id, kOneHot), on_value_(on_value), off_value_(off_value), axis_(axis), depth_(depth) {
+    nd_.data = &ndd_;
+    shape_ref_ = &shape_;
+    MESS(depth_dim_, 20);
+    MESS(tile_dim_, 20);
+  }
+
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void FoldProp(PropRange &range) override;
+  void AlignProp(PropRange &range) override;
+  void Tile(const TileParam &tp) override;
+  int Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  void UpdateDepthDim(int dim) { depth_dim_ = dim; }
+
+ private:
+  T on_value_;
+  T off_value_;
+  int axis_;
+  int depth_dim_;
+  int tile_dim_;
+  int64_t depth_tile_;
+  ShapeRef *depth_;
+  NDSpaceData ndd_;
+  ShapeWithRef shape_;
 };
 
 class CubeTuner;

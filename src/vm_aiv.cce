@@ -1043,6 +1043,71 @@ __aicore_inline__ void AtomicCum(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, op.count >> BlockDataShift(float), 0, 0);
 }
 
+template <typename T>
+__aicore_inline__ void OneHot(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vOneHot op;
+  vOneHot::Decode(pc, op);
+  __ubuf__ int32_t *indices = (__ubuf__ int32_t *)(op.xn);
+  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
+  T on_value, off_value;
+  vOneHot::DecodeValue(pc, on_value, off_value);
+  set_vector_mask(0, op.data_size);
+  vDup(xd, off_value, 1, 8);
+  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  switch (op.mode) {
+    case vOneHot::MODE_X: {
+      for (uint64_t i = 0; i < op.iter_num; ++i) {
+        if (uint64_t indice = indices[i]; indice < op.depth) {
+          xd[i * op.depth + indice] = on_value;
+        }
+      }
+      break;
+    }
+    case vOneHot::MODE_X_TILE: {
+      uint64_t begin = (TileIdx(tile) % op.dup_round) * op.depth;
+      if (uint64_t indice = indices[0]; indice >= begin && indice < begin + op.depth) {
+        xd[indice - begin] = on_value;
+      }
+      break;
+    }
+    case vOneHot::MODE_Y: {
+      for (uint64_t dup = 0; dup < op.dup_round; ++dup) {
+        for (uint64_t i = 0; i < op.iter_num; ++i) {
+          if (uint64_t indice = indices[op.iter_num * dup + i]; indice < op.depth) {
+            xd[(op.depth * dup + indice) * op.iter_num + i] = on_value;
+          }
+        }
+      }
+      break;
+    }
+    case vOneHot::MODE_Y_TILE: {
+      uint64_t begin = (TileIdx(tile) % op.dup_round) * op.depth;
+      uint64_t end = begin + op.depth;
+      for (uint64_t i = 0; i < op.iter_num; ++i) {
+        if (uint64_t indice = indices[i]; indice >= begin && indice < end) {
+          xd[(indice - begin) * op.iter_num + i] = on_value;
+        }
+      }
+      break;
+    }
+    case vOneHot::MODE_Y_TILE_2: {
+      uint64_t begin = (TileIdx(tile) % op.dup_round) / op.depth;
+      uint64_t end = begin + 1ul;
+      for (uint64_t i = 0; i < op.iter_num; ++i) {
+        if (uint64_t indice = indices[i]; indice >= begin && indice < end) {
+          xd[i] = on_value;
+        }
+      }
+      break;
+    }
+    default:
+      break;
+  }
+  set_flag(PIPE_S, PIPE_V, EVENT_ID0);
+  wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
+}
+
 __aicore_inline__ void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                         uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                         uint64_t pad_size, uint64_t type_size) {
@@ -2098,6 +2163,7 @@ DEF_DISP_SIMD(V_SEL, Select<float>(pc, head, tile))
 DEF_DISP_SIMD(V_POW, Power(pc, head, tile))
 DEF_DISP_SIMD(V_CLR_PAD, ClearPad(pc, head, tile))
 DEF_DISP_SIMD(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile))
+DEF_DISP_SIMD(V_ONE_HOT, OneHot<uint32_t>(pc, head, tile))
 
 DEF_DISP_SIMD(V_BROADCAST_X_B16, BroadcastX<uint16_t>(pc, head, tile))
 DEF_DISP_SIMD(V_BROADCAST_S_B16, BroadcastS<uint16_t>(pc, head, tile))
@@ -2122,6 +2188,7 @@ DEF_DISP_SIMD(V_CMP_FP16, BinCompare<half>(pc, head, tile))
 DEF_DISP_SIMD(V_CMPS_FP16, BinCompareS<half>(pc, head, tile))
 DEF_DISP_SIMD(V_SEL_FP16, Select<half>(pc, head, tile))
 DEF_DISP_SIMD(V_ISFINITE_FP16, IsFinite<uint16_t>(pc, head, tile))
+DEF_DISP_SIMD(V_ONE_HOT_B16, OneHot<uint16_t>(pc, head, tile))
 
 DEF_DISP_SIMD(V_CAST_BOOL_TO_FP16, CAST(pc, vconv_s82f16, head, tile, int8_t, half))
 

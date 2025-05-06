@@ -31,6 +31,7 @@ struct TensorInfoWrapper {
 
 struct ProfNodeAdditionInfo {
   MsprofCompactInfo node_basic_info;
+  MsprofAdditionalInfo context_id_info;
   std::vector<TensorInfoWrapper> tensor_info_wrappers;
   MsprofApi api;
 };
@@ -122,11 +123,23 @@ struct NodeInfo {
   const char *op_fullname;
   uint64_t input_size{0};
   uint64_t output_size{0};
-  KernelType kernel_type;
   uint32_t block_dim;
   std::vector<ShapeRef *> shapes;
   std::vector<TensorDtypeMs> data_types;
 };
+
+template <typename T>
+class ScopedValueGuard {
+ public:
+  ScopedValueGuard(T &target, T new_value) : target_(target), old_value_(target) { target_ = std::move(new_value); }
+
+  ~ScopedValueGuard() { target_ = std::move(old_value_); }
+
+ private:
+  T &target_;
+  T old_value_;
+};
+
 class MsProfHelper {
  public:
   MsProfHelper() = default;
@@ -134,7 +147,7 @@ class MsProfHelper {
 
   void InitReportNode();
   void UpdateReportNode(uint32_t block_dim);
-  void UpdateBeginTime();
+  void Update(uint32_t kernel_target);
   void ReportTask();
 
   NodeInfo info_;

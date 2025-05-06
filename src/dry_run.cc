@@ -201,7 +201,7 @@ uint64_t g_subblockid{0};
 bool g_cube_core{false};
 void *g_bytecode{nullptr};
 void *g_bytecode_ub{nullptr};
-rtError_t (*g_origin_launch)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
+LaunchFunc g_origin_launch;
 std::unordered_map<uint8_t *, std::pair<const char *, uint8_t *>> g_functable;
 
 uint64_t get_subblockdim() { return 2; }

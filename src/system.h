@@ -17,6 +17,7 @@
 #ifndef _DVM_SYSTEM_H_
 #define _DVM_SYSTEM_H_
 #include <iostream>
+#include <functional>
 #include "dvm.h"
 
 // rts_runtime
@@ -37,7 +38,10 @@ namespace dvm {
     }                                                                                                           \
   } while (0)
 
-#define MESS(var, init)  do { var = init; } while (0)
+#define MESS(var, init) \
+  do {                  \
+    var = init;         \
+  } while (0)
 #else
 #define ASSERT(cond)
 #define MESS(var, init)
@@ -71,6 +75,8 @@ enum SocType {
   kAscend910_9361,
   kSocUnknow,
 };
+
+using LaunchFunc = std::function<rtError_t(const void*, uint32_t, void*, uint32_t, rtSmDesc_t*, rtStream_t)>;
 
 class CubeTuner;
 class System {
@@ -108,8 +114,7 @@ class System {
   }
   rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
 
-  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm,
-                                 rtStream_t stm){nullptr};
+  LaunchFunc rt_kernel_launch_;
 
  private:
   System();
@@ -135,7 +140,6 @@ constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kTypeEnd];
 extern const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd];
-
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)

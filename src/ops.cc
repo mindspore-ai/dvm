@@ -106,32 +106,6 @@ inline uint64_t DMAConfig(uint64_t sid, uint64_t nBurst, uint64_t lenBurst, uint
   return dstStride << 48 | srcStride << 32 | lenBurst << 16 | nBurst << 4 | sid;
 }
 
-template <typename T>
-inline uint32_t EncodeScalar(T scalar) {
-  union Scalar {
-    T val;
-    uint32_t encode;
-  } data;
-  data.val = scalar;
-  return data.encode;
-}
-
-template <typename T>
-inline uint32_t EncodeScalar(T scalar, DType type) {
-  switch (type) {
-    case kFloat16:
-      return static_cast<Float16>(static_cast<float>(scalar)).int_value();
-    case kBFloat16:
-      return static_cast<BFloat16>(static_cast<float>(scalar)).int_value();
-    case kFloat32:
-      return EncodeScalar(static_cast<float>(scalar));
-    case kInt32:
-      return EncodeScalar(static_cast<int32_t>(scalar));
-    default:
-      return 0;
-  }
-}
-
 int EmitCopy(bcodeptr_t insn, uint64_t xd, uint64_t xn, uint64_t bytes) {
   vCopy op;
   op.xd = xd;
@@ -327,6 +301,32 @@ std::ostream &operator<<(std::ostream &oss, const NDSpace &nd) {
   return oss;
 }
 
+void DumpScalarCode(std::ostringstream &oss, scode_t code, DType type) {
+  switch (type) {
+    case kFloat16: {
+      oss << Float16(static_cast<uint16_t>(code));
+      break;
+    }
+    case kBFloat16: {
+      oss << BFloat16(static_cast<uint16_t>(code));
+      break;
+    }
+    case kFloat32: {
+      union {
+        float val;
+        uint32_t code;
+      } data;
+      data.code = code;
+      oss << data.val;
+      break;
+    }
+    default: {
+      oss << code;
+      break;
+    }
+  }
+}
+
 MemPool<512, 8192> NDObject::mem_pool_;
 
 const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
@@ -365,7 +365,7 @@ class AtomicCleanWrap : public CodeWrap {
     auto type = store->type_id_;
     auto dummy_load = new NDLoadDummy(type);
     kernel_.Append(dummy_load);
-    auto op = new BroadcastScalarOp<float>(0.0, &clear_shape_, type, dummy_load);
+    auto op = new BroadcastScalarOp(0, &clear_shape_, type, dummy_load);
     kernel_.Append(op);
     store_ = new NDStore(store->addr_.gm, op);
     kernel_.Append(store_);
@@ -1057,40 +1057,33 @@ int CastOp::Emit(VectorKernel &k) {
 
 void CastOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Cast"; }
 
-template <typename T>
-BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
+BinaryScalarOp::BinaryScalarOp(int op_type, NDObject *input, scode_t scalar)
     : NDObject(input, nullptr, input->type_id_, ObjectType::kBinaryS), op_type_(op_type), scalar_(scalar) {
   shape_ref_ = input->shape_ref_;
 }
 
-template <typename T>
-int BinaryScalarOp<T>::Emit(VectorKernel &k) {
+int BinaryScalarOp::Emit(VectorKernel &k) {
   vBinaryS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
   op.count = nd_.stride_back();
-  op.scalar = EncodeScalar(scalar_, type_id_);
+  op.scalar = scalar_;
   ASSERT(size_t(op_type_) < sizeof(binarys_id_list) / sizeof(InsnIdTable));
   auto id = binarys_id_list[op_type_].ids[type_id_];
   ASSERT(id != V_NONE);
   return vBinaryS::Encode(insn_, id, op);
 }
 
-template <typename T>
-void BinaryScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+void BinaryScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << binarys_id_list[op_type_].name;
   if (verbose) {
-    oss << "<" << scalar_ << ">";
+    oss << "<";
+    DumpScalarCode(oss, scalar_, type_id_);
+    oss << ">";
   }
 }
 
-template class BinaryScalarOp<float>;
-template class BinaryScalarOp<int32_t>;
-template class BinaryScalarOp<Float16>;
-template class BinaryScalarOp<BFloat16>;
-
-template <typename T>
-CompareScalarOp<T>::CompareScalarOp(int op_type, NDObject *input, T scalar)
+CompareScalarOp::CompareScalarOp(int op_type, NDObject *input, scode_t scalar)
     : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
   ws_num_ = 1;
   flags_ |= OBJ_FLAG_FLEX_INPL_WS;
@@ -1098,30 +1091,25 @@ CompareScalarOp<T>::CompareScalarOp(int op_type, NDObject *input, T scalar)
   shape_ref_ = input->shape_ref_;
 }
 
-template <typename T>
-int CompareScalarOp<T>::Emit(VectorKernel &k) {
+int CompareScalarOp::Emit(VectorKernel &k) {
   vCompareS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
   op.count = nd_.stride_back();
-  op.scalar = EncodeScalar(scalar_, type_id_);
+  op.scalar = scalar_;
   op.ws = wss_[0];
   op.type = cmp_op_;
   return vCompareS::Encode(insn_, type_id_ == kFloat32 ? V_CMPS : V_CMPS_FP16, op);
 }
 
-template <typename T>
-void CompareScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+void CompareScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "CompareS";
   if (verbose) {
-    oss << "<" << cmp_op_ << ", " << scalar_ << ">";
+    oss << "<";
+    DumpScalarCode(oss, scalar_, type_id_);
+    oss << ">";
   }
 }
-
-template class CompareScalarOp<float>;
-template class CompareScalarOp<int32_t>;
-template class CompareScalarOp<Float16>;
-template class CompareScalarOp<BFloat16>;
 
 _BinaryNormalizer::~_BinaryNormalizer() {
   for (auto op : lhs_stuff_ops_) {
@@ -1493,8 +1481,7 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
 }
 
-template <typename T>
-void BroadcastScalarOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
+void BroadcastScalarOp::Normalize(std::vector<NDObject *> &run_ops) {
   // update nd_ from shape_ref_
   auto dims = shape_ref_->size;
   ndd_.dims.resize(dims);
@@ -1503,28 +1490,23 @@ void BroadcastScalarOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
   }
 }
 
-template <typename T>
-int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
+int BroadcastScalarOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   vBroadcastS op;
-  op.scalar = EncodeScalar(scalar_, type_id_);
+  op.scalar = scalar_;
   op.xd = xbuf_;
   op.count = ndd_.stride_back();
   return vBroadcastS::Encode(insn_, ITEM_SIZE[type_id_] == sizeof(uint32_t) ? V_BROADCAST_S : V_BROADCAST_S_B16, op);
 }
 
-template <typename T>
-void BroadcastScalarOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+void BroadcastScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "BroadcastS";
   if (verbose) {
-    oss << "<" << scalar_ << ">";
+    oss << "<";
+    DumpScalarCode(oss, scalar_, type_id_);
+    oss << ">";
   }
 }
-
-template class BroadcastScalarOp<float>;
-template class BroadcastScalarOp<int32_t>;
-template class BroadcastScalarOp<Float16>;
-template class BroadcastScalarOp<BFloat16>;
 
 void _ReduceOp::FoldProp(PropRange &range) {
   int state = 0;  // -1 - reduce ; 1 - elemwise, 0 - undetemite
@@ -1805,8 +1787,7 @@ int ReduceOp::Emit(VectorKernel &k) {
   return size;
 }
 
-template <typename T>
-void OneHotOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
+void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {
   int64_t depth = depth_->data[0];
   int64_t axis = axis_;
   // updae shape_ref
@@ -1853,8 +1834,7 @@ void OneHotOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
   tile_dim_ = ndd_.size();
 }
 
-template <typename T>
-void OneHotOp<T>::FoldProp(PropRange &range) {
+void OneHotOp::FoldProp(PropRange &range) {
   if (range.base > depth_dim_) {
     if (auto depth_len = range.base - depth_dim_; depth_len < range.depth) {
       range.depth = depth_len;
@@ -1864,8 +1844,7 @@ void OneHotOp<T>::FoldProp(PropRange &range) {
   }
 }
 
-template <typename T>
-void OneHotOp<T>::AlignProp(PropRange &range) {
+void OneHotOp::AlignProp(PropRange &range) {
   if (depth_dim_ == 0) {
     range.depth = 1;
   } else if (range.depth > depth_dim_) {
@@ -1873,8 +1852,7 @@ void OneHotOp<T>::AlignProp(PropRange &range) {
   }
 }
 
-template <typename T>
-void OneHotOp<T>::Tile(const TileParam &tp) {
+void OneHotOp::Tile(const TileParam &tp) {
   if (tp.start <= tile_dim_) {
     tile_dim_ = tp.start;
     if (depth_dim_ == tp.end) {
@@ -1886,8 +1864,7 @@ void OneHotOp<T>::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-template <typename T>
-int OneHotOp<T>::Emit(VectorKernel &k) {
+int OneHotOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   vOneHot op;
   op.xn = lhs_->xbuf_;
@@ -1923,23 +1900,19 @@ int OneHotOp<T>::Emit(VectorKernel &k) {
       op.mode = vOneHot::MODE_Y_TILE_2;
     }
   }
-  auto on_value = EncodeScalar(on_value_, type_id_);
-  auto off_value = EncodeScalar(off_value_, type_id_);
-  return vOneHot::Encode(insn_, ITEM_SIZE[type_id_] == 2 ? V_ONE_HOT_B16 : V_ONE_HOT, on_value, off_value, op);
+  return vOneHot::Encode(insn_, ITEM_SIZE[type_id_] == 2 ? V_ONE_HOT_B16 : V_ONE_HOT, on_value_, off_value_, op);
 }
 
-template <typename T>
-void OneHotOp<T>::Dump(bool verbose, std::ostringstream &oss) {
+void OneHotOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "OneHot";
   if (verbose) {
-    oss << "<" << axis_ << "," << depth_->data[0] << "," << on_value_ << "," << off_value_ << ">";
+    oss << "<" << axis_ << "," << depth_->data[0] << ",";
+    DumpScalarCode(oss, on_value_, type_id_);
+    oss << ",";
+    DumpScalarCode(oss, off_value_, type_id_);
+    oss << ">";
   }
 }
-
-template class OneHotOp<float>;
-template class OneHotOp<int32_t>;
-template class OneHotOp<Float16>;
-template class OneHotOp<BFloat16>;
 
 static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCoder &coder) {
   auto round_depth = round_tile.size();

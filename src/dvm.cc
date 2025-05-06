@@ -41,22 +41,27 @@ static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
 template <typename T>
 struct TypeTrait {
   static constexpr DType ID = kTypeEnd;
+  using code_t = uint8_t;
 };
 template <>
 struct TypeTrait<int32_t> {
   static constexpr DType ID = kInt32;
+  using code_t = uint32_t;
 };
 template <>
 struct TypeTrait<float> {
   static constexpr DType ID = kFloat32;
+  using code_t = uint32_t;
 };
 template <>
 struct TypeTrait<Float16> {
   static constexpr DType ID = kFloat16;
+  using code_t = uint16_t;
 };
 template <>
 struct TypeTrait<BFloat16> {
   static constexpr DType ID = kBFloat16;
+  using code_t = uint16_t;
 };
 
 union Union32 {
@@ -174,6 +179,41 @@ uint16_t EncoderBF16(float f32) {
 }
 
 template <typename T>
+scode_t EncodeScalar(T scalar) {
+  constexpr auto id = TypeTrait<T>::ID;
+  if constexpr (id == kFloat16 || id == kBFloat16) {
+    return scalar.int_value();
+  } else {
+    union Code {
+      T val;
+      typename TypeTrait<T>::code_t code;
+    } data{scalar};
+    return data.code;
+  }
+}
+
+template <typename T>
+scode_t EncodeScalar(T scalar, int type) {
+  constexpr auto id = TypeTrait<T>::ID;
+  if constexpr (id == kFloat16 || id == kBFloat16) {
+    return scalar.int_value();
+  } else {
+    switch (type) {
+      case kFloat16:
+        return static_cast<Float16>(static_cast<float>(scalar)).int_value();
+      case kBFloat16:
+        return static_cast<BFloat16>(static_cast<float>(scalar)).int_value();
+      case kFloat32:
+        return EncodeScalar(static_cast<float>(scalar));
+      case kInt32:
+        return EncodeScalar(static_cast<int32_t>(scalar));
+      default:
+        return 0;
+    }
+  }
+}
+
+template <typename T>
 bool isInteger(const T &value) {
   if constexpr (std::is_integral<T>::value) {
     return true;
@@ -237,7 +277,7 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
     case BinaryOpType::kMul:
     case BinaryOpType::kMaximum:
     case BinaryOpType::kMinimum: {
-      auto obj = new BinaryScalarOp<T>(binary_map[op_type], input, val);
+      auto obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
       vkernel->Append(obj);
       return obj;
     }
@@ -247,8 +287,8 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
     case BinaryOpType::kLessEqual:
     case BinaryOpType::kGreaterEqual:
     case BinaryOpType::kLess: {
-      if (input->type_id_ != kInt32) {
-        auto obj = new CompareScalarOp<T>(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+      if (auto type_id = input->type_id_; type_id != kInt32) {
+        auto obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, EncodeScalar(val, type_id));
         vkernel->Append(obj);
         return obj;
       }
@@ -280,7 +320,7 @@ NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
       if (rhs_val) {
         return GetBinaryS<T, true>(kernel, BinaryOpType::kMul, T(1) / val, input);
       } else {
-        auto obj = new BinaryScalarOp<T>(lhs_val_binary_map[op_type], input, val);
+        auto obj = new BinaryScalarOp(lhs_val_binary_map[op_type], input, EncodeScalar(val, input->type_id_));
         vkernel->Append(obj);
         return obj;
       }
@@ -438,7 +478,7 @@ template <typename T>
 NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
   NDObject *obj = GetBinaryS<T, false>(this, op_type, val, rhs);
   if (obj == nullptr) {
-    NDObject *broadcast = new BroadcastScalarOp<T>(val, rhs->shape_ref_, rhs->type_id_, nullptr);
+    NDObject *broadcast = new BroadcastScalarOp(EncodeScalar(val, rhs->type_id_), rhs->shape_ref_, rhs->type_id_, nullptr);
     kernel_->Append(broadcast);
     return Binary(op_type, broadcast, rhs);
   }
@@ -449,7 +489,7 @@ template <typename T>
 NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
   NDObject *obj = GetBinaryS<T, true>(this, op_type, val, lhs);
   if (obj == nullptr) {
-    NDObject *broadcast = new BroadcastScalarOp<T>(val, lhs->shape_ref_, lhs->type_id_, nullptr);
+    NDObject *broadcast = new BroadcastScalarOp(EncodeScalar(val, lhs->type_id_), lhs->shape_ref_, lhs->type_id_, nullptr);
     kernel_->Append(broadcast);
     return Binary(op_type, lhs, broadcast);
   }
@@ -523,7 +563,7 @@ NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load)
     load = new NDLoadDummy(type);
     kernel_->Append(load);
   }
-  auto obj = new BroadcastScalarOp<T>(val, shape, type, load);
+  auto obj = new BroadcastScalarOp(EncodeScalar(val, type), shape, type, load);
   kernel_->Append(obj);
   return obj;
 }
@@ -547,7 +587,9 @@ NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
 
 template <typename T>
 NDObject *Kernel::OneHot(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value) {
-  auto obj = new OneHotOp<T>(indices, depth, axis, on_value, off_value, TypeTrait<T>::ID);
+  auto on_code = EncodeScalar(on_value);
+  auto off_code = EncodeScalar(off_value);
+  auto obj = new OneHotOp(indices, depth, axis, on_code, off_code, TypeTrait<T>::ID);
   kernel_->Append(obj);
   return obj;
 }

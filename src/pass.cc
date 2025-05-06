@@ -953,11 +953,7 @@ void EliminateReshape(BasicBlock &bb) {
       ASSERT(obj->obj_id_ == kOneHot);
       for (size_t i = 0; i < obj->nd_.size(); ++i) {
         if (obj->lhs_->nd_[i] == 1 && obj->nd_[i] > 1) {
-          if (ITEM_SIZE[obj->type_id_] == 2) {
-            static_cast<OneHotOp<uint16_t> *>(obj)->UpdateDepthDim(i);
-          } else {
-            static_cast<OneHotOp<uint32_t> *>(obj)->UpdateDepthDim(i);
-          }
+          static_cast<OneHotOp *>(obj)->UpdateDepthDim(i);
           break;
         }
       }

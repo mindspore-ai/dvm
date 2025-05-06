@@ -319,6 +319,9 @@ class MemPool {
   std::mutex mutex_;
 };
 
+using scode_t = uint32_t;
+void DumpScalarCode(std::ostringstream &oss, scode_t code, DType type);
+
 class VectorKernel;
 
 // dynamic flags
@@ -698,30 +701,28 @@ enum BinarySOpType {
   kBinarySOpEnd,
 };
 
-template <typename T>
 class BinaryScalarOp : public NDObject {
  public:
-  BinaryScalarOp(int op_type, NDObject *input, T scalar);
+  BinaryScalarOp(int op_type, NDObject *input, scode_t scalar);
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
   int op_type_;
-  T scalar_;
+  scode_t scalar_;
 };
 
-template <typename T>
 class CompareScalarOp : public FlexOp {
  public:
-  CompareScalarOp(int op_type, NDObject *input, T scalar);
+  CompareScalarOp(int op_type, NDObject *input, scode_t scalar);
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
   int cmp_op_;
-  T scalar_;
+  scode_t scalar_;
 };
 
 class _BinaryNormalizer {
@@ -824,10 +825,9 @@ class BroadcastOp : public _BroadcastOp {
   ShapeWithRef shape_;
 };
 
-template <typename T>
 class BroadcastScalarOp : public NDObject {
  public:
-  BroadcastScalarOp(T scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
+  BroadcastScalarOp(scode_t scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
       : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
@@ -837,7 +837,7 @@ class BroadcastScalarOp : public NDObject {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
-  T scalar_;
+  scode_t scalar_;
   NDSpaceData ndd_;
 };
 
@@ -905,10 +905,9 @@ class ReduceOp : public _ReduceOp {
   RelocAddr ws_reloc_;
 };
 
-template <typename T>
 class OneHotOp : public NDObject {
  public:
-  OneHotOp(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value, DType type_id)
+  OneHotOp(NDObject *indices, ShapeRef *depth, int axis, scode_t on_value, scode_t off_value, DType type_id)
     : NDObject(indices, nullptr, type_id, kOneHot), on_value_(on_value), off_value_(off_value), axis_(axis), depth_(depth) {
     nd_.data = &ndd_;
     shape_ref_ = &shape_;
@@ -926,8 +925,8 @@ class OneHotOp : public NDObject {
   void UpdateDepthDim(int dim) { depth_dim_ = dim; }
 
  private:
-  T on_value_;
-  T off_value_;
+  scode_t on_value_;
+  scode_t off_value_;
   int axis_;
   int depth_dim_;
   int tile_dim_;

@@ -330,31 +330,31 @@ void DumpScalarCode(std::ostringstream &oss, scode_t code, DType type) {
 MemPool<512, 8192> NDObject::mem_pool_;
 
 const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
-  {kGenLoad, true, false},    // LoadDummy
-  {kGenLoad, true, false},    // MultiLoad
-  {kGenLoad, true, false},    // Load
-  {kGenStore, false, true},   // PadStore
-  {kGenStore, true, true},    // Store
-  {kGenComm, true, false},    // ReduceScatter
-  {kGenComm, true, false},    // AllGather
-  {kGenComm, true, false},    // AllGatherV2
-  {kGenComm, true, false},    // AllReduce
-  {kGenSimd1, true, false},   // Reshape
-  {kGenSimd1, true, true},    // Copy
-  {kGenSimd1, true, true},    // Unary
-  {kGenSimd2, true, true},    // Binary
-  {kGenSimd1, true, true},    // Cast
-  {kGenSimd1, true, true},    // BinaryS
-  {kGenSimd1, false, false},  // BroadcastTo
-  {kGenSimd0, true, false},   // BroadcastS
-  {kGenFlex, false, false},   // Reduce
-  {kGenSimd3, true, true},    // Select
-  {kGenSimd1, false, false},  // ElemAny
-  {kGenSimd1, true, true},    // RemovePad
-  {kGenFlex, true, true},     // Power
-  {kGenFlex, true, true},     // Compare
-  {kGenFlex, true, true},     // CompareS
-  {kGenSimd1, false, false},  // OneHot
+  {kGenLoad, true, false, nullptr},    // LoadDummy
+  {kGenLoad, true, false, nullptr},    // MultiLoad
+  {kGenLoad, true, false, nullptr},    // Load
+  {kGenStore, false, true, nullptr},   // PadStore
+  {kGenStore, true, true, NDStore::DimChanged},    // Store
+  {kGenComm, true, false, nullptr},    // ReduceScatter
+  {kGenComm, true, false, nullptr},    // AllGather
+  {kGenComm, true, false, nullptr},    // AllGatherV2
+  {kGenComm, true, false, nullptr},    // AllReduce
+  {kGenSimd1, true, false, nullptr},   // Reshape
+  {kGenSimd1, true, true, nullptr},    // Copy
+  {kGenSimd1, true, true, nullptr},    // Unary
+  {kGenSimd2, true, true, nullptr},    // Binary
+  {kGenSimd1, true, true, nullptr},    // Cast
+  {kGenSimd1, true, true, nullptr},    // BinaryS
+  {kGenSimd1, false, false, nullptr},  // BroadcastTo
+  {kGenSimd0, true, false, nullptr},   // BroadcastS
+  {kGenFlex, false, false, _ReduceOp::DimChanged},   // Reduce
+  {kGenSimd3, true, true, nullptr},    // Select
+  {kGenSimd1, false, false, nullptr},  // ElemAny
+  {kGenSimd1, true, true, nullptr},    // RemovePad
+  {kGenFlex, true, true, nullptr},     // Power
+  {kGenFlex, true, true, nullptr},     // Compare
+  {kGenFlex, true, true, nullptr},     // CompareS
+  {kGenSimd1, false, false, OneHotOp::DimChanged},  // OneHot
 };
 
 class AtomicCleanWrap : public CodeWrap {
@@ -899,6 +899,10 @@ int NDStore::Emit(VectorKernel &k) {
 }
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }
+
+void NDStore::DimChanged(NDObject *op) {
+  static_cast<NDStore *>(op)->UpdateDimMask();
+}
 
 int CopyOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, nd_.stride_back() * ITEM_SIZE[type_id_]);
@@ -1623,6 +1627,27 @@ int _ReduceOp::Emit(VectorKernel &k) {
 
 void _ReduceOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Reduce"; }
 
+void _ReduceOp::DimChanged(NDObject *op) {
+  auto &input_axis = op->lhs_->nd_;
+  auto &output_axis = op->nd_;
+  ASSERT(input_axis.size() == output_axis.size());
+  size_t i = 0;
+  while (i < input_axis.size() && input_axis[i] == 1) {
+    ++i;
+  }
+  size_t lead_dim = i;
+  while (i < input_axis.size() && input_axis[i] == output_axis[i]) {
+    ++i;
+  }
+  int start = i == lead_dim ? 0 : i;
+  while (i < input_axis.size() && input_axis[i] != output_axis[i]) {
+    ++i;
+  }
+  int end = i - 1;
+  ASSERT(start <= end);
+  reinterpret_cast<_ReduceOp *>(op)->SetRange(start, end);
+}
+
 void ReduceOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Reduce";
   if (verbose) {
@@ -1803,33 +1828,12 @@ void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {
       shape_[i] = lhs_->shape_ref_->data[in_idx++];
     }
   }
-  // update input ndd
   depth_dim_ = shape_.size - axis - 1;
-  size_t init_stack_size = run_ops.size();
-  run_ops.push_back(lhs_);
-  while (run_ops.size() > init_stack_size) {
-    auto top = run_ops.back();
-    run_ops.pop_back();
-    if (auto ndd = top->Ndd(); ndd != nullptr) {
-      auto top_size = ndd->size();
-      ndd->dims.resize(top_size + 1);
-      for (int64_t i = top_size; i > depth_dim_; --i) {
-        ndd->dims[i] = ndd->dims[i - 1];
-      }
-      ndd->dims[depth_dim_] = 1;
-    }
-    if (top->lhs_) {
-      run_ops.push_back(top->lhs_);
-      if (top->rhs_) {
-        run_ops.push_back(top->rhs_);
-        ASSERT(!(top->flags_ & OBJ_FLAG_XHS));
-      }
-    }
-  }
   // update ndd
-  ndd_.dims.resize(lhs_->nd_.size());
-  for (int64_t i = 0; i < static_cast<int64_t>(ndd_.size()); ++i) {
-    ndd_.dims[i] = i == depth_dim_ ? depth : lhs_->nd_[i];
+  ndd_.dims.resize(lhs_->nd_.size() + 1);
+  size_t lhs_idx = 0;
+  for (size_t i = 0; i < ndd_.size(); ++i) {
+    ndd_.dims[i] = i == static_cast<size_t>(depth_dim_) ? depth : lhs_->nd_[lhs_idx++];
   }
   tile_dim_ = ndd_.size();
 }
@@ -1911,6 +1915,43 @@ void OneHotOp::Dump(bool verbose, std::ostringstream &oss) {
     oss << ",";
     DumpScalarCode(oss, off_value_, type_id_);
     oss << ">";
+  }
+}
+
+void OneHotOp::UpdateDomain(NDObject *head) {
+  size_t depth_dim = depth_dim_;
+  for (auto op = head; op != nullptr; op = op->pd_next_) {
+    auto ndd = op->Ndd();
+    if (ndd == nullptr) continue;
+    auto &dims = ndd->dims;
+    auto size = dims.size();
+    ndd->lidx = 0;
+    if (size >= ndd_.size() || size <= depth_dim) continue;
+    for (size_t i = depth_dim; i < size; ++i) {
+      if (auto dim = dims[i]; dim > 1 && dim != ndd_[i]) {
+        dims.resize(size + 1);
+        for (auto j = size; j > depth_dim; --j) {
+          dims[j] = dims[j -1];
+        }
+        dims[depth_dim] = 1;
+        ndd->lidx = 1;
+        break;
+      }
+    }
+  }
+  for (auto op = head; op != nullptr; op = op->pd_next_) {
+    if (op->nd_.data->lidx) {
+      op->DimChanged();
+    }
+  }
+}
+
+void OneHotOp::DimChanged(NDObject *op) {
+  for (size_t i = 0; i < op->nd_.size(); ++i) {
+    if (op->lhs_->nd_[i] == 1 && op->nd_[i] > 1) {
+      static_cast<OneHotOp *>(op)->UpdateDepthDim(i);
+      break;
+    }
   }
 }
 

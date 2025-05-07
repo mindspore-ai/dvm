@@ -317,9 +317,7 @@ uint64_t MixKernel::AlignCodeGen() {
         ndd->dims[1] = cube_op_->m_real_;
         ndd->dims.resize(2);
       }
-      if (op->obj_id_ == kStore) {
-        static_cast<NDStore *>(op)->UpdateDimMask();
-      }
+      op->DimChanged();
     }
   }
   if (auto comm = post_fusion_->comm_op_) {

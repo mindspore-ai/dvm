@@ -849,29 +849,6 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
   }
   return true;
 }
-
-// Fix start_dim_ and end_dim_
-void CleanUpReduce(NDObject *obj) {
-  auto &input_axis = obj->lhs_->nd_;
-  auto &output_axis = obj->nd_;
-  ASSERT(input_axis.size() == output_axis.size());
-  size_t i = 0;
-  while (i < input_axis.size() && input_axis[i] == 1) {
-    ++i;
-  }
-  size_t lead_dim = i;
-  while (i < input_axis.size() && input_axis[i] == output_axis[i]) {
-    ++i;
-  }
-  int start = i == lead_dim ? 0 : i;
-  while (i < input_axis.size() && input_axis[i] != output_axis[i]) {
-    ++i;
-  }
-  int end = i - 1;
-  ASSERT(start <= end);
-  auto reduce = reinterpret_cast<_ReduceOp *>(obj);
-  reduce->SetRange(start, end);
-}
 }  // namespace eliminate_reshape
 
 void EliminateReshape(BasicBlock &bb) {
@@ -918,8 +895,8 @@ void EliminateReshape(BasicBlock &bb) {
         if (auto ndd = to_update->Ndd(); ndd != nullptr) {
           ndd->dims = inter.need_reshape[to_update->index_].value();
         }
-        if (to_update->obj_id_ == kStore || to_update->obj_id_ == kReduce || to_update->obj_id_ == kOneHot) {
-            cleanup_ops.insert(to_update);
+        if (NDObject::attrs_[to_update->obj_id_].dim_changed != nullptr) {
+          cleanup_ops.insert(to_update);
         }
       }
       // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
@@ -945,19 +922,7 @@ void EliminateReshape(BasicBlock &bb) {
   eliminate_reshape_impl(true);
   eliminate_reshape_impl(false);
   for (auto obj : cleanup_ops) {
-    if (obj->obj_id_ == kReduce) {
-      CleanUpReduce(obj);
-    } else if (obj->obj_id_ == kStore) {
-      static_cast<NDStore *>(obj)->UpdateDimMask();
-    } else {
-      ASSERT(obj->obj_id_ == kOneHot);
-      for (size_t i = 0; i < obj->nd_.size(); ++i) {
-        if (obj->lhs_->nd_[i] == 1 && obj->nd_[i] > 1) {
-          static_cast<OneHotOp *>(obj)->UpdateDepthDim(i);
-          break;
-        }
-      }
-    }
+    obj->DimChanged();
   }
 }
 

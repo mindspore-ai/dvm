@@ -19,7 +19,7 @@ from dvm.tester import Tester
 
 def _gen_expect(indices, depth, axis, on_value, off_value):
     in_shape = [1, 1]
-    axis = axis if axis >= 0 else len(in_shape) + axis
+    axis = axis if axis >= 0 else len(in_shape) + axis + 1
     for i in range(len(indices.shape)):
         if i < axis:
             in_shape[0] = in_shape[0] * indices.shape[i]
@@ -83,4 +83,23 @@ def test_onehot_reshape_elim():
     expect_x = _gen_expect(a, depth, axis, 0.05, 0.01)
     expect_z = np.sum(np.reshape(expect_x, [512, 4, 128]), (2,), keepdims=True)
     t.store_expect(z, expect_z)
+    assert (t.run_check())
+
+def test_update_domain():
+    t = Tester()
+    shape, depth, axis = [4096], 512, -1
+    ax = np.random.normal(0.0, 1.0, [4096,1]).astype(np.float32)
+    bx = np.random.normal(0.0, 1.0, [4096, depth]).astype(np.float32)
+    cx = np.random.randint(0, depth, shape, np.int32)
+    y0 = t.binary("Add", t.load(ax), 0.1)
+    y1 = t.binary("Sub", t.load(bx), y0)
+    expect_y1 = bx - (ax + 0.1)
+    t.store_expect(y1, expect_y1)
+    y2 = t.one_hot(t.load(cx), depth, axis, 1.0, 0.0, "float32")
+    expect_y2 = _gen_expect(cx, depth, axis, 1.0, 0.0)
+    t.store_expect(y2, expect_y2)
+    y3 = t.binary("Mul", y1, y2)
+    y4 = t.reduce("sum", y3, [1], False)
+    expect_y4 = np.sum(expect_y1 * expect_y2, (1,), keepdims=False)
+    t.store_expect(y4, expect_y4)
     assert (t.run_check())

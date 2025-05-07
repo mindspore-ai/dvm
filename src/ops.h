@@ -365,6 +365,7 @@ struct NDObjectAttr {
   CodeGenTmpl cg_tmpl;
   bool inplace_prop;
   bool share_ndd;
+  void (*dim_changed)(NDObject *);
 };
 
 class NDObject {
@@ -408,6 +409,11 @@ class NDObject {
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
   NDSpaceData *Ndd() const { return attrs_[obj_id_].share_ndd ? nullptr : const_cast<NDSpaceData *>(nd_.data); }
+  void DimChanged() {
+    if (auto func = attrs_[obj_id_].dim_changed) {
+      func(this);
+    }
+  }
 
   void Clear(int index) {
     index_ = index;
@@ -556,6 +562,8 @@ class NDStore : public NDAccess {
       }
     }
   }
+
+  static void DimChanged(NDObject *op);
 
   DimArray round_tile_;
 
@@ -865,6 +873,8 @@ class _ReduceOp : public FlexOp {
   }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
 
+  static void DimChanged(NDObject *op);
+
   int red_op_;
   int start_dim_;
   int end_dim_;
@@ -923,6 +933,9 @@ class OneHotOp : public NDObject {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   void UpdateDepthDim(int dim) { depth_dim_ = dim; }
+  void UpdateDomain(NDObject *head);
+
+  static void DimChanged(NDObject *op);
 
  private:
   scode_t on_value_;

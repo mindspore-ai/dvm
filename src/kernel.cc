@@ -377,7 +377,6 @@ class CodeGenHelper {
 };
 
 void PropDomain::Normalize() {
-  size_t nd_size = 1;  // rank
   dom_ = nullptr;
   auto select_dom = [this](NDObject *cand) -> bool {
     auto &dom_nd = dom_->nd_;
@@ -391,25 +390,39 @@ void PropDomain::Normalize() {
     return false;
   };
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    auto size = op->nd_.size();
-    if (size > nd_size) {
-      nd_size = size;
-    }
     NDObject *cand = nullptr;
-    auto obj_type = op->GetObjectType();
-    if (op->IsStore() || obj_type == kReduce || obj_type == kElementAny || obj_type == kReduceScatter) {
-      if (op->lhs_ != dom_) cand = op->lhs_;
-    } else if (obj_type == kBroadcastTo) {
-      if (op != dom_) cand = op;
+    switch (op->obj_id_) {
+      case kPadStore:
+      case kStore:
+      case kReduceScatter:
+      case kElementAny:
+      case kReduce: {
+        cand = op->lhs_;
+        break;
+      }
+      case kBroadcastS:
+      case kBroadcastTo: {
+        cand = op;
+        break;
+      }
+      case kOneHot: {
+        cand = op;
+        static_cast<OneHotOp *>(op)->UpdateDomain(head_);
+        break;
+      }
+      default: {
+        if (dom_ == nullptr) {
+          dom_ = op;
+        }
+        break;
+      }
     }
-    // Find the largest dom (bigger rank or bigger shape[i])
-    if (cand) {
-      if (dom_ == nullptr || select_dom(cand)) dom_ = cand;
-    } else if (dom_ == nullptr && !op->IsStore() && obj_type != kLoadDummy) {
-      dom_ = op;
+    if (cand != nullptr && (dom_ == nullptr || (dom_ != cand && select_dom(cand)))) {
+      dom_ = cand;
     }
   }
   ASSERT(dom_ != nullptr);
+  auto nd_size = std::max(dom_->nd_.size(), 1ul);
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     // Make rank of all ops equal by broadcast to (..., 1, 1, .., 1)
     if (auto ndd = op->Ndd(); ndd != nullptr && ndd->dims.size() < nd_size) {

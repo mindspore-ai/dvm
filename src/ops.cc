@@ -330,31 +330,32 @@ void DumpScalarCode(std::ostringstream &oss, scode_t code, DType type) {
 MemPool<512, 8192> NDObject::mem_pool_;
 
 const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
-  {kGenLoad, true, false, nullptr},    // LoadDummy
-  {kGenLoad, true, false, nullptr},    // MultiLoad
-  {kGenLoad, true, false, nullptr},    // Load
-  {kGenStore, false, true, nullptr},   // PadStore
-  {kGenStore, true, true, NDStore::DimChanged},    // Store
-  {kGenComm, true, false, nullptr},    // ReduceScatter
-  {kGenComm, true, false, nullptr},    // AllGather
-  {kGenComm, true, false, nullptr},    // AllGatherV2
-  {kGenComm, true, false, nullptr},    // AllReduce
-  {kGenSimd1, true, false, nullptr},   // Reshape
-  {kGenSimd1, true, true, nullptr},    // Copy
-  {kGenSimd1, true, true, nullptr},    // Unary
-  {kGenSimd2, true, true, nullptr},    // Binary
-  {kGenSimd1, true, true, nullptr},    // Cast
-  {kGenSimd1, true, true, nullptr},    // BinaryS
-  {kGenSimd1, false, false, nullptr},  // BroadcastTo
-  {kGenSimd0, true, false, nullptr},   // BroadcastS
-  {kGenFlex, false, false, _ReduceOp::DimChanged},   // Reduce
-  {kGenSimd3, true, true, nullptr},    // Select
-  {kGenSimd1, false, false, nullptr},  // ElemAny
-  {kGenSimd1, true, true, nullptr},    // RemovePad
-  {kGenFlex, true, true, nullptr},     // Power
-  {kGenFlex, true, true, nullptr},     // Compare
-  {kGenFlex, true, true, nullptr},     // CompareS
-  {kGenSimd1, false, false, OneHotOp::DimChanged},  // OneHot
+  {kGenLoad, true, false, nullptr, nullptr, nullptr},                                          // LoadDummy
+  {kGenLoad, true, false, nullptr, nullptr, nullptr},                                          // MultiLoad
+  {kGenLoad, true, false, nullptr, NDSliceLoad::FoldProp, NDSliceLoad::AlignProp},             // SliceLoad
+  {kGenLoad, true, false, nullptr, nullptr, nullptr},                                          // Load
+  {kGenStore, false, true, nullptr, NDPadStore::FoldProp, NDPadStore::AlignProp},              // PadStore
+  {kGenStore, true, true, NDStore::DimChanged, nullptr, nullptr},                              // Store
+  {kGenComm, true, false, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::AlignProp},     // ReduceScatter
+  {kGenComm, true, false, nullptr, AllGatherOp::FoldProp, AllGatherOp::AlignProp},             // AllGather
+  {kGenComm, true, false, nullptr, nullptr, nullptr},                                          // AllGatherV2
+  {kGenComm, true, false, nullptr, nullptr, nullptr},                                          // AllReduce
+  {kGenSimd1, true, false, nullptr, nullptr, nullptr},                                         // Reshape
+  {kGenSimd1, true, true, nullptr, nullptr, nullptr},                                          // Copy
+  {kGenSimd1, true, true, nullptr, nullptr, nullptr},                                          // Unary
+  {kGenSimd2, true, true, nullptr, nullptr, nullptr},                                          // Binary
+  {kGenSimd1, true, true, nullptr, nullptr, nullptr},                                          // Cast
+  {kGenSimd1, true, true, nullptr, nullptr, nullptr},                                          // BinaryS
+  {kGenSimd1, false, false, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::AlignProp},         // BroadcastTo
+  {kGenSimd0, true, false, nullptr, nullptr, nullptr},                                         // BroadcastS
+  {kGenFlex, false, false, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::AlignProp},  // Reduce
+  {kGenSimd3, true, true, nullptr, nullptr, nullptr},                                          // Select
+  {kGenSimd1, false, false, nullptr, nullptr, nullptr},                                        // ElemAny
+  {kGenSimd1, true, true, nullptr, nullptr, nullptr},                                          // RemovePad
+  {kGenFlex, true, true, nullptr, nullptr, nullptr},                                           // Power
+  {kGenFlex, true, true, nullptr, nullptr, nullptr},                                           // Compare
+  {kGenFlex, true, true, nullptr, nullptr, nullptr},                                           // CompareS
+  {kGenSimd1, false, false, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::AlignProp},    // OneHot
 };
 
 class AtomicCleanWrap : public CodeWrap {
@@ -589,9 +590,9 @@ void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   nd_ = lhs_->nd_;
 }
 
-void NDPadStore::AlignProp(PropRange &range) { range.depth = 1; }
+void NDPadStore::AlignProp(NDObject *op, PropRange &range) { range.depth = 1; }
 
-void NDPadStore::FoldProp(PropRange &range) { range.depth = nd_.size() - 1; }
+void NDPadStore::FoldProp(NDObject *op, PropRange &range) { range.depth = op->nd_.size() - 1; }
 
 int NDPadStore::Emit(VectorKernel &k) {
   uint64_t lead_align = nd_.lead_stride();
@@ -625,9 +626,9 @@ void NDPadStore::Dump(bool verbose, std::ostringstream &oss) { oss << "PadStore"
 
 void NDSliceLoad::Normalize(std::vector<NDObject *> &run_ops) { NDLoad::Normalize(run_ops); }
 
-void NDSliceLoad::AlignProp(PropRange &range) { range.depth = 1; }
+void NDSliceLoad::AlignProp(NDObject *op, PropRange &range) { range.depth = 1; }
 
-void NDSliceLoad::FoldProp(PropRange &range) { range.depth = 1; }
+void NDSliceLoad::FoldProp(NDObject *op, PropRange &range) { range.depth = 1; }
 
 int64_t NDSliceLoad::CalcOffset() {
   uint64_t src_offset = 0;
@@ -1349,17 +1350,19 @@ int SelectOp::Emit(VectorKernel &k) {
 
 void SelectOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Select"; }
 
-void _BroadcastOp::FoldProp(PropRange &range) {
+void _BroadcastOp::FoldProp(NDObject *op, PropRange &range) {
+  auto &lhs_nd = op->lhs_->nd_;
+  auto &ndd = static_cast<_BroadcastOp *>(op)->ndd_;
   int state = 0;  // -1 - broadcast; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
   for (int i = range.base; i != range.base - range.depth; --i) {
-    if ((state == -1 && lhs_->nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && lhs_nd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (lhs_->nd_[i] > 1)
+      if (lhs_nd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -1370,17 +1373,19 @@ void _BroadcastOp::FoldProp(PropRange &range) {
   range.depth = new_depth;
 }
 
-void _BroadcastOp::AlignProp(PropRange &range) {
+void _BroadcastOp::AlignProp(NDObject *op, PropRange &range) {
+  auto &lhs_nd = op->lhs_->nd_;
+  auto &ndd = static_cast<_BroadcastOp *>(op)->ndd_;
   int state = 0;  // -1 - broadcast; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
   for (int i = 0; i < range.depth; ++i) {
-    if ((state == -1 && lhs_->nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && lhs_nd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (lhs_->nd_[i] > 1)
+      if (lhs_nd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -1512,17 +1517,19 @@ void BroadcastScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   }
 }
 
-void _ReduceOp::FoldProp(PropRange &range) {
+void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
+  auto &lhs_nd = op->lhs_->nd_;
+  auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
   int state = 0;  // -1 - reduce ; 1 - elemwise, 0 - undetemite
   int new_depth = 0;
   for (int i = range.base; i != range.base - range.depth; --i) {
-    if ((state == -1 && ndd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && ndd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (ndd_[i] > 1)
+      if (ndd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -1533,17 +1540,19 @@ void _ReduceOp::FoldProp(PropRange &range) {
   range.depth = new_depth;
 }
 
-void _ReduceOp::AlignProp(PropRange &range) {
+void _ReduceOp::AlignProp(NDObject *op, PropRange &range) {
+  auto &lhs_nd = op->lhs_->nd_;
+  auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
   int state = 0;  // -1 - reduce; 1 - elemwise, 0 - undetemite
   int new_depth = 0;
   for (int i = 0; i < range.depth; ++i) {
-    if ((state == -1 && ndd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && ndd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (ndd_[i] > 1)
+      if (ndd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -1838,21 +1847,23 @@ void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {
   tile_dim_ = ndd_.size();
 }
 
-void OneHotOp::FoldProp(PropRange &range) {
-  if (range.base > depth_dim_) {
-    if (auto depth_len = range.base - depth_dim_; depth_len < range.depth) {
+void OneHotOp::FoldProp(NDObject *op, PropRange &range) {
+  auto depth_dim = static_cast<OneHotOp *>(op)->depth_dim_;
+  if (range.base > depth_dim) {
+    if (auto depth_len = range.base - depth_dim; depth_len < range.depth) {
       range.depth = depth_len;
     }
-  } else if (range.base == depth_dim_) {
+  } else if (range.base == depth_dim) {
     range.depth = 1;
   }
 }
 
-void OneHotOp::AlignProp(PropRange &range) {
-  if (depth_dim_ == 0) {
+void OneHotOp::AlignProp(NDObject *op, PropRange &range) {
+  auto depth_dim = static_cast<OneHotOp *>(op)->depth_dim_;
+  if (depth_dim == 0) {
     range.depth = 1;
-  } else if (range.depth > depth_dim_) {
-    range.depth = depth_dim_;
+  } else if (range.depth > depth_dim) {
+    range.depth = depth_dim;
   }
 }
 
@@ -1949,7 +1960,7 @@ void OneHotOp::UpdateDomain(NDObject *head) {
 void OneHotOp::DimChanged(NDObject *op) {
   for (size_t i = 0; i < op->nd_.size(); ++i) {
     if (op->lhs_->nd_[i] == 1 && op->nd_[i] > 1) {
-      static_cast<OneHotOp *>(op)->UpdateDepthDim(i);
+      static_cast<OneHotOp *>(op)->depth_dim_ = i;
       break;
     }
   }
@@ -2602,21 +2613,23 @@ void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
   code_reserve_ = sizeof(uint64_t) * (7 * (comm_->GetRankSize() - 1) + 4 + 3);
 }
 
-void ReduceScatterOp::FoldProp(PropRange &range) {
-  if (multi_load_) {
-    CommOp::FoldProp(range);
+void ReduceScatterOp::FoldProp(NDObject *op, PropRange &range) {
+  auto self = static_cast<ReduceScatterOp *>(op);
+  if (self->multi_load_) {
     return;
   }
+  auto &lhs_nd = self->lhs_->nd_;
+  auto &ndd = self->ndd_;
   int state = 0;  // -1 - reduce ; 1 - elemwise, 0 - undetemite
   int new_depth = 0;
   for (int i = range.base; i != range.base - range.depth; --i) {
-    if ((state == -1 && nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && ndd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (ndd_[i] > 1)
+      if (ndd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -2627,21 +2640,23 @@ void ReduceScatterOp::FoldProp(PropRange &range) {
   range.depth = new_depth;
 }
 
-void ReduceScatterOp::AlignProp(PropRange &range) {
-  if (multi_load_) {
-    CommOp::AlignProp(range);
+void ReduceScatterOp::AlignProp(NDObject *op, PropRange &range) {
+  auto self = static_cast<ReduceScatterOp *>(op);
+  if (self->multi_load_) {
     return;
   }
+  auto &lhs_nd = self->lhs_->nd_;
+  auto &ndd = self->ndd_;
   int state = 0;  // -1 - reduce; 1 - elemwise, 0 - undetemite
   int new_depth = 0;
   for (int i = 0; i < range.depth; ++i) {
-    if ((state == -1 && ndd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && ndd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (ndd_[i] > 1)
+      if (ndd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -3472,17 +3487,19 @@ void AllGatherOp::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-void AllGatherOp::FoldProp(PropRange &range) {
+void AllGatherOp::FoldProp(NDObject *op, PropRange &range) {
+  auto &lhs_nd = op->lhs_->nd_;
+  auto &ndd = static_cast<AllGatherOp *>(op)->ndd_;
   int state = 0;  // -1 - broadcast; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
   for (int i = range.base; i != range.base - range.depth; --i) {
-    if ((state == -1 && lhs_->nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && lhs_nd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (lhs_->nd_[i] > 1)
+      if (lhs_nd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;
@@ -3493,17 +3510,19 @@ void AllGatherOp::FoldProp(PropRange &range) {
   range.depth = new_depth;
 }
 
-void AllGatherOp::AlignProp(PropRange &range) {
+void AllGatherOp::AlignProp(NDObject *op, PropRange &range) {
+  auto &lhs_nd = op->lhs_->nd_;
+  auto &ndd = static_cast<AllGatherOp *>(op)->ndd_;
   int state = 0;  // -1 - broadcast; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
   for (int i = 0; i < range.depth; ++i) {
-    if ((state == -1 && lhs_->nd_[i] > 1) || (state == 1 && lhs_->nd_[i] != ndd_[i])) {
+    if ((state == -1 && lhs_nd[i] > 1) || (state == 1 && lhs_nd[i] != ndd[i])) {
       break;
     }
     if (state == 0) {
-      if (lhs_->nd_[i] > 1)
+      if (lhs_nd[i] > 1)
         state = 1;
-      else if (lhs_->nd_[i] != ndd_[i])
+      else if (lhs_nd[i] != ndd[i])
         state = -1;
     }
     new_depth++;

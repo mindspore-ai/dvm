@@ -30,6 +30,7 @@ enum ObjectType {
   // Load
   kLoadDummy = 0,
   kMultiLoad,
+  kSliceLoad,
   kLoad,
 
   // Store
@@ -366,6 +367,8 @@ struct NDObjectAttr {
   bool inplace_prop;
   bool share_ndd;
   void (*dim_changed)(NDObject *);
+  void (*fold_prop)(NDObject *, PropRange &);
+  void (*align_prop)(NDObject *, PropRange &);
 };
 
 class NDObject {
@@ -382,10 +385,6 @@ class NDObject {
   // re-infer shape(nd_) from its inputs nd_
   virtual void Normalize(std::vector<NDObject *> &run_ops) {}
   virtual void Shard(const ShardParam &sp);
-  // fold axis right alignment: [base-depth+1, base]
-  virtual void FoldProp(PropRange &range) {}
-  // fold axis left alignment:  [0, depth-1]
-  virtual void AlignProp(PropRange &range) {}
   // tile nd range
   virtual void Tile(const TileParam &tp);
   virtual int Emit(VectorKernel &k) = 0;
@@ -409,9 +408,22 @@ class NDObject {
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
   NDSpaceData *Ndd() const { return attrs_[obj_id_].share_ndd ? nullptr : const_cast<NDSpaceData *>(nd_.data); }
+
   void DimChanged() {
     if (auto func = attrs_[obj_id_].dim_changed) {
       func(this);
+    }
+  }
+  // fold axis right alignment: [base-depth+1, base]
+  void FoldProp(PropRange &range) {
+    if (auto func = attrs_[obj_id_].fold_prop) {
+      func(this, range);
+    }
+  }
+  // fold axis left alignment:  [0, depth-1]
+  void AlignProp(PropRange &range) {
+    if (auto func = attrs_[obj_id_].align_prop) {
+      func(this, range);
     }
   }
 
@@ -508,12 +520,15 @@ class NDMultiLoad : public NDLoad {
 class NDSliceLoad : public NDLoad {
  public:
   NDSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
-      : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {}
+      : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {
+    obj_id_ = ObjectType::kSliceLoad;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
 
  protected:
   int64_t CalcOffset();
@@ -583,9 +598,10 @@ class NDPadStore : public NDAccess {
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
   int Emit(VectorKernel &k) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
 
  private:
   ShapeWithRef shape_;
@@ -805,10 +821,11 @@ class _BroadcastOp : public NDObject {
   _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
     nd_.data = &ndd_;
   }
-  void FoldProp(PropRange &range) override;
-  void AlignProp(PropRange &range) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
 
   NDSpaceData ndd_;
 
@@ -860,11 +877,12 @@ class _ReduceOp : public FlexOp {
     MESS(tail_dim_, 100);
     MESS(tail_size_, 10000);
   }
-  void FoldProp(PropRange &range) override;
-  void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
 
   void SetRange(int start, int end) {
     start_dim_ = start;
@@ -926,15 +944,14 @@ class OneHotOp : public NDObject {
   }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  void FoldProp(PropRange &range) override;
-  void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  void UpdateDepthDim(int dim) { depth_dim_ = dim; }
   void UpdateDomain(NDObject *head);
 
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
  private:
@@ -1088,14 +1105,14 @@ class ReduceScatterOp : public CommOp {
  public:
   ReduceScatterOp(NDObject *input, const Communicator *comm);
   ~ReduceScatterOp() override;
-  void FoldProp(PropRange &range) override;
-  void AlignProp(PropRange &range) override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   int MultiLoadEmit(VectorKernel &k);
 
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
   bool multi_load_;
 
  private:
@@ -1137,11 +1154,12 @@ class AllGatherOp : public CommOp {
   AllGatherOp(NDObject *input, const Communicator *comm);
   ~AllGatherOp() = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  void AlignProp(PropRange &range) override;
-  void FoldProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
 
   DimArray round_tile_;
 

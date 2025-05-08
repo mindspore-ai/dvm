@@ -926,5 +926,62 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
+void NormalizeNdd(BasicBlock &block) {
+  auto init_ndd = [&block]() {
+    for (auto &op : block) {
+      if (auto ndd = op.Ndd(); ndd != nullptr) {
+        ndd->lidx = 0;
+      }
+    }
+  };
+  auto onehot_align = [&block](OneHotOp *onehot) {
+    std::unordered_set<NDObject *> visited = {onehot, onehot->lhs_};
+    std::vector<NDObject *> stack = {onehot->lhs_};
+    auto stack_push = [&visited, &stack](NDObject *op) {
+      if (!visited.count(op)) {
+        stack.push_back(op);
+        visited.insert(op);
+      }
+    };
+    while (!stack.empty()) {
+      auto top = stack.back();
+      stack.pop_back();
+      if (top->obj_id_ == kReshape) continue;
+      if (auto ndd = top->Ndd(); ndd != nullptr && onehot->AlignNdd(ndd)) {
+        ndd->lidx = 1;
+      }
+      if (top->lhs_) {
+        stack_push(top->lhs_);
+        if (top->rhs_) {
+          stack_push(top->rhs_);
+          if (top->flags_ & OBJ_FLAG_XHS) {
+            stack_push(static_cast<FlexOp *>(top)->xhs_);
+          }
+        }
+      }
+      for (auto op : block.GetUsers(top)) {
+        stack_push(op);
+      }
+    }
+  };
+  bool init = false;
+  for (auto &op : block) {
+    if (op.obj_id_ == kOneHot) {
+      if (!init) {
+        init_ndd();
+        init = true;
+      }
+      onehot_align(static_cast<OneHotOp *>(&op));
+    }
+  }
+  if (init) {
+    for (auto &op : block) {
+      if (op.nd_.data->lidx) {
+        op.DimChanged();
+      }
+    }
+  }
+}
+
+std::vector<Pass> passes = {&NormalizeNdd, &EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
 }  // namespace dvm::pass

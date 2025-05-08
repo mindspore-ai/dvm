@@ -580,12 +580,11 @@ class NDStore : public NDAccess {
 
   static void DimChanged(NDObject *op);
 
-  DimArray round_tile_;
-
  private:
   int tail_dim_;
   int tail_size_;
   uint32_t elem_dim_mask_;
+  DimArray round_tile_;
 };
 
 class NDPadStore : public NDAccess {
@@ -893,12 +892,14 @@ class _ReduceOp : public FlexOp {
 
   static void DimChanged(NDObject *op);
 
+  NDSpaceData ndd_;
+
+protected:
   int red_op_;
   int start_dim_;
   int end_dim_;
   int tail_dim_;
   int64_t tail_size_;
-  NDSpaceData ndd_;
 };
 
 class AtomicCleanWrap;
@@ -948,6 +949,7 @@ class OneHotOp : public NDObject {
   int Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  bool AlignNdd(NDSpaceData *ndd);
   void UpdateDomain(NDObject *head);
 
   static void AlignProp(NDObject *op, PropRange &range);

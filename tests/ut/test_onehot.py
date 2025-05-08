@@ -85,8 +85,9 @@ def test_onehot_reshape_elim():
     t.store_expect(z, expect_z)
     assert (t.run_check())
 
-def test_update_domain():
-    t = Tester()
+@pytest.mark.parametrize('pass_opt', [True, False])
+def test_update_domain(pass_opt):
+    t = Tester(use_pass_opt=pass_opt)
     shape, depth, axis = [4096], 512, -1
     ax = np.random.normal(0.0, 1.0, [4096,1]).astype(np.float32)
     bx = np.random.normal(0.0, 1.0, [4096, depth]).astype(np.float32)

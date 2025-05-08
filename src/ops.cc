@@ -1929,15 +1929,11 @@ void OneHotOp::Dump(bool verbose, std::ostringstream &oss) {
   }
 }
 
-void OneHotOp::UpdateDomain(NDObject *head) {
+bool OneHotOp::AlignNdd(NDSpaceData *ndd) {
+  auto &dims = ndd->dims;
+  auto size = dims.size();
   size_t depth_dim = depth_dim_;
-  for (auto op = head; op != nullptr; op = op->pd_next_) {
-    auto ndd = op->Ndd();
-    if (ndd == nullptr) continue;
-    auto &dims = ndd->dims;
-    auto size = dims.size();
-    ndd->lidx = 0;
-    if (size >= ndd_.size() || size <= depth_dim) continue;
+  if (size < ndd_.size() && size > depth_dim) {
     for (size_t i = depth_dim; i < size; ++i) {
       if (auto dim = dims[i]; dim > 1 && dim != ndd_[i]) {
         dims.resize(size + 1);
@@ -1945,9 +1941,17 @@ void OneHotOp::UpdateDomain(NDObject *head) {
           dims[j] = dims[j -1];
         }
         dims[depth_dim] = 1;
-        ndd->lidx = 1;
-        break;
+        return true;
       }
+    }
+  }
+  return false;
+}
+
+void OneHotOp::UpdateDomain(NDObject *head) {
+  for (auto op = head; op != nullptr; op = op->pd_next_) {
+    if (auto ndd = op->Ndd(); ndd != nullptr) {
+      ndd->lidx = AlignNdd(ndd) ? 1 : 0;
     }
   }
   for (auto op = head; op != nullptr; op = op->pd_next_) {

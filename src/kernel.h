@@ -231,8 +231,6 @@ class VKernelS : public VectorKernel {
   VKernelS() : VectorKernel(KernelType::kStaticShape) {}
   void Append(NDObject *obj) override;
   void Optimize() override;
-
-  static std::vector<pass::Pass> passes;
 };
 
 class VKernelD : public VectorKernel {

@@ -275,6 +275,8 @@ void EliminateReshape(BasicBlock &bb);
 /// up the data transfer process to the GM.
 void InsertRemovePad(BasicBlock &block);
 
+void NormalizeNdd(BasicBlock &block);
+
 using Pass = void (*)(BasicBlock &);
 extern std::vector<Pass> passes;
 }  // namespace dvm::pass

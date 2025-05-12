@@ -985,6 +985,7 @@ class EagerArea {
 };
 
 static int g_eager_pv_width = -1;
+static bool g_eager_cv_enable = false;
 VKernelE::VKernelE(WsAllocFunc func, void *user_data)
     : VKernel(KernelType::kEager), ws_alloc_(func), user_data_(user_data) {
   objects_.reserve(128);
@@ -993,8 +994,11 @@ VKernelE::VKernelE(WsAllocFunc func, void *user_data)
   kernels_.reserve(8);
   if (g_eager_pv_width == -1) {
     const char *width = getenv("DVM_EAGER_PV_WIDTH");
-    g_eager_pv_width = width != nullptr ? std::stoi(width) : 8;
+    g_eager_pv_width = width != nullptr ? std::stoi(width) : 0;
     ASSERT(g_eager_pv_width <= EagerVector::kMaxPvNum);
+    if (auto en = getenv("DVM_EAGER_CV_FUSION"); en != nullptr && std::stoi(en) != 0) {
+      g_eager_cv_enable = true;
+    }
   }
 }
 
@@ -1192,7 +1196,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   }
   int aid = area_used_++;
   auto area = EagerArea::Assign(this, aid);
-  area->ResetMix(mm, EagerArea::kPending);
+  area->ResetMix(mm, g_eager_cv_enable ? EagerArea::kPending : EagerArea::kSubmitted);
   area->depend_mask_ |= dep_mask;
   SetArea(mm, aid);
   SetStore(mm, output);

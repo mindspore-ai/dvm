@@ -27,11 +27,10 @@ namespace dvm {
 
 class VisitCoder {
  public:
-  void AddReloc(uint64_t *pc, uint64_t offset) {
-    rel_relocs_.emplace_back(pc, offset);
-  }
+  void AddReloc(uint64_t *pc, uint64_t offset) { rel_relocs_.emplace_back(pc, offset); }
   void Clear() { rel_relocs_.clear(); }
-  std::vector<std::pair<uint64_t *, uint64_t >> rel_relocs_;
+  std::vector<std::pair<uint64_t *, uint64_t>> rel_relocs_;
+
  protected:
   ~VisitCoder() = default;
 };
@@ -135,14 +134,16 @@ class Code : public CodeWrap {
     UpdateHead(0, V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_C);
   }
 
-  void UpdateMix(const MixVisitCoder *visit, uint64_t slice[], uint64_t tail[], uint64_t stride[], uint64_t subtile0, uint64_t subtile1) {
+  void UpdateMix(const MixVisitCoder *visit, uint64_t slice[], uint64_t tail[], uint64_t stride[], uint64_t subtile0,
+                 uint64_t subtile1) {
     target_ = kTargetMix;
     uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
     data_size_ += vVisitMix::Encode(visit_code, slice, tail, stride, subtile0, subtile1) * sizeof(uint64_t);
     for (auto &r : visit->rel_relocs_) {
       *(r.first + r.second) |= static_cast<uint64_t>(visit_code - r.first);
     }
-    uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - (HeadSize() + sizeof(vCubeOp)) / sizeof(uint64_t);
+    uint64_t offset =
+      visit_code - reinterpret_cast<uint64_t *>(data_) - (HeadSize() + sizeof(vCubeOp)) / sizeof(uint64_t);
     uint64_t data =
       g_visit_func_offset[V_VISIT_MIX] << V_ENTRY_VE_VISIT_ID_OFFSET | offset << V_ENTRY_VE_VISIT_OFFSET_OFFSET;
     UpdateHead(data, V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_VE);

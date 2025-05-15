@@ -145,10 +145,16 @@ void MsProfHelper::InitReportNode() {
   prof_node_basic_info.opName = opName_hash_id;
   prof_node_basic_info.blockDim = info_.block_dim;
   prof_node_basic_info.opType = GetMsprofHashId(info_.op_name);
-  prof_node_basic_info.taskType =
-    (info_.kernel_type == kStaticMix || info_.kernel_type == kDynMix || info_.kernel_type == kStaticStages)
-      ? static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC)
-      : static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
+  MsprofContextIdInfo ctx_id;
+  ctx_id.opName = prof_node_basic_info.opName;
+  ctx_id.ctxIdNum = 1;
+  for (uint32_t i = 0; i < 1; i++) {
+    ctx_id.ctxIds[i] = i;
+  }
+  MsprofAdditionalInfo &context_id_info = addition_info_.context_id_info;
+  context_id_info.level = MSPROF_REPORT_NODE_LEVEL;
+  context_id_info.type = MSPROF_REPORT_NODE_CONTEXT_ID_INFO_TYPE;
+  memcpy(context_id_info.data, &ctx_id, sizeof(MsprofContextIdInfo));
   size_t total_size = info_.input_size + info_.output_size;
   for (size_t i = 0U; i < total_size; i += MSPROF_GE_TENSOR_DATA_NUM) {
     TensorInfoWrapper tensor_info_wrapper;
@@ -168,8 +174,16 @@ void MsProfHelper::UpdateReportNode(uint32_t block_dim) {
   }
 }
 
-void MsProfHelper::UpdateBeginTime() {
+void MsProfHelper::Update(uint32_t kernel_target) {
   addition_info_.api.beginTime = MsProfHolder::Instance().msprof_sys_cycle_time_();
+  auto &prof_node_basic_info = addition_info_.node_basic_info.data.nodeBasicInfo;
+  if (kernel_target == Code::kTargetCube) {
+    prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
+  } else if (kernel_target == Code::kTargetVec) {
+    prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AIV);
+  } else {
+    prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC);
+  }
 }
 
 void MsProfHelper::ReportTask() {
@@ -181,7 +195,14 @@ void MsProfHelper::ReportTask() {
   auto compact_ret = MsProfHolder::Instance().msprof_report_compact_info_(false, &addition_info_.node_basic_info,
                                                                           sizeof(MsprofCompactInfo));
   EXCEPTION_IF(compact_ret != MSPROF_ERROR_NONE, "MsprofReportCompactInfo failed.");
-
+  if (addition_info_.node_basic_info.data.nodeBasicInfo.taskType ==
+      static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC)) {
+    addition_info_.context_id_info.threadId = static_cast<uint32_t>(tid);
+    addition_info_.context_id_info.timeStamp = prof_time;
+    auto context_ret = MsProfHolder::Instance().msprof_report_additional_info_(false, &addition_info_.context_id_info,
+                                                                               sizeof(MsprofAdditionalInfo));
+    EXCEPTION_IF(context_ret != MSPROF_ERROR_NONE, "MsprofReportAdditionalInfo failed.");
+  }
   for (auto &tensor_info_wrapper : addition_info_.tensor_info_wrappers) {
     tensor_info_wrapper.tensor_info.timeStamp = prof_time;
     tensor_info_wrapper.tensor_info.threadId = static_cast<uint32_t>(tid);

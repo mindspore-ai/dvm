@@ -26,6 +26,7 @@
 #include "comm.h"
 
 namespace dvm {
+std::mutex g_rt_kernel_launch_mutex;
 namespace {
 static const BinarySOpType binary_map[kBinaryOpEnd] = {
   kEquals, kNotEquals,    kGreaters,     kGreaterEquals, kLesss,    kLessEquals,   kAdds,         kBinarySOpEnd,
@@ -715,7 +716,6 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
     info.op_fullname = op_fullname;
     info.input_size = reloc_table.inputs_size;
     info.output_size = reloc_table.outputs_size;
-    info.kernel_type = kernel_->KType();
     info.block_dim = kernel_->code_.block_dim_;
     auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
     for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
@@ -733,10 +733,17 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
   } else if (kernel_->KType() == kDynShape) {
     msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
   }
-  msprof_helper_->UpdateBeginTime();
-  auto ret = Launch(reloc_table, inputs, outputs, workspace, stream);
-  msprof_helper_->ReportTask();
-  return ret;
+  std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
+  ScopedValueGuard<LaunchFunc> guard(
+    System::Instance().rt_kernel_launch_,
+    [real_rt_launch = System::Instance().rt_kernel_launch_, this](const void *stub, auto &&...rest_args) {
+      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&System::Instance());
+      msprof_helper_->Update(target);
+      auto ret = real_rt_launch(stub, std::forward<decltype(rest_args)>(rest_args)...);
+      msprof_helper_->ReportTask();
+      return ret;
+    });
+  return Launch(reloc_table, inputs, outputs, workspace, stream);
 }
 
 int Kernel::EagerMsProfLaunch(void *stream) {
@@ -747,7 +754,6 @@ int Kernel::EagerMsProfLaunch(void *stream) {
     MsProfHelper msprof_helper;
     auto &info = msprof_helper.info_;
     auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);
-    info.kernel_type = vector_kernel->KType();
     info.block_dim = vector_kernel->code_.block_dim_;
     std::ostringstream oss;
     oss << "Dvm";
@@ -778,7 +784,7 @@ int Kernel::EagerMsProfLaunch(void *stream) {
     info.op_name = prof_name.c_str();
     info.op_fullname = info.op_name;
     msprof_helper.InitReportNode();
-    msprof_helper.UpdateBeginTime();
+    msprof_helper.Update(kernel->code_.target_);
     kernel->Launch(i, stream);
     msprof_helper.ReportTask();
   }

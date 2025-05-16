@@ -1479,6 +1479,7 @@ __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) 
     op.iter_num = op.iter_tail;
   }
   __gm__ uint8_t* gm = (__gm__ uint8_t*)op.to + op.tile_stride * tile_idx;
+  set_atomic_add();
   set_atomic_f32();
   if (op.pad_size == 0) {
     copy_ubuf_to_gm_align_b32(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0, 0);

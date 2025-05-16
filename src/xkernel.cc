@@ -21,6 +21,21 @@
 #include "tuning.h"
 
 namespace dvm {
+namespace {
+void ReplaceOperands(NDObject *replaced, NDObject *replacing, NDObject *op) {
+  auto InplaceOp = [replaced, replacing](NDObject *&op) {
+    if (op && op == replaced) {
+      op = replacing;
+    }
+  };
+  InplaceOp(op->lhs_);
+  InplaceOp(op->rhs_);
+  if (op->flags_ & OBJ_FLAG_XHS) {
+    InplaceOp(static_cast<FlexOp *>(op)->xhs_);
+  }
+}
+}  // namespace
+
 MixKernel::~MixKernel() {
   if (cube_op_) {
     delete cube_op_->lhs_;
@@ -81,30 +96,38 @@ void MixKernel::Append(NDObject *obj) {
 }
 
 void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node) {
-  auto InplaceOp = [replaced_node, replacing_node](NDObject *&op) {
-    if (op && op == replaced_node) {
-      op = replacing_node;
-    }
-  };
   for (auto &op : post_fusion_->build_ops_) {
     if (op != replaced_node) {
-      InplaceOp(op->lhs_);
-      InplaceOp(op->rhs_);
-      if (op->flags_ & OBJ_FLAG_XHS) {
-        InplaceOp(static_cast<FlexOp *>(op)->xhs_);
-      }
+      ReplaceOperands(replaced_node, replacing_node, op);
       stage_kernel_->GetImpl()->Append(op);
     }
   }
-  post_fusion_->build_ops_.clear();
-  if (replaced_node) {
-    post_fusion_->Append(replaced_node);
-  }
 }
+
 void MixKernel::Release() {
-  cube_op_->bias_ = nullptr;
-  if (cube_op_->GetObjectType() == kGmmOp) {
-    static_cast<GmmOp *>(cube_op_)->group_list_ = nullptr;
+  if (!stage_kernel_) {
+    return;
+  }
+  auto current_kernel = static_cast<MixKernel *>(static_cast<StagesKernel *>(stage_kernel_->GetImpl())->Current());
+  VectorKernel *target_post_fusion = current_kernel->post_fusion_;
+  if (post_fusion_) {
+    std::unordered_set<NDObject *> post_ops_set(post_fusion_->build_ops_.begin(), post_fusion_->build_ops_.end());
+    for (auto &obj : target_post_fusion->build_ops_) {
+      if (post_ops_set.find(obj) != post_ops_set.end()) {
+        obj = nullptr;
+      }
+    }
+    for (auto &op : post_fusion_->build_ops_) {
+      ReplaceOperands(current_kernel->sload_, sload_, op);
+    }
+  }
+
+  auto cube_op = current_kernel->cube_op_;
+  if (!cube_op_->tactics_.enable_bias_cast) {
+    cube_op->bias_ = nullptr;
+  }
+  if (cube_op->GetObjectType() == kGmmOp) {
+    static_cast<GmmOp *>(cube_op)->group_list_ = nullptr;
   }
 }
 
@@ -122,7 +145,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
       inputs[i] = stage_kernel_->StagePadStore(load, pad_size[i]);
     }
   }
-  stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
+  stage_kernel_->StageSwitch(KernelType::kStaticMix);
   for (size_t i = 0; i < 2; i++) {
     if (pad_size[i]) {
       inputs[i] = stage_kernel_->StageLoad(inputs[i]);
@@ -139,7 +162,6 @@ uint64_t MixKernel::UnAlignCodeGen() {
                                              cube_op_->bias_, static_cast<GmmOp *>(cube_op_)->group_list_,
                                              static_cast<GmmOp *>(cube_op_)->group_type_);
   }
-  Release();
   static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
@@ -183,7 +205,7 @@ uint64_t MixKernel::SplitKCodeGen() {
     (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
     (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
     NDObject *matmul_op;
-    NDObject *bias_op = (i == 0 ? cube_op_->bias_ : nullptr);
+    NDObject *bias_op = (i + 1 == split_num ? cube_op_->bias_ : nullptr);
     if (cube_op_->GetObjectType() == kCubeOp) {
       matmul_op = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op);
     } else {
@@ -196,7 +218,6 @@ uint64_t MixKernel::SplitKCodeGen() {
     static_cast<CubeOp *>(matmul_op)->SetOutFp32(i != 0);
     (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op)));
   }
-  Release();
   auto matmul_fp32 = split_out.back()->lhs_;
   auto matmul_fp16 = stage_kernel_->Cast(matmul_fp32, cube_op_->lhs_->type_id_);
   if (post_fusion_) {
@@ -230,10 +251,10 @@ uint64_t MixKernel::BiasBF16CodeGen() {
   stage_kernel_ = new Kernel();
   stage_kernel_->Reset(KernelType::kStaticStages);
   stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
-  stage_kernel_->GetImpl()->Append(cube_op_->bias_);
-  auto bias_fp32 = stage_kernel_->StageStore(stage_kernel_->Cast(cube_op_->bias_, kFloat32));
+  auto bias_bf16 = stage_kernel_->Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
+  auto bias_fp32 = stage_kernel_->StageStore(stage_kernel_->Cast(bias_bf16, kFloat32));
 
-  stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
+  stage_kernel_->StageSwitch(KernelType::kStaticMix);
   auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
   auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
   NDObject *matmul_op;
@@ -245,7 +266,6 @@ uint64_t MixKernel::BiasBF16CodeGen() {
       x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32),
       static_cast<GmmOp *>(cube_op_)->group_list_, static_cast<GmmOp *>(cube_op_)->group_type_);
   }
-  Release();
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
   }
@@ -261,6 +281,7 @@ uint64_t MixKernel::BiasBF16CodeGen() {
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
   src_lhs->addr_.Update(static_cast<NDAccess *>(x)->addr_);
   src_rhs->addr_.Update(static_cast<NDAccess *>(y)->addr_);
+  static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_bf16)->addr_);
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
   }
@@ -386,16 +407,18 @@ uint64_t MixKernel::CodeGen() {
     cube_op_->output_ = output;
   }
   cube_op_->InferCubeConfig();
+  uint64_t workspace_size = 0;
   if (cube_op_->tactics_.enable_bias_cast) {
-    return BiasBF16CodeGen();
+    workspace_size = BiasBF16CodeGen();
+  } else if (cube_op_->tactics_.enable_pad) {
+    workspace_size = UnAlignCodeGen();
+  } else if (cube_op_->tactics_.enable_splitk) {
+    workspace_size = SplitKCodeGen();
+  } else {
+    workspace_size = AlignCodeGen();
   }
-  if (cube_op_->tactics_.enable_pad) {
-    return UnAlignCodeGen();
-  }
-  if (cube_op_->tactics_.enable_splitk) {
-    return SplitKCodeGen();
-  }
-  return AlignCodeGen();
+  Release();
+  return workspace_size;
 }
 
 void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
@@ -424,6 +447,7 @@ DynMixKernel::DynMixKernel() : MixKernel() {
 
 uint64_t DynMixKernel::CodeGen() {
   delete stage_kernel_;
+  stage_kernel_ = nullptr;
   code_.~Code();
   code_.data_ = nullptr;
   code_ = std::move(Code());
@@ -438,16 +462,18 @@ uint64_t DynMixKernel::CodeGen() {
   cube_op_->NormalizeCube();
   cube_op_->output_->Normalize(empty_run_ops);
   cube_op_->InferCubeConfig();
+  uint64_t workspace_size = 0;
   if (cube_op_->tactics_.enable_bias_cast) {
-    return BiasBF16CodeGen();
+    workspace_size = BiasBF16CodeGen();
+  } else if (cube_op_->tactics_.enable_pad) {
+    workspace_size = UnAlignCodeGen();
+  } else if (cube_op_->tactics_.enable_splitk) {
+    workspace_size = SplitKCodeGen();
+  } else {
+    workspace_size = AlignCodeGen();
   }
-  if (cube_op_->tactics_.enable_pad) {
-    return UnAlignCodeGen();
-  }
-  if (cube_op_->tactics_.enable_splitk) {
-    return SplitKCodeGen();
-  }
-  return AlignCodeGen();
+  Release();
+  return workspace_size;
 }
 
 void DynMixKernel::Append(NDObject *obj) {
@@ -820,7 +846,7 @@ class EagerVector : public VectorKernel {
 
   vCubeOp *CodeGenMix(CubeOp *mm) {
     size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
-    size_t post_reserve = ReserveCodeSize(); // TODO: visit size
+    size_t post_reserve = ReserveCodeSize();  // TODO: visit size
     code_.Alloc(head_reserve + post_reserve);
     vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
     mm->CodeGen(cube_code, System::Instance().lazy_tuner_);

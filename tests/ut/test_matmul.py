@@ -388,17 +388,23 @@ def test_dyn_matmul():
     t = Tester('dyn_mix')
     x = t.load([-1, -1], "float16")
     y = t.load([-1, -1], "float16")
+    z = t.load([-1, -1], "float16")
     c = t.matmul(x, y, False, False)
+    c = t.binary("Add", c, z)
     out = t.store(c)
-    iterations = [[[256, 128], [128, 512]], [[1024, 1024], [1024, 1024]],[[444, 3333], [3333, 1111]]]
-    for x_shape, y_shape in iterations:
+    iterations = [[[256, 128], [128, 256], [256, 256]], [[256, 128], [128, 512], [256, 1]], [[444, 3333], [
+        3333, 1111], [1, 1111]], [[1024, 1024], [1024, 2222], [1024, 2222]], [[2560, 128], [128, 512], [512]]]
+    for x_shape, y_shape, z_shape in iterations:
         x_data = np.random.normal(0, 1, x_shape).astype(np.float16)
         y_data = np.random.normal(0, 1, y_shape).astype(np.float16)
-        np_c = np.matmul(x_data.astype(np.float32), y_data.astype(np.float32)).astype(np.float16)
+        z_data = np.random.normal(0, 1, z_shape).astype(np.float16)
+        np_c = np.matmul(x_data.astype(np.float32),
+                         y_data.astype(np.float32)).astype(np.float16)
         t.input(x, x_data)
         t.input(y, y_data)
+        t.input(z, z_data)
         t.run()
-        t.check(out, np_c, 1e-3)
+        t.check(out, np_c + z_data, 1e-3)
 
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b, broadcast_shape', [

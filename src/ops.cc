@@ -2054,6 +2054,9 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObjec
 }
 
 void CubeOp::InferCubeConfig() {
+  tactics_.enable_pad = false;
+  tactics_.enable_splitk = false;
+  tactics_.enable_bias_cast = false;
   auto GetPad = [this](int64_t pad_size, int64_t &pad) {
     if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
       return;

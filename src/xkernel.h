@@ -82,6 +82,8 @@ class StagesKernel : public VKernel {
       kernel = new MixKernel();
     } else if (type == KernelType::kStaticParallel) {
       kernel = new VKernelP();
+    } else if (type == KernelType::kDynMix) {
+      kernel = new DynMixKernel();
     } else {
       ASSERT(0);
     }

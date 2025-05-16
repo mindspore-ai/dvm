@@ -424,6 +424,7 @@ void PropDomain::Normalize() {
 }
 
 void PropDomain::AlignProp(PropRange &range) {
+  range.simd_dim = -1;
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     op->AlignProp(range);
   }

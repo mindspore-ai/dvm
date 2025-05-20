@@ -318,6 +318,12 @@ void NDObject::UpdateStride(uint64_t simd_width) {
   }
 }
 
+void NDObject::Shard(const ShardParam &sp) {
+  for (size_t i = sp.base; i < nd_.size(); ++i) {
+    nd_[i] = i < static_cast<size_t>(sp.base + ShardParam::PARTIAL_SIZE) && nd_[i] != 1 ? sp.tile[i - sp.base] : 1;
+  }
+}
+
 void NDObject::Dump(bool verbose, std::ostringstream &oss) { oss << "NDObject"; }
 
 int NDLoadDummy::Emit(VectorKernel &k) {
@@ -326,6 +332,16 @@ int NDLoadDummy::Emit(VectorKernel &k) {
 }
 
 void NDLoadDummy::Dump(bool verbose, std::ostringstream &oss) { oss << "LoadDummy"; }
+
+void NDLoad::Shard(const ShardParam &sp) {
+  if (nd_[sp.base + 1] == 1 && sp.tile[sp.base + 1] > 1) {
+    flags_ |= OBJ_FLAG_LOAD_SHARD_BCAST1;
+  }
+  if (nd_[sp.base] == 1 && sp.tile[sp.base] > 1) {
+    flags_ |= OBJ_FLAG_LOAD_SHARD_BCAST0;
+  }
+  NDObject::Shard(sp);
+}
 
 void NDLoad::Tile(const TileParam &tp) {
   if (CollectRoundTile(nd_, tp, round_tile_) && tp.tail > 0) {
@@ -343,6 +359,42 @@ int NDLoad::Emit(VectorKernel &k) {
   }
   int64_t lead_align = LeadAlign();
   uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
+  if (auto shard = k.root_dom_.shard_) {
+    constexpr int SHARD_M = 1;
+    constexpr int SHARD_N = 0;
+    if (flags_ & OBJ_FLAG_LOAD_PINGPONG) {
+      vPingPongLoad op;
+      op.from = addr_.gm;
+      op.xn = xbuf_;
+      op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
+      op.body_iter = strides_.back() / lead_align;
+      op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
+      op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
+      op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+      op.pingpong = 0;
+      op.pingpong_stride = shard->stride[SHARD_N] * shard->tile[SHARD_N] * shard->tile[SHARD_M] * ITEM_SIZE[type_id_];
+      op.round_rank = round_tile_.size();
+      addr_.Update(insn_ + vPingPongLoad::RELOC_OFFSET);
+      return vPingPongLoad::Encode(insn_, vAccInsnID::V_PINGPONG_LOAD, op, rounds);
+    } else {
+      vSLoad op;
+      op.gm = addr_.gm;
+      op.xn = xbuf_;
+      op.tile_stride = src_tile_stride_;
+      op.pad_size = lead_align - nd_[lead_dim_];
+      op.slice_m = shard->tile[SHARD_M];
+      op.slice_n = shard->stride[SHARD_N] * shard->tile[SHARD_N];
+      op.src_n = shard->stride[SHARD_M];
+      op.tail_m = shard->tail[SHARD_M];
+      op.tail_n = shard->stride[SHARD_N] * shard->tail[SHARD_N];
+      uint64_t broadcast_m = flags_ & OBJ_FLAG_LOAD_SHARD_BCAST1 ? 1 : 0;
+      uint64_t broadcast_n = flags_ & OBJ_FLAG_LOAD_SHARD_BCAST0 ? 1 : 0;
+      op.flags = broadcast_m << 1 | broadcast_n;
+      op.type_size = ITEM_SIZE[type_id_];
+      addr_.Update(insn_ + vSLoad::RELOC_OFFSET);
+      return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op);
+    }
+  } // end shard_
   vLoad op;
   op.from = addr_.gm;
   op.xn = xbuf_;
@@ -460,93 +512,6 @@ int NDPadStore::Emit(VectorKernel &k) {
 }
 
 void NDPadStore::Dump(bool verbose, std::ostringstream &oss) { oss << "PadStore"; }
-
-void NDSLoad::AlignProp(PropRange &range) { range.depth = 1; }
-
-void NDSStore::AlignProp(PropRange &range) { range.depth = 1; }
-
-void NDSLoad::FoldProp(PropRange &range) { range.depth = std::min(static_cast<int>(nd_.size() - 1), range.depth); }
-
-void NDSStore::FoldProp(PropRange &range) { range.depth = std::min(static_cast<int>(nd_.size() - 1), range.depth); }
-
-void NDSLoad::Tile(const TileParam &tp) {
-  if (tp.group_tile) {
-    NDObject::Tile(tp);
-  } else {
-    NDLoad::Tile(tp);
-  }
-}
-
-void NDSStore::Tile(const TileParam &tp) { NDObject::Tile(tp); }
-
-int NDSStore::Emit(VectorKernel &k) {  // TODO: broadcast
-  uint64_t lead_align = LeadAlign();
-  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  vSStore op;
-  op.gm = addr_.gm;
-  op.xn = lhs_->xbuf_;
-  op.tile_stride = src_tile_stride_;
-  op.pad_size = lead_align - nd_[lead_dim_];
-  op.slice_m = cube_op_->m0_;
-  op.slice_n = cube_op_->n0_;
-  op.src_n = cube_op_->n_real_;
-  op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
-  op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
-  op.type_size = ITEM_SIZE[type_id_];
-  addr_.Update(insn_ + vSStore::RELOC_OFFSET);
-  return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op);
-  ;
-}
-
-int NDSLoad::Emit(VectorKernel &k) {
-  uint64_t lead_align = LeadAlign();
-  uint64_t src_tile_stride_ = strides_.back() / lead_align * nd_[lead_dim_];
-  if (pingpong_load_) {
-    uint64_t rounds[2];
-    if (!round_tile_.empty()) {
-      BuildDimRounds(round_tile_, rounds);
-    }
-    vPingPongLoad op;
-    op.from = addr_.gm;
-    op.xn = xbuf_;
-    op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
-    op.body_iter = strides_.back() / lead_align;
-    op.tail_iter = tail_dim_ <= lead_dim_ ? op.body_iter : op.body_iter / nd_[tail_dim_] * tail_size_;
-    op.iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];
-    op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
-    op.pingpong = 0;
-    op.pingpong_stride = cube_op_->m0_ * cube_op_->n0_ * ITEM_SIZE[type_id_];
-    op.round_rank = round_tile_.size();
-    addr_.Update(insn_ + vPingPongLoad::RELOC_OFFSET);
-    return vPingPongLoad::Encode(insn_, vAccInsnID::V_PINGPONG_LOAD, op, rounds);
-  } else {
-    vSLoad op;
-    op.gm = addr_.gm;
-    op.xn = xbuf_;
-    op.tile_stride = src_tile_stride_;
-    op.pad_size = lead_align - nd_[lead_dim_];
-    op.slice_m = cube_op_->m0_;
-    op.slice_n = cube_op_->n0_;
-    op.src_n = cube_op_->n_real_;
-    op.tail_m = cube_op_->m_real_ % cube_op_->m0_;
-    op.tail_n = cube_op_->n_real_ % cube_op_->n0_;
-    if (cube_op_->batch_fold_) {
-      op.flags = 0;
-    } else {
-      size_t shape_size = shape_ref_->size;
-      auto broadcast_m = shape_size < 2 || shape_ref_->data[shape_size - 2] != cube_op_->m_real_;
-      auto broadcast_n = shape_size < 1 || shape_ref_->data[shape_size - 1] != cube_op_->n_real_;
-      op.flags = broadcast_m << 1 | broadcast_n;
-    }
-    op.type_size = ITEM_SIZE[type_id_];
-    addr_.Update(insn_ + vSLoad::RELOC_OFFSET);
-    return vSLoad::Encode(insn_, vAccInsnID::V_SLOAD, op);
-  }
-}
-
-void NDSLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "SLoad"; }
-
-void NDSStore::Dump(bool verbose, std::ostringstream &oss) { oss << "SStore"; }
 
 void NDSliceLoad::Normalize(std::vector<NDObject *> &run_ops) { NDLoad::Normalize(run_ops); }
 
@@ -744,6 +709,23 @@ int NDStore::Emit(VectorKernel &k) {
                       ITEM_SIZE[type_id_] / op.rank_size;
     addr_.Update(insn_ + vStoreAG::RELOC_OFFSET);
     return vStoreAG::Encode(insn_, V_STORE_AG, op);
+  }
+  if (auto shard = k.root_dom_.shard_) {
+    constexpr int SHARD_M = 1;
+    constexpr int SHARD_N = 0;
+    vSStore op;
+    op.gm = addr_.gm;
+    op.xn = lhs_->xbuf_;
+    op.tile_stride = dst_tile_stride_;
+    op.pad_size = lead_align - nd_[lead_dim_];
+    op.slice_m = shard->tile[SHARD_M];
+    op.slice_n = shard->stride[SHARD_N] * shard->tile[SHARD_N];
+    op.src_n = shard->stride[SHARD_M];
+    op.tail_m = shard->tail[SHARD_M];
+    op.tail_n = shard->stride[SHARD_N] * shard->tail[SHARD_N];
+    op.type_size = ITEM_SIZE[type_id_];
+    addr_.Update(insn_ + vSStore::RELOC_OFFSET);
+    return vSStore::Encode(insn_, vAccInsnID::V_SSTORE, op);
   }
   vStore op;
   uint64_t iter_size = nd_[lead_dim_] * ITEM_SIZE[type_id_];

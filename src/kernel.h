@@ -36,7 +36,7 @@ class PropDomain {
     }
     subdoms_.clear();
   }
-  virtual void Normalize();
+  void Normalize();
   virtual void AlignProp(PropRange &range);
   virtual void FoldProp(PropRange &range);
   virtual void TileProp(const TileParam &tp);
@@ -54,16 +54,17 @@ class RootDomain : public PropDomain {
  public:
   RootDomain() = default;
   void SetHead(NDObject *head) { head_ = head; }
-  void Normalize(VectorKernel *kernel);
+  void PrepareTiling(VectorKernel *kernel);
   int64_t Tile(int start, int end, int64_t space, int64_t num);
-  void GroupTile(int dim, int64_t space, int64_t tile);
   void Align(int depth, int64_t space);
+  void Shard(const ShardParam &sp);
 
   DimArray &DimSpace() const { return dom_->nd_; }
   int64_t TileNum() const { return tile_num_; }
   int64_t TileSize() const { return tile_size_; }
 
   PropRange align_;
+  const ShardParam *shard_{nullptr};
 
  private:
   int block_align_;    // min block align
@@ -116,7 +117,13 @@ class VectorKernel : public VKernel {
   }
 
   void BuildDomain(const std::vector<NDObject *> &objects);
-  void NormalizeDomain() { root_dom_.Normalize(this); }
+  void NormalizeDomain() {
+    root_dom_.Normalize();
+    int op_index = 0;
+    for (auto op : objects_) {  // clear status
+      op->Clear(op_index++);
+    }
+  }
   void Normalize() {
     for (auto op : build_ops_) {
       op->Normalize(objects_);

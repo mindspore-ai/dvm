@@ -17,6 +17,7 @@
 #ifndef _DVM_SYSTEM_H_
 #define _DVM_SYSTEM_H_
 #include <iostream>
+#include <functional>
 #include "dvm.h"
 
 // rts_runtime
@@ -36,6 +37,7 @@ namespace dvm {
       exit(0);                                                                                                  \
     }                                                                                                           \
   } while (0)
+
 #else
 #define ASSERT(cond)
 #endif
@@ -68,6 +70,8 @@ enum SocType {
   kAscend910_9361,
   kSocUnknow,
 };
+
+using LaunchFunc = std::function<rtError_t(const void*, uint32_t, void*, uint32_t, rtSmDesc_t*, rtStream_t)>;
 
 class CubeTuner;
 class System {
@@ -105,6 +109,8 @@ class System {
   }
   rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
 
+  LaunchFunc rt_kernel_launch_;
+
  private:
   System();
   AiCoreArch arch_;
@@ -119,8 +125,6 @@ class System {
   SocType soc_name_{kSocUnknow};
 
   void *rt_handle_;
-  rtError_t (*rt_kernel_launch_)(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm,
-                                 rtStream_t stm){nullptr};
   rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
 };
 

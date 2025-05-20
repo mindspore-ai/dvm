@@ -137,7 +137,7 @@ System::System() {
   rt_kernel_launch_ =
     reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
       dlsym(rt_handle_, "rtKernelLaunch"));
-  EXCEPTION_IF(rt_kernel_launch_ == nullptr, "load rt_kernel_launch symbol failed");
+  EXCEPTION_IF(!rt_kernel_launch_, "load rt_kernel_launch symbol failed");
 #endif
   rtError_t err;
   void *module = nullptr;

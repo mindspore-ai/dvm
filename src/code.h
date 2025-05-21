@@ -29,6 +29,11 @@ class VisitCoder {
  public:
   void AddReloc(uint64_t *pc, uint64_t offset) { rel_relocs_.emplace_back(pc, offset); }
   void Clear() { rel_relocs_.clear(); }
+  void Update(void *new_base, void *old_base) {
+    for (auto &r : rel_relocs_) {
+      r.first = static_cast<uint64_t *>(new_base) + (r.first - static_cast<uint64_t *>(old_base));
+    }
+  }
   std::vector<std::pair<uint64_t *, uint64_t>> rel_relocs_;
 
  protected:
@@ -37,11 +42,12 @@ class VisitCoder {
 
 struct RedVisitCoder : public VisitCoder {
  public:
+  enum { BCODE_MAX = 64 };
   uint32_t block_num_;
   uint32_t ws_size_;
   uint32_t visit_id_;
   uint32_t code_size_;
-  uint64_t *code_{nullptr};
+  uint8_t code_[BCODE_MAX];
 };
 
 class MixVisitCoder : public VisitCoder {};
@@ -54,6 +60,9 @@ struct RelocAddr {
   }
   void Update(uint64_t *insn) { reloc_ = insn; }
   void Update(const RelocAddr &share) { reloc_ = share.reloc_; }
+  void Update(void *new_base, void *old_base) {
+    reloc_ = static_cast<uint64_t *>(new_base) + (reloc_ - static_cast<uint64_t *>(old_base));
+  }
 
   union {  // NOTICE: bind after codegen
     void *gm;

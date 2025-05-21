@@ -1394,9 +1394,32 @@ void VKernelD::Optimize() {
   return;
 }
 
+class IsolateWrapVP : public CodeWrap {
+ public:
+  int LaunchWrap(void *workspace, void *stream) override {
+    for (auto &code : codes_) {
+      code->RelocBinds(workspace);
+      code->Launch(workspace, stream);
+    }
+    return term_ ? 0 : next_->LaunchWrap(workspace, stream);
+  }
+  bool DasWrap(std::ostringstream &oss) override {
+    for (auto &code : codes_) {
+      code->DisAssemble(oss);
+      oss << std::endl;
+    }
+    return term_ ? true :  next_->DasWrap(oss);
+  }
+  std::vector<Code *> codes_;
+  bool term_{false};
+};
+
 VKernelP::~VKernelP() {
   for (auto k : children_) {
     delete k;
+  }
+  if (wrap_) {
+    delete wrap_;
   }
 }
 
@@ -1434,6 +1457,7 @@ uint64_t VKernelP::CodeGen() {
   code_.Alloc(code_reserve);
   uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + summaries_offset);
   code_.block_dim_ = 0;
+  uint64_t ws_size = 0;
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
     auto workload = WorkLoad(k);
@@ -1442,6 +1466,10 @@ uint64_t VKernelP::CodeGen() {
     auto &code = k->code_;
     auto code_begin = code_.data_ + child_offset;
     uint64_t code_size = k->DoCodeGen(core_limit, code_begin, k->ReserveCodeSize()) - code_begin;
+    if (auto visit = k->GetVisitor<RedVisitCoder>(); visit != nullptr) {
+      ws_size += CodeGenVE(k, visit, code_begin, code_size, ws_size);
+      continue;
+    }
     code.block_dim_ = k->CompactBlockDim(core_limit);
     total_workload -= workload;
     core_num -= code.block_dim_;
@@ -1452,7 +1480,39 @@ uint64_t VKernelP::CodeGen() {
   }
   code_.data_size_ = child_offset;
   code_.UpdateVP();
-  return 0;
+  if (!code_.block_dim_) {
+    wrap_->term_ = true;
+  }
+  return ws_size;
+}
+
+uint64_t VKernelP::CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size) {
+  auto &code = kernel->code_;
+  code.Alloc(code_size + Code::HeadSize() + RedVisitCoder::BCODE_MAX);
+  std::memcpy(code.data_ + Code::HeadSize(), code_begin, code_size);
+  for (auto op : kernel->build_ops_) {
+    if (op->IsLoad() || op->IsStore()) {
+      auto ac = static_cast<NDAccess *>(op);
+      ac->addr_.Update(code.data_ + Code::HeadSize(), code_begin);
+    }
+  }
+  for (auto op = code.bind_ops_; op != nullptr; op = op->bind_list_) {
+    op->Update(code.data_ + Code::HeadSize(), code_begin);
+  }
+  visit->Update(code.data_ + Code::HeadSize(), code_begin);
+  for (auto op = code.bind_wss_; op != nullptr; op = op->bind_list_) {
+    op->ws += ws_size;
+    op->Update(code.data_ + Code::HeadSize(), code_begin);
+  }
+  code.data_size_ = code_size + Code::HeadSize();
+  code.block_dim_ = CeilDiv<uint32_t>(visit->block_num_, 2);
+  code.UpdateVE(visit);
+  if (wrap_ == nullptr) {
+    wrap_ = new IsolateWrapVP();
+    code_.InsertWrap(wrap_);
+  }
+  wrap_->codes_.push_back(&code);
+  return ws_size + visit->ws_size_;
 }
 
 void VKernelP::Dump(std::ostringstream &oss, const std::string &indent) {

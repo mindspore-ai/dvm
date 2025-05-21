@@ -250,6 +250,7 @@ class VKernelD : public VectorKernel {
   bool elim_reshape_{false};
 };
 
+class IsolateWrapVP;
 class VKernelP : public VKernel {
  public:
   VKernelP() : VKernel(KernelType::kStaticParallel) { children_.push_back(new VKernelS()); }
@@ -265,7 +266,10 @@ class VKernelP : public VKernel {
   static uint64_t UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t *&summaries);
 
  protected:
+  uint64_t CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size);
+
   std::vector<VKernelS *> children_;
+  IsolateWrapVP *wrap_{nullptr};
 };
 
 class DumpRefHelper {

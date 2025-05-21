@@ -880,7 +880,13 @@ class ReduceOp : public _ReduceOp {
       : _ReduceOp(input, red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
-    ws_num_ = System::Instance().deterministic_ ? 2 : 1;
+    if (System::Instance().deterministic_) {
+      ws_num_ = 2;
+      visit_ = new RedVisitCoder();
+    } else {
+      ws_num_ = 1;
+      visit_ = nullptr;
+    }
     flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   }
   ~ReduceOp();
@@ -890,7 +896,7 @@ class ReduceOp : public _ReduceOp {
 
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  RedVisitCoder visit_;
+  RedVisitCoder *visit_;
   AtomicCleanWrap *clean_wrap_{nullptr};
 
  private:

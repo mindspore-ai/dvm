@@ -42,8 +42,10 @@ def test_basic(shape1, shape2, shape3):
     c = t.store_expect(b, 0.1+0.3)
     assert(t.run_check())
 
-def test_reduce():
+@pytest.mark.parametrize('determ', [False, True])
+def test_reduce(determ):
     t = Tester("parallel")
+    t.set_determ(determ)
     # kernel 0
     a0 = np.full((8192,), 0.1, np.float32)
     a = t.reduce("sum", t.load(a0), [0], False)
@@ -59,3 +61,19 @@ def test_reduce():
     c = t.binary("Add", t.load(c0), 1.0)
     t.store_expect(c, 0.1 + 1.0)
     assert(t.run_check())
+    t.set_determ(False)
+
+def test_reduce_determ_all():
+    t = Tester("parallel")
+    t.set_determ(True)
+    # kernel 0
+    a0 = np.full((8192,), 0.1, np.float32)
+    a = t.reduce("sum", t.load(a0), [0], False)
+    t.store_expect(a, 8192 * 0.1)
+    # kernel 1
+    t.p_next()
+    b0 = np.full((4, 4096), 0.1, np.float32)
+    b = t.reduce("sum", t.load(b0), [0], False)
+    t.store_expect(b, 4 * 0.1)
+    assert(t.run_check())
+    t.set_determ(False)

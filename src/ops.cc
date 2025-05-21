@@ -1658,6 +1658,9 @@ ReduceOp::~ReduceOp() {
   if (clean_wrap_ != nullptr) {
     delete clean_wrap_;
   }
+  if (visit_) {
+    delete visit_;
+  }
 }
 
 void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -1771,7 +1774,9 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     ASSERT(stuff_idx == 0);
     start_dim_ = end_dim_ = -1;
   }
-  visit_.Clear();
+  if (visit_) {
+    visit_->Clear();
+  }
   round_tile_.resize(0);
 }
 
@@ -1948,28 +1953,26 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCo
   }
   uint64_t core_limit = k.code_.block_dim_;
   if (round_depth == 1) {
-    auto v = reinterpret_cast<vVisitRed1 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed1));
+    auto v = reinterpret_cast<vVisitRed1 *>(coder.code_);
     uint64_t r1 = round_tile[0];
     v->head = 0;
     v->r1 = r1;
     v->e = (k.tile_num_ / r1) << 32;
-    coder.code_ = reinterpret_cast<uint64_t *>(v);
     coder.code_size_ = sizeof(vVisitRed1);
     coder.visit_id_ = V_VISIT_RED_1;
     coder.block_num_ = std::min(core_limit, k.tile_num_);
   } else if (round_depth == 2) {
-    auto v = reinterpret_cast<vVisitRed2 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed2));
+    auto v = reinterpret_cast<vVisitRed2 *>(coder.code_);
     uint64_t r1 = round_tile[0];
     uint64_t e1 = round_tile[1];
     v->head = 0;
     v->e = (k.tile_num_ / r1) << 32;
     v->e1_r1 = e1 << 32 | r1;
-    coder.code_ = reinterpret_cast<uint64_t *>(v);
     coder.code_size_ = sizeof(vVisitRed2);
     coder.visit_id_ = V_VISIT_RED_2;
     coder.block_num_ = std::min(core_limit, k.tile_num_);
   } else if (round_depth == 3) {
-    auto v = reinterpret_cast<vVisitRed3 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed3));
+    auto v = reinterpret_cast<vVisitRed3 *>(coder.code_);
     uint64_t r1 = round_tile[0];
     uint64_t e1 = round_tile[1];
     uint64_t r2 = round_tile[2];
@@ -1977,13 +1980,12 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCo
     v->e = (k.tile_num_ / (r1 * r2)) << 32;
     v->e1_r2 = e1 << 32 | r2;
     v->r1 = r1;
-    coder.code_ = reinterpret_cast<uint64_t *>(v);
     coder.code_size_ = sizeof(vVisitRed3);
     coder.visit_id_ = V_VISIT_RED_3;
     coder.block_num_ = std::min(core_limit, k.tile_num_ / r2);
   } else {
     ASSERT(round_depth == 4);
-    auto v = reinterpret_cast<vVisitRed4 *>(k.code_.data_ + k.code_.mem_size_ - sizeof(vVisitRed4));
+    auto v = reinterpret_cast<vVisitRed4 *>(coder.code_);
     uint64_t r1 = round_tile[0];
     uint64_t e1 = round_tile[1];
     uint64_t r2 = round_tile[2];
@@ -1992,7 +1994,6 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCo
     v->e = (k.tile_num_ / (r1 * r2)) << 32;
     v->e1_r1 = e1 << 32 | r1;
     v->e2_r2 = e2 << 32 | r2;
-    coder.code_ = reinterpret_cast<uint64_t *>(v);
     coder.code_size_ = sizeof(vVisitRed4);
     coder.visit_id_ = V_VISIT_RED_4;
     coder.block_num_ = std::min(core_limit, k.tile_num_ / r2);
@@ -2001,12 +2002,12 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCo
 }
 
 int ReduceOp::EmitDeterm(VectorKernel &k) {
-  if (!GenTileVisit(k, round_tile_, visit_)) {
+  if (!GenTileVisit(k, round_tile_, *visit_)) {
     return _ReduceOp::Emit(k);
   }
   if (!k.GetVisitor<RedVisitCoder>()) {
-    k.AddVisitor(&visit_);
-    visit_.ws_size_ = ndd_.stride_back() * sizeof(float) * visit_.block_num_;
+    k.AddVisitor(visit_);
+    visit_->ws_size_ = ndd_.stride_back() * sizeof(float) * visit_->block_num_;
   }
   auto out_xbuf = xbuf_;
   xbuf_ = wss_[0];

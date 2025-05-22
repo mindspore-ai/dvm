@@ -724,6 +724,9 @@ bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is
     case kBinaryS:
     case kSelect:
     case kCast:
+    case kCompare:
+    case kCompareS:
+    case kPower:
       // Elementwise
       intermediate.RegisterNewShape(obj, new_shape);
       forward_shape = new_shape;

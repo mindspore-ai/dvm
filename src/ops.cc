@@ -199,13 +199,13 @@ int64_t SelectSimdWidth(int64_t iter_size, DType type_id) {
   return simd_block * block_width;
 }
 
-uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t iter_tail) {
+uint32_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t iter_tail, uint64_t simd_width) {
   vClearPad clr_op;
   clr_op.xd = op->xbuf_;
   clr_op.iter_size = op->nd_.lead_dim();
   clr_op.iter_stride = op->nd_.lead_stride();
   clr_op.iter_num = op->nd_.stride_back() / clr_op.iter_stride;
-  clr_op.simd_width = SelectSimdWidth(clr_op.iter_stride, op->type_id_);
+  clr_op.simd_width = simd_width;
   clr_op.iter_tail = iter_tail;
   return vClearPad::Encode(pc, V_CLR_PAD, clr_op);
 }
@@ -1031,7 +1031,7 @@ int ElementAnyOp::Emit(VectorKernel &k) {
   uint32_t insn_num = 1;
   uint32_t size = 0;
   if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride() || clr_tail) {
-    size = EmitClearPad(insn_, lhs_, clr_tail);
+    size = EmitClearPad(insn_, lhs_, clr_tail, op.simd_width);
     tail_insn_ = insn_ + size;
     insn_num++;
   }
@@ -1590,16 +1590,20 @@ int _ReduceOp::Emit(VectorKernel &k) {
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;
     op.red_size = lhs_->nd_.stride(end_dim_);
-    op.simd_width = SelectSimdWidth(op.red_size, type_id_);
     uint64_t clr_tail = 0;
-    if (tail_dim_ >= 0 && tail_dim_ <= end_dim_) {
+    if (tail_dim_ == -1 || tail_dim_ > end_dim_) {
+      op.simd_width = SelectSimdWidth(op.red_size, type_id_);
+      op.red_tail = op.red_size;
+    } else if (tail_dim_ > lhs_->nd_.lead_idx()) {
+      op.simd_width = SelectSimdWidth(lhs_->nd_.stride(tail_dim_ - 1), type_id_);
+      op.red_tail = op.red_size / lhs_->nd_[tail_dim_] * static_cast<uint64_t>(tail_size_);
+    } else {
+      op.simd_width = SelectSimdWidth(lhs_->nd_.lead_stride(), type_id_);
       auto tail_size = static_cast<uint64_t>(tail_size_);
       op.red_tail = RoundUp(tail_size, op.simd_width);
       if (op.red_tail != tail_size) {
         clr_tail = tail_size;
       }
-    } else {
-      op.red_tail = op.red_size;
     }
     op.dup_size = lhs_->nd_.stride_back() / lhs_->nd_.stride(end_dim_);
     if (auto lead_dim = ndd_.lead_dim(); lead_dim > 1) {
@@ -1612,7 +1616,7 @@ int _ReduceOp::Emit(VectorKernel &k) {
     uint32_t size = 0;
     uint32_t insn_num = 1;
     if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride() || clr_tail > 0) {
-      size = EmitClearPad(insn_, lhs_, clr_tail);
+      size = EmitClearPad(insn_, lhs_, clr_tail, op.simd_width);
       tail_insn_ = insn_ + size;
       insn_num++;
     }

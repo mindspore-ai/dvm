@@ -214,3 +214,15 @@ def test_reduce_x_clean_pad(shape, num, factor):
     t.store_expect(y, expect)
     t.tile(0, 0, num, factor)
     assert (t.run_check())
+
+def test_reduce_x_clean_pad_nolead():
+    t = Tester()
+    a0 = np.random.randn(8002, 2).astype(np.float32)
+    a1 = np.random.randn(8002, 1).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.load(a1)
+    x2 = t.binary("Add", x0, x1)
+    x3 = t.reduce("sum", x2, [0, 1], False)
+    t.store_expect(x3, np.sum(a0 + a1, axis=(0, 1)), eps=1e-4)
+    t.tile(1, 1, 8)
+    assert(t.run_check())

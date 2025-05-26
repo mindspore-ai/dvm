@@ -1753,10 +1753,10 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
         }
         stuff_idx++;
         obj->ndd_.dims = input->nd_.dims();
-        ndd_.strides.resize(0);
         for (int j = red_start; j <= red_end; ++j) {
           obj->ndd_.dims[j] = 1;
         }
+        obj->ndd_.strides.resize(0); // force update stride
         // align tile may revert to 0. let lead reduce to 0
         obj->SetRange(red_start == lead_dim ? 0 : red_start, red_end);
         run_ops.push_back(obj);

@@ -83,6 +83,21 @@ def test_reduce_round_tile():
         t.run()
         t.check(out, expect, 1e-4)
 
+def test_reduce_stuff():
+    t = Tester("dyn")
+    a = t.load([3, 1280, -1, -1], "float32")
+    x1 = t.cast(a, "float16")
+    x2 = t.binary("Add", x1, 0.1)
+    x3 = t.cast(x2, "float32")
+    x4 = t.reduce("sum", x3, [0, 2, 3], True)
+    out = t.store(x4)
+    iters = [[3,1280,38,36], [3,1280,44,22]]
+    for shape in iters:
+        ax = np.random.normal(0, 0.1, shape).astype(np.float32)
+        t.input(a, ax)
+        t.run()
+        t.check(out, np.sum(ax + 0.1, (0, 2, 3), keepdims=True))
+
 def test_broadcast():
     t = Tester('dyn')
     x = t.load([-1], "float32")

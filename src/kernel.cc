@@ -32,7 +32,7 @@ class CodeGenHelper {
   CodeGenHelper(VectorKernel &kernel) : kernel_(kernel) {}
   uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
-    static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserve;
+    static_xbuf_ = code_reserve;
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
       static_xbuf_ += xbuf_size_;
@@ -849,7 +849,7 @@ VectorKernel::~VectorKernel() {
 
 uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve) {
   int peak_live = Analyze();
-  int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
+  int64_t free_mem = System::Instance().LocalMemSize() - ReserveCodeSize();
   int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);  // max tile_size for each op
   // tiling
   ShapeTiling tiling(this, root_dom_, core_limit);

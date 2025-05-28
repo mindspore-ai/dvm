@@ -113,14 +113,14 @@ System::System() {
   soc_name_ = config->type;
 
   arch_ = kAiCore_C220;
-  local_mem_size_ = 192 * 1024;
+  ub_workspace_size_ = 512;
+  local_mem_size_ = 192 * 1024 - ub_workspace_size_;
   event_num_ = 8;
   cube_core_num_ = config->aicore_num;
   vector_core_num_ = cube_core_num_ * 2;
   l2_size_ = config->l2_size;
   l1_size_ = 512 * 1024;
   l0c_size_ = 128 * 1024;
-  ub_workspace_size_ = 512;
 #ifdef VK_SIM_MODEL
   auto rt_binary_register = rtDevBinaryRegister;
   auto rt_function_register = rtFunctionRegister;

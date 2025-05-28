@@ -16,10 +16,11 @@
 #define _CCE_KERNEL_
 #include "isa.h"
 
-const uint64_t UB_WORKSPACE_SIZE = 512;
-#define PC_BASE UB_WORKSPACE_SIZE
+constexpr uint64_t UB_WORKSPACE_SIZE = 512;
+constexpr uint64_t WORKSPACE = 192ul * 1024ul - UB_WORKSPACE_SIZE;
 
-#define WORKSPACE (uint64_t)0
+#define PC_BASE 0
+
 #define MASK_32 0xfffffffful
 #define INVALID_INT  uint64_t(-1)
 

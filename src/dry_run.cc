@@ -185,7 +185,6 @@ void wait_flag(int, int, int) {}
 #define __ca__
 #define __cb__
 #define __cc__
-#define __noinline__
 #define half int16_t
 #define bfloat16_t int32_t
 #define VMAIN_OFFSET  0

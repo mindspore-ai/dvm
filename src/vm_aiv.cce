@@ -2069,11 +2069,11 @@ TILE_LOOP:
 }
 
 #define DEF_DISP_SIMD(OP, func) \
-  extern "C" __noinline__ __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; } \
+  extern "C" __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) { func; } \
   DEF_DRY_FUNC(g_simd_func_offset, OP, D_##OP);
 
 #define DEF_DISP_LOAD(OP, func)                                                               \
-  extern "C" __noinline__ __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
+  extern "C" __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
     if ((head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) && !IsBeginTile(tile)) {                \
       event_t event = event_t((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);      \
       wait_flag(PIPE_V, PIPE_MTE2, event);                                                    \
@@ -2088,7 +2088,7 @@ TILE_LOOP:
 
 
 #define DEF_DISP_STORE(OP, func)                                                              \
-  extern "C" __noinline__ __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
+  extern "C" __aicore__ void D_##OP(bcodeptr_t pc, uint64_t head, uint64_t tile) {  \
     if (head & (0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET)) {                                        \
       event_t event = event_t((head >> V_M_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);      \
       wait_flag(PIPE_V, PIPE_MTE3, event);                                                    \
@@ -2102,7 +2102,7 @@ TILE_LOOP:
   DEF_DRY_FUNC(g_access_func_offset, OP, D_##OP);
 
 #define DEF_DISP_VISIT(ID, func) \
-  extern "C" __noinline__ __aicore__ uint64_t D_##ID(bcodeptr_t pc) { return func(pc); } \
+  extern "C" __aicore__ uint64_t D_##ID(bcodeptr_t pc) { return func(pc); } \
   DEF_DRY_FUNC(g_visit_func_offset, ID, D_##ID);
 
 DEF_DISP_VISIT(V_VISIT_RED_1, VisitRed_1);

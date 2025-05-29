@@ -20,7 +20,10 @@
 #include <stdint.h>
 
 #ifdef _CCE_KERNEL_
-#define __aicore_inline__ static inline[aicore]
+#ifndef inline
+#define inline __inline__ __attribute__((always_inline))
+#endif
+#define __aicore_inline__ static [aicore] inline
 #define __bcode__ __gm__
 #define bcodeptr_t __bcode__ uint64_t *__restrict__
 #define __aicore__ [aicore]

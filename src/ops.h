@@ -81,7 +81,7 @@ struct PropRange {
   };
   int base;
   int depth;
-  int affine{ELEMWISE};
+  int affine;
   int simd_dim;
   int64_t space;
 };

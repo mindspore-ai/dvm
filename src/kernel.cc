@@ -424,6 +424,7 @@ void PropDomain::Normalize() {
 }
 
 void PropDomain::AlignProp(PropRange &range) {
+  range.affine = PropRange::ELEMWISE;
   range.simd_dim = -1;
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     op->AlignProp(range);
@@ -436,6 +437,7 @@ void PropDomain::AlignProp(PropRange &range) {
 }
 
 void PropDomain::FoldProp(PropRange &range) {
+  range.affine = PropRange::ELEMWISE;
   int old_depth = range.depth;
   for (auto op = head_; op != nullptr; op = op->pd_next_) {
     op->FoldProp(range);

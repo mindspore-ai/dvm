@@ -1312,6 +1312,7 @@ uint64_t VKernelE::CodeGen() {
         for (; pv_mask && pv_num < g_eager_pv_width; ++pv_num) {
           int area_id = 63 - __builtin_clzl(pv_mask);
           pv_mask &= ~(1ul << area_id);
+          pv_black_mask_ |= 1ul << area_id;
           auto a = areas_[area_id].second;
           a->state_ = EagerArea::kFree;
           auto k = kernels_[kernel_begin++];

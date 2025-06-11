@@ -330,12 +330,12 @@ class VectorKernel;
 
 #define OBJ_FLAG_FLEX_RREE_XHS (1u << 14)
 #define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
-#define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 14)
-#define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 15)
-#define OBJ_FLAG_LOAD_SHARD_ROUND (1u << 16)
-#define OBJ_FLAG_STORE_SHARD_BCAST0 (1u << 14)
-#define OBJ_FLAG_STORE_SHARD_BCAST1 (1u << 15)
-#define OBJ_FLAG_STORE_SHARD_ROUND (1u << 16)
+#define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 13)
+#define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 14)
+#define OBJ_FLAG_LOAD_SHARD_ROUND (1u << 15)
+#define OBJ_FLAG_STORE_SHARD_BCAST0 (1u << 13)
+#define OBJ_FLAG_STORE_SHARD_BCAST1 (1u << 14)
+#define OBJ_FLAG_STORE_SHARD_ROUND (1u << 15)
 
 // static flags
 #define OBJ_FLAG_WORKSPACE (1u << 16)

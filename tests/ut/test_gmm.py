@@ -173,7 +173,7 @@ def test_dyn_gmm_type0():
         t.input(w, w_data)
         t.input(group_list, group_list_data)
         t.run()
-        t.check(out, expect, 1e-3)
+        assert(t.check(out, expect, 1e-3))
 
 
 @pytest.mark.mix
@@ -258,4 +258,4 @@ def test_dyn_gmm_type2():
         t.input(w, w_data)
         t.input(group_list, group_list_data)
         t.run()
-        t.check(out, expect + 1, 1e-3)
+        assert(t.check(out, expect + 1, 1e-3))

@@ -35,7 +35,7 @@ def test_reshape():
         t.input(y, y_data)
         ref.update(ref_shape)
         t.run()
-        t.check(out, x_data.reshape(ref_shape) + y_data)
+        assert(t.check(out, x_data.reshape(ref_shape) + y_data))
 
 def test_implicit_broadcast():
     t = Tester('dyn')
@@ -55,7 +55,7 @@ def test_implicit_broadcast():
         t.input(x, d1)
         t.input(y, d2)
         t.run()
-        t.check(out, (d1 + 0.15) * d2)
+        assert(t.check(out, (d1 + 0.15) * d2))
 
 def test_reduce():
     t = Tester('dyn')
@@ -69,7 +69,7 @@ def test_reduce():
         t.input(x, d1)
         dims.update(dims_shape)
         t.run()
-        t.check(out, np.sum(d1, tuple(dims_shape), keepdims=True), 1e-4)
+        assert(t.check(out, np.sum(d1, tuple(dims_shape), keepdims=True), 1e-4))
 
 def test_reduce_round_tile():
     t = Tester('dyn')
@@ -81,7 +81,7 @@ def test_reduce_round_tile():
     for i in range(3):
         t.input(x, din)
         t.run()
-        t.check(out, expect, 1e-4)
+        assert(t.check(out, expect, 1e-4))
 
 def test_reduce_stuff():
     t = Tester("dyn")
@@ -96,7 +96,7 @@ def test_reduce_stuff():
         ax = np.random.normal(0, 0.1, shape).astype(np.float32)
         t.input(a, ax)
         t.run()
-        t.check(out, np.sum(ax + 0.1, (0, 2, 3), keepdims=True))
+        assert(t.check(out, np.sum((ax.astype(np.float16) + 0.1).astype(np.float32), (0, 2, 3), keepdims=True), 1e-4))
 
 def test_broadcast():
     t = Tester('dyn')
@@ -112,7 +112,7 @@ def test_broadcast():
         t.input(x, x_data)
         shape.update(broad_shape)
         t.run()
-        t.check(out, np.broadcast_to(x_data, broad_shape) * 0.2)
+        assert(t.check(out, np.broadcast_to(x_data, broad_shape) * 0.2))
 
 # llava dynamic shape inference
 def test_atomic_reduce():
@@ -138,6 +138,6 @@ def test_atomic_reduce():
         np_out0 = x_data + y_data
         np_out1 = np_out0.astype(np.float32)
         np_out2 = np.sum(np_out1 * np_out1, (2), keepdims=True)
-        t.check(out0, np_out0)
-        t.check(out1, np_out1)
-        t.check(out2, np_out2, 1e-4)
+        assert(t.check(out0, np_out0))
+        assert(t.check(out1, np_out1))
+        assert(t.check(out2, np_out2, 1e-4))

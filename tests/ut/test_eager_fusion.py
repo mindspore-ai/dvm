@@ -313,7 +313,7 @@ def test_eager_lazy_tuner():
         x1 = t.load(b)
         x2 = t.matmul(x0, x1, False, False)
         t.store_expect(x2, expect, 1e-3)
-        t.run_check()
+        assert(t.run_check())
         t.reset_eager()
     Tester.set_online_tuning(False)
 

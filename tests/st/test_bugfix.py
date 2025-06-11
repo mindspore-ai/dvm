@@ -68,6 +68,6 @@ def test_select_overread_of_ub():
     d = t.load(dx)
     x2 = t.select(c, d, x0)
     x3 = t.store_expect(x2, x0_expect)
-    t.run_check()
+    assert(t.run_check())
 
 

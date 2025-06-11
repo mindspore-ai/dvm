@@ -540,9 +540,9 @@ def parse_and_generate_code(block, idx, occurrence_count):
             param_numpy_expr1 = numpy_steps.get(param_var_name1)
             param_numpy_expr2 = numpy_steps.get(param_var_name2)
             if trans_a == "True":
-                param_numpy_expr1 = f"{param_numpy_expr1}.swapaxes(-1,2)"
+                param_numpy_expr1 = f"{param_numpy_expr1}.swapaxes(-1,-2)"
             if trans_b == "True":
-                param_numpy_expr2 = f"{param_numpy_expr2}.swapaxes(-1,2)"
+                param_numpy_expr2 = f"{param_numpy_expr2}.swapaxes(-1,-2)"
 
             if len(params_list) == 2:
                 line = f"{code_var_name} = t.matmul({param_code_var1}, {param_code_var2}, {trans_a}, {trans_b})"

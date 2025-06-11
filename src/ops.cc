@@ -2312,7 +2312,7 @@ void CubeOp::TileV2(vCubeOp *op) {
   auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto core_num = System::Instance().CoreNum(CoreType::kCube);
-  float mincost = 3.125f;
+  float mincost = std::numeric_limits<float>::max();
   uint32_t round_m = RoundUp<uint32_t>(m_align_, BLOCK_SIZE);
   uint32_t round_n = RoundUp<uint32_t>(n_align_, BLOCK_SIZE);
   uint32_t round_k = RoundUp<uint32_t>(k_align_, BLOCK_SIZE);

@@ -234,7 +234,9 @@ class VKernelE : public VKernel {
   }
 
   void Split(NDObject *root);
+  NDObject *SplitPush(EagerArea *area, NDObject *input);
   NDObject *Exchange(EagerArea *area, NDObject *input);
+  void AppendOps(EagerVector *kernel, const std::vector<NDObject *> &objects);
   void TunerLaunch(EagerVector *kernel, void *stream);
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;

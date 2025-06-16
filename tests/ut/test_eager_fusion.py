@@ -436,3 +436,19 @@ def test_eager_pv_multi_parallel_area():
     t13 = t.cast(t12, "float16")
     t14 = t.store_expect(t13, e_t7 * e_t10)
     assert(t.run_check())
+
+def test_eager_many_split():
+    ''' from mindtest '''
+    t = Tester("eager")
+    g0 = np.full([5, 4], 0.1, np.float32)
+    x = t.load(g0)
+    expect = 0.1
+    output = []
+    for i in range(50):
+        x = t.binary("Add", x, x)
+        y = x
+        expect *= 2
+        output.append((y, expect))
+    for o, e in output:
+        t.store_expect(o, e)
+    assert(t.run_check())

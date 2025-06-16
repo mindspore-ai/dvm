@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <cstring>
+#include <queue>
 #include "xkernel.h"
 #include "comm.h"
 #include "tuning.h"
@@ -1055,71 +1056,75 @@ NDObject *VKernelE::Exchange(EagerArea *area, NDObject *input) {
   return load;
 }
 
+NDObject *VKernelE::SplitPush(EagerArea *area, NDObject *input) {
+  if (auto idx = GetArea(input); idx >= 0) {
+    auto a = areas_[idx].second;
+    if (a == area) return input;
+    if (a->state_ == EagerArea::kPending) {
+      if (area->FuseCheck(a)) {
+        if (a->dom_->obj_id_ == ObjectType::kCubeOp) {
+          if (input == a->dom_) {
+            input = Exchange(area, input);
+            SetArea(input, area->area_id_);
+            temp_ops_.push_back(input);
+          }
+          area->dom_ = a->dom_;
+          pv_black_mask_ |= 1ul << area->area_id_;
+        }
+        area->fused_.push_back(a);
+        areas_[a->area_id_].second = area;
+        if (!a->fused_.empty()) {
+          for (auto x : a->fused_) {
+            area->fused_.push_back(x);
+            areas_[x->area_id_].second = area;
+          }
+        }
+        kernel_used_--;
+        pv_black_mask_ |= 1ul << a->area_id_;
+        area->depend_mask_ |= a->depend_mask_;
+        return input;
+      }
+      if (!input->IsLoad()) {
+        a->state_ = EagerArea::kSubmitted;
+      }
+    }
+    if (input->IsLoad()) {
+      auto ac = static_cast<NDAccess *>(input);
+      auto load = new NDLoad(ac->addr_.gm, ac->shape_ref_, ac->type_id_);
+      SetStore(load, input);
+      load->Normalize(a->objects_);
+      objects_.push_back(load);
+      input = load;
+    } else {
+      area->depend_mask_ |= a->depend_mask_;
+      input = Exchange(a, input);
+    }
+  } else if (input->IsLoad()) {
+    if (auto store = GetStore(input); store != nullptr && store->IsStore()) {
+      auto a = areas_[GetArea(store)].second;
+      area->depend_mask_ |= a->depend_mask_;
+      a->state_ = EagerArea::kSubmitted;
+    }
+  }
+  SetArea(input, area->area_id_);
+  temp_ops_.push_back(input);
+  return input;
+}
+
 void VKernelE::Split(NDObject *root) {
   int kidx = area_used_++;
   EagerArea *area = EagerArea::Assign(this, kidx);
   area->Reset(root);
-  auto push_input = [area, this](NDObject *input, NDObject *&update) {
-    if (auto idx = GetArea(input); idx >= 0) {
-      if (auto a = areas_[idx].second; a != area) {
-        if (a->state_ == EagerArea::kPending) {
-          if (area->FuseCheck(a)) {
-            if (a->dom_->obj_id_ == ObjectType::kCubeOp) {
-              if (input == a->dom_) {
-                update = Exchange(area, input);
-                temp_ops_.push_back(update);
-              }
-              area->dom_ = a->dom_;
-              pv_black_mask_ |= 1ul << area->area_id_;
-            }
-            area->fused_.push_back(a);
-            areas_[a->area_id_].second = area;
-            if (!a->fused_.empty()) {
-              for (auto x : a->fused_) {
-                area->fused_.push_back(x);
-                areas_[x->area_id_].second = area;
-              }
-            }
-            kernel_used_--;
-            pv_black_mask_ |= 1ul << a->area_id_;
-            area->depend_mask_ |= a->depend_mask_;
-            return;
-          }
-          if (!input->IsLoad()) {
-            a->state_ = EagerArea::kSubmitted;
-          }
-        }
-        if (input->IsLoad()) {
-          auto ac = static_cast<NDAccess *>(input);
-          auto load = new NDLoad(ac->addr_.gm, ac->shape_ref_, ac->type_id_);
-          SetStore(load, input);
-          load->Normalize(a->objects_);
-          objects_.push_back(load);
-          update = input = load;
-        } else {
-          area->depend_mask_ |= a->depend_mask_;
-          update = input = Exchange(a, input);
-        }
-      }
-    } else if (input->IsLoad()) {
-      if (auto store = GetStore(input); store != nullptr && store->IsStore()) {
-        auto a = areas_[GetArea(store)].second;
-        area->depend_mask_ |= a->depend_mask_;
-        a->state_ = EagerArea::kSubmitted;
-      }
-    }
-    temp_ops_.push_back(input);
-  };
+  SetArea(root, kidx);
   temp_ops_.push_back(root);
   while (!temp_ops_.empty()) {
     auto op = temp_ops_.back();
     temp_ops_.pop_back();
-    SetArea(op, kidx);
     area->objects_.push_back(op);
     if (auto lhs = op->lhs_) {
-      push_input(lhs, op->lhs_);
+      op->lhs_ = SplitPush(area, lhs);
       if (auto rhs = op->rhs_) {
-        push_input(rhs, op->rhs_);
+        op->rhs_ = SplitPush(area, rhs);
       }
     }
   }
@@ -1232,28 +1237,47 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   return ret;
 }
 
-uint64_t VKernelE::CodeGen() {
-  auto append_ops = [this](EagerVector *kernel, const std::vector<NDObject *> &objects) {
-    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-      auto op = *it;
-      if (GetArea(op) == -1) continue;
-      SetArea(op, -1);
-      if (NDObject::attrs_[op->obj_id_].share_ndd) {
-        op->nd_.data = op->lhs_->nd_.data;
+void VKernelE::AppendOps(EagerVector *kernel, const std::vector<NDObject *> &objects) {
+  static std::queue<NDObject *> queue;
+  auto append_op = [this, kernel](NDObject *op) {
+    if (NDObject::attrs_[op->obj_id_].share_ndd) {
+      op->nd_.data = op->lhs_->nd_.data;
+    }
+    kernel->EagerVector::Append(op);
+    if (op->IsLoad()) {
+      if (!(op->flags_ & OBJ_FLAG_EAGER)) {
+        objects_.push_back(op);
       }
-      kernel->EagerVector::Append(op);
-      if (op->IsLoad()) {
-        if (!(op->flags_ & OBJ_FLAG_EAGER)) {
-          objects_.push_back(op);
-        }
-      } else if (auto store = GetStore(op)) {
-        ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
-        store->nd_.data = op->nd_.data;
-        kernel->EagerVector::Append(store);
-        temp_ops_.push_back(store);
-      }
+    } else if (auto store = GetStore(op)) {
+      ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
+      store->nd_.data = op->nd_.data;
+      kernel->EagerVector::Append(store);
+      temp_ops_.push_back(store);
     }
   };
+  for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+    auto op = *it;
+    ASSERT(GetArea(op) >= 0);
+    if (op->lhs_ && (GetArea(op->lhs_) >= 0 || (op->rhs_ && GetArea(op->rhs_) >= 0))) {
+      queue.push(op);
+      continue;
+    }
+    SetArea(op, -1);
+    append_op(op);
+    while (!queue.empty()) {
+      auto top = queue.front();
+      if (GetArea(top->lhs_) >= 0 || (top->rhs_ && GetArea(top->rhs_) >= 0)) {
+        break;
+      }
+      queue.pop();
+      SetArea(top, -1);
+      append_op(top);
+    }
+  }
+  ASSERT(queue.empty());
+}
+
+uint64_t VKernelE::CodeGen() {
   size_t obj_size = objects_.size();
   int kidx = kernel_used_;
   if (static_cast<size_t>(kidx) > kernels_.size()) {
@@ -1271,10 +1295,10 @@ uint64_t VKernelE::CodeGen() {
     kernel->Reset(area->dom_);
     if (!area->fused_.empty()) {
       for (auto it = area->fused_.rbegin(); it != area->fused_.rend(); ++it) {
-        append_ops(kernel, (*it)->objects_);
+        AppendOps(kernel, (*it)->objects_);
       }
     }
-    append_ops(kernel, area->objects_);
+    AppendOps(kernel, area->objects_);
     if (area->dom_->obj_id_ == ObjectType::kCubeOp) {
       auto mm = static_cast<CubeOp *>(area->dom_);
       if (auto io = static_cast<NDAccess *>(mm->lhs_); io->addr_.gm == nullptr) {
@@ -1319,10 +1343,10 @@ uint64_t VKernelE::CodeGen() {
           k->Reset(a->dom_);
           if (!a->fused_.empty()) {
             for (auto it = a->fused_.rbegin(); it != a->fused_.rend(); ++it) {
-              append_ops(k, (*it)->objects_);
+              AppendOps(k, (*it)->objects_);
             }
           }
-          append_ops(k, a->objects_);
+          AppendOps(k, a->objects_);
         }
       }
       AllocVectorWSS(kernel, obj_size);

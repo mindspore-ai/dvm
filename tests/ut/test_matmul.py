@@ -436,3 +436,27 @@ def test_post_fusion_broadcast(shape_a, shape_b, broadcast_shape):
     t.store_expect(x5, x5_expect, 1e-3)
     t.store_expect(x4, x4_expect, 1e-3)
     assert(t.run_check())
+
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b, shape_bias', [
+    [[256, 1, 1000], [1000, 256], None],
+    [[256, 1, 1000], [1000, 256], [256, 1, 256]],
+    [[256, 1, 1000], [1000, 256], [1, 256]],
+    [[5120,1, 40960], [40960, 256], [5120, 1, 256]],
+    [[5120,1, 40960], [40960, 256], [1, 256]],
+])
+def test_batch_fold(shape_a, shape_b, shape_bias):
+    t = Tester("mix")
+    a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    out = t.matmul(x0, x1, False, False)
+    expect = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16)
+    if shape_bias:
+        bias = np.random.normal(0, 0.01, shape_bias).astype(np.float16)
+        x2 = t.load(bias)
+        out = t.binary("Add", out, x2)
+        expect = expect + bias
+    t.store_expect(out, expect, 1e-3)
+    assert(t.run_check())

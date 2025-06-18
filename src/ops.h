@@ -984,8 +984,6 @@ class CubeOp : public NDObject {
     type_id_ = kFloat32;
   }
 
-  bool CanBatchFold() { return !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2; }
-
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};
   uint64_t core_loop_{0};

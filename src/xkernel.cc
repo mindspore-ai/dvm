@@ -292,7 +292,6 @@ uint64_t MixKernel::BiasBF16CodeGen() {
 uint64_t MixKernel::AlignCodeGen() {
   size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
   size_t post_reserve = 0;
-  cube_op_->batch_fold_ = cube_op_->CanBatchFold();
   if (post_fusion_) {
     post_fusion_->Normalize();
     post_reserve = post_fusion_->ReserveCodeSize();
@@ -755,6 +754,7 @@ class CubeOptimizer {
       offset_a += dom_->trans_a_ ? dom_->m_align_ * k_stride : k_stride;
       offset_b += dom_->trans_b_ ? k_stride : dom_->n_align_ * k_stride;
       op->output_ = dom_->output_;
+      op->batch_fold_ = dom_->batch_fold_;
     }
     dom_->SetRealShape(dom_->m_real_, dom_->n_real_, k_tail, offset_a, offset_b);
     dom_->SetOutFp32(true);
@@ -1227,7 +1227,7 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   }
   int aid = area_used_++;
   auto area = EagerArea::Assign(this, aid);
-  area->ResetMix(mm, g_eager_cv_enable ? EagerArea::kPending : EagerArea::kSubmitted);
+  area->ResetMix(mm, g_eager_cv_enable && !mm->batch_fold_? EagerArea::kPending : EagerArea::kSubmitted);
   area->depend_mask_ |= dep_mask;
   SetArea(mm, aid);
   SetStore(mm, output);
@@ -1255,24 +1255,35 @@ void VKernelE::AppendOps(EagerVector *kernel, const std::vector<NDObject *> &obj
       temp_ops_.push_back(store);
     }
   };
+  int queue_idx = -2;
   for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
     auto op = *it;
     ASSERT(GetArea(op) >= 0);
-    if (op->lhs_ && (GetArea(op->lhs_) >= 0 || (op->rhs_ && GetArea(op->rhs_) >= 0))) {
-      queue.push(op);
-      continue;
+    if (op->lhs_) {
+      bool suspend = GetArea(op->lhs_) >= 0 || (op->rhs_ && GetArea(op->rhs_) >= 0);
+      if (auto last = op->rhs_ && GetArea(op->rhs_) < GetArea(op->lhs_) ? op->rhs_ : op->lhs_;
+          !suspend && GetArea(last) < -1) {
+        while (true) {
+          ASSERT(!queue.empty());
+          auto top = queue.front();
+          if (GetArea(top->lhs_) >= 0 || (top->rhs_ && GetArea(top->rhs_) >= 0)) {
+            suspend = true;
+            break;
+          }
+          queue.pop();
+          SetArea(top, -1);
+          append_op(top);
+          if (top == last) break;
+        }
+      }
+      if (suspend) {
+        SetArea(op, queue_idx--);
+        queue.push(op);
+        continue;
+      }
     }
     SetArea(op, -1);
     append_op(op);
-    while (!queue.empty()) {
-      auto top = queue.front();
-      if (GetArea(top->lhs_) >= 0 || (top->rhs_ && GetArea(top->rhs_) >= 0)) {
-        break;
-      }
-      queue.pop();
-      SetArea(top, -1);
-      append_op(top);
-    }
   }
   ASSERT(queue.empty());
 }

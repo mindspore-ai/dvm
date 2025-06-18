@@ -2072,7 +2072,13 @@ void CubeOp::InferCubeConfig() {
   GetPad(trans_a_ ? m_align_ : k_align_, tactics_.lhs_pad_size);
   GetPad(trans_b_ ? k_align_ : n_align_, tactics_.rhs_pad_size);
 
-  int64_t k_stride = System::Instance().L2Size() / (m_real_ + n_real_) / 2;
+  batch_fold_ = !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2;
+  int64_t m_real = m_real_;
+  if (batch_fold_) {
+    m_real *= lhs_->nd_[2];
+    if (lhs_->nd_.size() > 3) m_real *= lhs_->nd_[3];
+  }
+  int64_t k_stride = System::Instance().L2Size() / (m_real + n_real_) / 2;
   if ((k_stride << 1) < k_real_ && k_real_ > MAX_SPLIT_K) {
     tactics_.enable_splitk = true;
     tactics_.k_stride = std::min(k_stride / ALIGN_256 * ALIGN_256, MAX_SPLIT_K);

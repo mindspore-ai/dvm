@@ -1433,7 +1433,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   op.lead_num = end_dim + 1 < rank_size ? ndd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
   op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();
-  const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_NONE, V_BROADCAST_X_B32,
+  const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_BROADCAST_X_B16, V_BROADCAST_X_B32,
                                                 V_BROADCAST_X_B32};
   ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastX::Encode(p, id_list[type_id_], op);
@@ -1739,7 +1739,8 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     if (input->nd_[d] == 1) continue;
     if (d != red_ext) {
       if (lead_dim == -1) {
-        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++);
+        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++)
+          ;
       }
       if (red_start >= 0) {
         _ReduceOp *obj;
@@ -1765,7 +1766,8 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
       red_start = d;
     }
     red_end = d;
-    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
+    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++)
+      ;
   }
   ndd_.dims = input->nd_.dims();
   if (red_start != -1) {

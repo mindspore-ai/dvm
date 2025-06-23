@@ -126,6 +126,16 @@ def test_broadcastx_unalign_load():
     t.store_expect(z0, expect)
     assert(t.run_check())
 
+def test_broadcastx_bf16():
+    t = Tester()
+    np.random.seed(1)
+    a0 = np.random.normal(0, 1, [30, 40, 1]).astype(np.float32)
+    la0 = t.load(a0, "bfloat16")
+    z0 = t.broadcast(la0, [30, 40, 5])
+    expect = np.broadcast_to(a0, (30, 40, 5))
+    t.store_expect(z0, expect, 5e-3)
+    assert(t.run_check())
+
 def test_broadcast_s():
     t = Tester()
     x = t.broadcast(0.2, [2, 64], "float32", True)

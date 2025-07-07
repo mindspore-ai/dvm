@@ -1237,55 +1237,32 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   return ret;
 }
 
-void VKernelE::AppendOps(EagerVector *kernel, const std::vector<NDObject *> &objects) {
-  static std::queue<NDObject *> queue;
-  auto append_op = [this, kernel](NDObject *op) {
-    if (NDObject::attrs_[op->obj_id_].share_ndd) {
-      op->nd_.data = op->lhs_->nd_.data;
-    }
-    kernel->EagerVector::Append(op);
-    if (op->IsLoad()) {
-      if (!(op->flags_ & OBJ_FLAG_EAGER)) {
-        objects_.push_back(op);
-      }
-    } else if (auto store = GetStore(op)) {
-      ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
-      store->nd_.data = op->nd_.data;
-      kernel->EagerVector::Append(store);
-      temp_ops_.push_back(store);
-    }
+bool VKernelE::AppendOp(EagerVector *kernel, NDObject *op) {
+  constexpr int kSubmitArea = -1;
+  constexpr int kPendArea = -2;
+  auto pend_check = [this, kernel](NDObject *obj) -> bool {
+    return GetArea(obj) >= 0 || (GetArea(obj) == kPendArea && !AppendOp(kernel, obj));
   };
-  int queue_idx = -2;
-  for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-    auto op = *it;
-    ASSERT(GetArea(op) >= 0);
-    if (op->lhs_) {
-      bool suspend = GetArea(op->lhs_) >= 0 || (op->rhs_ && GetArea(op->rhs_) >= 0);
-      if (auto last = op->rhs_ && GetArea(op->rhs_) < GetArea(op->lhs_) ? op->rhs_ : op->lhs_;
-          !suspend && GetArea(last) < -1) {
-        while (true) {
-          ASSERT(!queue.empty());
-          auto top = queue.front();
-          if (GetArea(top->lhs_) >= 0 || (top->rhs_ && GetArea(top->rhs_) >= 0)) {
-            suspend = true;
-            break;
-          }
-          queue.pop();
-          SetArea(top, -1);
-          append_op(top);
-          if (top == last) break;
-        }
-      }
-      if (suspend) {
-        SetArea(op, queue_idx--);
-        queue.push(op);
-        continue;
-      }
-    }
-    SetArea(op, -1);
-    append_op(op);
+  if (op->lhs_ && (pend_check(op->lhs_) || (op->rhs_ && pend_check(op->rhs_)))) {
+    SetArea(op, kPendArea);
+    return false;
   }
-  ASSERT(queue.empty());
+  if (NDObject::attrs_[op->obj_id_].share_ndd) {
+    op->nd_.data = op->lhs_->nd_.data;
+  }
+  kernel->EagerVector::Append(op);
+  if (op->IsLoad()) {
+    if (!(op->flags_ & OBJ_FLAG_EAGER)) {
+      objects_.push_back(op);
+    }
+  } else if (auto store = GetStore(op)) {
+    ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
+    store->nd_.data = op->nd_.data;
+    kernel->EagerVector::Append(store);
+    temp_ops_.push_back(store);
+  }
+  SetArea(op, kSubmitArea);
+  return true;
 }
 
 uint64_t VKernelE::CodeGen() {

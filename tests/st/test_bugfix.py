@@ -70,4 +70,22 @@ def test_select_overread_of_ub():
     x3 = t.store_expect(x2, x0_expect)
     assert(t.run_check())
 
+def test_eager_inverse_execute_sequence():
+    t = Tester("eager")
+    x0_a = np.random.normal(0, 0.1, [2, 4]).astype(np.float32)
+    x0 = t.load(x0_a)
+    x1_a = np.random.normal(0, 0.1, [2, 4]).astype(np.float32)
+    x1 = t.load(x1_a)
+    x2 = t.binary('Mul', x1, -1)
+    x3 = t.unary('Exp', x2)
+    x4 = t.binary('Add', x3, 1)
+    x5 = t.binary('Div', x4, 1)
+    x6 = t.binary('Div', x1, x4)
+    x7 = t.binary('Add', x5, x6)
+    x8 = t.binary('Mul', x5, x6)
+    x9 = t.binary('Sub', x7, x8)
+    x10 = t.binary('Mul', x9, x0)
+    y11_numpy = np.multiply(np.subtract(np.add(np.divide(np.add(np.exp(np.multiply(x1_a, -1)), 1), 1), np.divide(x1_a, np.add(np.exp(np.multiply(x1_a, -1)), 1))), np.multiply(np.divide(np.add(np.exp(np.multiply(x1_a, -1)), 1), 1), np.divide(x1_a, np.add(np.exp(np.multiply(x1_a, -1)), 1)))), x0_a)
+    y11 = t.store_expect(x10, y11_numpy)
+    assert t.run_check()
 

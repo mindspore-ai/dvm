@@ -158,6 +158,20 @@ def test_eager_stop_fuse_reduce():
     assert(t.run_check())
     t.reset_eager()
 
+def test_eager_reduce_multi_user():
+    t = Tester("eager")
+    x0_a = np.random.normal(0, 0.1, [428, 16, 8]).astype(np.float32)
+    x0 = t.load(x0_a)
+    x1 = t.unary('Abs', x0)
+    x2 = t.reduce('sum', x1, (2,), False)
+    x3 = t.binary('Mul', x2, x2)
+    x4_a = np.random.normal(0, 0.1, [428, 1]).astype(np.float32)
+    x4 = t.binary('Add', x3, t.load(x4_a))
+    x2_e = np.sum(np.abs(x0_a), axis=(2,), keepdims=False)
+    x4_e = (x2_e * x2_e) + x4_a
+    t.store_expect(x4, x4_e)
+    assert(t.run_check())
+
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[128, 1024], [1024, 256]],  # no pad

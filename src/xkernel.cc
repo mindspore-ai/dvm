@@ -1141,17 +1141,20 @@ void VKernelE::Append(NDObject *obj) {
       Split(src);
     }
   } else {
-    auto fuse_break = [](NDObject *op) -> bool { return op->obj_id_ == ObjectType::kReduce; };
-    if (auto lhs = obj->lhs_) {
-      if (fuse_break(lhs) && GetArea(lhs) == -1) {
-        Split(lhs);
-        obj->lhs_ = Exchange(areas_[GetArea(lhs)].second, lhs);
-        SetArea(obj->lhs_, -1);
+    auto exchange_input = [this](NDObject *input) -> NDObject * {
+      if (GetArea(input) == -1) {
+        Split(input);
       }
-      if (auto rhs = obj->rhs_; rhs != nullptr && fuse_break(rhs) && GetArea(rhs) == -1) {
-        Split(rhs);
-        obj->rhs_ = Exchange(areas_[GetArea(rhs)].second, rhs);
-        SetArea(obj->rhs_, -1);
+      auto load = Exchange(areas_[GetArea(input)].second, input);
+      SetArea(load, -1);
+      return load;
+    };
+    if (auto lhs = obj->lhs_) {
+      if (lhs->obj_id_ == ObjectType::kReduce) {
+        obj->lhs_ = exchange_input(lhs);
+      }
+      if (auto rhs = obj->rhs_; rhs != nullptr && rhs->obj_id_ == ObjectType::kReduce) {
+        obj->rhs_ = exchange_input(rhs);
       }
     }
     InitObjInfo(obj);

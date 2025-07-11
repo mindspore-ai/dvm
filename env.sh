@@ -1,21 +1,32 @@
-if [[ -z "${ASCEND_CUSTOM_PATH}" ]]; then
-  if [[ -z "${ASCEND_PATH}" ]]; then
-    if [ -d "/usr/local/Ascend/ascend-toolkit" ]; then
-      export ASCEND_PATH="/usr/local/Ascend/ascend-toolkit"
+#!/bin/bash
+
+# Set Ascend environment variables
+if [[ -z "${ASCEND_TOOLKIT_HOME}" ]]; then
+    if [[ -z "${ASCEND_CUSTOM_PATH}" ]]; then
+        if [ -d "/usr/local/Ascend/ascend-toolkit" ]; then
+            source /usr/local/Ascend/ascend-toolkit/set_env.sh
+        fi
     else
-      export ASCEND_PATH="/usr/local/Ascend"
+        source ${ASCEND_CUSTOM_PATH}/ascend-toolkit/set_env.sh
     fi
-  fi
-else
-  export ASCEND_PATH="${ASCEND_CUSTOM_PATH}"
 fi
 
-echo "ASCEND_PATH: ${ASCEND_PATH}"
-echo "ls ${ASCEND_PATH}"
-ls ${ASCEND_PATH}
+# Set Pybind11 includes if not already set
+if [[ -z "${PYBIND11_INCLUDES}" ]]; then
+    # Safely get pybind11 includes
+    export PYBIND11_INCLUDES=$(python -m pybind11 --includes 2>/dev/null)
+    if [ $? -ne 0 ]; then
+        echo "WARNING: Failed to get pybind11 includes. Please ensure pybind11 is installed."
+    fi
+fi
 
-# auto config. DONOT config directly
-export PY_INCLUDE=$(python -c "from sysconfig import get_paths as gp; print(gp()['include'])")
+# Set additional environment variables
+export ASCEND_PATH=${ASCEND_TOOLKIT_HOME}
 export PYTHONPATH=$(pwd)/python:${PYTHONPATH}
-export PATH=${ASCEND_PATH}/latest/compiler/ccec_compiler/bin/:${ASCEND_PATH}/latest/compiler/bin:${PATH}
-export LD_LIBRARY_PATH=${ASCEND_PATH}/latest/$(uname -m)-linux/lib64:${LD_LIBRARY_PATH}
+
+# Optional: Print environment summary
+echo "Environment summary:"
+echo "---------------------------------"
+echo "ASCEND_PATH: ${ASCEND_PATH:-Not set}"
+echo "PYBIND11_INCLUDES: ${PYBIND11_INCLUDES:-Not set}"
+echo "---------------------------------"

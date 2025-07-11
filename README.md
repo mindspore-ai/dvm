@@ -39,24 +39,24 @@ DVM实现了业界首创的微秒级算子实时编译和执行技术，具有�
    # 1. 更新dvm.h
    cp ~/dvm/include/dvm.h ~/mindspore/mindspore/ccsrc/plugin/device/ascend/kernel/dvm
 
-   # 2. 更新libdvm.a（以2024/02/02的CI构建结果为例）
+   # 2. 更新libdvm.a（以2025/06/23的CI构建结果为例）
    ## 更新aarch64版本
-   cd ~/mindspore/mindspore/ccsrc/plugin/device/ascend/kernel/dvm/prebuild/aarch64
+   cd ~/mindspore/mindspore/ccsrc/plugin/res_manager/ascend/dvm/prebuild/aarch64
    rm libdvm.a lib_info.txt
-   wget https://repo.mindspore.cn/mindspore/dvm/daily/202402/20240202/master_20240202104200_9928302bfbd57493e6d8b6d527c69cf5bb67caa8/ascend/aarch64/libdvm.a
-   wget https://repo.mindspore.cn/mindspore/dvm/daily/202402/20240202/master_20240202104200_9928302bfbd57493e6d8b6d527c69cf5bb67caa8/ascend/aarch64/lib_info.txt
+   wget https://repo.mindspore.cn/mindspore/dvm/daily/202506/20250623/r2.7_20250623161052_e233237e66c22b88379917c192945b4b033e0885/ascend/aarch64/libdvm.a
+   wget https://repo.mindspore.cn/mindspore/dvm/daily/202506/20250623/r2.7_20250623161052_e233237e66c22b88379917c192945b4b033e0885/ascend/aarch64/lib_info.txt
 
    ## 更新x86_64版本
-   cd ~/mindspore/mindspore/ccsrc/plugin/device/ascend/kernel/dvm/prebuild/x86_64
+   cd ~/mindspore/mindspore/ccsrc/plugin/res_manager/ascend/dvm/prebuild/x86_64
    rm libdvm.a lib_info.txt
-   wget https://repo.mindspore.cn/mindspore/dvm/daily/202402/20240202/master_20240202104200_9928302bfbd57493e6d8b6d527c69cf5bb67caa8/ascend/x86_64/libdvm.a
-   wget https://repo.mindspore.cn/mindspore/dvm/daily/202402/20240202/master_20240202104200_9928302bfbd57493e6d8b6d527c69cf5bb67caa8/ascend/x86_64/lib_info.txt
+   wget https://repo.mindspore.cn/mindspore/dvm/daily/202506/20250623/r2.7_20250623161052_e233237e66c22b88379917c192945b4b033e0885/ascend/x86_64/libdvm.a
+   wget https://repo.mindspore.cn/mindspore/dvm/daily/202506/20250623/r2.7_20250623161052_e233237e66c22b88379917c192945b4b033e0885/ascend/x86_64/lib_info.txt
 
    # 3. 提交代码
    cd ~/mindspore
-   git add mindspore/ccsrc/plugin/device/ascend/kernel/dvm/dvm.h
-   git add mindspore/ccsrc/plugin/device/ascend/kernel/dvm/prebuild/aarch64/libdvm.a -f
-   git add mindspore/ccsrc/plugin/device/ascend/kernel/dvm/prebuild/aarch64/lib_info.txt
-   git add mindspore/ccsrc/plugin/device/ascend/kernel/dvm/prebuild/x86_64/libdvm.a -f
-   git add mindspore/ccsrc/plugin/device/ascend/kernel/dvm/prebuild/x86_64/lib_info.txt
+   git add mindspore/ccsrc/plugin/res_manager/ascend/dvm/dvm.h
+   git add mindspore/ccsrc/plugin/res_manager/ascend/dvm/prebuild/aarch64/libdvm.a -f
+   git add mindspore/ccsrc/plugin/res_manager/ascend/dvm/prebuild/aarch64/lib_info.txt
+   git add mindspore/ccsrc/plugin/res_manager/ascend/dvm/prebuild/x86_64/libdvm.a -f
+   git add mindspore/ccsrc/plugin/res_manager/ascend/dvm/prebuild/x86_64/lib_info.txt
    ```

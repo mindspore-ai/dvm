@@ -74,7 +74,7 @@ echo "---------------- build start ----------------"
 source ${BASEPATH}/env.sh
 echo "MAKE_ARGS: ${MAKE_ARGS}"
 make clean
-make ${MAKE_ARGS}
+make libdvm.a ${MAKE_ARGS}
 if [ ! -f ${TARGET_FILE} ]; then
   echo "[ERROR] compile failed!"
   exit 1

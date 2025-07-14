@@ -43,7 +43,7 @@ class CodeGenHelper {
     }
     if (kernel_.comm_op_) {
       auto comm = kernel_.comm_op_;
-      for (size_t i = 0; i < comm->XbufReserve(); ++i) {
+      for (int i = 0; i < comm->XbufReserve(); ++i) {
         comm->xbufs_.push_back(static_xbuf_);
         static_xbuf_ += xbuf_size_;
       }
@@ -183,13 +183,13 @@ class CodeGenHelper {
     auto &objects = kernel_.objects_;
     EventManager vl_event, sv_event;
     auto alloc_event = [backward_event_num = kernel_.backward_event_num_](EventManager &m, uint64_t &event) -> bool {
-      event = m.hold_event + 1;
-      if ((int)event >= backward_event_num) {
-        event = m.hold_event;
-        return false;
+      if (auto next = m.hold_event + 1; next < backward_event_num) {
+        m.hold_event = next;
+        event = static_cast<uint64_t>(next);
+        return true;
       }
-      m.hold_event = event;
-      return true;
+      event = static_cast<uint64_t>(m.hold_event);
+      return false;
     };
     vl_event.sync_idx = sv_event.sync_idx = static_cast<int>(objects.size());
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
@@ -353,14 +353,14 @@ class CodeGenHelper {
   inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
     int total = kernel_.forward_event_num_;
     for (int i = 1; i <= total; ++i) {
-      event = (m.hold_event + i) % total;
-      if (from_idx >= m.hold_idx[event]) {
-        m.hold_idx[event] = to_idx;
-        m.hold_event = event;
+      if (int next = (m.hold_event + i) % total; from_idx >= m.hold_idx[next]) {
+        event = static_cast<uint64_t>(next);
+        m.hold_idx[next] = to_idx;
+        m.hold_event = next;
         return true;
       }
     }
-    event = m.hold_event;
+    event = static_cast<uint64_t>(m.hold_event);
     return false;
   }
 

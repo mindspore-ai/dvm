@@ -1271,8 +1271,8 @@ bool VKernelE::AppendOp(EagerVector *kernel, NDObject *op) {
 uint64_t VKernelE::CodeGen() {
   size_t obj_size = objects_.size();
   int kidx = kernel_used_;
-  if (static_cast<size_t>(kidx) > kernels_.size()) {
-    for (int i = kernels_.size(); i < kidx; ++i) {
+  if (int ksize = static_cast<int>(kernels_.size()); kidx > ksize) {
+    for (int i = ksize; i < kidx; ++i) {
       kernels_.push_back(new EagerVector());
     }
   }

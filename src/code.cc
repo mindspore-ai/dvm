@@ -958,12 +958,12 @@ class DisAssembler {
   void DasParallel(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
     struct Summary {
       Summary(uint8_t *code = nullptr) : bcode(code) {}
-      int64_t block_start{-1};
-      int64_t block_end{-1};
-      int64_t block_step{-1};
-      int64_t block_tail{-1};
+      uint64_t block_start;
+      uint64_t block_end;
+      uint64_t block_step;
+      uint64_t block_tail;
       uint8_t *bcode;
-      int64_t code_size;
+      uint64_t code_size;
     };
     std::vector<Summary> summays;
     Summary *current = nullptr;

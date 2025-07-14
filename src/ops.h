@@ -384,7 +384,7 @@ class NDObject {
   virtual void AlignProp(PropRange &range) {}
   // tile nd range
   virtual void Tile(const TileParam &tp);
-  virtual int Emit(VectorKernel &k) = 0;
+  virtual uint64_t Emit(VectorKernel &k) = 0;
   virtual void Dump(bool verbose, std::ostringstream &oss);
 
   void *operator new(size_t size) { return mem_pool_.Get(size); }
@@ -449,7 +449,7 @@ class NDLoadDummy : public NDAccess {
     nd_.data = &ndd_;
   }
   void Tile(const TileParam &tp) override {}
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -469,7 +469,7 @@ class NDLoad : public NDAccess {
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   int tail_dim_;
@@ -487,7 +487,7 @@ class NDMultiLoad : public NDLoad {
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   // void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   // uint32_t multi_size_{1}; // only support up to 1023(2^10)
@@ -501,7 +501,7 @@ class NDSliceLoad : public NDLoad {
   NDSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
       : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {}
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -542,7 +542,7 @@ class NDStore : public NDAccess {
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   void UpdateDimMask() {
@@ -571,7 +571,7 @@ class NDPadStore : public NDAccess {
   NDPadStore(void *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { addr_.gm = dst; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -603,7 +603,7 @@ class CopyOp : public NDObject {
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
@@ -616,7 +616,7 @@ class ReshapeOp : public CopyOp {
     obj_id_ = ObjectType::kReshape;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -629,7 +629,7 @@ class UnaryOp : public NDObject {
  public:
   UnaryOp(int op_type, NDObject *input);
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static int QueryId(const std::string &op_name);
@@ -644,7 +644,7 @@ class RemovePadOp : public CopyOp {
     ASSERT(ITEM_SIZE[type_id_] != 1);
     obj_id_ = ObjectType::kRemovePad;
   }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
@@ -659,7 +659,7 @@ class ElementAnyOp : public NDObject {
     MESS(tail_dim_, 100);
     MESS(tail_size_, 10000);
   }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Tile(const TileParam &tp) override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -679,7 +679,7 @@ class CastOp : public NDObject {
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
@@ -703,7 +703,7 @@ class BinaryScalarOp : public NDObject {
  public:
   BinaryScalarOp(int op_type, NDObject *input, T scalar);
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -716,7 +716,7 @@ class CompareScalarOp : public FlexOp {
  public:
   CompareScalarOp(int op_type, NDObject *input, T scalar);
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -738,7 +738,7 @@ class BinaryOp : public NDObject {
  public:
   BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static int QueryId(const std::string &op_name);
@@ -755,7 +755,7 @@ class PowerOp : public FlexOp {
     shape_ref_ = &norm_.shape_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
@@ -766,7 +766,7 @@ class CompareOp : public FlexOp {
  public:
   CompareOp(int op_type, NDObject *lhs, NDObject *rhs);
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
@@ -783,7 +783,7 @@ class SelectOp : public FlexOp {
   }
   ~SelectOp();
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -798,14 +798,14 @@ class _BroadcastOp : public NDObject {
   }
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   NDSpaceData ndd_;
 
  private:
-  int64_t EmitBroadcastX(uint64_t *p, int end_dim);
-  int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
+  uint64_t EmitBroadcastX(uint64_t *p, int end_dim);
+  uint64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
 };
 
 // expect shape is align: equal rank
@@ -833,7 +833,7 @@ class BroadcastScalarOp : public NDObject {
     nd_.data = &ndd_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -855,7 +855,7 @@ class _ReduceOp : public FlexOp {
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   void SetRange(int start, int end) {
@@ -892,7 +892,7 @@ class ReduceOp : public _ReduceOp {
   ~ReduceOp();
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
 
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -900,7 +900,7 @@ class ReduceOp : public _ReduceOp {
   AtomicCleanWrap *clean_wrap_{nullptr};
 
  private:
-  int EmitDeterm(VectorKernel &k);
+  uint64_t EmitDeterm(VectorKernel &k);
 
   std::vector<_ReduceOp *> stuff_ops_;
   ShapeWithRef shape_;
@@ -926,7 +926,7 @@ class OneHotOp : public NDObject {
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   void UpdateDepthDim(int dim) { depth_dim_ = dim; }
@@ -959,7 +959,7 @@ class CubeOp : public NDObject {
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
 
-  int Emit(VectorKernel &k) override { return 0; }
+  uint64_t Emit(VectorKernel &k) override { return 0; }
   void Dump(bool verbose, std::ostringstream &oss) override;
   void NormalizeCube();
   virtual void InferCubeConfig();
@@ -1053,7 +1053,7 @@ class CommOp : public NDObject {
   }
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
-  uint64_t XbufReserve() { return xbuf_reserve_; }
+  int XbufReserve() { return xbuf_reserve_; }
   void SetXbufSize(uint32_t size) { xbuf_size_ = size; }
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
@@ -1067,7 +1067,7 @@ class CommOp : public NDObject {
   CommIdWrap id_wrap_;
 
  protected:
-  uint64_t xbuf_reserve_{0};  // static
+  int xbuf_reserve_{0};  // static
   uint64_t code_reserve_{0};
   CubeOp *cube_op_{nullptr};
   uint32_t xbuf_size_{0};
@@ -1085,7 +1085,7 @@ class ReduceScatterOp : public CommOp {
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   int MultiLoadEmit(VectorKernel &k);
 
   bool multi_load_;
@@ -1120,7 +1120,7 @@ class AllReduceOp : public AllReduceOpBase {
  public:
   AllReduceOp(NDObject *input, const Communicator *comm) : AllReduceOpBase(input, comm) {};
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   int MatmulEmit(VectorKernel &k);  // used when lhs_ is Matmul
 };
 
@@ -1132,7 +1132,7 @@ class AllGatherOp : public CommOp {
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   DimArray round_tile_;
@@ -1150,7 +1150,7 @@ class AllGatherV2Op : public CommOp {
   AllGatherV2Op(NDObject *input, const Communicator *comm);
   ~AllGatherV2Op() = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:

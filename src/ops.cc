@@ -186,13 +186,13 @@ NDObject *InsertImplicitBroadcast(NDObject *obj, const DimArray &dst_shape, std:
   return last_broadcast_op;
 }
 
-int64_t SelectSimdWidth(int64_t iter_size, DType type_id) {
-  auto block_width = ITEM_SIMD_WIDTH_MAX[type_id] >> 3;
+uint64_t SelectSimdWidth(uint64_t iter_size, DType type_id) {
+  uint64_t block_width = ITEM_SIMD_WIDTH_MAX[type_id] >> 3;
   ASSERT(iter_size % block_width == 0);
-  auto iter_block = iter_size / block_width;
+  uint64_t iter_block = iter_size / block_width;
   if (iter_block <= 8) return iter_size;
-  auto simd_block = 8;
-  auto repeat = iter_block / simd_block;
+  uint64_t simd_block = 8;
+  uint64_t repeat = iter_block / simd_block;
   while (repeat * simd_block != iter_block) {
     repeat = iter_block / (--simd_block);
   }
@@ -430,7 +430,7 @@ void NDObject::Shard(const ShardParam &sp) {
 
 void NDObject::Dump(bool verbose, std::ostringstream &oss) { oss << "NDObject"; }
 
-int NDLoadDummy::Emit(VectorKernel &k) {
+uint64_t NDLoadDummy::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   *insn_ = vMakeHead(V_LOAD_DUMMY, 0, 1, V_PIPE_LOAD);
   return 1;
@@ -463,7 +463,7 @@ void NDLoad::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-int NDLoad::Emit(VectorKernel &k) {
+uint64_t NDLoad::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
@@ -549,7 +549,7 @@ void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
   round_tile_.resize(0);
 }
 
-int NDMultiLoad::Emit(VectorKernel &k) {
+uint64_t NDMultiLoad::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   int64_t lead_align = ndd_.lead_stride();
   uint64_t src_tile_stride_ = ndd_.stride_back() / lead_align * ndd_.lead_dim();
@@ -593,7 +593,7 @@ void NDPadStore::AlignProp(PropRange &range) { range.depth = 1; }
 
 void NDPadStore::FoldProp(PropRange &range) { range.depth = nd_.size() - 1; }
 
-int NDPadStore::Emit(VectorKernel &k) {
+uint64_t NDPadStore::Emit(VectorKernel &k) {
   uint64_t lead_align = nd_.lead_stride();
   uint64_t src_tile_stride_ = nd_.stride_back() / lead_align * nd_.lead_dim();
   vSliceSL op;
@@ -648,7 +648,7 @@ int64_t NDSliceLoad::CalcOffset() {
   return src_offset;
 }
 
-int NDSliceLoad::Emit(VectorKernel &k) {
+uint64_t NDSliceLoad::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
@@ -736,7 +736,7 @@ void NDStore::Tile(const TileParam &tp) {
   }
 }
 
-int NDStore::Emit(VectorKernel &k) {
+uint64_t NDStore::Emit(VectorKernel &k) {
   int64_t lead_align = nd_.lead_stride();
   int64_t lead_dim = nd_.lead_dim();
   ASSERT(lead_align == lhs_->nd_.lead_stride());
@@ -900,7 +900,7 @@ int NDStore::Emit(VectorKernel &k) {
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }
 
-int CopyOp::Emit(VectorKernel &k) {
+uint64_t CopyOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, nd_.stride_back() * ITEM_SIZE[type_id_]);
 }
 
@@ -936,7 +936,7 @@ void ReshapeOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
 }
 
-int ReshapeOp::Emit(VectorKernel &k) {
+uint64_t ReshapeOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   if (lhs_->nd_.lead_dim() == ndd_.lead_dim()) {
     return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
@@ -959,7 +959,7 @@ UnaryOp::UnaryOp(int op_type, NDObject *input)
   shape_ref_ = input->shape_ref_;
 }
 
-int UnaryOp::Emit(VectorKernel &k) {
+uint64_t UnaryOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -979,7 +979,7 @@ int UnaryOp::QueryId(const std::string &op_name) {
   return -1;
 }
 
-int RemovePadOp::Emit(VectorKernel &k) {
+uint64_t RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
   if (nd_.lead_dim() == nd_.lead_stride() || nd_.stride_back() == nd_.lead_stride()) {
     return CopyOp::Emit(k);
@@ -1009,7 +1009,7 @@ void ElementAnyOp::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-int ElementAnyOp::Emit(VectorKernel &k) {
+uint64_t ElementAnyOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   uint64_t clr_tail = 0;
   vElementAny op;
@@ -1029,7 +1029,7 @@ int ElementAnyOp::Emit(VectorKernel &k) {
     op.repeat_tail = op.repeat / lhs_->nd_[tail_dim_] * tail_size_;
   }
   uint32_t insn_num = 1;
-  uint32_t size = 0;
+  uint64_t size = 0;
   if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride() || clr_tail) {
     size = EmitClearPad(insn_, lhs_, clr_tail, op.simd_width);
     tail_insn_ = insn_ + size;
@@ -1045,7 +1045,7 @@ int ElementAnyOp::Emit(VectorKernel &k) {
 
 void ElementAnyOp::Dump(bool verbose, std::ostringstream &oss) { oss << "ElementAny"; }
 
-int CastOp::Emit(VectorKernel &k) {
+uint64_t CastOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1064,7 +1064,7 @@ BinaryScalarOp<T>::BinaryScalarOp(int op_type, NDObject *input, T scalar)
 }
 
 template <typename T>
-int BinaryScalarOp<T>::Emit(VectorKernel &k) {
+uint64_t BinaryScalarOp<T>::Emit(VectorKernel &k) {
   vBinaryS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
@@ -1099,7 +1099,7 @@ CompareScalarOp<T>::CompareScalarOp(int op_type, NDObject *input, T scalar)
 }
 
 template <typename T>
-int CompareScalarOp<T>::Emit(VectorKernel &k) {
+uint64_t CompareScalarOp<T>::Emit(VectorKernel &k) {
   vCompareS op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
@@ -1220,7 +1220,7 @@ BinaryOp::BinaryOp(int op_type, NDObject *lhs, NDObject *rhs)
   shape_ref_ = &norm_.shape_;
 }
 
-int BinaryOp::Emit(VectorKernel &k) {
+uint64_t BinaryOp::Emit(VectorKernel &k) {
   vBinary op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1249,7 +1249,7 @@ CompareOp::CompareOp(int op_type, NDObject *lhs, NDObject *rhs)
   shape_ref_ = &norm_.shape_;
 }
 
-int CompareOp::Emit(VectorKernel &k) {
+uint64_t CompareOp::Emit(VectorKernel &k) {
   vCompare op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1269,7 +1269,7 @@ void CompareOp::Dump(bool verbose, std::ostringstream &oss) {
   }
 }
 
-int PowerOp::Emit(VectorKernel &k) {
+uint64_t PowerOp::Emit(VectorKernel &k) {
   ASSERT(type_id_ == dvm::kFloat32);
   vBinaryWS op;
   op.xd = xbuf_;
@@ -1342,7 +1342,7 @@ SelectOp::~SelectOp() {
   }
 }
 
-int SelectOp::Emit(VectorKernel &k) {
+uint64_t SelectOp::Emit(VectorKernel &k) {
   vSelect op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1399,7 +1399,7 @@ void _BroadcastOp::AlignProp(PropRange &range) {
   range.depth = new_depth;
 }
 
-int _BroadcastOp::Emit(VectorKernel &k) {
+uint64_t _BroadcastOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   int start_dim = -1;
   int end_dim = -1;
@@ -1415,7 +1415,7 @@ int _BroadcastOp::Emit(VectorKernel &k) {
       break;
     }
   }
-  int64_t offset;
+  uint64_t offset;
   if (start_dim == 0 || start_dim == ndd_.lead_idx()) {
     offset = EmitBroadcastX(insn_, end_dim);
   } else {
@@ -1424,7 +1424,7 @@ int _BroadcastOp::Emit(VectorKernel &k) {
   return offset;
 }
 
-int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
+uint64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   vBroadcastX op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1439,7 +1439,7 @@ int64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
 
-int64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim) {
+uint64_t _BroadcastOp::EmitBroadcastY(uint64_t *p, int start_dim, int end_dim) {
   vBroadcastY op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
@@ -1504,7 +1504,7 @@ void BroadcastScalarOp<T>::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 template <typename T>
-int BroadcastScalarOp<T>::Emit(VectorKernel &k) {
+uint64_t BroadcastScalarOp<T>::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   vBroadcastS op;
   op.scalar = EncodeScalar(scalar_, type_id_);
@@ -1577,7 +1577,7 @@ void _ReduceOp::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-int _ReduceOp::Emit(VectorKernel &k) {
+uint64_t _ReduceOp::Emit(VectorKernel &k) {
   if (ndd_.strides.empty()) {
     ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   }
@@ -1613,7 +1613,7 @@ int _ReduceOp::Emit(VectorKernel &k) {
       op.dup_block = op.dup_size;
       op.dup_pad = 0;
     }
-    uint32_t size = 0;
+    uint64_t size = 0;
     uint32_t insn_num = 1;
     if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride() || clr_tail > 0) {
       size = EmitClearPad(insn_, lhs_, clr_tail, op.simd_width);
@@ -1791,7 +1791,7 @@ void ReduceOp::Tile(const TileParam &tp) {
   _ReduceOp::Tile(tp);
 }
 
-int ReduceOp::Emit(VectorKernel &k) {
+uint64_t ReduceOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   if (ws_num_ == 2) {
     return EmitDeterm(k);
@@ -1801,7 +1801,7 @@ int ReduceOp::Emit(VectorKernel &k) {
   }
   auto out_xbuf = xbuf_;
   xbuf_ = wss_[0];
-  int size = _ReduceOp::Emit(k);
+  uint64_t size = _ReduceOp::Emit(k);
   vAtomicCum op;
   uint64_t rounds[2];
   BuildDimRounds(round_tile_, rounds);
@@ -1898,7 +1898,7 @@ void OneHotOp<T>::Tile(const TileParam &tp) {
 }
 
 template <typename T>
-int OneHotOp<T>::Emit(VectorKernel &k) {
+uint64_t OneHotOp<T>::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   vOneHot op;
   op.xn = lhs_->xbuf_;
@@ -2007,7 +2007,7 @@ static bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCo
   return true;
 }
 
-int ReduceOp::EmitDeterm(VectorKernel &k) {
+uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
   if (!GenTileVisit(k, round_tile_, *visit_)) {
     return _ReduceOp::Emit(k);
   }
@@ -2017,7 +2017,7 @@ int ReduceOp::EmitDeterm(VectorKernel &k) {
   }
   auto out_xbuf = xbuf_;
   xbuf_ = wss_[0];
-  int size = _ReduceOp::Emit(k);
+  uint64_t size = _ReduceOp::Emit(k);
   vReduceJoin op;
   op.xd = xbuf_ = out_xbuf;
   op.xn = wss_[0];
@@ -2670,7 +2670,7 @@ void ReduceScatterOp::Tile(const TileParam &tp) {
   NDObject::Tile(tp);
 }
 
-int ReduceScatterOp::Emit(VectorKernel &k) {
+uint64_t ReduceScatterOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
@@ -2691,7 +2691,7 @@ int ReduceScatterOp::Emit(VectorKernel &k) {
   uint64_t forward_event = System::Instance().EventNum() - 1;
   uint64_t backward_event = System::Instance().EventNum() - 1;
   uint64_t backward_event2 = backward_event - 1;
-  int code_size = 0;
+  uint64_t code_size = 0;
   uint64_t *current_insn{nullptr};
 
   // nop
@@ -3149,7 +3149,7 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
 }
 
 template <bool is_bf16>
-int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
+uint64_t AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
@@ -3165,7 +3165,7 @@ int AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
   uint64_t forward_event = System::Instance().EventNum() - 1;
   uint64_t backward_event = System::Instance().EventNum() - 1;
   uint64_t backward_event2 = backward_event - 1;
-  int code_size = 0;
+  uint64_t code_size = 0;
   uint64_t *current_insn{nullptr};
 
   // nop
@@ -3516,7 +3516,7 @@ void AllGatherOp::AlignProp(PropRange &range) {
   range.depth = new_depth;
 }
 
-int AllGatherOp::Emit(VectorKernel &k) {
+uint64_t AllGatherOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
@@ -3524,7 +3524,7 @@ int AllGatherOp::Emit(VectorKernel &k) {
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
-  int code_size = 0;
+  uint64_t code_size = 0;
   uint64_t *current_insn{nullptr};
   uint64_t forward_event = System::Instance().EventNum() - 1;
   uint64_t backward_event = System::Instance().EventNum() - 1;
@@ -3632,7 +3632,7 @@ void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
   code_reserve_ = 5 * sizeof(uint64_t) * (comm_->GetRankSize() + 1);
 }
 
-int AllGatherV2Op::Emit(VectorKernel &k) {
+uint64_t AllGatherV2Op::Emit(VectorKernel &k) {
   ndd_.UpdateStride(ndd_.dims, k.LeadAlign());
   ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
@@ -3640,7 +3640,7 @@ int AllGatherV2Op::Emit(VectorKernel &k) {
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
   auto rank_size = comm_->GetRankSize();
   auto rank_id = comm_->GetRankId();
-  int code_size = 0;
+  uint64_t code_size = 0;
   uint64_t *current_insn{nullptr};
   auto forward_event = System::Instance().EventNum() - 1;
   auto backward_event = System::Instance().EventNum() - 1;

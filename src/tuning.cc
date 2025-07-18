@@ -16,21 +16,25 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <sstream>
 #ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
 #endif
 #include "tuning.h"
 #include "xkernel.h"
 #include "ops.h"
+#include "system.h"
 
 namespace dvm {
-#define ASCEND_CALL(func)                                                                               \
-  do {                                                                                                  \
-    auto err = (func);                                                                                  \
-    if (err != 0) {                                                                                     \
-      std::cerr << "Ascend error in function " << #func << " : " << static_cast<int>(err) << std::endl; \
-      exit(0);                                                                                          \
-    }                                                                                                   \
+#define ASCEND_CALL(func)                                                            \
+  do {                                                                               \
+    auto err = (func);                                                               \
+    if (err != 0) {                                                                  \
+      std::ostringstream oss;                                                        \
+      oss << "Ascend error in function " << #func << " : " << static_cast<int>(err); \
+      std::cerr << oss.str() << std::endl;                                           \
+      DvmException(oss.str().c_str());                                               \
+    }                                                                                \
   } while (0)
 
 constexpr uint32_t FP32_SIZE = 4;

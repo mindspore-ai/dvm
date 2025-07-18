@@ -17,6 +17,7 @@
 #ifndef _DVM_SYSTEM_H_
 #define _DVM_SYSTEM_H_
 #include <iostream>
+#include <sstream>
 #include <functional>
 #include "dvm.h"
 
@@ -30,12 +31,14 @@ typedef struct tagRtSmCtrl rtSmDesc_t;
 
 namespace dvm {
 #ifdef DEBUG
-#define ASSERT(cond)                                                                                            \
-  do {                                                                                                          \
-    if (!(cond)) {                                                                                              \
-      std::cout << "[ASSERT ERROR]" << __FILE__ << ":" << __LINE__ << ": ASSERT(" << #cond << ")" << std::endl; \
-      exit(0);                                                                                                  \
-    }                                                                                                           \
+#define ASSERT(cond)                                                                         \
+  do {                                                                                       \
+    if (!(cond)) {                                                                           \
+      std::ostringstream oss;                                                                \
+      oss << "[ASSERT ERROR]" << __FILE__ << ":" << __LINE__ << ": ASSERT(" << #cond << ")"; \
+      std::cerr << oss.str() << std::endl;                                                   \
+      DvmException(oss.str().c_str());                                                       \
+    }                                                                                        \
   } while (0)
 
 #define MESS(var, init) \

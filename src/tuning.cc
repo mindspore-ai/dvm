@@ -16,7 +16,6 @@
 
 #include <cstdlib>
 #include <iostream>
-#include <cstring>
 #ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
 #endif
@@ -41,7 +40,7 @@ constexpr uint32_t MAX_BIAS_SIZE = 1024;
 
 class ManualCubeTuner : public CubeTuner {
  public:
-  ManualCubeTuner(const TuningInfo &info) : CubeTuner(kUnknownTuner), info_(info) {}
+  explicit ManualCubeTuner(const TuningInfo &info) : CubeTuner(kUnknownTuner), info_(info) {}
   void GenTile(CubeOp *op, vCubeOp *code) override {
     op->m0_ = code->m0 = info_.m0;
     op->n0_ = code->n0 = info_.n0;

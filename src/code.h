@@ -17,7 +17,7 @@
 #ifndef _DVM_CODE_H_
 #define _DVM_CODE_H_
 #include <sstream>
-#include <cstring>
+#include <securec.h>
 #include "isa.h"
 #include "system.h"
 
@@ -92,7 +92,7 @@ class Code : public CodeWrap {
   Code(const Code &obj) = delete;
   Code &operator=(const Code &) = delete;
   Code &operator=(Code &&other);
-  ~Code();
+  ~Code() override;
   void Clear() {
     bind_wss_ = nullptr;
     bind_ops_ = nullptr;
@@ -123,7 +123,7 @@ class Code : public CodeWrap {
     target_ = kTargetMix;
     uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
     data_size_ += visit->code_size_;
-    std::memcpy(visit_code, visit->code_, visit->code_size_);
+    memcpy_s(visit_code, visit->code_size_, visit->code_, visit->code_size_);
     for (auto &r : visit->rel_relocs_) {
       *r.first |= static_cast<uint64_t>(visit_code - r.first) << V_HEAD_EXT_OFFSET;
     }

@@ -28,12 +28,11 @@
 #include <string>
 #include <mutex>
 #include <vector>
-#include <cstring>
 #include <cstdlib>
 
 #include "system.h"
 #ifndef VK_SIM_MODEL
-  #include "acl/acl_rt.h"
+#include "acl/acl_rt.h"
 #endif
 
 namespace dvm {

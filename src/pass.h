@@ -67,7 +67,7 @@ class ObjectList {
     using iterator_category = std::bidirectional_iterator_tag;
     using difference_type = std::ptrdiff_t;
 
-    Iterator(pointer ptr) : ptr_(ptr) {}
+    explicit Iterator(pointer ptr) : ptr_(ptr) {}
 
     Iterator &operator++() {
       ptr_ = reverse ? ObjectList::Prev(ptr_) : ObjectList::Next(ptr_);

@@ -17,6 +17,7 @@
 #include <queue>
 #include <unordered_map>
 #include <climits>
+#include <securec.h>
 #include "kernel.h"
 
 namespace dvm {
@@ -29,7 +30,7 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VectorKernel &kernel) : kernel_(kernel) {}
+  explicit CodeGenHelper(VectorKernel &kernel) : kernel_(kernel) {}
   uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
     static_xbuf_ = code_reserve;
@@ -1491,7 +1492,7 @@ uint64_t VKernelP::CodeGen() {
 uint64_t VKernelP::CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size) {
   auto &code = kernel->code_;
   code.Alloc(code_size + Code::HeadSize() + RedVisitCoder::BCODE_MAX);
-  std::memcpy(code.data_ + Code::HeadSize(), code_begin, code_size);
+  memcpy_s(code.data_ + Code::HeadSize(), code_size, code_begin, code_size);
   for (auto op : kernel->build_ops_) {
     if (op->IsLoad() || op->IsStore()) {
       auto ac = static_cast<NDAccess *>(op);

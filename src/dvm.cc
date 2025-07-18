@@ -17,7 +17,7 @@
 #include <unordered_map>
 #include <cmath>
 #include <vector>
-#include <cstring>
+#include <securec.h>
 #include "dvm.h"
 #include "kernel.h"
 #include "xkernel.h"
@@ -154,7 +154,7 @@ float ToFloat32(const BFloat16 &bf16) {
   float f32 = 0;
   uint32_t f32_tmp = bf16.int_value();
   f32_tmp <<= 16;
-  memcpy(&f32, &f32_tmp, sizeof(f32_tmp));
+  memcpy_s(&f32, sizeof(f32_tmp), &f32_tmp, sizeof(f32_tmp));
   return f32;
 }
 
@@ -388,8 +388,7 @@ NDObject *Kernel::Unary(int op_type, NDObject *input) {
       return Binary(BinaryOpType::kDiv, 1.0f, input);
     }
   }
-  NDObject *obj;
-  obj = new UnaryOp(op_type, input);
+  NDObject *obj = new UnaryOp(op_type, input);
   kernel_->Append(obj);
   return obj;
 }

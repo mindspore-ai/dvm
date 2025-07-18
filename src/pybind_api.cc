@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <memory>
 #include <fstream>
+#include <securec.h>
 #include "pybind11/numpy.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -483,7 +484,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
       const uint64_t reserve_mem = 512;
       ASCEND_CALL(aclrtMalloc(&info.dev, info.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
       if (info.clear_mem) {
-        std::memset(info.host, 0, info.size);
+        memset_s(info.host, info.size, 0, info.size);
         ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
       }
       relocs.emplace_back(op, info.dev);
@@ -685,7 +686,7 @@ void KernelPy::PrepareIO() {
     const uint64_t reserve_mem = 512;
     ASCEND_CALL(aclrtMalloc(&info.dev, info.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     if (info.clear_mem) {
-      std::memset(info.host, 0, info.size);
+      memset_s(info.host, info.size, 0, info.size);
       ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
     static_cast<NDAccess *>(op)->addr_.Reloc(info.dev);

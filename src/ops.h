@@ -134,8 +134,10 @@ class DimArray {
   enum { kMaxDimSize = 10 };
   DimArray() : size_(0) {}
   DimArray &operator=(const DimArray &other) {
-    size_ = other.size();
-    if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    if (this != &other) {
+      size_ = other.size();
+      if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    }
     return *this;
   }
   DimArray &operator=(const std::vector<int64_t> &other) {
@@ -255,7 +257,9 @@ class NDSpace {
   ~NDSpace() = default;
 
   NDSpace &operator=(const NDSpace &other) {
-    data = other.data;
+    if (this != &other) {
+      data = other.data;
+    }
     return *this;
   }
   template <typename T>
@@ -587,6 +591,7 @@ class FlexOp : public NDObject {
   FlexOp(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
     flags_ |= OBJ_FLAG_WORKSPACE;
   }
+  ~FlexOp() override = default;
   void SetXhs(NDObject *xhs) {
     xhs_ = xhs;
     flags_ |= OBJ_FLAG_XHS;
@@ -781,7 +786,7 @@ class SelectOp : public FlexOp {
     ws_num_ = 1;
     SetXhs(cond);
   }
-  ~SelectOp();
+  ~SelectOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -793,9 +798,10 @@ class SelectOp : public FlexOp {
 
 class _BroadcastOp : public NDObject {
  public:
-  _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
+  explicit _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
     nd_.data = &ndd_;
   }
+  ~_BroadcastOp() override = default;
   void FoldProp(PropRange &range) override;
   void AlignProp(PropRange &range) override;
   uint64_t Emit(VectorKernel &k) override;
@@ -815,7 +821,7 @@ class BroadcastOp : public _BroadcastOp {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
   }
-  ~BroadcastOp();
+  ~BroadcastOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
 
  private:
@@ -889,7 +895,7 @@ class ReduceOp : public _ReduceOp {
     }
     flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   }
-  ~ReduceOp();
+  ~ReduceOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
   uint64_t Emit(VectorKernel &k) override;
@@ -1051,6 +1057,7 @@ class CommOp : public NDObject {
     max_type_ = type_id_;
     nd_.data = &ndd_;
   }
+  ~CommOp() override = default;
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
   int XbufReserve() { return xbuf_reserve_; }
@@ -1127,7 +1134,7 @@ class AllReduceOp : public AllReduceOpBase {
 class AllGatherOp : public CommOp {
  public:
   AllGatherOp(NDObject *input, const Communicator *comm);
-  ~AllGatherOp() = default;
+  ~AllGatherOp() override = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void AlignProp(PropRange &range) override;
   void FoldProp(PropRange &range) override;
@@ -1148,7 +1155,7 @@ class AllGatherOp : public CommOp {
 class AllGatherV2Op : public CommOp {
  public:
   AllGatherV2Op(NDObject *input, const Communicator *comm);
-  ~AllGatherV2Op() = default;
+  ~AllGatherV2Op() override = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;

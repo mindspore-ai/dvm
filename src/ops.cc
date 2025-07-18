@@ -15,7 +15,6 @@
  */
 #include <set>
 #include <string>
-#include <cstring>
 #include <vector>
 #include <numeric>
 #include <algorithm>
@@ -359,7 +358,7 @@ const NDObjectAttr NDObject::attrs_[ObjectType::kObjectBulk] = {
 
 class AtomicCleanWrap : public CodeWrap {
  public:
-  AtomicCleanWrap(NDAccess *store) {
+  explicit AtomicCleanWrap(NDAccess *store) {
     clear_shape_.data = &clear_shape_data_;
     clear_shape_.size = 1;
     auto type = store->type_id_;
@@ -381,12 +380,12 @@ class AtomicCleanWrap : public CodeWrap {
     code.BindOpFast(store_->addr_, store->addr_);
   }
 
-  int LaunchWrap(void *workspace, void *stream) {
+  int LaunchWrap(void *workspace, void *stream) override {
     kernel_.code_.Launch(nullptr, stream);
     return next_->LaunchWrap(workspace, stream);
   }
 
-  bool DasWrap(std::ostringstream &oss) {
+  bool DasWrap(std::ostringstream &oss) override {
     kernel_.code_.DisAssemble(oss);
     auto ret = next_->DasWrap(oss);
     oss << std::endl;
@@ -3037,7 +3036,6 @@ int AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
     cp.xd = xbuf_;
     cp.config = DMAConfig(0, 1, GetBlocks(tile_stride), 0, 0);
     current_insn = insn_ + code_size;
-    // code_size += vNop::Encode(current_insn);
     code_size += vCopy::Encode(current_insn, V_COPY, cp);
     *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
     *current_insn |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -3341,7 +3339,6 @@ uint64_t AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
     cp.xd = xbuf_;
     cp.config = DMAConfig(0, 1, GetBlocks(tile_stride), 0, 0);
     current_insn = insn_ + code_size;
-    // code_size += vNop::Encode(current_insn);
     code_size += vCopy::Encode(current_insn, V_COPY, cp);
     *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
     *current_insn |= 0x1ul << V_HEAD_BACK_SET_OFFSET | backward_event2 << V_HEAD_B_SET_EVENT_OFFSET;
@@ -3598,7 +3595,6 @@ uint64_t AllGatherOp::Emit(VectorKernel &k) {
   cp.xd = xbuf_;
   cp.config = DMAConfig(0, 1, GetBlocks(tile_stride), 0, 0);
   current_insn = insn_ + code_size;
-  // code_size += vNop::Encode(current_insn);
   code_size += vCopy::Encode(current_insn, V_COPY, cp);
   *current_insn |= 0x1ul << V_HEAD_WAIT_FLAG_OFFSET | forward_event << V_HEAD_WAIT_EVENT_OFFSET;
   *current_insn |= 0x1ul << V_HEAD_BACK_SET_OFFSET | backward_event << V_HEAD_B_SET_EVENT_OFFSET;

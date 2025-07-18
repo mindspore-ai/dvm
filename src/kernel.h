@@ -29,7 +29,7 @@ class VectorKernel;
 class PropDomainBuilder;
 class PropDomain {
  public:
-  PropDomain(NDObject *head = nullptr) : head_(head) {}
+  explicit PropDomain(NDObject *head = nullptr) : head_(head) {}
   virtual ~PropDomain() {
     for (auto dom : subdoms_) {
       delete dom;
@@ -86,7 +86,7 @@ class RootDomain : public PropDomain {
 
 class VKernel {
  public:
-  VKernel(KernelType ktype) : ktype_(ktype) {}
+  explicit VKernel(KernelType ktype) : ktype_(ktype) {}
   virtual ~VKernel() {}
 
   virtual void Append(NDObject *obj) = 0;
@@ -111,12 +111,12 @@ class VKernel {
 class CodeGenHelper;
 class VectorKernel : public VKernel {
  public:
-  VectorKernel(KernelType ktype) : VKernel(ktype) {
+  explicit VectorKernel(KernelType ktype) : VKernel(ktype) {
     MESS(max_type_, 100);
     MESS(min_type_, 200);
     MESS(visit_, reinterpret_cast<VisitCoder *>(100));
   }
-  virtual ~VectorKernel();
+  ~VectorKernel() override;
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
@@ -274,7 +274,8 @@ class VKernelP : public VKernel {
 
 class DumpRefHelper {
  public:
-  DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}
+  explicit DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}
+  virtual ~DumpRefHelper() = default;
   void Dump(NDObject *op);
   virtual NDObject *GetInput(NDObject *input);
 

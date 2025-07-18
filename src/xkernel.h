@@ -61,7 +61,7 @@ class DynMixKernel : public MixKernel {
 class StagesKernel;
 class StageCodeWrap : public CodeWrap {
  public:
-  StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
+  explicit StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
   int LaunchWrap(void *workspace, void *stream) override;
   bool DasWrap(std::ostringstream &oss) override;
 
@@ -125,7 +125,7 @@ class StagesKernel : public VKernel {
   uint64_t AllocWorkspace();
 
   struct Stage {
-    Stage(VKernel *k) : kernel(k) {}
+    explicit Stage(VKernel *k) : kernel(k) {}
     VKernel *kernel;
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
@@ -207,8 +207,8 @@ class VKernelE : public VKernel {
     auto size = GetStoreSize(store);
     if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
       store->addr_.gm = it->second;
-      wss_.erase(it);
       SetStoreSize(store, it->first);
+      wss_.erase(it);
     } else {
       store->addr_.gm = ws_alloc_(size, user_data_);
     }

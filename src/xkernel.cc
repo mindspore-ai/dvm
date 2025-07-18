@@ -15,7 +15,6 @@
  */
 
 #include <cstdlib>
-#include <cstring>
 #include <queue>
 #include "xkernel.h"
 #include "comm.h"
@@ -697,7 +696,7 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 
 class CubeOptimizer {
  public:
-  CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
+  explicit CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
 
   bool AlignA(std::vector<NDObject *> &ops) {
     if (dom_->tactics_.lhs_pad_size == 0) {
@@ -1377,8 +1376,8 @@ uint64_t VKernelE::CodeGen() {
 
 class EagerDumpRef : public DumpRefHelper {
  public:
-  EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
-  virtual NDObject *GetInput(NDObject *input) {
+  explicit EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
+  NDObject *GetInput(NDObject *input) override {
     while (input && idx_map_.count(input) == 0) {
       if (input->IsLoad()) {
         auto acc = VKernelE::GetStore(input);

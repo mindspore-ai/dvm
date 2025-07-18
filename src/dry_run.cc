@@ -13,8 +13,8 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <cstring>
 #include <unordered_map>
+#include <securec.h>
 #include "isa.h"
 #include "system.h"
 
@@ -225,7 +225,7 @@ struct FuncRegister {
 
 rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm) {
   g_bytecode = std::malloc(size);
-  std::memcpy(g_bytecode, args, size);
+  memcpy_s(g_bytecode, size, args, size);
   uint64_t ffts_addr = *(reinterpret_cast<uint64_t*>(g_bytecode));
   uint64_t entry = *(reinterpret_cast<uint64_t*>(g_bytecode) + 1);
   if (!g_cube_core) {
@@ -234,7 +234,8 @@ rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size,
     if (entry & V_ENTRY_FLAG_CUBE_MIX) {
       head_size += sizeof(vCubeOp);
     }
-    std::memcpy(g_bytecode_ub, static_cast<uint8_t *>(g_bytecode) + head_size, size - head_size);
+    auto sz = size - head_size;
+    memcpy_s(g_bytecode_ub, sz, static_cast<uint8_t *>(g_bytecode) + head_size, sz);
     vmain_mix_aiv(ffts_addr, entry);
     std::free(g_bytecode_ub);
   } else {

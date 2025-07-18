@@ -26,7 +26,7 @@ namespace dvm {
 namespace py = pybind11;
 class NDObjectPy {
  public:
-  NDObjectPy(NDObject *obj) : obj_(obj) {}
+  explicit NDObjectPy(NDObject *obj) : obj_(obj) {}
   py::object GetShape() {
     py::tuple out(obj_->shape_ref_->size);
     for (size_t i = 0; i < obj_->shape_ref_->size; ++i) {
@@ -44,7 +44,7 @@ class NDObjectPy {
 class ShapeRefPy {
  public:
   ShapeRefPy() { shape_ref_ = new ShapeRef(shape_); }
-  ShapeRefPy(const std::vector<int64_t> &shape) : shape_(shape) { shape_ref_ = new ShapeRef(shape_); }
+  explicit ShapeRefPy(const std::vector<int64_t> &shape) : shape_(shape) { shape_ref_ = new ShapeRef(shape_); }
   ~ShapeRefPy() { delete shape_ref_; }
   void Update(const py::object &shape);
   ShapeRef *Get() const { return shape_ref_; }

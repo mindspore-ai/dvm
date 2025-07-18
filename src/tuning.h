@@ -41,7 +41,7 @@ class CubeTuner {
  public:
   using Key = std::pair<uint64_t, uint64_t>;
 
-  CubeTuner(TunerType type) : type_(type) {}
+  explicit CubeTuner(TunerType type) : type_(type) {}
   virtual ~CubeTuner();
   virtual void GenTile(CubeOp *op, vCubeOp *code) = 0;
   TunerType Type() const { return type_; }

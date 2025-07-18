@@ -16,7 +16,6 @@
 
 #include <unordered_map>
 #include <vector>
-#include <cstring>
 #include "code.h"
 #include "ops.h"
 
@@ -793,7 +792,7 @@ void DasBody(std::ostringstream &oss, uint8_t *bcode, uint64_t bcode_size, const
 
 class DisAssembler {
  public:
-  DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
+  explicit DisAssembler(std::ostringstream &oss_) : oss(oss_) {}
 
   void Run(Code *code, const char *prefix) {
     if (code->wrap_ && !code->wrap_->DasWrap(oss)) {
@@ -957,7 +956,7 @@ class DisAssembler {
 
   void DasParallel(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
     struct Summary {
-      Summary(uint8_t *code = nullptr) : bcode(code) {}
+      explicit Summary(uint8_t *code = nullptr) : bcode(code) {}
       uint64_t block_start;
       uint64_t block_end;
       uint64_t block_step;
@@ -1058,10 +1057,12 @@ Code::~Code() {
 }
 
 Code &Code::operator=(Code &&other) {
-  MoveCode(other);
-  bind_wss_ = other.bind_wss_;
-  bind_ops_ = other.bind_ops_;
-  wrap_ = other.wrap_;
+  if (this != &other) {
+    MoveCode(other);
+    bind_wss_ = other.bind_wss_;
+    bind_ops_ = other.bind_ops_;
+    wrap_ = other.wrap_;
+  }
   return *this;
 }
 
@@ -1084,10 +1085,9 @@ void Code::Alloc(size_t size) {
   }
   if (size <= PARAM_TABLE_LIMIT) {
     if (data_) {
-      data_ = static_cast<unsigned char *>(std::realloc(data_, size));
-    } else {
-      data_ = static_cast<unsigned char *>(std::malloc(size));
+      std::free(data_);
     }
+    data_ = static_cast<unsigned char *>(std::malloc(size));
   } else {
     if (data_) {
       if (mem_size_ <= PARAM_TABLE_LIMIT) {

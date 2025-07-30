@@ -89,7 +89,7 @@ static const InsnIdTable binarys_id_list[] = {
   {"LessEqual", {V_NONE, V_CMPS_FP16, V_NONE, V_CMPS, V_NONE}},
   {"Add", {V_NONE, V_ADDS_FP16, V_NONE, V_ADDS, V_ADDS_INT32}},
   {"Mul", {V_NONE, V_MULS_FP16, V_NONE, V_MULS, V_MULS_INT32}},
-  {"Div", {V_NONE, V_SDIV_FP16, V_NONE, V_SDIV, V_NONE}},
+  {"ScalarDiv", {V_NONE, V_SDIV_FP16, V_NONE, V_SDIV, V_NONE}},
   {"Maximum", {V_NONE, V_MAXS_FP16, V_NONE, V_MAXS, V_MAXS_INT32}},
   {"Minimum", {V_NONE, V_MINS_FP16, V_NONE, V_MINS, V_MINS_INT32}}};
 

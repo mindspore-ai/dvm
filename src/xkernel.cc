@@ -1389,6 +1389,9 @@ class EagerDumpRef : public DumpRefHelper {
       if (input->IsLoad()) {
         auto acc = VKernelE::GetStore(input);
         if (acc) {
+          if (acc->IsLoad()) {
+            return acc;
+          }
           input = acc->lhs_;
           continue;
         }

@@ -960,8 +960,13 @@ class EagerArea {
   ~EagerArea() = default;
 
   void Reset(NDObject *dom) {
-    dom_ = dom->obj_id_ != kReduce ? dom : dom->lhs_;
-    state_ = kPending;
+    if (dom->obj_id_ != kReduce) {
+      dom_ = dom;
+      state_ = kPending;
+    } else {
+      dom_ = dom->lhs_;
+      state_ = kSubmitted;
+    }
     objects_.clear();
     fused_.clear();
   }
@@ -1133,12 +1138,14 @@ void VKernelE::Append(NDObject *obj) {
   obj->flags_ |= OBJ_FLAG_EAGER;  // TODO: add eager param for Normalize
   if (obj->IsStore()) {
     obj->Normalize(objects_);
-    InitStoreInfo(obj);
     auto src = obj->lhs_;
-    SetStore(src, obj);
-    if (GetArea(src) == -1) {
+    auto area_id = GetArea(src);
+    if (area_id == -1) {
       Split(src);
+      area_id = GetArea(src);
     }
+    SetStore(src, obj);
+    InitStoreInfo(obj, area_id);
   } else {
     auto exchange_input = [this](NDObject *input) -> NDObject * {
       if (GetArea(input) == -1) {

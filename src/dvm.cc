@@ -598,6 +598,11 @@ NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
   return obj;
 }
 
+void Kernel::SetStoreInplace(NDObject *store) {
+  ASSERT(kernel_->KType() == kEager);
+  VKernelE::SetStoreInplace(store, 1);
+}
+
 NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
   NDObject *obj;
   if (input->type_id_ == DType::kBFloat16) {

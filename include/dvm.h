@@ -172,6 +172,7 @@ class Kernel {
   NDObject *MultiLoad(void *addr, ShapeRef *shape, DType type, const Comm *comm);
   NDObject *Store(void *addr, NDObject *input);
   NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);
+  void SetStoreInplace(NDObject *store);
 
   NDObject *Unary(int op_type, NDObject *input);
   NDObject *Binary(int op_type, NDObject *lhs, NDObject *rhs);

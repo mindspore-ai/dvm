@@ -182,12 +182,12 @@ class VKernelE : public VKernel {
   }
 
   static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
+  static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
 
  protected:
   static int GetArea(NDObject *obj) { return obj->reserved_; }
   static void SetArea(NDObject *obj, int area_id) { obj->reserved_ = area_id; }
   static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t *>(store); }
-  static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
   static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }
   static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
   static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }

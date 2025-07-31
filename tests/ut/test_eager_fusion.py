@@ -481,3 +481,18 @@ def test_reduce_depend():
     e_x5 = np.sum((a - e_x2) * (-0.125), axis=(0, 2, 3), keepdims=False)
     t.store_expect(x5, e_x5)
     assert(t.run_check())
+
+def test_skip_output():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.1, [1, 32, 2, 4]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.binary("Add", x0, 0.125)
+    x2 = t.reduce("sum", x1, (0, 2, 3), True)
+    e_x2 = np.sum(a + 0.125, axis=(0, 2, 3), keepdims=True)
+    t.store_expect(x2, e_x2)
+    # skip ops
+    x3 = t.unary("Sqrt", x1)
+    x4 = t.binary("Mul", x3, -0.125)
+    x5 = t.reduce("sum", x4, (0, 2, 3), False)
+    x6 = t.binary("Add", x5, 0.02)
+    assert(t.run_check())

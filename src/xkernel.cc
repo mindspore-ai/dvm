@@ -1264,7 +1264,7 @@ bool VKernelE::AppendOp(EagerVector *kernel, NDObject *op) {
     if (!(op->flags_ & OBJ_FLAG_EAGER)) {
       objects_.push_back(op);
     }
-  } else if (auto store = GetStore(op)) {
+  } else if (auto store = GetStore(op); store && store->addr_.gm) {
     ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
     store->nd_.data = op->nd_.data;
     kernel->EagerVector::Append(store);

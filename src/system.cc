@@ -102,7 +102,10 @@ const SocConfig soc_configs[] = {
 
 System::System() {
   const SocConfig *config = nullptr;
-  auto soc_name = GetSocName();
+  const std::string soc_name = GetSocName();
+  if (soc_name.empty() || soc_name == "MS_DRY_RUN") {
+    return;
+  }
   for (const SocConfig &c : soc_configs) {
     if (soc_name == c.name) {
       config = &c;

@@ -99,7 +99,7 @@ def test_binary_s_l(type, op, func):
     t.store_expect(y, func(0.1, a))
     assert (t.run_check())
 
-@pytest.mark.parametrize('type', [np.float16] if dvm.device.arch() != 'AscendC220' else [np.float16,np.float32])
+@pytest.mark.parametrize('type', [np.float16,np.float32])
 @pytest.mark.parametrize("size",[1024, 24, 66666])
 def test_isfinite(type, size):
     t = Tester()

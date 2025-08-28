@@ -485,27 +485,29 @@ class TileVisitor {
       }
       group_info_ += (m.m_loop * m.n_loop) << V_GMM_BLOCK_OFF_OFFSET;
     }
-    uint64_t stride = static_cast<uint64_t>(*gm_group_list_ - LastList());
+    int64_t stride = *gm_group_list_ - LastList();
     group_info_ += stride << V_GMM_LAST_OFFSET;
     group_info_--;
     if (m.flags & V_CUBE_FLAG_GROUP_K) {
-      m.k_real = stride;
+      m.k_real = static_cast<uint64_t>(stride);
       m.k_loop = CeilDiv(m.k_real, m.k0);
       m.shuffle_k = block_idx % m.k_loop;
       m.k_actual = (m.shuffle_k == m.k_loop - 1) ? (m.k_real - m.shuffle_k * m.k0) : m.k0;
     } else {
-      m.m_real = stride;
+      m.m_real = static_cast<uint64_t>(stride);
       m.m_loop = CeilDiv(m.m_real, m.m0);
     }
     gm_group_list_++;
     pos_last_ = pos_ = INVALID_TILE_POS;
     tile_loop_ += (m.m_loop * m.n_loop) << 32;
+    skip_ = stride <= 0;
   }
 
   __force_inline__ __aicore__ bool Forward(M &m) {
+  FORWARD:
     if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
       uint64_t pos = pos_;
-      if (m.flags & V_CUBE_FLAG_GROUPED_LIST) { // NOTICE: only for splik-k mode
+      if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {  // NOTICE: only for splik-k mode
         pos += (BlockIdxOffset() / (m.m_loop * m.n_loop)) << V_MM_POS_C_OFFSET;
       }
       gm_msg_->pos[m.flags & V_PINGPONG_FLAG_GROUP_MSG ? 1 : 0] = pos;
@@ -530,6 +532,7 @@ class TileVisitor {
     pos_ = pos_next_;
     tile_loop_ += block_num;
     UpdateNext(m);
+    if (skip_) goto FORWARD;
     return true;
   }
 
@@ -579,6 +582,7 @@ class TileVisitor {
   __gm__ vMixGroupMsg *gm_msg_;
   __gm__ int64_t *__restrict__ gm_group_list_;
   uint64_t group_info_;
+  bool skip_{false};
 };
 
 template <typename T>

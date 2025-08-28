@@ -82,7 +82,7 @@ def np_gmm_split_k(x, w, b, group_list):
     [
         [1024, 4096, 512, [512, 1024]],
         [2333, 1111, 2222, [777, 2333]],
-        [4096, 4096, 4096, [10, 256, 3000, 4096]],
+        [4096, 4096, 4096, [10, 256, 256, 3000, 4096]],
     ],
 )
 @pytest.mark.parametrize(
@@ -201,6 +201,31 @@ def test_gmm_type2(m, n, k, group_list, trans):
     group_list_d = t.load(group_list)
     res = t.gmm(x_d, w_d, trans[0], trans[1],  None, group_list_d, 2)
     t.store_expect(res, expect)
+    assert t.run_check()
+
+
+@pytest.mark.mix
+@pytest.mark.parametrize(
+    "m, n, k, group_list",
+    [
+        [1024, 512, 3333, [0, 0, 10, 128, 256, 256, 1024, 2048, 2048, 3333]],
+    ],
+)
+def test_gmm_type2_zero(m, n, k, group_list):
+    x_shape = [m, k]
+    w_shape = [k, n]
+    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
+    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
+    group_list = np.array(group_list).astype(np.int64)
+    expect = np_gmm_split_k(
+        x, w, None, group_list)
+    t = Tester("mix")
+    x_d = t.load(x)
+    w_d = t.load(w)
+    group_list_d = t.load(group_list)
+    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2)
+    s = t.store_expect(res, expect)
+    t.clear_store_memory(s)
     assert t.run_check()
 
 

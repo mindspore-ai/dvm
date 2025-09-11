@@ -143,8 +143,5 @@ constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kTypeEnd];
 extern const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd];
-
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
 }  // namespace dvm
 #endif  // _DVM_SYSTEM_H_

@@ -35,6 +35,9 @@
 #define __aicore__
 #endif
 
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
+
 enum vPipe {
   V_PIPE_LOAD = 0,
   V_PIPE_STORE,
@@ -257,7 +260,7 @@ __aicore_inline__ T DecodeScalar(__bcode__ uint32_t *scalr_offset) {
 
 template <typename T>
 __aicore_inline__ T CeilDiv(T a, T b) {
-  return (a - 1) / b + 1;
+  return (a + b - 1) / b;
 }
 
 template <typename T>

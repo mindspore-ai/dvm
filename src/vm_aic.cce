@@ -500,11 +500,9 @@ class TileVisitor {
     gm_group_list_++;
     pos_last_ = pos_ = INVALID_TILE_POS;
     tile_loop_ += (m.m_loop * m.n_loop) << 32;
-    skip_ = stride <= 0;
   }
 
   __force_inline__ __aicore__ bool Forward(M &m) {
-  FORWARD:
     if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
       uint64_t pos = pos_;
       if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {  // NOTICE: only for splik-k mode
@@ -532,7 +530,6 @@ class TileVisitor {
     pos_ = pos_next_;
     tile_loop_ += block_num;
     UpdateNext(m);
-    if (skip_) goto FORWARD;
     return true;
   }
 
@@ -582,7 +579,6 @@ class TileVisitor {
   __gm__ vMixGroupMsg *gm_msg_;
   __gm__ int64_t *__restrict__ gm_group_list_;
   uint64_t group_info_;
-  bool skip_{false};
 };
 
 template <typename T>
@@ -627,22 +623,37 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
     mat.ComputeOffset(cidx, offset_a, offset_b);
     uint64_t m_actual = (midx == (mat.m_loop - 1)) ? (mat.m_real - midx * mat.m0) : mat.m0;
     uint64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
-
-    if (!visit.HasLast()) {
-      auto event_id = mat.flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
-      wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
-      mat.LoadA(l1a, mat.gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
-      set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
-      wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
-      mat.LoadB(l1b, mat.gm_b + offset_b, mat.shuffle_k, nidx, mat.k_actual, n_actual);
-      set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
-    }
-    if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
-      wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
-      if (nidx != visit.LastN()) {
-        mat.LoadBias(bias_l1, mat.gm_bias + mat.BiasTypeSize() * nidx * mat.n0, n_actual);
+    if (likely(mat.k_loop > 0)) {
+      if (!visit.HasLast()) {
+        auto event_id = mat.flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+        mat.LoadA(l1a, mat.gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+        mat.LoadB(l1b, mat.gm_b + offset_b, mat.shuffle_k, nidx, mat.k_actual, n_actual);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
       }
-      set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
+      if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
+        wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+        if (nidx != visit.LastN()) {
+          mat.LoadBias(bias_l1, mat.gm_bias + mat.BiasTypeSize() * nidx * mat.n0, n_actual);
+        }
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
+      }
+    } else {
+      __ca__ T *__restrict__ l0a = (__ca__ T *)0;
+      __cb__ T *__restrict__ l0b = (__cb__ T *)0;
+      if (!visit.HasLast()) {
+        wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+        create_ca_matrix(l0a, (L0_PINGPONG_BUFFER_LEN >> 9) << 16 | 1, T(0));
+        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+      }
+      uint8_t unit_flag = 0b11;
+      mat.MM(l0c, l0a, l0b, true, unit_flag, m_actual, n_actual, BLOCK_SIZE);
+      if (!visit.HasNext()) {
+        set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+      }
     }
     uint64_t shuffle_k = mat.shuffle_k;
     for (uint64_t k = 0; k < mat.k_loop; ++k) {

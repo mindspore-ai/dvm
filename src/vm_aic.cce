@@ -577,7 +577,7 @@ class TileVisitor {
   uint64_t swizzle_;
   uint64_t tile_loop_;
   __gm__ vMixGroupMsg *gm_msg_;
-  __gm__ int64_t *__restrict__ gm_group_list_;
+  __gm__ int64_t *__restrict__ gm_group_list_{nullptr};
   uint64_t group_info_;
 };
 
@@ -641,11 +641,12 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t tile_end
         set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
       }
     } else {
-      __ca__ T *__restrict__ l0a = (__ca__ T *)0;
-      __cb__ T *__restrict__ l0b = (__cb__ T *)0;
+      __ca__ T *__restrict__ l0a = l0a_base;
+      __cb__ T *__restrict__ l0b = l0b_base;
       if (!visit.HasLast()) {
         wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
         create_ca_matrix(l0a, (L0_PINGPONG_BUFFER_LEN >> 9) << 16 | 1, T(0));
+        create_cb_matrix(l0b, (L0_PINGPONG_BUFFER_LEN >> 9) << 16 | 1, T(0));
         set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
         wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
       }

@@ -212,6 +212,16 @@ def test_gmm_type2(m, n, k, group_list, trans):
     ],
 )
 def test_gmm_type2_zero(m, n, k, group_list):
+    # Produce dirty data for L0A and L0B"
+    t = Tester("mix")
+    x = np.full([1024, 1024], np.nan, np.float16)
+    w = np.full([1024, 1024], np.nan, np.float16)
+    x_d = t.load(x)
+    w_d = t.load(w)
+    res = t.matmul(x_d, w_d, False, False)
+    t.store(res)
+    t.run()
+    
     x_shape = [m, k]
     w_shape = [k, n]
     x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
@@ -225,7 +235,6 @@ def test_gmm_type2_zero(m, n, k, group_list):
     group_list_d = t.load(group_list)
     res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2)
     s = t.store_expect(res, expect)
-    t.clear_store_memory(s)
     assert t.run_check()
 
 

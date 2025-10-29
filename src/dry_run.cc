@@ -177,6 +177,7 @@ void wait_flag(int, int, int) {}
 #define load_cbuf_to_cb CCE_CALL(load_cbuf_to_cb)
 #define mad CCE_CALL(mad)
 #define create_ca_matrix CCE_CALL(create_ca_matrix)
+#define create_cb_matrix CCE_CALL(create_ca_matrix)
 
 /************* vm code stub ***************/
 #define __VM_DRY_RUN__

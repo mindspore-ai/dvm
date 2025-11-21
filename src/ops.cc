@@ -1176,14 +1176,14 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject *> &run_o
   for (size_t i = 0; i < res_dim; ++i) {
     auto lhs_axis = i < lhs_dim ? lhs_nd[i] : 1;
     auto rhs_axis = i < rhs_dim ? rhs_nd[i] : 1;
-    if (lhs_axis > rhs_axis) {
+    if (lhs_axis == rhs_axis) {
       nd[i] = lhs_axis;
-      rhs_need_broadcast = true;
-    } else if (lhs_axis < rhs_axis) {
+    } else if (lhs_axis == 1) {
       nd[i] = rhs_axis;
       lhs_need_broadcast = true;
     } else {
       nd[i] = lhs_axis;
+      rhs_need_broadcast = true;
     }
   }
   if (self->flags_ & OBJ_FLAG_EAGER) {

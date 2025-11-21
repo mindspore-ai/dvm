@@ -169,6 +169,10 @@ class VectorKernel : public VKernel {
     auto code_reserve = ReserveCodeSize();
     code_.Alloc(code_reserve + code_.HeadSize());
     root_dom_.PrepareTiling(this);
+    if (unlikely(!root_dom_.TileSize())) {
+      code_.UpdateIdle();
+      return 0;
+    }
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
     code_.data_size_ = code_end - code_.data_;
     if (auto visit = GetVisitor<RedVisitCoder>(); visit != nullptr) {

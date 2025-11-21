@@ -495,4 +495,45 @@ def test_skip_output():
     x4 = t.binary("Mul", x3, -0.125)
     x5 = t.reduce("sum", x4, (0, 2, 3), False)
     x6 = t.binary("Add", x5, 0.02)
+    assert (t.run_check())
+
+
+def test_zero_shape_pv():
+    t = Tester("eager")
+    a = np.full([10, 0, 2], 0.1, np.float32)
+    b = np.full([10, 1, 2], 0.2, np.float32)
+    x = t.load(a)
+    y = t.binary("Mul", x, 0.1)
+    out1 = t.store(y)
+    z = t.load(b)
+    z = t.binary("Mul", z, 0.2)
+    t.store_expect(z, 0.2 * 0.2)
     assert(t.run_check())
+    assert(out1.shape() == (10, 0, 2))
+
+
+def test_zero_shape_reduce():
+    t = Tester("eager")
+    a = np.full([10, 0, 2], 0.01, np.float32)
+    x1 = t.load(a)
+    x2 = t.binary("Add", x1, 0.1)
+    x3 = t.reduce("sum", x2, (2,), True)
+    x4 = t.binary("Add", x3, 0.2)
+    x5 = t.reduce("sum", x4, (1,), True)
+    out = t.store(x5)
+    t.run()
+    assert(out.shape() == (10, 1, 1))
+
+
+def test_zero_shape_mm():
+    t = Tester("eager")
+    a = np.full([0, 1024], 0.001, np.float16)
+    b = np.full([1024, 1024], 0.001, np.float16)
+    x0 = t.load(a)
+    x0 = t.binary("Add", x0, 0.01)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.binary("Add", x2, 1.0)
+    out = t.store(x3)
+    t.run()
+    assert(out.shape() == (0, 1024))

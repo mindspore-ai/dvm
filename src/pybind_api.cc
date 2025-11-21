@@ -104,9 +104,11 @@ std::unordered_map<std::string, KernelType> kernel_type_map = {
 
 void *WsAllocCallback(uint64_t size, void *user_data) {
   void *dev_addr = nullptr;
-  ASCEND_CALL(aclrtMalloc(&dev_addr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-  ASSERT(user_data);
-  static_cast<std::vector<void *> *>(user_data)->push_back(dev_addr);
+  if (size > 0) {
+    ASCEND_CALL(aclrtMalloc(&dev_addr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ASSERT(user_data);
+    static_cast<std::vector<void *> *>(user_data)->push_back(dev_addr);
+  }
   return dev_addr;
 }
 
@@ -622,8 +624,10 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   auto input = py::array(array);
   py::buffer_info buf = input.request();
   size_t size = buf.itemsize * buf.size;
-  ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-  ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
+  if (size > 0) {
+    ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
+  }
   if (kernel_.GetImpl()->KType() == kDynShape || kernel_.GetImpl()->KType() == kDynMix) {
     info.shape.resize(buf.ndim);
     for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
@@ -653,7 +657,9 @@ py::object KernelPy::Output(const py::object &store) {
     }
     strides.push_back(stride);
   }
-  ASCEND_CALL(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
+  if (size > 0) {
+    ASCEND_CALL(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
+  }
   py::buffer_info buf(info.host, itemsize, GetBufferFormat(op->type_id_), ndim, shape, strides);
   return py::array(py::dtype(buf), buf.shape, buf.strides, buf.ptr, store);
 }

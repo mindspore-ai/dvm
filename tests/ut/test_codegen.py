@@ -77,4 +77,14 @@ def test_inplace_anti_dep():
     x6 = t.binary("Add", x4, x5)
     t.store(x6)
     t.codegen()
-    assert(t.das().count("bar") == 3)
+    assert (t.das().count("bar") == 3)
+
+
+def test_zero_shape():
+    t = Tester()
+    a = np.full([10, 0, 2], 0.1, np.float32)
+    x = t.load(a)
+    y = t.binary("Mul", x, 0.1)
+    out = t.store(y)
+    t.run()
+    assert(out.shape() == (10, 0, 2))

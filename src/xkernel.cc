@@ -837,6 +837,10 @@ class EagerVector : public VectorKernel {
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
+    if (unlikely(!mm->m_align_ || !mm->n_align_ || !mm->k_align_)) {
+      code_.UpdateIdle();
+      return;
+    }
     mm->CodeGen(body, System::Instance().lazy_tuner_);
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
@@ -849,6 +853,10 @@ class EagerVector : public VectorKernel {
     size_t post_reserve = ReserveCodeSize();  // TODO: visit size
     code_.Alloc(head_reserve + post_reserve);
     vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
+    if (unlikely(!mm->m_align_ || !mm->n_align_ || !mm->k_align_)) {
+      code_.UpdateIdle();
+      return cube_code;
+    }
     mm->CodeGen(cube_code, System::Instance().lazy_tuner_);
     ASSERT(!mm->batch_fold_);
     root_dom_.SetHead(next_);
@@ -893,14 +901,22 @@ class EagerVector : public VectorKernel {
     uint64_t prim_load = GetWorkLoad(this);
     uint64_t total_load = prim_load;
     uint64_t other_loads[EagerVector::kMaxPvNum];
+    uint64_t child_num = prim_load ? 1 : 0;
     for (int i = 0; i < other_num; ++i) {
       auto k = others[i];
       k->root_dom_.SetHead(k->next_);
       k->NormalizeDomain();
       k->root_dom_.PrepareTiling(k);
       other_loads[i] = GetWorkLoad(k);
-      total_load += other_loads[i];
-      code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);
+      if (other_loads[i]) {
+        total_load += other_loads[i];
+        code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);
+        child_num++;
+      }
+    }
+    if (unlikely(child_num == 0)) {
+      code_.UpdateIdle();
+      return 0;
     }
     code_.Alloc(code_reserve);
     uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + Code::HeadSize());
@@ -916,11 +932,15 @@ class EagerVector : public VectorKernel {
       k->code_.block_dim_ = block_dim;
       child_offset = VKernelP::UpdateSummary(k, child_offset, code_size, summaries);
     };
-    GenChild(prim_load, this);
+    if (prim_load) {
+      GenChild(prim_load, this);
+    }
     for (int i = 0; i < other_num; ++i) {
-      auto k = others[i];
-      GenChild(other_loads[i], k);
-      code_.Combine(k->code_, 0);
+      if (other_loads[i]) {
+        auto k = others[i];
+        GenChild(other_loads[i], k);
+        code_.Combine(k->code_, 0);
+      }
     }
     code_.data_size_ = child_offset;
     code_.block_dim_ = core_total - core_free;

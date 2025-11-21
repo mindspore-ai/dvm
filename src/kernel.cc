@@ -387,7 +387,7 @@ void PropDomain::Normalize() {
       return cand_nd.size() > dom_nd.size();
     }
     for (size_t i = 0; i < dom_nd.size(); ++i) {
-      if (cand_nd[i] > dom_nd[i]) return true;
+      if (dom_nd[i] == 1 && cand_nd[i] != 1) return true;
     }
     return false;
   };

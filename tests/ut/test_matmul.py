@@ -460,3 +460,30 @@ def test_batch_fold(shape_a, shape_b, shape_bias):
         expect = expect + bias
     t.store_expect(out, expect, 1e-3)
     assert(t.run_check())
+
+
+@pytest.mark.mix
+@pytest.mark.parametrize('mode', ["mix", "dyn_mix"])
+def test_same_matmul_input(mode):
+    t = Tester(mode)
+    g0 = np.random.normal(0, 0.01, [1024, 2048]).astype(np.float16)
+    a = t.load(g0)
+    c = t.matmul(a, a, False, True)
+    expect = np.matmul(g0.astype(np.float32), g0.T.astype(np.float32)).astype(np.float16)
+    t.store_expect(c, expect)
+    assert (t.run_check())
+
+
+@pytest.mark.mix
+@pytest.mark.parametrize('mode', ["mix", "dyn_mix"])
+def test_same_matmul_vec_input(mode):
+    t = Tester(mode)
+    g0 = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    g1 = np.random.normal(0, 0.01, [1024, 1536]).astype(np.float16)
+    a = t.load(g0)
+    b = t.load(g1)
+    c = t.matmul(a, b, False, False)
+    d = t.binary("Add", c, b)
+    expect = np.matmul(g0.astype(np.float32), g1.astype(np.float32)).astype(np.float16) + g1
+    t.store_expect(d, expect)
+    assert (t.run_check())

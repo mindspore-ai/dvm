@@ -52,15 +52,32 @@ MixKernel::~MixKernel() {
 }
 
 void MixKernel::Append(NDObject *obj) {
-  const uint32_t LOAD_PENDING = 1;
+  constexpr uint32_t LOAD_VEC_USED = 0;
+  constexpr uint32_t LOAD_PENDING = 1;
+  constexpr uint32_t LOAD_CUBE_USED = 2;
   if (obj->IsLoad()) {
     obj->xbuf_ = LOAD_PENDING;
   } else if (obj->IsCube()) {
     EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
+    cube_op_ = static_cast<CubeOp *>(obj);
+    auto reload_check = [this](NDObject *&input) {
+      auto load = static_cast<NDAccess *>(input);
+      if (load->xbuf_ == LOAD_PENDING) {
+        load->xbuf_ = LOAD_CUBE_USED;
+      } else {
+        auto new_load = new NDLoad(nullptr, load->shape_ref_, load->type_id_);
+        reloads_.emplace_back(new_load, load);
+        input = new_load;
+      }
+    };
+    reload_check(cube_op_->lhs_);
+    reload_check(cube_op_->rhs_);
+    if (cube_op_->bias_) {
+      reload_check(cube_op_->bias_);
+    }
     std::vector<NDObject *> empty_run_ops;
     obj->lhs_->Normalize(empty_run_ops);
     obj->rhs_->Normalize(empty_run_ops);
-    cube_op_ = static_cast<CubeOp *>(obj);
     cube_op_->NormalizeCube();
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
     obj->nd_ = cube_op_->nd_;
@@ -77,8 +94,14 @@ void MixKernel::Append(NDObject *obj) {
           post_fusion_->build_ops_.emplace_back(sload_);
         }
         op = sload_;
-      } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
-        op->xbuf_ = 0;
+      } else if (op->IsLoad() && op->xbuf_ != LOAD_VEC_USED) {
+        if (op->xbuf_ == LOAD_PENDING) {
+          op->xbuf_ = LOAD_VEC_USED;
+        } else { // LOAD_CUBE_USED
+          auto new_load = new NDLoad(nullptr, op->shape_ref_, op->type_id_);
+          reloads_.emplace_back(new_load, static_cast<NDAccess *>(op));
+          op = new_load;
+        }
         post_fusion_->build_ops_.emplace_back(op);
       }
     };
@@ -123,9 +146,6 @@ void MixKernel::Release() {
   }
 
   auto cube_op = current_kernel->cube_op_;
-  if (!cube_op_->tactics_.enable_bias_cast) {
-    cube_op->bias_ = nullptr;
-  }
   if (cube_op->GetObjectType() == kGmmOp) {
     static_cast<GmmOp *>(cube_op)->group_list_ = nullptr;
   }
@@ -154,12 +174,14 @@ uint64_t MixKernel::UnAlignCodeGen() {
       pad_inputs[i] = inputs[i];
     }
   }
+  auto src_bias = cube_op_->bias_;
+  NDObject *bias = src_bias ? stage_kernel_->Load(nullptr, src_bias->shape_ref_, src_bias->type_id_) : nullptr;
   NDObject *matmul_op;
   if (cube_op_->GetObjectType() == kCubeOp) {
-    matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, cube_op_->bias_);
+    matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, bias);
   } else {
     matmul_op = stage_kernel_->GroupedMatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_,
-                                             cube_op_->bias_, static_cast<GmmOp *>(cube_op_)->group_list_,
+                                             bias, static_cast<GmmOp *>(cube_op_)->group_list_,
                                              static_cast<GmmOp *>(cube_op_)->group_type_);
   }
   static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
@@ -178,6 +200,9 @@ uint64_t MixKernel::UnAlignCodeGen() {
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
   src_lhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[0])->addr_);
   src_rhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[1])->addr_);
+  if (bias) {
+    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias)->addr_);
+  }
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
   }
@@ -194,6 +219,7 @@ uint64_t MixKernel::SplitKCodeGen() {
   std::vector<NDAccess *> split_lhs;
   std::vector<NDAccess *> split_rhs;
   std::vector<NDAccess *> split_out;
+  NDObject *bias_op = nullptr;
   for (size_t i = 0; i < split_num; i++) {
     size_t offset_a = i * k_stride;
     size_t offset_b = i * k_stride;
@@ -205,7 +231,9 @@ uint64_t MixKernel::SplitKCodeGen() {
     (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
     (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
     NDObject *matmul_op;
-    NDObject *bias_op = (i + 1 == split_num ? cube_op_->bias_ : nullptr);
+    if (i + 1 == split_num && cube_op_->bias_) {
+      bias_op = stage_kernel_->Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
+    }
     if (cube_op_->GetObjectType() == kCubeOp) {
       matmul_op = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op);
     } else {
@@ -240,6 +268,9 @@ uint64_t MixKernel::SplitKCodeGen() {
     code_.BindOpFast(split_lhs[i]->addr_, src_lhs->addr_);
     code_.BindOpFast(split_rhs[i]->addr_, src_rhs->addr_);
     code_.BindWorkspace(split_out[i]->addr_, stage_workspace_size);
+  }
+  if (bias_op) {
+    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_op)->addr_);
   }
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
@@ -416,6 +447,11 @@ uint64_t MixKernel::CodeGen() {
   } else {
     workspace_size = AlignCodeGen();
   }
+  if (!reloads_.empty()) {
+    for (auto &r : reloads_) {
+      code_.BindOpFast(r.first->addr_, r.second->addr_);
+    }
+  }
   Release();
   return workspace_size;
 }
@@ -471,17 +507,39 @@ uint64_t DynMixKernel::CodeGen() {
   } else {
     workspace_size = AlignCodeGen();
   }
+  if (!reloads_.empty()) {
+    for (auto &r : reloads_) {
+      code_.BindOpFast(r.first->addr_, r.second->addr_);
+    }
+  }
   Release();
   return workspace_size;
 }
 
 void DynMixKernel::Append(NDObject *obj) {
-  const uint32_t LOAD_PENDING = 1;
+  constexpr uint32_t LOAD_VEC_USED = 0;
+  constexpr uint32_t LOAD_PENDING = 1;
+  constexpr uint32_t LOAD_CUBE_USED = 2;
   if (obj->IsLoad()) {
     obj->xbuf_ = LOAD_PENDING;
   } else if (obj->IsCube()) {
     EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
     cube_op_ = static_cast<CubeOp *>(obj);
+    auto reload_check = [this](NDObject *&input) {
+      auto load = static_cast<NDAccess *>(input);
+      if (load->xbuf_ == LOAD_PENDING) {
+        load->xbuf_ = LOAD_CUBE_USED;
+      } else {
+        auto new_load = new NDLoad(nullptr, load->shape_ref_, load->type_id_);
+        reloads_.emplace_back(new_load, load);
+        input = new_load;
+      }
+    };
+    reload_check(cube_op_->lhs_);
+    reload_check(cube_op_->rhs_);
+    if (cube_op_->bias_) {
+      reload_check(cube_op_->bias_);
+    }
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
     cube_op_->output_ = static_cast<NDAccess *>(obj);
   } else {
@@ -496,8 +554,14 @@ void DynMixKernel::Append(NDObject *obj) {
           post_fusion_->Append(sload_);
         }
         op = sload_;
-      } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
-        op->xbuf_ = 0;
+      } else if (op->IsLoad() && op->xbuf_ != LOAD_VEC_USED) {
+        if (op->xbuf_ == LOAD_PENDING) {
+          op->xbuf_ = LOAD_VEC_USED;
+        } else { // LOAD_CUBE_USED
+          auto new_load = new NDLoad(nullptr, op->shape_ref_, op->type_id_);
+          reloads_.emplace_back(new_load, static_cast<NDAccess *>(op));
+          op = new_load;
+        }
         post_fusion_->Append(op);
       }
     };

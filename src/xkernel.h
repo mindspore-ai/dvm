@@ -48,6 +48,7 @@ class MixKernel : public VKernel {
   Kernel *stage_kernel_{nullptr};
   CubeTuner *tuner_;
   RelocAddr gm_pos_;
+  std::vector<std::pair<NDAccess *, NDAccess *>> reloads_;
 };
 
 class DynMixKernel : public MixKernel {

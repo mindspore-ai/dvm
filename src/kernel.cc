@@ -17,10 +17,132 @@
 #include <queue>
 #include <unordered_map>
 #include <climits>
+#include <memory>
 #include <securec.h>
 #include "kernel.h"
 
 namespace dvm {
+class IdleCleanWrap : public CodeWrap {
+ public:
+  ~IdleCleanWrap() override { Clear(); }
+
+  void CodeGen(const std::vector<NDObject *> &cleans) {
+    Clear();
+    for (auto op : cleans) {
+      auto store = static_cast<NDAccess *>(op);
+      auto k = new VKernelD();
+      auto type = store->type_id_;
+      auto dummy_load = new NDLoadDummy(type);
+      k->Append(dummy_load);
+      NDObject *broadcast;
+      if (ITEM_SIZE[type] == 4) {
+        broadcast = new BroadcastScalarOp<float>(0.0f, store->shape_ref_, type, dummy_load);
+      } else if (ITEM_SIZE[type] == 2) {
+        Float16 init(0);
+        broadcast = new BroadcastScalarOp<Float16>(init, store->shape_ref_, type, dummy_load);
+      } else {
+        DvmException("unsupport broadcast type");
+        broadcast = nullptr;
+      }
+      k->Append(broadcast);
+      auto out = new NDStore(store->addr_.gm, broadcast);
+      k->Append(out);
+      k->CodeGen();
+      auto &addr = store->addr_;
+      addr.Update(&addr.data);
+      k->code_.BindOpFast(out->addr_, addr);
+      kernels_.push_back(k);
+    }
+  }
+
+  void Clear() {
+    if (!kernels_.empty()) {
+      for (auto k : kernels_) {
+        delete k;
+      }
+      kernels_.clear();
+    }
+  }
+
+  int LaunchWrap(void *workspace, void *stream) override {
+    for (auto k : kernels_) {
+      k->code_.RelocBinds(nullptr);
+      k->code_.Launch(nullptr, stream);
+    }
+    return 0;
+  }
+
+  bool DasWrap(std::ostringstream &oss) override {
+    for (auto k : kernels_) {
+      k->code_.DisAssemble(oss);
+    }
+    oss << "\nvmain.idle() {}";
+    return false;
+  }
+
+ private:
+  std::vector<VKernelD *> kernels_;
+};
+
+class IdleCodeWrap : public CodeWrap {
+ public:
+  int LaunchWrap(void *workspace, void *stream) override { return 0; }
+  bool DasWrap(std::ostringstream &oss) override {
+    oss << "vmain.idle() {}";
+    return false;
+  }
+
+  IdleCleanWrap *Erase(VKernel *k) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto it = wraps_.find(k);
+    if (it != wraps_.end()) {
+      auto wrap = it->second;
+      wraps_.erase(it);
+      return wrap;
+    }
+    return nullptr;
+  }
+
+  IdleCleanWrap *Get(VKernel *k) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto it = wraps_.find(k);
+    if (it != wraps_.end()) {
+      return it->second;
+    } else {
+      auto wrap = new IdleCleanWrap();
+      wraps_[k] = wrap;
+      return wrap;
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  std::unordered_map<VKernel *, IdleCleanWrap *> wraps_;
+};
+
+static std::unique_ptr<IdleCodeWrap> g_idle_wrap;
+
+VKernel::~VKernel() {
+  if (g_idle_wrap) {
+    if (auto wrap = g_idle_wrap->Erase(this)) {
+      delete wrap;
+    }
+  }
+}
+
+void VKernel::UpdateIdle(const std::vector<NDObject *> &cleans) {
+  if (!g_idle_wrap) {
+    g_idle_wrap = std::make_unique<IdleCodeWrap>();
+  }
+  if (cleans.empty()) {
+    code_.InsertWrap(g_idle_wrap.get());
+  } else {
+    auto wrap = g_idle_wrap->Get(this);
+    wrap->CodeGen(cleans);
+    code_.InsertWrap(wrap);
+  }
+}
+
 class CodeGenHelper {
  public:
   struct EventManager {
@@ -1293,6 +1415,31 @@ NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
 uint64_t VectorKernel::CodeGen() {
   Optimize();
   return DoCodeGen(System::Instance().CoreNum());
+}
+
+void VectorKernel::CollectIdle(std::vector<NDObject *> &cleans) {
+  for (auto op : objects_) {
+    if (op->IsStore()) {
+      auto shape = op->shape_ref_->data;
+      auto size = op->shape_ref_->size;
+      bool zero = false;
+      for (size_t i = 0; i < size; ++i) {
+        if (auto dim = *shape++; dim == 0) {
+          zero = true;
+          break;
+        }
+      }
+      if (!zero) {
+        cleans.push_back(op);
+      }
+    }
+  }
+}
+
+void VectorKernel::ProcessIdle() {
+  std::vector<NDObject *> cleans;
+  CollectIdle(cleans);
+  UpdateIdle(cleans);
 }
 
 void VKernelS::Append(NDObject *obj) {

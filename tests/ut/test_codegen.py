@@ -88,3 +88,38 @@ def test_zero_shape():
     out = t.store(y)
     t.run()
     assert(out.shape() == (10, 0, 2))
+
+
+def test_zero_shape_clean():
+    t = Tester()
+    a = np.full([10, 0, 2], 0.01, np.float32)
+    x1 = t.load(a)
+    x2 = t.binary("Add", x1, 0.1)
+    x3 = t.reduce("sum", x2, (1,), True)
+    out = t.store_expect(x3, 0.0)
+    assert(t.run_check())
+    assert(out.shape() == (10, 1, 2))
+
+def test_zero_shape_dyn_shape():
+    t = Tester("dyn")
+    x1 = t.load([-1], "float32")
+    x2 = t.binary("Add", x1, 0.1)
+    x3 = t.reduce("sum", x2, (1,), True)
+    out = t.store(x3)
+
+    d1 = np.full([10, 0, 20], 0.01, np.float32)
+    t.input(x1, d1)
+    t.run()
+    assert(t.check(out, 0.0))
+    assert(out.shape() == (10, 1, 20))
+
+    d1 = np.full([0, 10, 20], 0.01, np.float32)
+    t.input(x1, d1)
+    t.run()
+    assert(out.shape() == (0, 1, 20))
+
+    d1 = np.full([10, 40, 20], 0.01, np.float32)
+    t.input(x1, d1)
+    t.run()
+    assert(t.check(out, (0.01 + 0.1) * 40))
+    assert(out.shape() == (10, 1, 20))

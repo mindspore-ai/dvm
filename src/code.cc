@@ -1165,20 +1165,6 @@ uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
   return workspace_size + offset;
 }
 
-class IdleCodeWrap : public CodeWrap {
- public:
-  int LaunchWrap(void *workspace, void *stream) override { return 0; }
-  bool DasWrap(std::ostringstream &oss) override {
-    oss << "vmain.idle() {}";
-    return false;
-  }
-};
-
-void Code::UpdateIdle() {
-  static IdleCodeWrap idle_wrap;
-  InsertWrap(&idle_wrap);
-}
-
 int Code::LaunchWrap(void *workspace, void *stream) { return DoLaunch(workspace, stream); }
 
 void Code::CombineWrap(Code *code, uint64_t ws_base) {}

@@ -158,8 +158,6 @@ class Code : public CodeWrap {
     UpdateHead(data, V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_VE);
   }
 
-  void UpdateIdle();
-
   static constexpr uint64_t HeadSize() { return sizeof(uint64_t) * 2; }  // ffts + entry
 
   uint64_t ReserveWorkspace(uint64_t workspace_size) {

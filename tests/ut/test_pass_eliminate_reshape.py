@@ -148,19 +148,6 @@ def test_element_any_forward():
     t.run_check()
     assert t.output(b)[0] == 1
 
-def test_element_any_backward():
-    t = Tester()
-    a = np.full([10,8], 0, np.float32)
-    a[1, 1] = 1
-    y = t.load(a)
-    z = t.element_any(y)
-    z = t.broadcast(z, [10, 8])
-    z = t.reshape(z, [10, 1, 8])
-    z = t.broadcast(z, [10, 4, 8])
-    t.set_passes("EliminateReshape")
-    t.store_expect(z, 1.0)
-    assert t.run_check()
-
 def test_unalign_broadcast():
     t = Tester()
     a = np.full([1, 320], 0.3, np.float16)

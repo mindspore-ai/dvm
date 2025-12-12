@@ -87,7 +87,7 @@ class RootDomain : public PropDomain {
 class VKernel {
  public:
   explicit VKernel(KernelType ktype) : ktype_(ktype) {}
-  virtual ~VKernel() {}
+  virtual ~VKernel();
 
   virtual void Append(NDObject *obj) = 0;
   virtual uint64_t CodeGen() = 0;
@@ -100,6 +100,8 @@ class VKernel {
   }
   virtual std::string &DisAssemble();
   KernelType KType() const { return ktype_; }
+
+  void UpdateIdle(const std::vector<NDObject *> &cleans);
 
   Code code_;
 
@@ -170,7 +172,7 @@ class VectorKernel : public VKernel {
     code_.Alloc(code_reserve + code_.HeadSize());
     root_dom_.PrepareTiling(this);
     if (unlikely(!root_dom_.TileSize())) {
-      code_.UpdateIdle();
+      ProcessIdle();
       return 0;
     }
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
@@ -186,6 +188,8 @@ class VectorKernel : public VKernel {
   }
 
   NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
+  void CollectIdle(std::vector<NDObject *> &cleans);
+  void ProcessIdle();
 
   template <typename T>
   T *GetVisitor() {

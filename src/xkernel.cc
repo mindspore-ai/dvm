@@ -902,7 +902,11 @@ class EagerVector : public VectorKernel {
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
     if (unlikely(!mm->m_align_ || !mm->n_align_ || !mm->k_align_)) {
-      code_.UpdateIdle();
+      static_ops_.clear();
+      if (mm->m_align_ && mm->n_align_) {
+        static_ops_.push_back(mm->output_);
+      }
+      UpdateIdle(static_ops_);
       return;
     }
     mm->CodeGen(body, System::Instance().lazy_tuner_);
@@ -918,7 +922,12 @@ class EagerVector : public VectorKernel {
     code_.Alloc(head_reserve + post_reserve);
     vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
     if (unlikely(!mm->m_align_ || !mm->n_align_ || !mm->k_align_)) {
-      code_.UpdateIdle();
+      static_ops_.clear();
+      if (mm->m_align_ && mm->n_align_) {
+        static_ops_.push_back(mm->output_);
+      }
+      CollectIdle(static_ops_);
+      UpdateIdle(static_ops_);
       return cube_code;
     }
     mm->CodeGen(cube_code, System::Instance().lazy_tuner_);
@@ -979,7 +988,12 @@ class EagerVector : public VectorKernel {
       }
     }
     if (unlikely(child_num == 0)) {
-      code_.UpdateIdle();
+      static_ops_.clear();
+      CollectIdle(static_ops_);
+      for (int i = 0; i < other_num; ++i) {
+        others[i]->CollectIdle(static_ops_);
+      }
+      UpdateIdle(static_ops_);
       return 0;
     }
     code_.Alloc(code_reserve);

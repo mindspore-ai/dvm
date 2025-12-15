@@ -26,7 +26,6 @@
 #include "comm.h"
 
 namespace dvm {
-std::mutex g_rt_kernel_launch_mutex;
 namespace {
 static const BinarySOpType binary_map[kBinaryOpEnd] = {
   kEquals, kNotEquals,    kGreaters,     kGreaterEquals, kLesss,    kLessEquals,   kAdds,         kBinarySOpEnd,
@@ -711,6 +710,18 @@ int Kernel::Launch(void *workspace, void *stream) {
   return code.Launch(workspace, stream);
 }
 
+class MsprofLaunchGuard : public CodeLaunchGuard {
+ public:
+  MsprofLaunchGuard(Code &code, MsProfHelper *helper) : CodeLaunchGuard(code), helper_(helper) {}
+  int CodeLaunch(Code *code, void *workspace, void *stream) {
+    helper_->Update(code->target_);
+    int ret = code->DoLaunch(workspace, stream);
+    helper_->ReportTask();
+    return ret;
+  }
+  MsProfHelper *helper_;
+};
+
 int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
                          void **outputs, void *workspace, void *stream) {
   if (msprof_helper_ == nullptr) {
@@ -737,16 +748,7 @@ int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const Rel
   } else if (kernel_->KType() == kDynShape) {
     msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
   }
-  std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
-  ScopedValueGuard<LaunchFunc> guard(
-    System::Instance().rt_kernel_launch_,
-    [real_rt_launch = System::Instance().rt_kernel_launch_, this](const void *stub, auto &&...rest_args) {
-      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&System::Instance());
-      msprof_helper_->Update(target);
-      auto ret = real_rt_launch(stub, std::forward<decltype(rest_args)>(rest_args)...);
-      msprof_helper_->ReportTask();
-      return ret;
-    });
+  MsprofLaunchGuard guard(kernel_->code_, msprof_helper_);
   return Launch(reloc_table, inputs, outputs, workspace, stream);
 }
 

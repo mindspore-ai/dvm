@@ -110,14 +110,7 @@ class System {
   CubeTuner *lazy_tuner_{nullptr};
 
   // runtime api
-  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
-  rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                           rtStream_t stm) const {
-    return rt_kernel_launch_(stubFunc, blockDim, args, argsSize, nullptr, stm);
-  }
-  rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
-
-  LaunchFunc rt_kernel_launch_;
+  void *func_handles_[3];
 
  private:
   System();
@@ -131,9 +124,7 @@ class System {
   uint64_t vector_core_num_;
   uint64_t cube_core_num_;
   SocType soc_name_{kSocUnknow};
-
-  void *rt_handle_;
-  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
+  void *renamed_bin_{nullptr};
 };
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;

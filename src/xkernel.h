@@ -65,6 +65,7 @@ class StageCodeWrap : public CodeWrap {
   explicit StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
   int LaunchWrap(void *workspace, void *stream) override;
   bool DasWrap(std::ostringstream &oss) override;
+  void CollectWrap(std::vector<Code *> &codes) override;
 
  private:
   StagesKernel *kernel_;

@@ -1044,6 +1044,7 @@ void CodeWrap::CombineWrap(Code *to, uint64_t ws_base) {
 }
 
 bool CodeWrap::DasWrap(std::ostringstream &oss) { return next_->DasWrap(oss); }
+void CodeWrap::CollectWrap(std::vector<Code *> &codes) { return next_->CollectWrap(codes); }
 
 Code::~Code() {
   if (data_) {
@@ -1150,8 +1151,8 @@ int Code::LaunchEx(void *workspace, void *stream) {
   auto ret = aclrtMemcpyAsync(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(data_) + 1)};
-  auto stub_func = System::Instance().StubFunc(target_);
-  return System::Instance().rtKernelLaunch(stub_func, block_dim_, args, sizeof(args), stream);
+  auto func_handle = System::Instance().func_handles_[target_];
+  return aclrtLaunchKernelWithHostArgs(func_handle, block_dim_, stream, nullptr, args, sizeof(args), nullptr, 0);
 #endif
 }
 
@@ -1169,5 +1170,41 @@ int Code::LaunchWrap(void *workspace, void *stream) { return DoLaunch(workspace,
 
 void Code::CombineWrap(Code *code, uint64_t ws_base) {}
 bool Code::DasWrap(std::ostringstream &oss) { return true; }
+void Code::CollectWrap(std::vector<Code *> &codes) { codes.push_back(this); }
 
+CodeLaunchGuard::CodeLaunchGuard(Code &root) {
+  root.Collect(codes_);
+  for (auto code : codes_) {
+    if (code->wrap_ == nullptr) {
+      code->wrap_ = this;
+    } else {
+      for (auto prev = code->wrap_; prev; prev = prev->next_) {
+        if (prev->next_ == code) {
+          prev->next_ = this;
+          break;
+        }
+      }
+    }
+  }
+}
+
+CodeLaunchGuard::~CodeLaunchGuard() {
+  for (auto code : codes_) {
+    if (code->wrap_ == this) {
+      code->wrap_ = nullptr;
+    } else {
+      for (auto prev = code->wrap_; prev; prev = prev->next_) {
+        if (prev->next_ == this) {
+          prev->next_ = code;
+          break;
+        }
+      }
+    }
+  }
+}
+
+int CodeLaunchGuard::LaunchWrap(void *workspace, void *stream) {
+  ASSERT(launch_idx_ < codes_.size());
+  return CodeLaunch(codes_[launch_idx_++], workspace, stream);
+}
 }  // namespace dvm

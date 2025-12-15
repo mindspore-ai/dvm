@@ -19,9 +19,7 @@
 
 #include <vector>
 #include <dvm.h>
-#include "experiment/msprof/toolchain/prof_api.h"
-#include "experiment/msprof/toolchain/prof_common.h"
-#include "experiment/msprof/toolchain/prof_data_config.h"
+#include "profiling/prof_api.h"
 
 namespace dvm {
 struct TensorInfoWrapper {
@@ -126,18 +124,6 @@ struct NodeInfo {
   uint32_t block_dim;
   std::vector<ShapeRef *> shapes;
   std::vector<TensorDtypeMs> data_types;
-};
-
-template <typename T>
-class ScopedValueGuard {
- public:
-  ScopedValueGuard(T &target, T new_value) : target_(target), old_value_(target) { target_ = std::move(new_value); }
-
-  ~ScopedValueGuard() { target_ = std::move(old_value_); }
-
- private:
-  T &target_;
-  T old_value_;
 };
 
 class MsProfHelper {

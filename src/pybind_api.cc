@@ -557,11 +557,22 @@ void KernelPy::Run() {
 }
 
 void DryRunEntry(uint64_t core_idx, bool is_cube);
-void DryRunExit();
+void DryLaunch(Code *code, void *workspace, void *stream);
+
+class DryRunGuard : public CodeLaunchGuard {
+ public:
+  DryRunGuard(Code &code, uint64_t core_idx, bool is_cube) : CodeLaunchGuard(code) {
+    DryRunEntry(core_idx, is_cube);
+  }
+  int CodeLaunch(Code *code, void *workspace, void *stream) override {
+    DryLaunch(code, workspace, stream);
+    return 0;
+  }
+};
+
 void KernelPy::DryRun(int core_idx, bool cube_core) {
-  DryRunEntry(core_idx, cube_core);
+  DryRunGuard guard(kernel_.GetImpl()->code_, core_idx, cube_core);
   Run();
-  DryRunExit();
 }
 
 py::object KernelPy::Perf() {
@@ -581,8 +592,8 @@ py::object KernelPy::Perf() {
   float max_us = 0.0f;
   float total_us = 0.0f;
   aclrtEvent start, end;
-  ASCEND_CALL(aclrtCreateEvent(&start));
-  ASCEND_CALL(aclrtCreateEvent(&end));
+  ASCEND_CALL(aclrtCreateEventExWithFlag(&start, ACL_EVENT_TIME_LINE));
+  ASCEND_CALL(aclrtCreateEventExWithFlag(&end, ACL_EVENT_TIME_LINE));
   for (int i = 0; i < TEST_NUM; i++) {
     for (auto &s : stores_) {
       auto info = s.second;

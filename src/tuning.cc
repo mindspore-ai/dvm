@@ -174,8 +174,8 @@ void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
   float max_us = 0.0f;
   float total_us = 0.0f;
   aclrtEvent start, end;
-  ASCEND_CALL(aclrtCreateEvent(&start));
-  ASCEND_CALL(aclrtCreateEvent(&end));
+  ASCEND_CALL(aclrtCreateEventExWithFlag(&start, ACL_EVENT_TIME_LINE));
+  ASCEND_CALL(aclrtCreateEventExWithFlag(&end, ACL_EVENT_TIME_LINE));
   uint32_t test_num = 10;
   for (uint32_t i = 0; i < test_num; i++) {
     ASCEND_CALL(aclrtRecordEvent(start, nullptr));
@@ -277,8 +277,8 @@ int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
     return code.Launch(nullptr, stream);
   }
   aclrtEvent start, end;
-  auto err1 = aclrtCreateEvent(&start);
-  auto err2 = aclrtCreateEvent(&end);
+  auto err1 = aclrtCreateEventExWithFlag(&start, ACL_EVENT_TIME_LINE);
+  auto err2 = aclrtCreateEventExWithFlag(&end, ACL_EVENT_TIME_LINE);
   if (err1 || err2) return -1;
   auto err3 = aclrtRecordEvent(start, stream);
   auto err4 = code.Launch(nullptr, stream);

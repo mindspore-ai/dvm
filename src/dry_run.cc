@@ -16,7 +16,7 @@
 #include <unordered_map>
 #include <securec.h>
 #include "isa.h"
-#include "system.h"
+#include "code.h"
 
 extern const uint64_t g_visit_func_offset[];
 
@@ -225,9 +225,10 @@ struct FuncRegister {
 #include "vm_aic.cce"
 } // end namespace
 
-rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm) {
+void DryLaunch(Code *code, void *workspace, void *stream) {
+  size_t size = code->data_size_;
   g_bytecode = std::malloc(size);
-  memcpy_s(g_bytecode, size, args, size);
+  memcpy_s(g_bytecode, size, code->data_, size);
   uint64_t ffts_addr = *(reinterpret_cast<uint64_t*>(g_bytecode));
   uint64_t entry = *(reinterpret_cast<uint64_t*>(g_bytecode) + 1);
   if (!g_cube_core) {
@@ -244,13 +245,10 @@ rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size,
     vmain_mix_aic(ffts_addr, entry);
   }
   std::free(g_bytecode);
-  return 0;
 }
 
 void DryRunEntry(uint64_t core_idx, bool is_cube) {
   auto &sys = System::Instance();
-  g_origin_launch = sys.rt_kernel_launch_;
-  sys.rt_kernel_launch_ = DryLaunch;
   g_cube_core = is_cube;
   if (is_cube) {
     block_idx = core_idx;
@@ -260,10 +258,5 @@ void DryRunEntry(uint64_t core_idx, bool is_cube) {
     g_subblockid = core_idx & 1;
     block_num = sys.CoreNum(CoreType::kVector) / 2;
   }
-}
-
-void DryRunExit() {
-  auto &sys = System::Instance();
-  sys.rt_kernel_launch_ = g_origin_launch;
 }
 }  // namespace dvm

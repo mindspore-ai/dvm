@@ -593,6 +593,12 @@ bool StageCodeWrap::DasWrap(std::ostringstream &oss) {
   return false;
 }
 
+void StageCodeWrap::CollectWrap(std::vector<Code *> &codes) {
+  for (auto s : kernel_->stages_) {
+    s->kernel->code_.Collect(codes);
+  }
+}
+
 StagesKernel::~StagesKernel() {
   for (auto s : stages_) {
     delete s->kernel;

@@ -80,6 +80,12 @@ class IdleCleanWrap : public CodeWrap {
     return false;
   }
 
+  void CollectWrap(std::vector<Code *> &codes) override {
+    for (auto k : kernels_) {
+      k->code_.Collect(codes);
+    }
+  }
+
  private:
   std::vector<VKernelD *> kernels_;
 };

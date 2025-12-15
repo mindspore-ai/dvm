@@ -392,6 +392,11 @@ class AtomicCleanWrap : public CodeWrap {
     return ret;
   }
 
+  void CollectWrap(std::vector<Code *> &codes) override {
+    kernel_.code_.Collect(codes);
+    next_->CollectWrap(codes);
+  }
+
  private:
   VKernelD kernel_;
   NDStore *store_;

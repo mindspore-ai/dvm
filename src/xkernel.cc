@@ -1402,14 +1402,16 @@ uint64_t VKernelE::CodeGen() {
     AppendOps(kernel, area->objects_);
     if (area->dom_->obj_id_ == ObjectType::kCubeOp) {
       auto mm = static_cast<CubeOp *>(area->dom_);
-      if (auto io = static_cast<NDAccess *>(mm->lhs_); io->addr_.gm == nullptr) {
-        io->addr_.gm = AllocWS(GetStore(io));
-      }
-      if (auto io = static_cast<NDAccess *>(mm->rhs_); io->addr_.gm == nullptr) {
-        io->addr_.gm = AllocWS(GetStore(io));
-      }
-      if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->addr_.gm == nullptr) {
-        io->addr_.gm = AllocWS(GetStore(io));
+      auto cube_gen = [this](NDObject *in) {
+        if (auto io = static_cast<NDAccess *>(in); io->addr_.gm == nullptr) {
+          auto store = GetStore(io);
+          io->addr_.gm = store->addr_.gm ? store->addr_.gm : AllocWS(store);
+        }
+      };
+      cube_gen(mm->lhs_);
+      cube_gen(mm->rhs_);
+      if (mm->bias_) {
+        cube_gen(mm->bias_);
       }
       if (kernel->objects_.empty()) {
         kernel->CodeGenCube(mm);

@@ -404,6 +404,22 @@ def test_eager_cv_1():
     assert(t.run_check())
 
 @pytest.mark.mix
+def test_eager_cv_2():
+    ''' {area1, area2} -> matmul '''
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [256, 512]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [512, 256]).astype(np.float16)
+    x0 = t.load(a)
+    x0 = t.binary("Mul", x0, 1.2)
+    x1 = t.load(b)
+    x1 = t.binary("Mul", x1, 0.8)
+    t.store_expect(x1, b * 0.8)
+    x2 = t.matmul(x0, x1, False, False)
+    expect_x2 = np.matmul(a.astype(np.float32) * 1.2, b.astype(np.float32) * 0.8).astype(np.float16)
+    t.store_expect(x2, expect_x2)
+    assert (t.run_check())
+
+@pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b, shape_broadcast', [
     [[1024, 512], [512, 1024], [1, 1024]],
     [[512, 512], [512, 1024], [512, 1]],

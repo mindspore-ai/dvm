@@ -509,12 +509,17 @@ uint64_t NDLoad::Emit(VectorKernel &k) {
   op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
   op.body_iter = ndd_.stride_back() / lead_align;
   op.iter_size = lead_dim * ITEM_SIZE[type_id_];
+  op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   if (op.body_iter == 1) {
     op.tail_iter = tail_dim_ < 0 ? op.iter_size : tail_size_ * ITEM_SIZE[type_id_];
   } else {
     op.tail_iter = tail_dim_ < 0 ? op.body_iter : op.body_iter / ndd_[tail_dim_] * tail_size_;
+    if (op.pad_size == 0) {
+      op.tail_iter *= op.iter_size;
+      op.iter_size *= op.body_iter;
+      op.body_iter = 1;
+    }
   }
-  op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = round_tile_.size();
   addr_.Update(insn_ + vLoad::RELOC_OFFSET);
   return vLoad::Encode(insn_, vAccInsnID::V_LOAD, op, rounds);
@@ -865,25 +870,18 @@ uint64_t NDStore::Emit(VectorKernel &k) {
   }
   vStore op;
   uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
-  uint64_t pad_size = lead_align * ITEM_SIZE[type_id_] - iter_size;
+  uint64_t pad_size = lhs_->obj_id_ == ObjectType::kRemovePad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
   uint64_t body_iter = nd_.stride_back() / lead_align;
   uint64_t tail_iter;
-  if (lhs_->obj_id_ == ObjectType::kRemovePad) {
-    if (tail_dim_ < 0) {
-      iter_size *= body_iter;
-      tail_iter = iter_size;
-    } else if (body_iter == 1) {
-      tail_iter = tail_size_ * ITEM_SIZE[type_id_];
-    } else {
-      tail_iter = body_iter / nd_[tail_dim_] * tail_size_ * iter_size;
-      iter_size *= body_iter;
-    }
-    body_iter = 1;
-    pad_size = 0;
-  } else if (body_iter == 1) {
+  if (body_iter == 1) {
     tail_iter = tail_dim_ < 0 ? iter_size : tail_size_ * ITEM_SIZE[type_id_];
   } else {
     tail_iter = tail_dim_ < 0 ? body_iter : body_iter / nd_[tail_dim_] * tail_size_;
+    if (pad_size == 0) {
+      tail_iter *= iter_size;
+      iter_size *= body_iter;
+      body_iter = 1;
+    }
   }
   op.xn = lhs_->xbuf_;
   op.to = addr_.data;

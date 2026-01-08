@@ -13,10 +13,10 @@ DVM当前支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构。
 2. make
 3. python test_xxx.py
 
-#### Profiling编译
+#### 仿真模拟
 1. source env.sh 910B1
-2. cd tests/profiling
-3. bash build.sh test_xxx.cc
+2. make
+3. msprof op simulator --application="python test_xxx" --output=./profiling
 
 
 #### 贡献

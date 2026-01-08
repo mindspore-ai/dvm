@@ -1516,10 +1516,19 @@ _SpecVector::~_SpecVector() {
 
 void _SpecVector::Append(NDObject *obj) {
   VKernelS::Append(obj);
-  stage_ids_.push_back(last_stage_);
+  obj->index_ = stage_ids_.size();
+  int sid;
+  if (obj->IsStore()) {
+    sid = stage_ids_[obj->lhs_->index_];
+  } else {
+    sid = obj->IsLoad() ? -1 : last_stage_;
+  }
+  stage_ids_.push_back(sid);
   obj->ForInput([this](NDObject *in) {
     if (in->obj_id_ == ObjectType::kReduce) {
       post_reduces_.push_back(in);
+    } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
+      stage_ids_[in->index_] = last_stage_;
     }
   });
 }
@@ -1620,6 +1629,8 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
     _CloneHelper  helper;
     helper.clones_.reserve(stage_ids_.size());
     for (size_t i = 0; i < stage_ids_.size(); ++i) {
+      auto out_sid = stage_ids_[i];
+      if (out_sid == -1) continue; // load only
       auto src_op = build_ops_[i];
       src_op->index_ = i;
       auto clone_op = src_op->Clone(helper);
@@ -1629,7 +1640,6 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       if (!clone_op->IsSimd()) {
         stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
       }
-      auto out_sid = stage_ids_[i];
       clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
         auto in_sid = stage_ids_[in->index_];
         if (in_sid == out_sid) {

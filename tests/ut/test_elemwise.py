@@ -359,7 +359,7 @@ def test_binarys_bf16(op, func):
 @pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
                                       (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
 def test_binary_scalar_ref(op, func):
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     s = t.make_int()
     a = op(t, x, s)
@@ -376,7 +376,7 @@ def test_binary_scalar_ref(op, func):
 @pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
                                       (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
 def test_binary_float_scalar_ref(op, func):
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     s = t.make_float()
     a = op(t, x, s)

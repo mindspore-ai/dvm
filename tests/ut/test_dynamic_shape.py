@@ -21,7 +21,7 @@ from tests.mark_utils import arg_mark
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_reshape():
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     y = t.load([-1], "float32")
     ref = ShapeRef()
@@ -43,7 +43,7 @@ def test_reshape():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_implicit_broadcast():
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     y = t.load([-1], "float32")
     a = t.add(x, 0.15)
@@ -65,7 +65,7 @@ def test_implicit_broadcast():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_reduce():
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     dims = ShapeRef()
     a = t.sum(x, dims, True)
@@ -81,7 +81,7 @@ def test_reduce():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_reduce_round_tile():
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1, 2, 4, 3000], "float32")
     a = t.sum(x, [0, 2], True)
     out = t.store(a)
@@ -95,7 +95,7 @@ def test_reduce_round_tile():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_reduce_stuff():
-    t = Tester("vec:dyn")
+    t = Tester("vector:dyn")
     a = t.load([3, 1280, -1, -1], "float32")
     x1 = t.cast(a, "float16")
     x2 = t.add(x1, 0.1)
@@ -112,7 +112,7 @@ def test_reduce_stuff():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_broadcast():
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     shape = ShapeRef()
     a = t.broadcast(x, shape)
@@ -131,7 +131,7 @@ def test_broadcast():
 # llava dynamic shape inference
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_atomic_reduce():
-    t = Tester('vec:dyn')
+    t = Tester('vector:dyn')
     para0 = t.load([-1], "float16")
     para1 = t.load([-1], "float16")
     y0 = t.add(para0, para1)

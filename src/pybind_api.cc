@@ -431,11 +431,16 @@ KernelPy::KernelPy(const std::string &ker_type, const std::string &run_type, int
       flags |= KernelFlag::kUnifyWS;
     } else if (flag_name == "spec") {
       flags |= KernelFlag::kSpeculate;
+    } else {
+      DvmException("kernel flag error");
     }
     pos = end;
   }
   auto it = kernel_type_map.find(type_name);
-  auto type = it != kernel_type_map.end() ? it->second : KernelType::kVector;
+  if (it == kernel_type_map.end()) {
+    DvmException("kernel type error");
+  }
+  auto type = it->second;
   runner_ = RunnerManager::Instance().Get(run_type, dev_id);
   kernel_.Reset(type, flags);
 }

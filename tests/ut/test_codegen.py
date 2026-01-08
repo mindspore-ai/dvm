@@ -114,7 +114,7 @@ def test_zero_shape_clean():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_zero_shape_dyn_shape():
-    t = Tester("vec:dyn")
+    t = Tester("vector:dyn")
     x1 = t.load([-1], "float32")
     x2 = t.add(x1, 0.1)
     x3 = t.sum(x2, (1,), True)

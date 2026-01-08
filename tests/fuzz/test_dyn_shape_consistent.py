@@ -113,14 +113,14 @@ def fuzz_consistent(suite_cls):
     test_num = len(suite.case_list)
     expects = [None] * test_num
     for tidx in range(test_num):
-        t = Tester('vec:dyn', run_mode = 'das')
+        t = Tester('vector:dyn', run_mode = 'das')
         suite.construct(t)
         suite.update(t, suite.case_list[tidx])
         t.run()
         expects[tidx] = t.das()
         t.reset()
     iter_num = test_num * 50
-    tester = Tester('vec:dyn', run_mode = 'das')
+    tester = Tester('vector:dyn', run_mode = 'das')
     suite.construct(tester)
     for i in range(iter_num):
         if i % 1000 == 0:

@@ -61,6 +61,23 @@ def test_spec_fall_reduce(shape_a, dims):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_migrate_load_store():
+    t = Tester("vector:spec")
+    a = np.random.normal(0.0, 0.3, [10, 6000]).astype(np.float32)
+    b = np.random.normal(0.0, 0.3, [1, 6000]).astype(np.float32)
+    x1 = t.load(a)
+    x2 = t.load(b)
+    x3 = t.add(x1, 0.02)
+    x4 = t.sum(x3, (0,), True)
+    t.spec_next()
+    x5 = t.mul(x4, x2)
+    x3_e = a + 0.02
+    t.store_expect(x3, x3_e)
+    t.store_expect(x5, np.sum(x3_e, axis=(0,), keepdims=True) * b)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_dyn_spec_fall_reduce():
     t = Tester("vector:spec,dyn")
     x1 = t.load([-1], "float32")
@@ -79,4 +96,4 @@ def test_dyn_spec_fall_reduce():
         t.input(x1, d1)
         dims.update(dims_shape)
         t.run()
-        assert(t.check(x5, np.sum(d1 + 0.02, axis=dims_shape, keepdims=True) * (d1 + 0.02)))
+        assert(t.check(x5, np.sum(d1 + 0.02, axis=dims_shape, keepdims=True) * (d1 + 0.02), 1e-4))

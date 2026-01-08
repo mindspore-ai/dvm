@@ -13,12 +13,10 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <cstring>
 #include <unordered_map>
+#include <securec.h>
 #include "isa.h"
 #include "system.h"
-
-extern const uint64_t g_visit_func_offset[];
 
 namespace dvm {
 /************* cce definition ***************/
@@ -99,14 +97,16 @@ void wait_flag(int, int, int) {}
 #define set_cmpmask CCE_CALL(set_cmpmask)
 #define dcci CCE_CALL(dcci)
 #define set_atomic_f32 CCE_CALL(set_atomic_f32)
+#define set_atomic_f16 CCE_CALL(set_atomic_f16)
 #define set_atomic_add CCE_CALL(set_atomic_add)
+#define set_atomic_max CCE_CALL(set_atomic_max)
+#define set_atomic_min CCE_CALL(set_atomic_min)
 #define trap CCE_CALL(trap)
 #define set_deqscale CCE_CALL(set_deqscale)
 #define set_ffts_base_addr CCE_CALL(set_ffts_base_addr)
 #define ffts_cross_core_sync CCE_CALL(ffts_cross_core_sync)
 #define wait_flag_dev CCE_CALL(wait_flag_dev)
 
-#define copy_gm_to_ubuf CCE_CALL(copy_gm_to_ubuf)
 #define copy_ubuf_to_ubuf CCE_CALL(copy_ubuf_to_ubuf)
 #define copy_ubuf_to_gm CCE_CALL(copy_ubuf_to_gm)
 #define copy_ubuf_to_gm_align_b8 CCE_CALL(copy_ubuf_to_gm_align_b8)
@@ -128,6 +128,7 @@ void wait_flag(int, int, int) {}
 #define vreducev2 CCE_CALL(vreducev2)
 #define vcadd CCE_CALL(vcadd)
 #define vcmax CCE_CALL(vcmax)
+#define vcmin CCE_CALL(vcmin)
 #define vector_dup CCE_CALL(vector_dup)
 #define vsel CCE_CALL(vsel)
 #define vcmpvs_ne CCE_CALL(vcmpvs_ne)
@@ -176,6 +177,8 @@ void wait_flag(int, int, int) {}
 #define load_cbuf_to_ca CCE_CALL(load_cbuf_to_ca)
 #define load_cbuf_to_cb CCE_CALL(load_cbuf_to_cb)
 #define mad CCE_CALL(mad)
+#define create_ca_matrix CCE_CALL(create_ca_matrix)
+#define create_cb_matrix CCE_CALL(create_ca_matrix)
 
 /************* vm code stub ***************/
 #define __VM_DRY_RUN__
@@ -185,11 +188,10 @@ void wait_flag(int, int, int) {}
 #define __ca__
 #define __cb__
 #define __cc__
-#define __noinline__
 #define half int16_t
 #define bfloat16_t int32_t
 #define VMAIN_OFFSET  0
-#define VA_BCODE_BASE_UB  g_bytecode_ub
+#define VA_BCODE_BASE_UB  (g_ubuf_mem + PC_BASE)
 #define get_pc()  VMAIN_OFFSET
 #define min(x,y) (x > y ? y : x)
 #define max(x,y) (x < y ? y : x)
@@ -198,70 +200,90 @@ namespace {
 uint64_t block_idx{0};
 uint64_t block_num{0};
 uint64_t g_subblockid{0};
+uint64_t g_subblocknum{1};
 bool g_cube_core{false};
 void *g_bytecode{nullptr};
-void *g_bytecode_ub{nullptr};
+uint8_t *g_ubuf_mem{nullptr};
 LaunchFunc g_origin_launch;
-std::unordered_map<uint8_t *, std::pair<const char *, uint8_t *>> g_functable;
 
-uint64_t get_subblockdim() { return 2; }
+struct FuncEntry {
+  const uint64_t **offsets;
+  int idx;
+  const char *name;
+  void *func;
+};
+std::vector<FuncEntry> g_functable;
+
+uint64_t get_subblockdim() { return g_subblocknum; }
 uint64_t get_subblockid() { return g_subblockid; }
 void *get_para_base() { return g_bytecode; }
 uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
-  auto &func = g_functable[base_addr + id];
-  std::cout << "[" << func.first << "]" << std::endl;
-  return func.second;
+  for (auto &e: g_functable) {
+    if ((*e.offsets)[e.idx] == reinterpret_cast<uint64_t>(base_addr + id)) {
+      std::cout << "[" << e.name << "]" << std::endl;
+      return static_cast<uint8_t *>(e.func);
+    }
+  }
+  std::cout << "GetFunc failed!" << std::endl;
+  return nullptr;
 }
 
+uint64_t get_imm(uint64_t imm) { return reinterpret_cast<uint64_t>(g_ubuf_mem) + imm; }
+void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_t lenBurst, uint16_t srcStride, uint16_t dstStride);
+
 struct FuncRegister {
-  FuncRegister(const uint64_t offsets[], int op_id, const char *name, void *func) {
-    g_functable.emplace(reinterpret_cast<uint8_t *>(offsets[op_id]), std::make_pair(name, reinterpret_cast<uint8_t *>(func)));
+  FuncRegister(const uint64_t **offsets, int op_id, const char *name, void *func) {
+    g_functable.emplace_back(FuncEntry{offsets, op_id, name, func});
   }
 };
-#define DEF_DRY_FUNC(offsets, OP, func) FuncRegister g_dryfunc_##OP(offsets, OP, #OP, (void *)(&func));
+#define DEF_DRY_FUNC(offsets, OP, func) FuncRegister g_dryfunc_##OP(&dvm::g_system.offsets##_, OP, #OP, (void *)(&func));
 
 #include "vm_aiv.cce"
 #include "vm_aic.cce"
+
+void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_t lenBurst, uint16_t srcStride, uint16_t dstStride) {
+  if (dst == reinterpret_cast<void *>(PC_BASE)) {
+    uint64_t size = nBurst * lenBurst * 32;
+    memcpy_s(g_ubuf_mem + PC_BASE, size, src, size);
+  }
+  std::cout << "copy_gm_to_ubuf(" << dst << ", " << src << ", " << sid << ", " << nBurst << ", " << lenBurst << ", "
+            << srcStride << ", " << dstStride << ")" << std::endl;
+}
 } // end namespace
 
 rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm) {
   g_bytecode = std::malloc(size);
-  std::memcpy(g_bytecode, args, size);
+  memcpy_s(g_bytecode, size, args, size);
   uint64_t ffts_addr = *(reinterpret_cast<uint64_t*>(g_bytecode));
   uint64_t entry = *(reinterpret_cast<uint64_t*>(g_bytecode) + 1);
+  block_num = block;
   if (!g_cube_core) {
-    g_bytecode_ub = std::malloc(size);
-    uint64_t head_size = sizeof(uint64_t) * 2;
-    if (entry & V_ENTRY_FLAG_CUBE_MIX) {
-      head_size += sizeof(vCubeOp);
-    }
-    std::memcpy(g_bytecode_ub, static_cast<uint8_t *>(g_bytecode) + head_size, size - head_size);
-    vmain_mix_aiv(ffts_addr, entry);
-    std::free(g_bytecode_ub);
+    g_ubuf_mem = reinterpret_cast<uint8_t *>(std::malloc(size + PC_BASE));
+    dvm_mix_aiv(ffts_addr, entry);
+    std::free(g_ubuf_mem);
   } else {
-    vmain_mix_aic(ffts_addr, entry);
+    dvm_mix_aic(ffts_addr, entry);
   }
   std::free(g_bytecode);
   return 0;
 }
 
-void DryRunEntry(uint64_t core_idx, bool is_cube) {
-  auto &sys = System::Instance();
+void DryRunEntry(uint64_t core_idx, bool is_cube, int target) {
+  auto &sys = g_system;
   g_origin_launch = sys.rt_kernel_launch_;
   sys.rt_kernel_launch_ = DryLaunch;
   g_cube_core = is_cube;
+  g_subblocknum = target > 0 ? 2 : 1;
   if (is_cube) {
     block_idx = core_idx;
-    block_num = sys.CoreNum(CoreType::kCube);
   } else {
-    block_idx = core_idx / 2;
+    block_idx = core_idx / g_subblocknum;
     g_subblockid = core_idx & 1;
-    block_num = sys.CoreNum(CoreType::kVector) / 2;
   }
 }
 
 void DryRunExit() {
-  auto &sys = System::Instance();
+  auto &sys = g_system;
   sys.rt_kernel_launch_ = g_origin_launch;
 }
 }  // namespace dvm

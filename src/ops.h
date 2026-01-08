@@ -30,7 +30,7 @@ enum ObjectType {
   // Load
   kLoadDummy = 0,
   kMultiLoad,
-  kSliceLoad,
+  kViewLoad,
   kLoad,
 
   // Store
@@ -82,8 +82,8 @@ struct PropRange {
   };
   int base;
   int depth;
-  int affine{ELEMWISE};
-  int simd_dim{-1};
+  int affine;
+  int simd_dim;
   int64_t space;
 };
 
@@ -92,6 +92,7 @@ class DimArray;
 struct ShardParam {
   enum { PARTIAL_SIZE = 2 };
   int base;
+  bool sink;
   const DimArray *dom;
   uint64_t tile[PARTIAL_SIZE];
   uint64_t tail[PARTIAL_SIZE];
@@ -135,8 +136,10 @@ class DimArray {
   enum { kMaxDimSize = 10 };
   DimArray() : size_(0) {}
   DimArray &operator=(const DimArray &other) {
-    size_ = other.size();
-    if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    if (this != &other) {
+      size_ = other.size();
+      if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    }
     return *this;
   }
   DimArray &operator=(const std::vector<int64_t> &other) {
@@ -216,7 +219,7 @@ class NDSpaceData {
   NDSpaceData() = default;
   ~NDSpaceData() = default;
 
-  void UpdateStride(const DimArray &dims, uint64_t simd_width) {
+  void UpdateStride(uint64_t simd_width) {
     strides.resize(dims.size());
     size_t i = 0;
     while (i < dims.size() - 1 && dims[i] == 1) {
@@ -256,7 +259,9 @@ class NDSpace {
   ~NDSpace() = default;
 
   NDSpace &operator=(const NDSpace &other) {
-    data = other.data;
+    if (this != &other) {
+      data = other.data;
+    }
     return *this;
   }
   template <typename T>
@@ -321,35 +326,7 @@ class MemPool {
 };
 
 using scode_t = uint32_t;
-void DumpScalarCode(std::ostringstream &oss, scode_t code, DType type);
-
-class VectorKernel;
-
-// dynamic flags
-#define OBJ_FLAG_FREE_LHS 1
-#define OBJ_FLAG_FREE_RHS 2
-#define OBJ_FLAG_REUSE_LHS 4
-#define OBJ_FLAG_REUSE_RHS 8
-#define OBJ_FLAG_DEAD 16
-
-#define OBJ_FLAG_FLEX_RREE_XHS (1u << 14)
-#define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
-#define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 14)
-#define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 15)
-#define OBJ_FLAG_LOAD_SHARD_ROUND (1u << 16)
-#define OBJ_FLAG_STORE_SHARD_BCAST0 (1u << 14)
-#define OBJ_FLAG_STORE_SHARD_BCAST1 (1u << 15)
-#define OBJ_FLAG_STORE_SHARD_ROUND (1u << 16)
-
-// static flags
-#define OBJ_FLAG_WORKSPACE (1u << 16)
-#define OBJ_FLAG_XHS (2u << 16)
-#define OBJ_FLAG_EAGER (8u << 16)
-#define OBJ_FLAG_STAGE_IO (16u << 16)
-
-#define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
-#define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
-#define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
+void DumpScalarCode(std::ostringstream &oss, scode_t code, DataType type);
 
 enum CodeGenTmpl {
   kGenSimd0 = 0,
@@ -362,21 +339,67 @@ enum CodeGenTmpl {
   kGenStore,
 };
 
-struct NDObjectAttr {
-  CodeGenTmpl cg_tmpl;
-  bool inplace_prop;
-  bool share_ndd;
-  void (*dim_changed)(NDObject *);
-  void (*fold_prop)(NDObject *, PropRange &);
-  void (*align_prop)(NDObject *, PropRange &);
+class CloneHelper {
+ public:
+  virtual NDObject *GetClone(NDObject *op) = 0;
 };
+
+struct ObjectMeta {
+  constexpr ObjectMeta() : flags(), tmpl(), dim_changed(), fold_prop(), align_prop() {}
+
+  static constexpr uint32_t kNddShared = 1;
+  static constexpr uint32_t kInplaceProp = 1u << 1;
+  static constexpr uint32_t kLhsReuse = 1u << 2;
+  static constexpr uint32_t kRhsReuse = 1u << 3;
+  static constexpr uint32_t kLhsDom = 1u << 4;
+  static constexpr uint32_t kDom = 1u << 5;
+
+  uint32_t flags[kObjectBulk];
+  CodeGenTmpl tmpl[kObjectBulk];
+  void (*dim_changed[kObjectBulk])(NDObject *);
+  void (*fold_prop[kObjectBulk])(NDObject *, PropRange &);
+  void (*align_prop[kObjectBulk])(NDObject *, PropRange &);
+};
+
+class VectorKernel;
+
+// dynamic flags
+#define OBJ_FLAG_FREE_LHS 1
+#define OBJ_FLAG_FREE_RHS 2
+#define OBJ_FLAG_REUSE_LHS 4
+#define OBJ_FLAG_REUSE_RHS 8
+#define OBJ_FLAG_DEAD 16
+
+#define OBJ_FLAG_FLEX_RREE_XHS (1u << 14)
+#define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
+#define OBJ_FLAG_LOAD_FROM_CC (1u << 11)
+#define OBJ_FLAG_LOAD_FROM_CC_ONCE (1u << 12)
+#define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 13)
+#define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 14)
+#define OBJ_FLAG_LOAD_SHARD_ROUND (1u << 15)
+#define OBJ_FLAG_STORE_SHARD_BCAST0 (1u << 13)
+#define OBJ_FLAG_STORE_SHARD_BCAST1 (1u << 14)
+#define OBJ_FLAG_STORE_SHARD_ROUND (1u << 15)
+#define OBJ_FLAG_BROKER_AFFINED (1u << 15)  // reshape, onehot
+
+// static flags
+#define OBJ_FLAG_WORKSPACE (1u << 16)
+#define OBJ_FLAG_XHS (2u << 16)
+#define OBJ_FLAG_EAGER (8u << 16)
+#define OBJ_FLAG_STAGE_IO (16u << 16)
+
+#define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
+#define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
+#define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
 
 class NDObject {
  public:
-  NDObject(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
+  NDObject(NDObject *lhs, NDObject *rhs, DataType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
     type_id_ = type_id;
     MESS(index_, 10);
     MESS(reuse_dep_, 200);
+    prop_id_ = -1;  // debug
+    // MESS(prop_id_, 1);
   }
   NDObject(const NDObject &) = delete;
   NDObject &operator=(const NDObject &) = delete;
@@ -387,7 +410,8 @@ class NDObject {
   virtual void Shard(const ShardParam &sp);
   // tile nd range
   virtual void Tile(const TileParam &tp);
-  virtual int Emit(VectorKernel &k) = 0;
+  virtual uint64_t Emit(VectorKernel &k) = 0;
+  virtual NDObject *Clone(CloneHelper &h);
   virtual void Dump(bool verbose, std::ostringstream &oss);
 
   void *operator new(size_t size) { return mem_pool_.Get(size); }
@@ -396,8 +420,6 @@ class NDObject {
   int64_t Size();
   uint64_t GetBlocks(int64_t size) const { return (size * ITEM_SIZE[type_id_] + 31) >> 5; }
   ObjectType GetObjectType() const { return obj_id_; }
-  // Now we have comm op, which will cross different pipe. This method should be deprecated
-  int Pipe() const { return obj_id_ <= kLoad ? V_PIPE_LOAD : (obj_id_ <= kStore ? V_PIPE_STORE : V_PIPE_SIMD); }
   bool IsLoad() const { return obj_id_ <= kLoad; }
   bool IsStore() const { return obj_id_ <= kStore && obj_id_ > kLoad; }
   bool IsComm() const { return obj_id_ > kStore && obj_id_ <= kAllReduce; }
@@ -407,22 +429,27 @@ class NDObject {
   bool NeedTailCopy() const { return obj_id_ > kReduceScatter && obj_id_ <= kAllReduce; }
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
-  NDSpaceData *Ndd() const { return attrs_[obj_id_].share_ndd ? nullptr : const_cast<NDSpaceData *>(nd_.data); }
+  NDSpaceData *Ndd() const { return SharedNdd() ? nullptr : const_cast<NDSpaceData *>(nd_.data); }
+
+  uint32_t MetaFlags() const { return meta_.flags[obj_id_]; }
+  bool SharedNdd() const { return meta_.flags[obj_id_] & ObjectMeta::kNddShared; }
+  bool InplaceProp() const { return meta_.flags[obj_id_] & ObjectMeta::kInplaceProp; }
+  CodeGenTmpl CgTmpl() const { return meta_.tmpl[obj_id_]; }
 
   void DimChanged() {
-    if (auto func = attrs_[obj_id_].dim_changed) {
+    if (auto func = meta_.dim_changed[obj_id_]) {
       func(this);
     }
   }
   // fold axis right alignment: [base-depth+1, base]
   void FoldProp(PropRange &range) {
-    if (auto func = attrs_[obj_id_].fold_prop) {
+    if (auto func = meta_.fold_prop[obj_id_]) {
       func(this, range);
     }
   }
   // fold axis left alignment:  [0, depth-1]
   void AlignProp(PropRange &range) {
-    if (auto func = attrs_[obj_id_].align_prop) {
+    if (auto func = meta_.align_prop[obj_id_]) {
       func(this, range);
     }
   }
@@ -434,15 +461,17 @@ class NDObject {
     flags_ &= 0xffff0000u;
   }
 
+  template <typename T>
+  void ForInput(const T &func);
+
   NDSpace nd_;
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_;
   ShapeRef *shape_ref_;
-  NDObject *pd_next_;  // PropDomain next
   ObjectType obj_id_;
-  DType type_id_;
-  int reserved_;
+  DataType type_id_;
+  int prop_id_;
   int index_;
   int reuse_dep_;
   uint32_t flags_{0};
@@ -450,19 +479,19 @@ class NDObject {
   uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
 
   static MemPool<512, 8192> mem_pool_;
-  static const NDObjectAttr attrs_[];
+  static const ObjectMeta meta_;
 };
 
 class NDAccess : public NDObject {
  public:
-  NDAccess(void *gm, NDObject *lhs, DType type_id, ObjectType obj_id)
+  NDAccess(void *gm, NDObject *lhs, DataType type_id, ObjectType obj_id)
       : NDObject(lhs, nullptr, type_id, obj_id), addr_({gm}) {}
   RelocAddr addr_;
 };
 
 class NDLoadDummy : public NDAccess {
  public:
-  NDLoadDummy(DType type_id) : NDAccess(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
+  NDLoadDummy(DataType type_id) : NDAccess(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
     ndd_.dims.resize(1, 1);
     shape_.Resize(1);
     shape_[0] = 1;
@@ -470,7 +499,8 @@ class NDLoadDummy : public NDAccess {
     nd_.data = &ndd_;
   }
   void Tile(const TileParam &tp) override {}
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -480,7 +510,7 @@ class NDLoadDummy : public NDAccess {
 
 class NDLoad : public NDAccess {
  public:
-  NDLoad(void *src, ShapeRef *shape_ref, DType type_id = kFloat32)
+  NDLoad(void *src, ShapeRef *shape_ref, DataType type_id = kFloat32)
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
@@ -490,7 +520,8 @@ class NDLoad : public NDAccess {
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   int tail_dim_;
@@ -499,59 +530,50 @@ class NDLoad : public NDAccess {
   NDSpaceData ndd_;
 };
 
+class NDViewLoad : public NDAccess {
+ public:
+  NDViewLoad(void *src, ShapeRef *shape, ShapeRef *stride, const int64_t *offset, DataType dtype)
+      : NDAccess(src, nullptr, dtype, ObjectType::kViewLoad), src_stride_ref_(stride), offset_(offset) {
+    shape_ref_ = shape;
+    nd_.data = &ndd_;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Tile(const TileParam &tp) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
+  static void DimChanged(NDObject *op);
+
+ protected:
+  ShapeRef *src_stride_ref_;
+  const int64_t *offset_;
+  DimArray src_stride_;
+  DimArray tile_;
+  int tail_dim_;
+  int tail_size_;
+  NDSpaceData ndd_;
+};
+
 // split input to `multi_size` parts, everytime load a piece from all parts
 class NDMultiLoad : public NDLoad {
  public:
-  NDMultiLoad(uint8_t *src, ShapeRef *shape_ref, DType type_id, const Communicator *comm)
+  NDMultiLoad(uint8_t *src, ShapeRef *shape_ref, DataType type_id, const Communicator *comm)
       : NDLoad(src, shape_ref, type_id), comm_(comm) {
     obj_id_ = ObjectType::kMultiLoad;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   // void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   // uint32_t multi_size_{1}; // only support up to 1023(2^10)
   uint64_t gap_{0};
   uint32_t xbuf_size_{0};
   const Communicator *comm_;
-};
-
-class NDSliceLoad : public NDLoad {
- public:
-  NDSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DType type_id = kFloat32)
-      : NDLoad(src, size_ref, type_id), start_ref_(start_ref), src_ref_(src_ref), size_ref_(size_ref) {
-    obj_id_ = ObjectType::kSliceLoad;
-  }
-  void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-
-  static void AlignProp(NDObject *op, PropRange &range);
-  static void FoldProp(NDObject *op, PropRange &range);
-
- protected:
-  int64_t CalcOffset();
-  ShapeRef *start_ref_;
-  ShapeRef *src_ref_;
-  ShapeRef *size_ref_;
-};
-
-class NDStridedSliceLoad : public NDSliceLoad {
- public:
-  NDStridedSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
-                     DType type_id = kFloat32)
-      : NDSliceLoad(src, src_ref, start_ref, nullptr, type_id), end_ref_(end_ref), step_ref_(step_ref) {
-    shape_ref_ = &shape_;
-  }
-
-  void Normalize(std::vector<NDObject *> &run_ops) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-
- private:
-  ShapeWithRef shape_;
-  ShapeRef *end_ref_;
-  ShapeRef *step_ref_;
 };
 
 class NDStore : public NDAccess {
@@ -566,7 +588,8 @@ class NDStore : public NDAccess {
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   void UpdateDimMask() {
@@ -596,7 +619,8 @@ class NDPadStore : public NDAccess {
   NDPadStore(void *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { addr_.gm = dst; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static void AlignProp(NDObject *op, PropRange &range);
@@ -610,9 +634,10 @@ class NDPadStore : public NDAccess {
 class FlexOp : public NDObject {
  public:
   enum { kWsMax = 2 };
-  FlexOp(NDObject *lhs, NDObject *rhs, DType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
+  FlexOp(NDObject *lhs, NDObject *rhs, DataType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
     flags_ |= OBJ_FLAG_WORKSPACE;
   }
+  ~FlexOp() override = default;
   void SetXhs(NDObject *xhs) {
     xhs_ = xhs;
     flags_ |= OBJ_FLAG_XHS;
@@ -623,18 +648,39 @@ class FlexOp : public NDObject {
   uint64_t wss_[kWsMax];
 };
 
+template <typename T>
+void NDObject::ForInput(const T &func) {
+  if (lhs_) {
+    func(lhs_);
+    if (rhs_) {
+      func(rhs_);
+      if (flags_ & OBJ_FLAG_XHS) {
+        func(static_cast<FlexOp *>(this)->xhs_);
+      }
+    }
+  }
+}
+
 class CopyOp : public NDObject {
  public:
   CopyOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kCopy) {
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
 class ReshapeOp : public CopyOp {
  public:
+  struct ChangeRange {
+    int begin{0};
+    int size{0};
+    int in_begin{0};
+    int in_size{0};
+  };
+
   ReshapeOp(NDObject *input, ShapeRef *shape_ref) : CopyOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
@@ -642,10 +688,13 @@ class ReshapeOp : public CopyOp {
     obj_id_ = ObjectType::kReshape;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
- private:
+  bool VisitChangeRange(ChangeRange &range);
+
+ protected:
   ShapeRef *dst_shape_ref_;
   ShapeWithRef shape_;
   NDSpaceData ndd_;
@@ -653,9 +702,13 @@ class ReshapeOp : public CopyOp {
 
 class UnaryOp : public NDObject {
  public:
-  UnaryOp(int op_type, NDObject *input);
+  UnaryOp(int op_type, NDObject *input)
+      : NDObject(input, nullptr, input->type_id_, ObjectType::kUnary), op_type_(op_type) {
+    shape_ref_ = input->shape_ref_;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static int QueryId(const std::string &op_name);
@@ -670,7 +723,8 @@ class RemovePadOp : public CopyOp {
     ASSERT(ITEM_SIZE[type_id_] != 1);
     obj_id_ = ObjectType::kRemovePad;
   }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
@@ -685,9 +739,10 @@ class ElementAnyOp : public NDObject {
     MESS(tail_dim_, 100);
     MESS(tail_size_, 10000);
   }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Tile(const TileParam &tp) override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -700,12 +755,13 @@ class ElementAnyOp : public NDObject {
 
 class CastOp : public NDObject {
  public:
-  CastOp(NDObject *input, DType type_id) : NDObject(input, nullptr, type_id, ObjectType::kCast) {
+  CastOp(NDObject *input, DataType type_id) : NDObject(input, nullptr, type_id, ObjectType::kCast) {
     ASSERT(type_id != lhs_->type_id_);
     shape_ref_ = input->shape_ref_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
@@ -719,6 +775,7 @@ enum BinarySOpType {
   kAdds,
   kMuls,
   kDivs,
+  ksDiv,
   kMaximums,
   kMinimums,
   kBinarySOpEnd,
@@ -726,24 +783,35 @@ enum BinarySOpType {
 
 class BinaryScalarOp : public NDObject {
  public:
-  BinaryScalarOp(int op_type, NDObject *input, scode_t scalar);
+  BinaryScalarOp(int op_type, NDObject *input, scode_t scalar)
+      : NDObject(input, nullptr, input->type_id_, ObjectType::kBinaryS), op_type_(op_type), scalar_(scalar) {
+    shape_ref_ = input->shape_ref_;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
- private:
+ protected:
   int op_type_;
   scode_t scalar_;
 };
 
 class CompareScalarOp : public FlexOp {
  public:
-  CompareScalarOp(int op_type, NDObject *input, scode_t scalar);
+  CompareScalarOp(int op_type, NDObject *input, scode_t scalar)
+      : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
+    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 1;
+    flags_ |= OBJ_FLAG_FLEX_INPL_WS;
+    cmp_op_ = op_type;
+    shape_ref_ = input->shape_ref_;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
- private:
+ protected:
   int cmp_op_;
   scode_t scalar_;
 };
@@ -760,9 +828,13 @@ class _BinaryNormalizer {
 
 class BinaryOp : public NDObject {
  public:
-  BinaryOp(int op_type, NDObject *lhs, NDObject *rhs);
+  BinaryOp(int op_type, NDObject *lhs, NDObject *rhs)
+      : NDObject(lhs, rhs, lhs->type_id_, ObjectType::kBinary), op_type_(op_type) {
+    shape_ref_ = &norm_.shape_;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static int QueryId(const std::string &op_name);
@@ -775,11 +847,12 @@ class BinaryOp : public NDObject {
 class PowerOp : public FlexOp {
  public:
   PowerOp(NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
-    ws_num_ = 2;
+    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 2;
     shape_ref_ = &norm_.shape_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
@@ -788,9 +861,15 @@ class PowerOp : public FlexOp {
 
 class CompareOp : public FlexOp {
  public:
-  CompareOp(int op_type, NDObject *lhs, NDObject *rhs);
+  CompareOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
+    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 1;
+    flags_ |= OBJ_FLAG_FLEX_INPL_WS;
+    cmp_op_ = op_type;
+    shape_ref_ = &norm_.shape_;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
@@ -801,13 +880,14 @@ class CompareOp : public FlexOp {
 class SelectOp : public FlexOp {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
+    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 1;
     shape_ref_ = &shape_;
-    ws_num_ = 1;
     SetXhs(cond);
   }
-  ~SelectOp();
+  ~SelectOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
@@ -817,10 +897,11 @@ class SelectOp : public FlexOp {
 
 class _BroadcastOp : public NDObject {
  public:
-  _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
+  explicit _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
     nd_.data = &ndd_;
   }
-  int Emit(VectorKernel &k) override;
+  ~_BroadcastOp() override = default;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static void AlignProp(NDObject *op, PropRange &range);
@@ -829,8 +910,8 @@ class _BroadcastOp : public NDObject {
   NDSpaceData ndd_;
 
  private:
-  int64_t EmitBroadcastX(uint64_t *p, int end_dim);
-  int64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
+  uint64_t EmitBroadcastX(uint64_t *p, int end_dim);
+  uint64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
 };
 
 // expect shape is align: equal rank
@@ -840,8 +921,9 @@ class BroadcastOp : public _BroadcastOp {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
   }
-  ~BroadcastOp();
+  ~BroadcastOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  NDObject *Clone(CloneHelper &h) override;
 
  private:
   std::vector<NDObject *> stuff_ops_;
@@ -851,23 +933,25 @@ class BroadcastOp : public _BroadcastOp {
 
 class BroadcastScalarOp : public NDObject {
  public:
-  BroadcastScalarOp(scode_t scalar, ShapeRef *shape_ref, DType type_id, NDObject *dummy_load)
-      : NDObject(dummy_load, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
+  BroadcastScalarOp(scode_t scalar, ShapeRef *shape_ref, DataType type_id)
+      : NDObject(nullptr, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
   }
+  ~BroadcastScalarOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
- private:
+ protected:
   scode_t scalar_;
   NDSpaceData ndd_;
+  NDLoadDummy *dummy_load_{nullptr};
 };
 
 class _ReduceOp : public FlexOp {
  public:
-  enum { SUM, MAX, MIN };
   _ReduceOp(NDObject *input, int red_op)
       : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {
     nd_.data = &ndd_;
@@ -877,7 +961,7 @@ class _ReduceOp : public FlexOp {
     MESS(tail_size_, 10000);
   }
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static void AlignProp(NDObject *op, PropRange &range);
@@ -889,13 +973,14 @@ class _ReduceOp : public FlexOp {
     tail_dim_ = -1;
   }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
+  int EndDim() const { return end_dim_; }
 
   static void DimChanged(NDObject *op);
 
   NDSpaceData ndd_;
-
-protected:
   int red_op_;
+
+ protected:
   int start_dim_;
   int end_dim_;
   int tail_dim_;
@@ -909,21 +994,27 @@ class ReduceOp : public _ReduceOp {
       : _ReduceOp(input, red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
-    ws_num_ = System::Instance().deterministic_ ? 2 : 1;
+    if (g_system.deterministic_ && red_op_ == ReduceType::kSum) {
+      ws_num_ = 2;
+      visit_ = new RedVisitCoder();
+    } else {
+      ws_num_ = 1;
+      visit_ = nullptr;
+    }
     flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   }
-  ~ReduceOp();
+  ~ReduceOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
-
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  RedVisitCoder visit_;
+  RedVisitCoder *visit_;
   AtomicCleanWrap *clean_wrap_{nullptr};
 
  private:
-  int EmitDeterm(VectorKernel &k);
+  uint64_t EmitDeterm(VectorKernel &k);
 
   std::vector<_ReduceOp *> stuff_ops_;
   ShapeWithRef shape_;
@@ -936,8 +1027,12 @@ class ReduceOp : public _ReduceOp {
 
 class OneHotOp : public NDObject {
  public:
-  OneHotOp(NDObject *indices, ShapeRef *depth, int axis, scode_t on_value, scode_t off_value, DType type_id)
-    : NDObject(indices, nullptr, type_id, kOneHot), on_value_(on_value), off_value_(off_value), axis_(axis), depth_(depth) {
+  OneHotOp(NDObject *indices, ShapeRef *depth, int axis, scode_t on_value, scode_t off_value, DataType type_id)
+      : NDObject(indices, nullptr, type_id, kOneHot),
+        on_value_(on_value),
+        off_value_(off_value),
+        axis_(axis),
+        depth_(depth) {
     nd_.data = &ndd_;
     shape_ref_ = &shape_;
     MESS(depth_dim_, 20);
@@ -946,11 +1041,11 @@ class OneHotOp : public NDObject {
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  bool AlignNdd(NDSpaceData *ndd);
-  void UpdateDomain(NDObject *head);
+  int DepthDim() const { return depth_dim_; }
 
   static void AlignProp(NDObject *op, PropRange &range);
   static void FoldProp(NDObject *op, PropRange &range);
@@ -971,6 +1066,18 @@ class OneHotOp : public NDObject {
 class CubeTuner;
 class CubeOp : public NDObject {
  public:
+  static constexpr uint32_t BLOCK_SIZE = 16;
+  static constexpr uint32_t CUBE_BLOCK_SIZE = 256;
+  static constexpr uint32_t MAX_BIAS_SIZE = 1024;
+  static constexpr uint32_t AXES_ALIGN_SIZE = 512;
+  static constexpr uint32_t CONST_512 = 512;
+  static constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;
+  static constexpr uint32_t DEFAULT_DIAGONAL_SWIZZLE_COUNT = 8;
+  static constexpr int64_t MAX_SPLIT_K = 20480;
+  static constexpr int64_t MIN_SPLIT_K = 4096;
+  static constexpr int64_t ALIGN_256 = 128;
+  static constexpr int64_t ALIGN_128 = 128;
+  static constexpr int64_t ALIGN_32 = 32;
   struct Tactics {
     bool enable_splitk{false};
     bool enable_pad{false};
@@ -984,7 +1091,8 @@ class CubeOp : public NDObject {
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
 
-  int Emit(VectorKernel &k) override { return 0; }
+  uint64_t Emit(VectorKernel &k) override { return 0; }
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   void NormalizeCube();
   virtual void InferCubeConfig();
@@ -997,19 +1105,29 @@ class CubeOp : public NDObject {
     return core_loop_ < block_dim_ * 2 ? pingpong_size * core_loop_ : pingpong_size * block_dim_ * 2;
   }
   void SetRealShape(int64_t m, int64_t n, int64_t k, size_t offset_a, size_t offset_b) {
+    set_real_ = true;
     m_real_ = m;
     n_real_ = n;
     k_real_ = k;
     offset_a_ = offset_a;
     offset_b_ = offset_b;
-    NormalizeOutput();
   }
   void SetOutFp32(bool atomic_add) {
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }
 
-  bool CanBatchFold() { return !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2; }
+  uint64_t BaseSize() const { return m0_ * n0_ * ITEM_SIZE[type_id_]; }
+
+  void Recover() {
+    if (batch_fold_) {
+      ASSERT(lhs_->nd_.size() > 2);
+      uint64_t batch_size = lhs_->nd_[2];
+      if (lhs_->nd_.size() > 3) batch_size *= lhs_->nd_[3];
+      m_real_ /= batch_size;
+      m_align_ /= batch_size;
+    }
+  }
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};
@@ -1030,6 +1148,7 @@ class CubeOp : public NDObject {
   bool pingpong_store_{false};
   bool atomic_add_{false};
   bool batch_fold_{false};
+  bool set_real_{false};
   NDObject *bias_{nullptr};
   Tactics tactics_;
   uint32_t batch_c0_{0};
@@ -1039,9 +1158,8 @@ class CubeOp : public NDObject {
  protected:
   float CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0);
   void Tile(vCubeOp *code);
-  void GetSwizzleConfig(vCubeOp *code);
-
-  void TileV2(vCubeOp *op);
+  void TileV1(vCubeOp *op);
+  void TileV2(vCubeOp *op, uint32_t swizzle_type);
 
   size_t offset_a_{0};
   size_t offset_b_{0};
@@ -1051,15 +1169,18 @@ class CubeOp : public NDObject {
 class GmmOp : public CubeOp {
  public:
   GmmOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias, NDObject *group_list,
-        GroupType group_type);
+        GmmSplitType group_type, GmmListType group_list_type);
 
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
   void InferCubeConfig();
   void NormalizeOutput() override;
   void CodeGen(vCubeOp *code, CubeTuner *tuner) override;
   void GenTiling(vCubeOp *code) override;
 
   NDObject *group_list_;
-  GroupType group_type_;
+  GmmSplitType group_type_;
+  GmmListType group_list_type_;
 };
 
 class CommIdWrap : public CodeWrap {
@@ -1078,9 +1199,10 @@ class CommOp : public NDObject {
     max_type_ = type_id_;
     nd_.data = &ndd_;
   }
+  ~CommOp() override = default;
   // Extra space needed to store expanded instructions
   uint64_t CodeReserve() { return code_reserve_; }
-  uint64_t XbufReserve() { return xbuf_reserve_; }
+  int XbufReserve() { return xbuf_reserve_; }
   void SetXbufSize(uint32_t size) { xbuf_size_ = size; }
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
 
@@ -1089,12 +1211,12 @@ class CommOp : public NDObject {
   std::vector<uint64_t> forward_events_;
   std::vector<uint64_t> backward_events_;
   bool mix_{false};
-  DType max_type_;
+  DataType max_type_;
   const Communicator *comm_;
   CommIdWrap id_wrap_;
 
  protected:
-  uint64_t xbuf_reserve_{0};  // static
+  int xbuf_reserve_{0};  // static
   uint64_t code_reserve_{0};
   CubeOp *cube_op_{nullptr};
   uint32_t xbuf_size_{0};
@@ -1110,8 +1232,9 @@ class ReduceScatterOp : public CommOp {
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
-  int MultiLoadEmit(VectorKernel &k);
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  uint64_t MultiLoadEmit(VectorKernel &k);
 
   static void AlignProp(NDObject *op, PropRange &range);
   static void FoldProp(NDObject *op, PropRange &range);
@@ -1123,13 +1246,11 @@ class ReduceScatterOp : public CommOp {
   ShapeWithRef shape_;
   vSimdInsnID add_id_;
   DimArray round_tile_;
-  NDObject *reshape_op_{nullptr};
-  ShapeWithRef reshape_shape_;
 };
 
 class AllReduceOpBase : public CommOp {
  public:
-  AllReduceOpBase(NDObject *input, const Communicator *comm);
+  AllReduceOpBase(int op_type, NDObject *input, const Communicator *comm);
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -1138,26 +1259,28 @@ class AllReduceOpBase : public CommOp {
   int tail_dim_{-1};
   int tail_size_{0};
   bool use_twoshot_{false};
-  vSimdInsnID add_id_;
+  vSimdInsnID insn_id_;
 };
 
 // Design: AllReduce is used before codegen, then codegen will generate PeerLoad and PeerStore
 template <bool is_bf16>
 class AllReduceOp : public AllReduceOpBase {
  public:
-  AllReduceOp(NDObject *input, const Communicator *comm) : AllReduceOpBase(input, comm) {};
+  AllReduceOp(int op_type, NDObject *input, const Communicator *comm) : AllReduceOpBase(op_type, input, comm){};
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
-  int MatmulEmit(VectorKernel &k);  // used when lhs_ is Matmul
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  uint64_t MatmulEmit(VectorKernel &k);  // used when lhs_ is Matmul
 };
 
 class AllGatherOp : public CommOp {
  public:
   AllGatherOp(NDObject *input, const Communicator *comm);
-  ~AllGatherOp() = default;
+  ~AllGatherOp() override = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Tile(const TileParam &tp) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   static void AlignProp(NDObject *op, PropRange &range);
@@ -1176,9 +1299,10 @@ class AllGatherOp : public CommOp {
 class AllGatherV2Op : public CommOp {
  public:
   AllGatherV2Op(NDObject *input, const Communicator *comm);
-  ~AllGatherV2Op() = default;
+  ~AllGatherV2Op() override = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  int Emit(VectorKernel &k) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
@@ -1187,6 +1311,32 @@ class AllGatherV2Op : public CommOp {
 
  private:
   ShapeWithRef shape_;
+};
+
+class GraphTracker {
+ public:
+  GraphTracker() = default;
+  ~GraphTracker() = default;
+  void Record(NDObject **op_addr) { records_.emplace_back(op_addr, *op_addr); }
+  void Recover() {
+    for (auto it = records_.rbegin(); it != records_.rend(); ++it) {
+      *(it->addr) = it->origin;
+    }
+  }
+  void RecoverClear() {
+    if (!records_.empty()) {
+      Recover();
+      records_.clear();
+    }
+  }
+
+ protected:
+  struct _Record {
+    _Record(NDObject **a, NDObject *o) : addr(a), origin(o) {}
+    NDObject **addr;
+    NDObject *origin;
+  };
+  std::vector<_Record> records_;
 };
 }  // namespace dvm
 #endif  // _DVM_OPS_H_

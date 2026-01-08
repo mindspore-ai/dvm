@@ -27,7 +27,7 @@ int main() {
 
   std::vector<int64_t> reduce_axis{1};
   auto reduce_axis_ref = std::make_shared<ShapeRef>(reduce_axis);
-  auto b_dvm = kernel.Reduce(ReduceOpType::kSum, a_dvm, reduce_axis_ref.get(), true);
+  auto b_dvm = kernel.Reduce(ReduceType::kSum, a_dvm, reduce_axis_ref.get(), true);
 
   (void)kernel.Store(o1.dev_, b_dvm);
   auto workspace = PrepareWorkspace(kernel.CodeGen());

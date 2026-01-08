@@ -15,32 +15,34 @@
 
 import sys
 import re
+import warnings
 
-def process_address(address):
+def process_address(ins_name, address):
     """
     Processes a hexadecimal address, ensuring it's within a valid range.
-    
+
     Parameters:
         address (str): The address to process.
-        
+
     Returns:
         str: Processed address in hexadecimal format.
-        
+
     Raises:
         ValueError: If the address exceeds the valid range.
     """
     head = int(address[:-4], 16)
     if head != 0:
-        raise ValueError("Address exceeds 0xFFFF.")
+        warnings.warn(f"{ins_name}, Address exceeds 0xFFFF.")
     return '0x' + address[-4:]
+
 
 def extract_instruction_name(line):
     """
     Extracts the instruction name from a line of code.
-    
+
     Parameters:
         line (str): A line of C++ code.
-        
+
     Returns:
         str or None: The extracted instruction name, or None if not found.
     """
@@ -51,21 +53,25 @@ def extract_instruction_name(line):
     else:
         return None
 
+
 if __name__ == '__main__':
     # Get arguments
-    isa_file = sys.argv[1]
+    if len(sys.argv) != 3:
+        print(f"Usage: {sys.argv[0]} <isa_file> <arch>")
+        sys.exit(1)
+
+    isa_file, arch = sys.argv[1], sys.argv[2]
 
     # Process symbol table to find function addresses
     try:
         function_address_map = {}
         pattern = r'^([0-9a-f]+) .* D_(V_[\w]+)$'
-        vmain_pattern = r"^0000000000000000 .* vmain_mix_aiv$"
         while True:
             line = input()
             match = re.search(pattern, line)
             if match:
                 address, ins_name = match.groups()
-                function_address_map[ins_name] = process_address(address)
+                function_address_map[ins_name] = process_address(ins_name, address)
     except EOFError:
         pass
 
@@ -74,21 +80,24 @@ if __name__ == '__main__':
         for line in isa_file:
             if not in_insn:
                 if line.startswith('enum vAccInsnID'):
-                    print('extern const unsigned long int g_access_func_offset[] = {')
+                    print(f'extern const unsigned long int g_access_func_offset_{arch}[] = {{')
                     in_insn = True
                     pipe_cnt += 1
                 elif line.startswith('enum vSimdInsnID'):
-                    print('extern const unsigned long int g_simd_func_offset[] = {')
+                    print(f'extern const unsigned long int g_simd_func_offset_{arch}[] = {{')
                     in_insn = True
                     pipe_cnt += 1
                 elif line.startswith('enum vVisitID'):
-                    print('extern const unsigned long int g_visit_func_offset[] = {')
+                    print(f'extern const unsigned long int g_visit_func_offset_{arch}[] = {{')
                     in_insn = True
                     pipe_cnt += 1
             else:
                 stripped_line = line.strip()
                 if not stripped_line.startswith("//"):
                     ins_name = extract_instruction_name(stripped_line)
+                    if "[" in stripped_line and arch not in stripped_line:
+                        print('0x0000, // ' + ins_name)
+                        continue
                     if ins_name != None:
                         if ins_name.endswith("_NONE"):
                             in_insn = False

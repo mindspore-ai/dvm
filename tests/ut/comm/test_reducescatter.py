@@ -42,7 +42,7 @@ def test_reducescatter(comm, rank, size, shape):
 
     x1 = t.load(inputs[rank])
     x2 = t.reducescatter(x1)
-    x3 = t.unary("Abs", x2)
+    x3 = t.abs(x2)
     t.store_expect(x3, np.abs(expect), 0.01)
     res = t.run_check()
     assert res
@@ -65,7 +65,7 @@ def test_reducescatter_multiload(comm, rank, size, shape):
 
     x1 = t.multi_load(inputs[rank])
     x2 = t.reducescatter(x1)
-    x3 = t.unary("Abs", x2)
+    x3 = t.abs(x2)
     t.store_expect(x3, np.abs(expect), 0.01)
     res = t.run_check()
     assert res

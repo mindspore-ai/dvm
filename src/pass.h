@@ -26,7 +26,7 @@ namespace dvm::pass {
 class BasicBlock;
 class ObjectList {
  public:
-  ObjectList() : sentinel_(kTypeEnd) {}
+  ObjectList() : sentinel_(kDataTypeEnd) {}
   void Build(const std::vector<NDObject *> &objects, bool reindex);
 
   void Insert(NDObject *pos, NDObject *obj) {
@@ -67,7 +67,7 @@ class ObjectList {
     using iterator_category = std::bidirectional_iterator_tag;
     using difference_type = std::ptrdiff_t;
 
-    Iterator(pointer ptr) : ptr_(ptr) {}
+    explicit Iterator(pointer ptr) : ptr_(ptr) {}
 
     Iterator &operator++() {
       ptr_ = reverse ? ObjectList::Prev(ptr_) : ObjectList::Next(ptr_);
@@ -129,7 +129,7 @@ class BasicBlock {
   using iterator = ObjectList::Iterator<false>;
   using reverse_iterator = ObjectList::Iterator<true>;
 
-  BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner);
+  BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner, GraphTracker *tracker = nullptr);
 
   iterator begin() { return iterator(list_.Begin()); }
   iterator end() { return iterator(list_.End()); }
@@ -181,6 +181,7 @@ class BasicBlock {
   }
 
   ObjectList &List() { return list_; }
+  GraphTracker *Tracker() { return tracker_; }
 
  protected:
   static int GetHead(NDObject *obj) { return obj->xbuf_; }
@@ -189,6 +190,7 @@ class BasicBlock {
   ObjectList list_;
   std::vector<Edge> edges_;
   std::vector<NDObject *> &objects_owner_;
+  GraphTracker *tracker_;
 };
 
 // ------ Introducing Pass--------
@@ -274,8 +276,6 @@ void EliminateReshape(BasicBlock &bb);
 /// reorganizing non-continuous memory segments within the UB into a continuous memory layout. This significantly speeds
 /// up the data transfer process to the GM.
 void InsertRemovePad(BasicBlock &block);
-
-void NormalizeNdd(BasicBlock &block);
 
 using Pass = void (*)(BasicBlock &);
 extern std::vector<Pass> passes;

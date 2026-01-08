@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 
-#include "acl_ext.h"
+#include "runtime/rt.h"
 #include "dvm.h"
 #include <assert.h>
 #include <random>

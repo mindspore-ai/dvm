@@ -15,6 +15,8 @@
 
 import os
 import sys
+import subprocess
+import csv
 import inspect
 import numpy as np
 from ._dvm_py import Kernel, ShapeRef
@@ -45,19 +47,32 @@ class PerformanceResult:
 class Tester(Kernel):
     __test__ = False
 
-    def __init__(self, ker_type="", use_pass_opt=False, comm=None):
+    def __init__(self, ker_type="", use_pass_opt=False, run_mode="dev", comm=None):
         if comm:
             os.environ["DEVICE_ID"] = str(comm.Get_rank())
             os.environ["RANK_SIZE"] = str(comm.Get_size())
         self.comm = comm
         dev_id = int(os.getenv("DEVICE_ID"))
-        Kernel.__init__(self, dev_id, ker_type)
+        Kernel.__init__(self, ker_type, run_mode, dev_id)
         self.is_dyn = "dyn" in ker_type
         self.is_codegen = False
         self.expects = []  # [(op, expect, eps)]
         self.passes = None if use_pass_opt else []
         if comm:
-            self.init_comm(comm.Get_rank(), comm.Get_size())
+            self.init_comm(comm.Get_rank(), comm.Get_size(), "memory")
+
+    @staticmethod
+    def fast_random_normal(loc, scale, shape):
+        row_random = np.random.normal(loc, scale, (shape[-1], ))
+        return np.broadcast_to(row_random, shape).copy()
+
+    @staticmethod
+    def bf16_random_normal(loc, scale, shape):
+        x = np.random.normal(loc, scale, shape)
+        x_int = x.view(np.uint32)
+        x_bf16_int = x_int & 0xFFFF0000
+        x_bf32 = x_bf16_int.view(np.float32)
+        return x_bf32
 
     def load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
@@ -70,6 +85,19 @@ class Tester(Kernel):
         shape = list(shape_arr.shape)
         op = Kernel.load(self, shape, dtype)
         self.input(op, shape_arr)
+        return op
+
+    def view_load(self, shape, stride, arr_dtype, offset=0, real_dtype=None):
+        if isinstance(arr_dtype, str):
+            # dynamic shape scenario
+            return Kernel.view_load(self, shape, stride, arr_dtype)
+        dtype = str(arr_dtype.dtype)
+        if real_dtype:
+            assert (real_dtype == "bfloat16")
+            arr_dtype = Kernel.convert_to_bf16(self, arr_dtype)
+            dtype = real_dtype
+        op = Kernel.view_load(self, shape, stride, offset, dtype)
+        self.input(op, arr_dtype)
         return op
 
     def slice_load(self, shape_arr, start, size, dtype=None):
@@ -210,13 +238,45 @@ class Tester(Kernel):
         self.codegen()
         Kernel.dry_run(self, core_id, is_cube)
 
+    def run_msprof(self, path, test_num = 10):
+        self.codegen()
+        self.msprof(path, test_num)
+        if not os.path.isdir(path):
+            print(f"Invalid directory: {path}")
+            return
+        subprocess.run(
+            ["msprof", f"--export=on", f"--output={path}"],
+            check=True,
+            stdout=subprocess.DEVNULL
+        )
+        output_lines = []
+        for root, _, files in os.walk(path):
+            for file_name in files:
+                if file_name.startswith("op_statistic") and file_name.lower().endswith(
+                    ".csv"
+                ):
+                    file_path = os.path.join(root, file_name)
+                    with open(file_path, "r", encoding="utf-8", newline="") as f:
+                        reader = list(csv.reader(f))
+                    col_widths = [
+                        max(len(cell) for cell in col) for col in zip(*reader)
+                    ]
+                    table = "\n".join(
+                        " | ".join(
+                            cell.ljust(width) for cell, width in zip(row, col_widths)
+                        )
+                        for row in reader
+                    )
+                    output_lines.append(f"\n===== {file_path} =====\n{table}")
+        return "\n\n".join(output_lines)
+
     def set_passes(self, *pass_names):
         self.passes = []
         for pass_name in pass_names:
             self.passes.append(pass_name)
 
-    def reset_eager(self):
-        Kernel.reset_eager(self)
+    def reset(self):
+        Kernel.reset(self)
         self.is_codegen = False
         self.expects = []
 
@@ -240,7 +300,7 @@ class CommScope:
 
     def __init__(self, *ids):
         self.ids = ids
-
+        self.comm_type = ""
     def __enter__(self):
         if self.ids:
             rank_size = len(self.ids)
@@ -250,9 +310,23 @@ class CommScope:
         else:
             ids_str = os.environ["ASCEND_RT_VISIBLE_DEVICES"]
             rank_size = len(ids_str.split(","))
-        Kernel.fork(rank_size)
+        Kernel.fork(rank_size, self.comm_type)
         os.environ["DEVICE_ID"] = str(Kernel.rank_id())
         return Kernel
 
     def __exit__(self, type, value, trace):
         Kernel.join()
+
+class HcclScope(CommScope):
+    """
+    Create an hccl comm domain scope.
+
+    Examples:
+        >>> from dvm.tester import HcclScope, Tester
+        >>> with HcclScope(0, 1, 2, 3):
+        >>>     t = Tester()
+        >>>     ...
+    """
+    def __init__(self, *ids):
+        self.ids = ids
+        self.comm_type = "hccl"

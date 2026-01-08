@@ -50,6 +50,7 @@ write_checksum()
 }
 
 MAKE_ARGS=""
+THREAD_NUM=8
 while getopts 'daj:' opt
 do
   case "${opt}" in
@@ -60,7 +61,7 @@ do
       MAKE_ARGS="${MAKE_ARGS} asan=1"
       ;;
     j)
-      MAKE_ARGS="${MAKE_ARGS} -j${OPTARG}"
+      THREAD_NUM=${OPTARG}
       ;;
     *)
       echo "Unknown option ${opt}!"
@@ -69,12 +70,21 @@ do
   esac
 done
 
+MAKE_ARGS="${MAKE_ARGS} -j${THREAD_NUM}"
+
 TARGET_FILE="libdvm.a"
 echo "---------------- build start ----------------"
-source ${BASEPATH}/env.sh
 echo "MAKE_ARGS: ${MAKE_ARGS}"
+set --
+source ${BASEPATH}/env.sh
 make clean
 make ${MAKE_ARGS}
+
+if [ $? -ne 0 ]; then
+  echo "[ERROR] compile failed!"
+  exit 1
+fi
+
 if [ ! -f ${TARGET_FILE} ]; then
   echo "[ERROR] compile failed!"
   exit 1

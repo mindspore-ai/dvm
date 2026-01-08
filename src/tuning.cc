@@ -16,24 +16,13 @@
 
 #include <cstdlib>
 #include <iostream>
-#include <cstring>
-#ifndef VK_SIM_MODEL
 #include "acl/acl_rt.h"
-#endif
 #include "tuning.h"
+#include "msprof.h"
 #include "xkernel.h"
 #include "ops.h"
 
 namespace dvm {
-#define ASCEND_CALL(func)                                                                               \
-  do {                                                                                                  \
-    auto err = (func);                                                                                  \
-    if (err != 0) {                                                                                     \
-      std::cerr << "Ascend error in function " << #func << " : " << static_cast<int>(err) << std::endl; \
-      exit(0);                                                                                          \
-    }                                                                                                   \
-  } while (0)
-
 constexpr uint32_t FP32_SIZE = 4;
 constexpr uint32_t BLOCK_SIZE = 16;
 constexpr uint32_t CUBE_BLOCK_SIZE = 256;
@@ -41,7 +30,7 @@ constexpr uint32_t MAX_BIAS_SIZE = 1024;
 
 class ManualCubeTuner : public CubeTuner {
  public:
-  ManualCubeTuner(const TuningInfo &info) : CubeTuner(kUnknownTuner), info_(info) {}
+  explicit ManualCubeTuner(const TuningInfo &info) : CubeTuner(kUnknownTuner), info_(info) {}
   void GenTile(CubeOp *op, vCubeOp *code) override {
     op->m0_ = code->m0 = info_.m0;
     op->n0_ = code->n0 = info_.n0;
@@ -58,18 +47,17 @@ class ManualCubeTuner : public CubeTuner {
 CubeTuner::~CubeTuner() {}
 
 void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
-#ifndef VK_SIM_MODEL
   auto &tuning_table = CubeTuner::CacheTable();
   TuningInfo &best_tuning = tuning_table[GenKey(op, code)];
   if (best_tuning.swizzle == 0) {
     void *dev_M_, *dev_N_, *dev_O_;
-    ASCEND_CALL(aclrtMalloc(&dev_M_, op->lhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    ASCEND_CALL(aclrtMalloc(&dev_N_, op->rhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    ASCEND_CALL(aclrtMalloc(&dev_O_, op->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ERROR_CHECK(aclrtMalloc(&dev_M_, op->lhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ERROR_CHECK(aclrtMalloc(&dev_N_, op->rhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ERROR_CHECK(aclrtMalloc(&dev_O_, op->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     TuneData td;
-    td.kernel.Reset(kStaticMix);
-    auto m_input = td.kernel.Load(dev_M_, op->lhs_->shape_ref_, DType::kFloat16);
-    auto n_input = td.kernel.Load(dev_N_, op->rhs_->shape_ref_, DType::kFloat16);
+    td.kernel.Reset<KernelType::kCube>(0);
+    auto m_input = td.kernel.Load(dev_M_, op->lhs_->shape_ref_, DataType::kFloat16);
+    auto n_input = td.kernel.Load(dev_N_, op->rhs_->shape_ref_, DataType::kFloat16);
     auto matmul = new CubeOp(m_input, n_input, op->trans_a_, op->trans_b_);
     if (op->type_id_ == dvm::kFloat32) matmul->SetOutFp32(false);
     td.kernel.GetImpl()->Append(matmul);
@@ -87,14 +75,13 @@ void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
   code->swizzle = best_tuning.swizzle;
   op->core_loop_ = best_tuning.core_loop;
   op->block_dim_ = best_tuning.block_dim;
-#endif
 }
 
 void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
-  auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
+  auto l0c_max = g_system.L0CSize() / FP32_SIZE;
   auto bias_size = mm->bias_ ? MAX_BIAS_SIZE : 0;
-  auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[mm->lhs_->type_id_];
-  auto core_num = System::Instance().CoreNum(CoreType::kCube);
+  auto l1_max = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[mm->lhs_->type_id_];
+  auto core_num = g_system.CoreNum(CoreType::kAIC);
   uint32_t round_m = RoundUp<uint32_t>(mm->m_align_, BLOCK_SIZE);
   uint32_t round_n = RoundUp<uint32_t>(mm->n_align_, BLOCK_SIZE);
   uint32_t round_k = RoundUp<uint32_t>(mm->k_align_, BLOCK_SIZE);
@@ -163,41 +150,22 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
 }
 
 void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
-#ifndef VK_SIM_MODEL
   ManualCubeTuner tuner(parameter);
   static_cast<MixKernel *>(td.kernel.GetImpl())->SetTuner(&tuner);
   td.kernel.CodeGen();
-  float min_us = 1e6;
-  float max_us = 0.0f;
-  float total_us = 0.0f;
-  aclrtEvent start, end;
-  ASCEND_CALL(aclrtCreateEvent(&start));
-  ASCEND_CALL(aclrtCreateEvent(&end));
+  RepeatProfiler profiler;
+  profiler.Reset();
   uint32_t test_num = 10;
   for (uint32_t i = 0; i < test_num; i++) {
-    ASCEND_CALL(aclrtRecordEvent(start, nullptr));
-    ASCEND_CALL(td.kernel.Launch(nullptr, nullptr));
-    ASCEND_CALL(aclrtRecordEvent(end, nullptr));
-    ASCEND_CALL(aclrtSynchronizeStream(nullptr));
-    float time_us = 0.0f;
-    ASCEND_CALL(aclrtEventElapsedTime(&time_us, start, end));
-    time_us *= 1000.0;
-    if (time_us < min_us) {
-      min_us = time_us;
-    }
-    if (time_us > max_us) {
-      max_us = time_us;
-    }
-    total_us += time_us;
+    profiler.RecordStart(nullptr);
+    ERROR_CHECK(td.kernel.Launch(nullptr, 0, nullptr, nullptr));
+    profiler.RecordEnd(nullptr);
   }
-  ASCEND_CALL(aclrtDestroyEvent(start));
-  ASCEND_CALL(aclrtDestroyEvent(end));
-  auto mean_time = (total_us - min_us - max_us) / (test_num - 2);
+  auto mean_time = (profiler.total_us_ - profiler.min_us_ - profiler.max_us_) / (test_num - 2);
   if (mean_time < td.best_time) {
     td.best_time = mean_time;
     td.best_para = parameter;
   }
-#endif
 }
 
 LazyCubeTuner::~LazyCubeTuner() {
@@ -267,27 +235,17 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
 }
 
 int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
-#ifndef VK_SIM_MODEL
   auto cube_code = reinterpret_cast<vCubeOp *>(code.data_ + code.HeadSize());
   uint32_t space_idx = cube_code->unique_id;
   if (space_idx == (uint32_t)-1) {
     return code.Launch(nullptr, stream);
   }
-  aclrtEvent start, end;
-  auto err1 = aclrtCreateEvent(&start);
-  auto err2 = aclrtCreateEvent(&end);
-  if (err1 || err2) return -1;
-  auto err3 = aclrtRecordEvent(start, stream);
-  auto err4 = code.Launch(nullptr, stream);
-  auto err5 = aclrtRecordEvent(end, stream);
-  auto err6 = aclrtSynchronizeStream(stream);
-  if (err3 || err4 || err5 || err6) return -1;
-  float time = 0.0f;
-  auto err7 = aclrtEventElapsedTime(&time, start, end);
-  (void)aclrtDestroyEvent(start);
-  (void)aclrtDestroyEvent(end);
+  TimeProfiler profiler;
+  profiler.RecordStart(stream);
+  auto err = code.Launch(nullptr, stream);
+  float time = profiler.RecordEnd(stream);
   auto ctx = context_[GenKey(op, cube_code)];
-  if (!err7 && (ctx->best_idx < 0 || time < ctx->best_time)) {
+  if (!err && (ctx->best_idx < 0 || time < ctx->best_time)) {
     ctx->best_idx = ctx->run_cnt;
     ctx->best_time = time;
   }
@@ -296,15 +254,14 @@ int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
     std::unique_lock<std::mutex> lock(ctx->mutex_);
     ctx->cond_var_.notify_all();
   }
-#endif
   return 0;
 }
 
 void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space) {
-  auto l0c_max = System::Instance().L0CSize() / FP32_SIZE;
+  auto l0c_max = g_system.L0CSize() / FP32_SIZE;
   auto bias_size = op->bias_ ? MAX_BIAS_SIZE : 0;
-  auto l1_max = (System::Instance().L1Size() / 2 - bias_size) / ITEM_SIZE[op->lhs_->type_id_];
-  auto core_num = System::Instance().CoreNum(CoreType::kCube);
+  auto l1_max = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[op->lhs_->type_id_];
+  auto core_num = g_system.CoreNum(CoreType::kAIC);
   uint32_t round_m = RoundUp<uint32_t>(op->m_align_, BLOCK_SIZE);
   uint32_t round_n = RoundUp<uint32_t>(op->n_align_, BLOCK_SIZE);
   uint32_t round_k = RoundUp<uint32_t>(op->k_align_, BLOCK_SIZE);

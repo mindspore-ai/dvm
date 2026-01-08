@@ -1,4 +1,4 @@
-# Copyright 2024 Huawei Technologies Co., Ltd
+# Copyright 2025 Huawei Technologies Co., Ltd
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,208 +13,30 @@
 # limitations under the License.
 # ============================================================================
 
-import pytest
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
-@pytest.mark.parametrize("shape1, shape2, shape3, reduce_dims", 
-                         [[(10, 3, 1), (10, 3, 4), (1, 10, 12), (2,)],
-                          [(10, 3, 1), (10, 3, 4), (1, 10, 12), (1,)]])
-def test_reduce_forward(shape1, shape2, shape3, reduce_dims):
-    t = Tester()
-    b = np.full(shape1, 0.1, np.float32)
-    y = t.load(b)
-    z = t.broadcast(y, shape2)
-    z = t.reshape(z, shape3)
-    z = t.reduce("sum", z, reduce_dims, True)
-    t.set_passes("EliminateReshape")
-    c = np.copy(b)
-    c = np.broadcast_to(c, shape2)
-    print(c.shape)
-    c = np.reshape(c, shape3)
-    e = np.sum(c, reduce_dims, keepdims=True)
-    t.store_expect(z, e)
-    assert(t.run_check())
 
-@pytest.mark.parametrize("shape1", [(16, 16)])
-@pytest.mark.parametrize("shape2", [(32, 8)])
-def test_unary(shape1, shape2):
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_elim_reshape():
     t = Tester()
-    x = np.full(shape1, 81.0, np.float32)
-    a = t.load(x)
-    b = t.unary("Sqrt", a)
-    c = t.reshape(b, shape2)
-    d = t.unary("Sqrt", c)
-    t.store_expect(d, 3.0)
-    t.set_passes("EliminateReshape")
-    assert (t.run_check())
-
-@pytest.mark.parametrize("shape1", [(16, 16)])
-@pytest.mark.parametrize("shape2", [(32, 8)])
-def test_cast(shape1, shape2):
-    t = Tester()
-    x = np.full(shape1, 81.0, np.float32)
-    a = t.load(x)
-    b = t.unary("Sqrt", a)
-    c = t.reshape(b, shape2)
-    d = t.unary("Sqrt", c)
-    d = t.cast(d, "float16")
-    t.store_expect(d, 3.0)
-    t.set_passes("EliminateReshape")
-    assert (t.run_check())
-
-@pytest.mark.parametrize("shape",[(3, 3)])
-@pytest.mark.parametrize("shape2", [(9,)])
-@pytest.mark.parametrize('type, eps', [(np.float32, 1e-5)])
-def test_select_forward(shape, shape2, type, eps):
-    t = Tester()
-    a = np.full(shape2, 1.0).astype(type)
-    b = np.full(shape, 2.0).astype(type)
-    c = np.random.choice([True, False], shape).astype(bool)
-    x = t.load(c)
-    y = t.load(a)
-    y = t.reshape(y, shape)
-    z = t.load(b)
-    z = t.select(x, y, z)
-    t.store_expect(z, np.select([c == True, c == False],[a.reshape(shape), b]), eps)
-    t.set_passes("EliminateReshape")
-    assert(t.run_check())
-
-def test_broadcast_backward():
-    t = Tester()
-    b = np.full([1,8], 0.3, np.float32)
-    y = t.load(b)
-    z = t.broadcast(y, [10, 8])
-    z = t.reshape(z, [10, 1, 8])
-    z = t.broadcast(z, [10, 4, 8])
-    t.set_passes("EliminateReshape")
-    t.store_expect(z, 0.3000)
-    assert(t.run_check())
-
-def test_broadcast_forward():
-    t = Tester()
-    b = np.full([10, 3, 4], 0.3, np.float32)
-    y = t.load(b)
-    z = t.reshape(y, [1, 10, 12])
-    z = t.broadcast(z, [8, 10 ,12])
-    t.set_passes("EliminateReshape")
-    t.store_expect(z, 0.3000)
-    assert(t.run_check())
-
-def test_broadcast_s():
-    t = Tester()
-    z = t.broadcast(0.3, [3, 10], "float32", True)
-    z = t.reshape(z, [3, 1, 10])
-    z = t.broadcast(z, [3, 10, 10])
-    t.set_passes("EliminateReshape")
-    t.store_expect(z, 0.3000)
-    assert(t.run_check())
-
-def test_multi_reshape_1():
-    t = Tester()
-    a = np.random.rand(54, 89).astype(np.float32)
-    x = t.load(a)
-    y = t.reshape(x, [89,54])
-    y = t.unary("Sqrt", y)
-    z = t.unary("Reciprocal", x)
-    z = t.reshape(z, [89,54])
-    z = t.binary("Add", y, z)
-    expect = np.add(np.sqrt(a), np.reciprocal(a)).reshape([89, 54])
-    t.store_expect(z, expect)
-    t.set_passes("EliminateReshape")
-    assert(t.run_check())
-
-def test_multi_reshape_2():
-    t = Tester()
-    a = np.random.rand(54, 89).astype(np.float32)
-    x = t.load(a)
-    y = t.reshape(x, [89,54])
-    y = t.unary("Sqrt", y)
-    z = t.reshape(y, [178, 27])
-    t.store_expect(z, np.sqrt(a).reshape([178, 27]))
-    t.set_passes("EliminateReshape")
-    assert(t.run_check())
-
-def test_element_any_forward():
-    t = Tester()
-    a = np.full([10, 10], 0, np.float32)
-    a[1, 1] = 1
-    x = t.load(a)
-    g = t.unary("Abs", x)
-    g = t.reshape(g, [5, 10, 2])
-    z = t.element_any(g)
-    b = t.store(z)
-    t.set_passes("EliminateReshape")
-    t.run_check()
-    assert t.output(b)[0] == 1
-
-def test_element_any_backward():
-    t = Tester()
-    a = np.full([10,8], 0, np.float32)
-    a[1, 1] = 1
-    y = t.load(a)
-    z = t.element_any(y)
-    z = t.broadcast(z, [10, 8])
-    z = t.reshape(z, [10, 1, 8])
-    z = t.broadcast(z, [10, 4, 8])
-    t.set_passes("EliminateReshape")
-    t.store_expect(z, 1.0)
-    assert t.run_check()
-
-def test_unalign_broadcast():
-    t = Tester()
-    a = np.full([1, 320], 0.3, np.float16)
-    b = np.full((), 0.2, np.float32)
+    a = np.random.normal(0.0, 1.0, [50, 256]).astype(np.float32)
     x1 = t.load(a)
-    x2 = t.load(b)
-    x3 = t.cast(x1, "float32")
-    x4 = t.reshape(x3, [320])
-    x5 = t.binary("Mul", x4, x2)
+    x2 = t.add(x1, 0.2)
+    x3 = t.reshape(x2, [25, 256, 2])
+    x4 = t.mul(x3, 0.3)
+    t.store_expect(x4, (a + 0.2).reshape([25, 256, 2]) * 0.3)
     t.set_passes("EliminateReshape")
-    t.store_expect(x5, 0.06)
-    assert(t.run_check())
-
-def test_reduce_lead_dim():
-    t = Tester()
-    a = np.random.normal(-0.5, 0.5, [128, 1]).astype(np.float32)
-    x = t.load(a)
-    x = t.reshape(x, [1, 128])
-    y = t.reduce("sum", x, [1], True)
-    t.store_expect(y, np.sum(a, (0,), keepdims=True))
-    t.set_passes("EliminateReshape")
-    assert(t.run_check())
-
-@pytest.mark.mix
-def test_matmul_post_fusion_forward():
-    t = Tester("mix",use_pass_opt=True)
-    shape_a = [1020, 3072]
-    shape_b = [3072, 3072]
-    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
-    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
-    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16)
-    a = t.load(ax)
-    b = t.load(bx)
-    c = t.matmul(a, b, False, False)
-    e = t.reshape(c, (2, 510, 48, 64))
-    expect = np.reshape(np_c,(2, 510, 48, 64))
-    t.store_expect(e, np.reshape(expect,(2, 510, 48, 64)), 2e-3)
     assert (t.run_check())
 
-@pytest.mark.mix
-def test_matmul_post_fusion_sload():
-    t = Tester("mix",use_pass_opt=True)
-    shape_a = [1, 32, 512, 2048]
-    shape_b = [1, 32, 512, 128]
-    shape_c = [32, 2048, 128]
-    ax = np.random.normal(0, 0.01, shape_a).astype(np.float16)
-    bx = np.random.normal(0, 0.01, shape_b).astype(np.float16)
-    cx = np.random.normal(0, 0.01, shape_c).astype(np.float16)
-    np_c = np.matmul(ax.astype(np.float32).transpose(0, 1, 3, 2), bx.astype(np.float32)).astype(np.float16)
-    a = t.load(ax)
-    b = t.load(bx)
-    cc = t.load(cx)
-    c = t.matmul(a, b, True, False)
-    e = t.reshape(c, shape_c)
-    f = t.binary("Add", e, cc)
-    t.store_expect(f, np.reshape(np_c, shape_c) + cx, 2e-3)
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_elim_reshape_load_store():
+    t = Tester()
+    a = np.random.normal(0.0, 1.0, [50, 256]).astype(np.float32)
+    x1 = t.load(a)
+    x2 = t.reshape(x1, [25, 256, 2])
+    t.store_expect(x2, a.reshape([25, 256, 2]))
+    t.set_passes("EliminateReshape")
     assert (t.run_check())

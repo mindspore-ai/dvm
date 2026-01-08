@@ -352,22 +352,22 @@ def parse_and_generate_code(block, idx, occurrence_count):
                 param_numpy_expr1 = numpy_steps.get(param_var_name1)
                 param_numpy_expr2 = numpy_steps.get(param_var_name2)
                 if param_code_var1 and param_code_var2 and param_numpy_expr1 and param_numpy_expr2:
-                    line = f"{code_var_name} = t.binary('{operation}', {param_code_var1}, {param_code_var2})"
-                    code_lines.append('    ' + line)
                     numpy_op_map = {
-                        'Add': 'np.add',
-                        'Mul': 'np.multiply',
-                        'Sub': 'np.subtract',
-                        'Div': 'np.divide',
-                        'Pow': 'np.power',
-                        'Maximum': 'np.maximum',
-                        'Minimum': 'np.minimum',
-                        'Less': 'np.less',
-                        'LogicalOr': 'np.logical_or',
-                        'LogicalAnd': 'np.logical_and',
+                        'Add': ('add', 'np.add'),
+                        'Mul': ('mul', 'np.multiply'),
+                        'Sub': ('sub', 'np.subtract'),
+                        'Div': ('div', 'np.divide'),
+                        'Pow': ('pow', 'np.power'),
+                        'Maximum': ('maximum', 'np.maximum'),
+                        'Minimum': ('minimum', 'np.minimum'),
+                        'Less': ('less', 'np.less'),
+                        'LogicalOr': ('logical_or', 'np.logical_or'),
+                        'LogicalAnd': ('logical_and', 'np.logical_and'),
                     }
                     numpy_op = numpy_op_map.get(operation, 'np.add')
-                    numpy_expr = f"{numpy_op}({param_numpy_expr1}, {param_numpy_expr2})"
+                    line = f"{code_var_name} = t.{numpy_op[0]}({param_code_var1}, {param_code_var2})"
+                    code_lines.append('    ' + line)
+                    numpy_expr = f"{numpy_op[1]}({param_numpy_expr1}, {param_numpy_expr2})"
                     numpy_steps[var_name] = numpy_expr
                 else:
                     print(
@@ -419,7 +419,18 @@ def parse_and_generate_code(block, idx, occurrence_count):
             code_lines.append('    ' + line)
             numpy_expr = f"np.full({shape_ref}, {scalar_value}, dtype=np.{var_type})"
             numpy_steps[var_name] = numpy_expr
-        elif operation in ['Abs', 'Neg', 'Exp', 'Log', 'Sqrt', 'Reciprocal', 'IsFinite', 'LogicalNot']:
+        elif operation == 'ScalarDiv':
+            operator_count += 1
+            param_var_name, _, _ = parse_variable_def(
+                params_list[0], allow_extra=True)
+            param_var_name = resolve_variable(param_var_name, skip_variables)
+            param_code_var = variable_mapping.get(param_var_name)
+            param_numpy_expr = numpy_steps.get(param_var_name)
+            line = f"{code_var_name} = t.binary(\"Div\", {scalar_value}, {param_code_var})"
+            code_lines.append('    ' + line)
+            numpy_expr = f"np.divide({scalar_value}, {param_numpy_expr})"
+            numpy_steps[var_name] = numpy_expr
+        elif operation in ['Abs', 'Exp', 'Log', 'Sqrt', 'Reciprocal', 'IsFinite', 'LogicalNot']:
             operator_count += 1  # 增加算子计数
             if len(params_list) < 1:
                 print(f"{operation} operation缺少参数: {line}")
@@ -431,20 +442,19 @@ def parse_and_generate_code(block, idx, occurrence_count):
             param_code_var = variable_mapping.get(param_var_name)
             param_numpy_expr = numpy_steps.get(param_var_name)
             if param_code_var and param_numpy_expr:
-                line = f"{code_var_name} = t.unary('{operation}', {param_code_var})"
-                code_lines.append('    ' + line)
                 numpy_op_map = {
-                    'Abs': 'np.abs',
-                    'Neg': 'np.negative',
-                    'Exp': 'np.exp',
-                    'Log': 'np.log',
-                    'Sqrt': 'np.sqrt',
-                    'Reciprocal': 'np.reciprocal',
-                    'IsFinite': 'np.isfinite',
-                    'LogicalNot': 'np.logical_not',
+                    'Abs': ('abs', 'np.abs'),
+                    'Exp': ('exp', 'np.exp'),
+                    'Log': ('log', 'np.log'),
+                    'Sqrt': ('sqrt', 'np.sqrt'),
+                    'Reciprocal': ('reciprocal', 'np.reciprocal'),
+                    'IsFinite': ('isfinite', 'np.isfinite'),
+                    'LogicalNot': ('logical_not', 'np.logical_not'),
                 }
                 numpy_op = numpy_op_map.get(operation, 'np.abs')
-                numpy_expr = f"{numpy_op}({param_numpy_expr})"
+                line = f"{code_var_name} = t.{numpy_op[0]}({param_code_var})"
+                code_lines.append('    ' + line)
+                numpy_expr = f"{numpy_op[1]}({param_numpy_expr})"
                 numpy_steps[var_name] = numpy_expr
             else:
                 print(f"Error: variable {param_var_name} not found.")
@@ -513,7 +523,7 @@ def parse_and_generate_code(block, idx, occurrence_count):
                         continue
 
                 # 生成代码
-                line = f"{code_var_name} = t.reduce('sum', {param_code_var}, {axis}, {keepdims})"
+                line = f"{code_var_name} = t.sum({param_code_var}, {axis}, {keepdims})"
                 code_lines.append('    ' + line)
                 if axis is None:
                     numpy_expr = f"np.sum({param_numpy_expr}, keepdims={keepdims})"
@@ -540,9 +550,9 @@ def parse_and_generate_code(block, idx, occurrence_count):
             param_numpy_expr1 = numpy_steps.get(param_var_name1)
             param_numpy_expr2 = numpy_steps.get(param_var_name2)
             if trans_a == "True":
-                param_numpy_expr1 = f"{param_numpy_expr1}.swapaxes(-1,2)"
+                param_numpy_expr1 = f"{param_numpy_expr1}.swapaxes(-1,-2)"
             if trans_b == "True":
-                param_numpy_expr2 = f"{param_numpy_expr2}.swapaxes(-1,2)"
+                param_numpy_expr2 = f"{param_numpy_expr2}.swapaxes(-1,-2)"
 
             if len(params_list) == 2:
                 line = f"{code_var_name} = t.matmul({param_code_var1}, {param_code_var2}, {trans_a}, {trans_b})"

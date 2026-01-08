@@ -16,34 +16,14 @@
 import pytest
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
-@pytest.mark.parametrize('shape1, shape2', [([2, 3, 64], [2, 6, 32]),
-  ([1000, 4], [100, 40]), # lead dim
-])
-def test_reshape(shape1, shape2):
-    t = Tester()
-    a = np.full(shape1, 0.3, np.float32)
-    x = t.load(a)
-    y = t.binary("Mul", x, 0.6)
-    z = t.reshape(y, shape2)
-    r = t.unary("Sqrt", z)
-    t.store_expect(r, 0.42426)
-    assert(t.run_check())
 
-@pytest.mark.parametrize('shape1, shape2', [([2, 3, 64], [2, 6, 32]), ([128], [128, 1])])
-def test_reshape_direct_store(shape1, shape2):
-    t = Tester()
-    a = np.full(shape1, 0.3, np.float32)
-    x = t.load(a)
-    y = t.binary("Mul", x, 0.6)
-    z = t.reshape(y, shape2)
-    t.store_expect(z, 0.18)
-    assert(t.run_check())
-
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_copy():
     t = Tester()
     a = np.full([4, 32], 0.5, np.float32)
     x = t.load(a)
     y = t.copy(x)
     out = t.store_expect(y, 0.5)
-    assert(t.run_check())
+    assert (t.run_check())

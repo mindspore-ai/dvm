@@ -18,10 +18,16 @@
 #define _DVM_MSPROF_H_
 
 #include <vector>
-#include <dvm.h>
+#include "dvm.h"
+#include "system.h"
+#include "acl/acl_rt.h"
+#ifdef __CANN_85__
+#include "profiling/prof_api.h"
+#else
 #include "experiment/msprof/toolchain/prof_api.h"
 #include "experiment/msprof/toolchain/prof_common.h"
 #include "experiment/msprof/toolchain/prof_data_config.h"
+#endif
 
 namespace dvm {
 struct TensorInfoWrapper {
@@ -126,6 +132,18 @@ struct NodeInfo {
   uint32_t block_dim;
   std::vector<ShapeRef *> shapes;
   std::vector<TensorDtypeMs> data_types;
+
+  void AppendInput(NDObject *op) {
+    shapes.emplace_back(op->shape_ref_);
+    data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[op->type_id_]);
+    input_size++;
+  }
+
+  void AppendOutput(NDObject *op) {
+    shapes.emplace_back(op->shape_ref_);
+    data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[op->type_id_]);
+    output_size++;
+  }
 };
 
 template <typename T>
@@ -140,10 +158,10 @@ class ScopedValueGuard {
   T old_value_;
 };
 
-class MsProfHelper {
+class MsprofHelper {
  public:
-  MsProfHelper() = default;
-  ~MsProfHelper() = default;
+  MsprofHelper() = default;
+  ~MsprofHelper() = default;
 
   void InitReportNode();
   void UpdateReportNode(uint32_t block_dim);
@@ -159,6 +177,41 @@ class MsProfHelper {
   void UpdateTensorShape(const size_t index_begin, const size_t index_end, TensorInfoWrapper *tensor_info_wrapper);
 
   ProfNodeAdditionInfo addition_info_;
+};
+
+class TimeProfiler {
+ public:
+  TimeProfiler();
+  ~TimeProfiler();
+  void RecordStart(void *stream) { ERROR_CHECK(aclrtRecordEvent(start_, stream)); }
+  float RecordEnd(void *stream) {
+    ERROR_CHECK(aclrtRecordEvent(end_, stream));
+    ERROR_CHECK(aclrtSynchronizeStream(stream));
+    float time_us = 0.0f;
+    ERROR_CHECK(aclrtEventElapsedTime(&time_us, start_, end_));
+    return time_us;
+  }
+ protected:
+  aclrtEvent start_, end_;
+};
+
+class RepeatProfiler : public TimeProfiler {
+ public:
+  void Reset() {
+    min_us_ = 1e6;
+    max_us_ = 0.0f;
+    total_us_ = 0.0f;
+  }
+  void RecordEnd(void *stream) {
+    float time_us = TimeProfiler::RecordEnd(stream);
+    time_us *= 1000.0;
+    min_us_ = std::min(min_us_, time_us);
+    max_us_ = std::max(max_us_, time_us);
+    total_us_ += time_us;
+  }
+  float min_us_;
+  float max_us_;
+  float total_us_;
 };
 }  // namespace dvm
 #endif  // _DVM_MSPROF_H_

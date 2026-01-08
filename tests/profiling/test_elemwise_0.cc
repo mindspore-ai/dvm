@@ -30,10 +30,10 @@ int main() {
   auto b_dvm = kernel.Load(b.dev_, b.shape_ref_.get(), DType::kFloat32);
   auto c_dvm = kernel.Load(c.dev_, c.shape_ref_.get(), DType::kFloat32);
 
-  auto d_dvm = kernel.Binary(BinaryOpType::kDiv, b_dvm, c_dvm);
-  auto e_dvm = kernel.Binary(BinaryOpType::kAdd, d_dvm, 2);
-  auto f_dvm = kernel.Unary(UnaryOpType::kAbs, e_dvm);
-  auto g_dvm = kernel.Binary(BinaryOpType::kMul, f_dvm, a_dvm);
+  auto d_dvm = kernel.Binary(BinaryType::kDiv, b_dvm, c_dvm);
+  auto e_dvm = kernel.Binary(BinaryType::kAdd, d_dvm, 2);
+  auto f_dvm = kernel.Unary(UnaryType::kAbs, e_dvm);
+  auto g_dvm = kernel.Binary(BinaryType::kMul, f_dvm, a_dvm);
 
   (void)kernel.Store(o1.dev_, d_dvm);
   (void)kernel.Store(o2.dev_, g_dvm);

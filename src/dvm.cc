@@ -17,7 +17,6 @@
 #include <unordered_map>
 #include <cmath>
 #include <vector>
-#include <cstring>
 #include "dvm.h"
 #include "kernel.h"
 #include "xkernel.h"
@@ -28,39 +27,39 @@
 namespace dvm {
 std::mutex g_rt_kernel_launch_mutex;
 namespace {
-static const BinarySOpType binary_map[kBinaryOpEnd] = {
-  kEquals, kNotEquals,    kGreaters,     kGreaterEquals, kLesss,    kLessEquals,   kAdds,         kBinarySOpEnd,
-  kMuls,   kBinarySOpEnd, kBinarySOpEnd, kMaximums,      kMinimums, kBinarySOpEnd, kBinarySOpEnd,
+static const BinarySOpType binary_map[kBinaryTypeEnd] = {
+  kEquals, kNotEquals, kGreaters,     kGreaterEquals, kLesss,    kLessEquals,   kAdds,         kBinarySOpEnd,
+  kMuls,   kDivs,      kBinarySOpEnd, kMaximums,      kMinimums, kBinarySOpEnd, kBinarySOpEnd,
 };
 
-static const BinarySOpType lhs_val_binary_map[kBinaryOpEnd] = {
+static const BinarySOpType lhs_val_binary_map[kBinaryTypeEnd] = {
   kEquals, kNotEquals, kLesss,        kLessEquals, kGreaters, kGreaterEquals, kAdds,         kBinarySOpEnd,
-  kMuls,   kDivs,      kBinarySOpEnd, kMaximums,   kMinimums, kBinarySOpEnd,  kBinarySOpEnd,
+  kMuls,   ksDiv,      kBinarySOpEnd, kMaximums,   kMinimums, kBinarySOpEnd,  kBinarySOpEnd,
 };
-
+static constexpr const char* kUnnamedDvmOp = "UnnamedDvmOp";
 template <typename T>
 struct TypeTrait {
-  static constexpr DType ID = kTypeEnd;
+  static constexpr DataType ID = kDataTypeEnd;
   using code_t = uint8_t;
 };
 template <>
 struct TypeTrait<int32_t> {
-  static constexpr DType ID = kInt32;
+  static constexpr DataType ID = kInt32;
   using code_t = uint32_t;
 };
 template <>
 struct TypeTrait<float> {
-  static constexpr DType ID = kFloat32;
+  static constexpr DataType ID = kFloat32;
   using code_t = uint32_t;
 };
 template <>
 struct TypeTrait<Float16> {
-  static constexpr DType ID = kFloat16;
+  static constexpr DataType ID = kFloat16;
   using code_t = uint16_t;
 };
 template <>
 struct TypeTrait<BFloat16> {
-  static constexpr DType ID = kBFloat16;
+  static constexpr DataType ID = kBFloat16;
   using code_t = uint16_t;
 };
 
@@ -156,10 +155,11 @@ uint16_t EncoderFP16(float f32) {
 }
 
 float ToFloat32(const BFloat16 &bf16) {
-  float f32 = 0;
-  uint32_t f32_tmp = bf16.int_value();
-  f32_tmp <<= 16;
-  memcpy(&f32, &f32_tmp, sizeof(f32_tmp));
+  union {
+    float f32;
+    uint32_t u32;
+  };
+  u32 = static_cast<uint32_t>(bf16.int_value()) << 16;
   return f32;
 }
 
@@ -227,7 +227,7 @@ template <typename T>
 NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   int32_t iter_num = std::abs(static_cast<int32_t>(value));
   if (iter_num == 0) {
-    return kernel->Broadcast(static_cast<T>(1), obj->shape_ref_, obj->type_id_, false);
+    return kernel->Broadcast(static_cast<T>(1), obj->shape_ref_, obj->type_id_);
   }
   NDObject *res = nullptr;
   if (iter_num == 1) {
@@ -235,16 +235,16 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   } else {
     while (iter_num) {
       if (iter_num & 1) {
-        res = res == nullptr ? obj : kernel->Binary(BinaryOpType::kMul, res, obj);
+        res = res == nullptr ? obj : kernel->Binary<BinaryType::kMul>(res, obj);
       }
       if (iter_num != 1) {
-        obj = kernel->Binary(BinaryOpType::kMul, obj, obj);
+        obj = kernel->Binary<BinaryType::kMul>(obj, obj);
       }
       iter_num >>= 1;
     }
   }
   if (value < T(0)) {
-    res = kernel->Unary(UnaryOpType::kReciprocal, res);
+    res = kernel->Unary<UnaryType::kReciprocal>(res);
   }
   return res;
 }
@@ -269,75 +269,239 @@ inline BFloat16 operator-(const BFloat16 &a) {
 inline bool operator>(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
 inline bool operator<(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
 
-template <typename T, bool rhs_val>
-NDObject *GetBinaryS(Kernel *kernel, int op_type, T val, NDObject *input) {
+template <typename T>
+class BroadcastScalarRefOp : public BroadcastScalarOp {
+ public:
+  BroadcastScalarRefOp(T scalar, ShapeRef *shape_ref, DataType type_id)
+      : BroadcastScalarOp(0, shape_ref, type_id), scalar_ref_(scalar) {}
+  uint64_t Emit(VectorKernel &k) {
+    scalar_ = EncodeScalar(*scalar_ref_, type_id_);
+    return BroadcastScalarOp::Emit(k);
+  }
+  NDObject *Clone(CloneHelper &h) override { return new BroadcastScalarRefOp<T>(scalar_ref_, shape_ref_, type_id_); }
+
+ private:
+  T scalar_ref_;
+};
+
+template <typename T>
+class CompareScalarRefOp : public CompareScalarOp {
+ public:
+  CompareScalarRefOp(int op_type, NDObject *input, T scalar_ref)
+      : CompareScalarOp(op_type, input, 0), scalar_ref_(scalar_ref) {}
+
+  uint64_t Emit(VectorKernel &k) override {
+    scalar_ = EncodeScalar(*scalar_ref_, type_id_);
+    return CompareScalarOp::Emit(k);
+  }
+  NDObject *Clone(CloneHelper &h) override { return new CompareScalarRefOp<T>(cmp_op_, h.GetClone(lhs_), scalar_ref_); }
+
+ private:
+  T scalar_ref_;
+};
+
+template <typename T>
+class BinaryScalarRefOp : public BinaryScalarOp {
+ public:
+  BinaryScalarRefOp(int op_type, NDObject *input, T scalar_ref)
+      : BinaryScalarOp(op_type, input, 0), scalar_ref_(scalar_ref) {}
+
+  uint64_t Emit(VectorKernel &k) override {
+    scalar_ = EncodeScalar(*scalar_ref_, type_id_);
+    return BinaryScalarOp::Emit(k);
+  }
+  NDObject *Clone(CloneHelper &h) override { return new BinaryScalarRefOp<T>(op_type_, h.GetClone(lhs_), scalar_ref_); }
+
+ private:
+  T scalar_ref_;
+};
+
+template <BinaryType op_type>
+NDObject *BinaryPromotion(Kernel *kernel, dvm::DataType promote_dtype, NDObject *lhs, NDObject *rhs) {
+  auto orig_dtype = lhs->type_id_;
+  lhs = kernel->Cast(lhs, promote_dtype);
+  rhs = kernel->Cast(rhs, promote_dtype);
+  auto result = kernel->Binary<op_type>(lhs, rhs);
+  return kernel->Cast(result, orig_dtype);
+}
+
+template <UnaryType op_type>
+NDObject *UnaryPromotion(Kernel *kernel, dvm::DataType promote_dtype, NDObject *lhs) {
+  auto orig_dtype = lhs->type_id_;
+  lhs = kernel->Cast(lhs, promote_dtype);
+  auto result = kernel->Unary<op_type>(lhs);
+  return kernel->Cast(result, orig_dtype);
+}
+
+template <BinaryType op_type, typename T, bool rhs_val>
+NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
   auto vkernel = kernel->GetImpl();
-  switch (op_type) {
-    case BinaryOpType::kAdd:
-    case BinaryOpType::kMul:
-    case BinaryOpType::kMaximum:
-    case BinaryOpType::kMinimum: {
-      auto obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
+  if constexpr (op_type == BinaryType::kAdd || op_type == BinaryType::kMul || op_type == BinaryType::kMinimum ||
+                op_type == BinaryType::kMinimum) {
+    NDObject *obj;
+    if constexpr (std::is_pointer<T>::value) {
+      obj = new BinaryScalarRefOp<T>(binary_map[op_type], input, val);
+    } else {
+      obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
+    }
+    vkernel->Append(obj);
+    return obj;
+  } else if constexpr (op_type == BinaryType::kDiv) {
+    if (input->type_id_ == kBFloat16) {
+      auto result = GetBinaryS<op_type, T, rhs_val>(kernel, val, kernel->Cast(input, kFloat32));
+      return kernel->Cast(result, input->type_id_);
+    }
+    NDObject *obj;
+    if constexpr (std::is_pointer<T>::value) {
+      obj = new BinaryScalarRefOp<T>(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+    } else {
+      obj = new BinaryScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
+                               EncodeScalar(val, input->type_id_));
+    }
+    vkernel->Append(obj);
+    return obj;
+  } else if constexpr (op_type == BinaryType::kEqual || op_type == BinaryType::kNotEqual ||
+                       op_type == BinaryType::kGreater || op_type == BinaryType::kGreaterEqual ||
+                       op_type == BinaryType::kLess || op_type == BinaryType::kLessEqual) {
+    auto type_id = input->type_id_;
+    if (type_id != kInt32 || g_system.Arch() == kAiCore_C310) {
+      NDObject *obj;
+      if constexpr (std::is_pointer<T>::value) {
+        obj = new CompareScalarRefOp<T>(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+      } else {
+        obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
+                                  EncodeScalar(val, type_id));
+      }
       vkernel->Append(obj);
       return obj;
     }
-    case BinaryOpType::kEqual:
-    case BinaryOpType::kNotEqual:
-    case BinaryOpType::kGreater:
-    case BinaryOpType::kLessEqual:
-    case BinaryOpType::kGreaterEqual:
-    case BinaryOpType::kLess: {
-      if (auto type_id = input->type_id_; type_id != kInt32) {
-        auto obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, EncodeScalar(val, type_id));
-        vkernel->Append(obj);
-        return obj;
-      }
+    return nullptr;
+  } else if constexpr (op_type == BinaryType::kPow) {
+    if constexpr (std::is_pointer<T>::value) {
       return nullptr;
-    }
-    case BinaryOpType::kPow: {
-      if (rhs_val) {
-        if (isInteger(val)) return PowS(kernel, input, val);
+    } else {
+      if constexpr (rhs_val) {
+        if (isInteger(val)) {
+          return PowS(kernel, input, val);
+        }
       } else if (val > T(0)) {
         if (input->type_id_ != kFloat32) {
-          auto result = GetBinaryS<float, false>(kernel, BinaryOpType::kPow, static_cast<float>(val),
-                                                 kernel->Cast(input, kFloat32));
+          auto result = GetBinaryS<BinaryType::kPow, float, false>(kernel, static_cast<float>(val),
+                                                                     kernel->Cast(input, kFloat32));
           return kernel->Cast(result, input->type_id_);
         }
-        auto tmp = GetBinaryS<float, true>(kernel, BinaryOpType::kMul, std::log(static_cast<float>(val)), input);
-        return kernel->Unary(UnaryOpType::kExp, tmp);
+        auto tmp = GetBinaryS<BinaryType::kMul, float, true>(kernel, std::log(static_cast<float>(val)), input);
+        return kernel->Unary<UnaryType::kExp>(tmp);
       }
       return nullptr;
     }
-    case BinaryOpType::kSub: {
-      if (rhs_val) {
-        return GetBinaryS<T, true>(kernel, BinaryOpType::kAdd, -val, input);
-      } else {
-        auto neg_input = GetBinaryS<T, true>(kernel, BinaryOpType::kMul, static_cast<T>(-1), input);
-        return GetBinaryS<T, true>(kernel, BinaryOpType::kAdd, val, neg_input);
-      }
-    }
-    case BinaryOpType::kDiv: {
-      if (rhs_val) {
-        return GetBinaryS<T, true>(kernel, BinaryOpType::kMul, T(1) / val, input);
-      } else {
-        auto obj = new BinaryScalarOp(lhs_val_binary_map[op_type], input, EncodeScalar(val, input->type_id_));
-        vkernel->Append(obj);
-        return obj;
-      }
-    }
-    default:
+  } else if constexpr (op_type == BinaryType::kSub) {
+    if constexpr (std::is_pointer<T>::value) {
       return nullptr;
+    } else {
+      if constexpr (rhs_val) {
+        return GetBinaryS<BinaryType::kAdd, T, true>(kernel, -val, input);
+      } else {
+        auto neg_input = GetBinaryS<BinaryType::kMul, T, true>(kernel, static_cast<T>(-1), input);
+        return GetBinaryS<BinaryType::kAdd, T, true>(kernel, val, neg_input);
+      }
+    }
   }
+  return nullptr;
 }
+
+class NDSliceLoad : public NDViewLoad {
+ public:
+  NDSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DataType type_id)
+      : NDViewLoad(src, size_ref, &stride_data_, &offset_data_, type_id), start_ref_(start_ref), src_ref_(src_ref) {
+    MESS(offset_data_, 10);
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) {
+    stride_data_[src_ref_->size - 1] = 1;
+    for (size_t i = src_ref_->size - 1; i > 0; --i) {
+      stride_data_[i - 1] = stride_data_[i] * src_ref_->data[i];
+    }
+    offset_data_ = 0;
+    if (start_ref_) {
+      ASSERT(start_ref_->size == src_ref_->size);
+      auto get_start = [this](size_t idx) -> int64_t {
+        auto start = start_ref_->data[idx];
+        return start >= 0 ? start : start + src_ref_->data[idx];
+      };
+      offset_data_ = get_start(start_ref_->size - 1);
+      for (size_t i = src_ref_->size - 1; i > 0; --i) {
+        offset_data_ += stride_data_[i - 1] * get_start(i - 1);
+      }
+    }
+    NDViewLoad::Normalize(run_ops);
+  }
+  NDObject *Clone(CloneHelper &h) override { return new NDSliceLoad(addr_.gm, src_ref_, start_ref_, shape_ref_, type_id_); }
+
+ protected:
+  ShapeRef *start_ref_;
+  ShapeRef *src_ref_;
+  ShapeWithRef stride_data_;
+  int64_t offset_data_;
+};
+
+class NDStridedSliceLoad : public NDSliceLoad {
+ public:
+  NDStridedSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
+                     DataType type_id = kFloat32)
+      : NDSliceLoad(src, src_ref, start_ref, &shape_, type_id), end_ref_(end_ref), step_ref_(step_ref) {}
+  void Normalize(std::vector<NDObject *> &run_ops) {
+    ASSERT(std::all_of(step_ref_->data, step_ref_->data + step_ref_->size, [](int64_t i) { return i == 1; }));
+    shape_.Resize(src_ref_->size);
+    for (size_t i = 0; i < src_ref_->size; i++) {
+      int64_t end = end_ref_->data[i] < 0 ? end_ref_->data[i] + src_ref_->data[i] : end_ref_->data[i];
+      int64_t start = start_ref_ == nullptr
+                        ? 0
+                        : (start_ref_->data[i] < 0 ? start_ref_->data[i] + src_ref_->data[i] : start_ref_->data[i]);
+      shape_[i] = std::min(end, src_ref_->data[i]) - start;
+    }
+    NDSliceLoad::Normalize(run_ops);
+  }
+  NDObject *Clone(CloneHelper &h) override {
+    return new NDStridedSliceLoad(addr_.gm, shape_ref_, src_stride_ref_, end_ref_, step_ref_, type_id_);
+  }
+
+ private:
+  ShapeWithRef shape_;
+  ShapeRef *end_ref_;
+  ShapeRef *step_ref_;
+};
+
+class ReshapeRankOp : public ReshapeOp {
+ public:
+  ReshapeRankOp(NDObject *input, const Communicator *comm) : ReshapeOp(input, nullptr), comm_(comm) {
+    shape_ref_ = input->shape_ref_;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) {
+    size_t last_idx = lhs_->nd_.size() - 1;
+    for (size_t i = 0; i < last_idx; ++i) {
+      ndd_.dims[i] = lhs_->nd_[i];
+    }
+    auto last_dim = lhs_->nd_[last_idx];
+    auto rank_size = comm_->GetRankSize();
+    if (last_dim != rank_size) {
+      ndd_.dims[last_idx] = last_dim / rank_size;
+      last_idx++;
+    }
+    ndd_.dims[last_idx] = rank_size;
+    ndd_.dims.resize(last_idx + 1);
+  }
+  NDObject *Clone(CloneHelper &h) override { return new ReshapeRankOp(h.GetClone(lhs_), comm_); }
+  const Communicator *comm_;
+};
 }  // namespace
 
-Float16::Float16(const float &v) : Float16(EncoderFP16(v)) {}
-Float16::Float16(const int32_t &v) : Float16(static_cast<float>(v)) {}
+Float16::Float16(float v) : Float16(EncoderFP16(v)) {}
+Float16::Float16(int32_t v) : Float16(static_cast<float>(v)) {}
 Float16::operator float() const { return ToFloat32(*this); }
 Float16::operator int32_t() const { return static_cast<int32_t>(ToFloat32(*this)); }
 
-BFloat16::BFloat16(const float &v) : BFloat16(EncoderBF16(v)) {}
-BFloat16::BFloat16(const int32_t &v) : BFloat16(static_cast<float>(v)) {}
+BFloat16::BFloat16(float v) : BFloat16(EncoderBF16(v)) {}
+BFloat16::BFloat16(int32_t v) : BFloat16(static_cast<float>(v)) {}
 BFloat16::operator float() const { return ToFloat32(*this); }
 BFloat16::operator int32_t() const { return static_cast<int32_t>(ToFloat32(*this)); }
 
@@ -345,165 +509,269 @@ Comm::~Comm() {
   if (comm_) delete comm_;
 }
 
-bool Comm::Init(int rank_id, int rank_size) {
-  if (!comm_) {
-    comm_ = new Communicator(rank_id, rank_size);
+bool Comm::Init(int rank_id, int rank_size, int comm_type, const uint32_t *group_ranks) {
+  if (comm_) {
+    delete comm_;
   }
-  return comm_->Init();
+  if (comm_type == Comm::kMemory) {
+    comm_ = new MemoryComm(rank_id, rank_size, group_ranks);
+    if (!static_cast<MemoryComm *>(comm_)->Init()) return false;
+  } else if (comm_type == Comm::kHccl) {
+    // TODO: create hccl_comm
+    comm_ = new HcclComm(nullptr);
+  } else {
+    ASSERT(comm_type == Comm::kDummy);
+    comm_ = new DummyComm(rank_id, rank_size);
+  }
+  return true;
 }
 
-Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr} {}
+void Comm::Init(void *hccl_comm) {
+  if (comm_) {
+    delete comm_;
+  }
+  comm_ = new HcclComm(hccl_comm);
+}
+
+#define ASSERT_KTYPE_SPLIT(type) \
+  ASSERT(type == KernelTypeX::kEager_ || type == KernelTypeX::kStaticSplit || type == KernelTypeX::kDynSplit)
+
+Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr}, op_name_{kUnnamedDvmOp}, op_fullname_{kUnnamedDvmOp} {
+  g_system.Init();
+}
 
 Kernel::~Kernel() {
   delete kernel_;
   delete msprof_helper_;
 }
 
-void Kernel::Reset(KernelType type) {
+template <KernelType type>
+void Kernel::Reset(uint32_t flags) {
   if (kernel_) {
     delete kernel_;
   }
-  if (type == kStaticShape) {
-    kernel_ = new VKernelS();
-  } else if (type == kDynShape) {
-    kernel_ = new VKernelD();
-  } else if (type == kStaticParallel) {
+  if constexpr (type == KernelType::kVector) {
+    bool dynamic = flags & KernelFlag::kDynamic;
+    if (flags & KernelFlag::kSpeculate) {
+      if (dynamic) {
+        kernel_ = new SpecVector<true>(kDynSpec);
+      } else {
+        kernel_ = new SpecVector<false>(kStaticSpec);
+      }
+    } else {
+      kernel_ = dynamic ? new VKernelD() : new VKernelS();
+    }
+  } else if constexpr (type == KernelType::kCube || type == KernelType::kMix) {
+    kernel_ = flags & KernelFlag::kDynamic ? new DynMixKernel() : new MixKernel();
+  } else if constexpr (type == KernelType::kParallel) {
+    EXCEPTION_IF(flags & KernelFlag::kDynamic , "dynamic shape parallel is not support");
     kernel_ = new VKernelP();
-  } else if (type == kStaticMix) {
-    kernel_ = new MixKernel();
-  } else if (type == kStaticStages) {
-    kernel_ = new StagesKernel();
-  } else if (type == kDynMix) {
-    kernel_ = new DynMixKernel();
+  } else if constexpr (type == KernelType::kSplit) {
+    bool unify_ws = flags & KernelFlag::kUnifyWS;
+    if (flags & KernelFlag::kDynamic) {
+      kernel_ = unify_ws ? new SplitGraphDW() : new SplitGraphD();
+    } else {
+      kernel_ = new SplitGraphS(unify_ws);
+    }
   } else {
-    ASSERT(0);
+    ASSERT(type == KernelType::kEager);
+    kernel_ = flags & KernelFlag::kUnifyWS ? new SplitEagerW() : new VKernelE();
   }
 }
 
-NDObject *Kernel::Load(void *addr, ShapeRef *shape, DType type) {
+template void Kernel::Reset<KernelType::kVector>(uint32_t);
+template void Kernel::Reset<KernelType::kCube>(uint32_t);
+template void Kernel::Reset<KernelType::kMix>(uint32_t);
+template void Kernel::Reset<KernelType::kParallel>(uint32_t);
+template void Kernel::Reset<KernelType::kSplit>(uint32_t);
+template void Kernel::Reset<KernelType::kEager>(uint32_t);
+
+NDObject *Kernel::Load(void *addr, ShapeRef *shape, DataType type) {
   NDObject *obj = new NDLoad(addr, shape, type);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DType type) {
+NDObject *Kernel::Load(void *addr, ShapeRef *shape, ShapeRef *stride, const int64_t *offset, DataType type) {
+  NDObject *obj;
+  if (stride) {
+    obj = new NDViewLoad(addr, shape, stride, offset, type);
+  } else {
+    obj = new NDLoad(addr, shape, type);
+  }
+  kernel_->Append(obj);
+  return obj;
+}
+
+NDObject *Kernel::SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DataType type) {
   auto obj = new NDSliceLoad(addr, shape, start, size, type);
   kernel_->Append(obj);
   return obj;
 }
 
 NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step,
-                                   DType type) {
+                                   DataType type) {
   auto obj = new NDStridedSliceLoad(addr, shape, start, end, step, type);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::MultiLoad(void *addr, ShapeRef *shape, DType type, const Comm *comm) {
+NDObject *Kernel::MultiLoad(void *addr, ShapeRef *shape, DataType type, const Comm *comm) {
   NDObject *obj = new NDMultiLoad(static_cast<uint8_t *>(addr), shape, type, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::Unary(int op_type, NDObject *input) {
-  if (op_type >= UnaryOpType::kRound && op_type <= UnaryOpType::kTrunc && GetDType(input) == kFloat16) {
-    return Cast(Unary(op_type, Cast(input, kFloat32)), kFloat16);
-  }
-  if (GetDType(input) == kInt32) {
-    if (op_type == UnaryOpType::kAbs) {
-      return Binary(BinaryOpType::kMaximum, input, Binary(BinaryOpType::kMul, input, -1));
+template <UnaryType op_type>
+NDObject *Kernel::Unary(NDObject *input) {
+  switch (input->type_id_) {
+    case kBool:
+      return UnaryPromotion<op_type>(this, DataType::kFloat16, input);
+    case kBFloat16:
+      return UnaryPromotion<op_type>(this, DataType::kFloat32, input);
+    case kFloat16: {
+      if constexpr (op_type >= UnaryType::kRound && op_type <= UnaryType::kTrunc) {
+        return UnaryPromotion<op_type>(this, DataType::kFloat32, input);
+      }
+      break;
     }
-  }
-  if (op_type == UnaryOpType::kLogicalNot) {
-    if (input->type_id_ == kBool) {
-      return Cast(Binary(BinaryOpType::kSub, 1.0f, Cast(input, kFloat16)), kBool);
-    } else {
-      return Binary(BinaryOpType::kSub, 1, input);
+    case kInt32: {
+      if constexpr (op_type == UnaryType::kAbs) {
+        if (g_system.Arch() == kAiCore_C220) {
+          return Binary<BinaryType::kMaximum>(input, Binary<BinaryType::kMul>(input, -1));
+        }
+      }
+      break;
     }
+    default:
+      break;
   }
-  if (op_type == UnaryOpType::kReciprocal) {
-    if (input->type_id_ == kInt32 || input->type_id_ == kBool) {
-      return Cast(Binary(BinaryOpType::kDiv, 1.0f, Cast(input, kFloat32)), input->type_id_);
-    } else {
-      return Binary(BinaryOpType::kDiv, 1.0f, input);
-    }
+  if constexpr (op_type == UnaryType::kLogicalNot) {
+    return Binary<BinaryType::kSub>(1, input);
   }
-  NDObject *obj;
-  obj = new UnaryOp(op_type, input);
+  if constexpr (op_type == UnaryType::kReciprocal) {
+    return Binary<BinaryType::kDiv>(1, input);
+  }
+  NDObject *obj = new UnaryOp(op_type, input);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::Binary(int op_type, NDObject *lhs, NDObject *rhs) {
-  if (lhs->type_id_ == DType::kBool) {
-    // Binary may introduce broadcast which is not supported in Bool. So Cast to f16.
-    auto cast1 = Cast(lhs, DType::kFloat16);
-    auto cast2 = Cast(rhs, DType::kFloat16);
-    auto bin = Binary(op_type, cast1, cast2);
-    auto cast3 = Cast(bin, DType::kBool);
-    return cast3;
-  }
-  if (op_type < V_CMP_ALL && lhs->type_id_ == kInt32) {
-    switch (op_type) {
-      case kGreaterEqual:
-        return Binary(BinaryOpType::kEqual, Binary(BinaryOpType::kMaximum, lhs, rhs), lhs);
-      case kLess:
-        return Binary(BinaryOpType::kNotEqual, Binary(BinaryOpType::kMaximum, lhs, rhs), lhs);
-      case kLessEqual:
-        return Binary(BinaryOpType::kEqual, Binary(BinaryOpType::kMinimum, lhs, rhs), lhs);
-      case kGreater:
-        return Binary(BinaryOpType::kNotEqual, Binary(BinaryOpType::kMinimum, lhs, rhs), lhs);
+#define DEF_UNARY(op) template NDObject *Kernel::Unary<op>(NDObject *)
+DEF_UNARY(UnaryType::kSqrt);
+DEF_UNARY(UnaryType::kAbs);
+DEF_UNARY(UnaryType::kLog);
+DEF_UNARY(UnaryType::kExp);
+DEF_UNARY(UnaryType::kReciprocal);
+DEF_UNARY(UnaryType::kIsFinite);
+DEF_UNARY(UnaryType::kLogicalNot);
+DEF_UNARY(UnaryType::kRound);
+DEF_UNARY(UnaryType::kFloor);
+DEF_UNARY(UnaryType::kCeil);
+DEF_UNARY(UnaryType::kTrunc);
+
+template <BinaryType op_type, typename L, typename R>
+NDObject *Kernel::Binary(L lhs, R rhs) {
+  if constexpr (!std::is_same<L, NDObject *>::value) {
+    if (rhs->type_id_ == kBool) {
+      return Cast(Binary<op_type>(lhs, Cast(rhs, kFloat16)), kBool);
+    }
+    NDObject *obj = GetBinaryS<op_type, L, false>(this, lhs, rhs);
+    if (obj == nullptr) {
+      return Binary<op_type>(Broadcast(lhs, rhs->shape_ref_, rhs->type_id_), rhs);
+    }
+    return obj;
+  } else if constexpr (!std::is_same<R, NDObject *>::value) {
+    if (lhs->type_id_ == kBool) {
+      return Cast(Binary<op_type>(Cast(lhs, kFloat16), rhs), kBool);
+    }
+    NDObject *obj = GetBinaryS<op_type, R, true>(this, rhs, lhs);
+    if (obj == nullptr) {
+      return Binary<op_type>(lhs, Broadcast(rhs, lhs->shape_ref_, lhs->type_id_));
+    }
+    return obj;
+  } else {
+    switch (lhs->type_id_) {
+      case kBool:
+        return BinaryPromotion<op_type>(this, DataType::kFloat16, lhs, rhs);
+      case kBFloat16: {
+        if constexpr (op_type == BinaryType::kPow || op_type == BinaryType::kDiv) {
+          return BinaryPromotion<op_type>(this, DataType::kFloat32, lhs, rhs);
+        }
+        break;
+      }
+      case kFloat16: {
+        if constexpr (op_type == BinaryType::kPow) {
+          return BinaryPromotion<op_type>(this, DataType::kFloat32, lhs, rhs);
+        }
+        break;
+      }
+      case kInt32: {
+        if (g_system.Arch() == kAiCore_C220) {
+          if constexpr (op_type == kGreaterEqual) {
+            return Binary<BinaryType::kEqual>(Binary<BinaryType::kMaximum>(lhs, rhs), lhs);
+          } else if constexpr (op_type == kLess) {
+            return Binary<BinaryType::kNotEqual>(Binary<BinaryType::kMaximum>(lhs, rhs), lhs);
+          } else if constexpr (op_type == kLessEqual) {
+            return Binary<BinaryType::kEqual>(Binary<BinaryType::kMinimum>(lhs, rhs), lhs);
+          } else if constexpr (op_type == kGreater) {
+            return Binary<BinaryType::kNotEqual>(Binary<BinaryType::kMinimum>(lhs, rhs), lhs);
+          }
+        }
+        break;
+      }
       default:
         break;
     }
-  }
-  NDObject *obj;
-  if (op_type == BinaryOpType::kPow) {
-    if (lhs->type_id_ == kFloat16) {
-      obj = new PowerOp(Cast(lhs, kFloat32), Cast(rhs, kFloat32));
-      kernel_->Append(obj);
-      return Cast(obj, kFloat16);
+    NDObject *obj;
+    if constexpr (op_type == BinaryType::kPow) {
+      obj = new PowerOp(lhs, rhs);
+    } else if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
+      obj = new CompareOp(op_type, lhs, rhs);
+    } else {
+      obj = new BinaryOp(op_type, lhs, rhs);
     }
-    obj = new PowerOp(lhs, rhs);
-  } else if (op_type < V_CMP_ALL) {
-    obj = new CompareOp(op_type, lhs, rhs);
-  } else {
-    obj = new BinaryOp(op_type, lhs, rhs);
+    kernel_->Append(obj);
+    return obj;
   }
-  kernel_->Append(obj);
-  return obj;
 }
 
-template <typename T>
-NDObject *Kernel::Binary(int op_type, T val, NDObject *rhs) {
-  NDObject *obj = GetBinaryS<T, false>(this, op_type, val, rhs);
-  if (obj == nullptr) {
-    NDObject *broadcast = new BroadcastScalarOp(EncodeScalar(val, rhs->type_id_), rhs->shape_ref_, rhs->type_id_, nullptr);
-    kernel_->Append(broadcast);
-    return Binary(op_type, broadcast, rhs);
-  }
-  return obj;
-}
+#define DEF_BINARY(op)  \
+  template NDObject *Kernel::Binary<op>(NDObject *, NDObject *); \
+  template NDObject *Kernel::Binary<op>(NDObject *, float);      \
+  template NDObject *Kernel::Binary<op>(NDObject *, int32_t);    \
+  template NDObject *Kernel::Binary<op>(NDObject *, Float16);    \
+  template NDObject *Kernel::Binary<op>(NDObject *, BFloat16);   \
+  template NDObject *Kernel::Binary<op>(float, NDObject *);      \
+  template NDObject *Kernel::Binary<op>(int32_t, NDObject *);    \
+  template NDObject *Kernel::Binary<op>(Float16, NDObject *);    \
+  template NDObject *Kernel::Binary<op>(BFloat16, NDObject *);   \
+  template NDObject *Kernel::Binary<op>(NDObject *, float *);    \
+  template NDObject *Kernel::Binary<op>(NDObject *, int32_t *);  \
+  template NDObject *Kernel::Binary<op>(NDObject *, int64_t *);  \
+  template NDObject *Kernel::Binary<op>(NDObject *, Float16 *);  \
+  template NDObject *Kernel::Binary<op>(NDObject *, BFloat16 *); \
+  template NDObject *Kernel::Binary<op>(float *, NDObject *);    \
+  template NDObject *Kernel::Binary<op>(int32_t *, NDObject *);  \
+  template NDObject *Kernel::Binary<op>(int64_t *, NDObject *);  \
+  template NDObject *Kernel::Binary<op>(Float16 *, NDObject *);  \
+  template NDObject *Kernel::Binary<op>(BFloat16 *, NDObject *)
 
-template <typename T>
-NDObject *Kernel::Binary(int op_type, NDObject *lhs, T val) {
-  NDObject *obj = GetBinaryS<T, true>(this, op_type, val, lhs);
-  if (obj == nullptr) {
-    NDObject *broadcast = new BroadcastScalarOp(EncodeScalar(val, lhs->type_id_), lhs->shape_ref_, lhs->type_id_, nullptr);
-    kernel_->Append(broadcast);
-    return Binary(op_type, lhs, broadcast);
-  }
-  return obj;
-}
-
-template NDObject *Kernel::Binary<float>(int op_type, NDObject *lhs, float val);
-template NDObject *Kernel::Binary<int32_t>(int op_type, NDObject *lhs, int32_t val);
-template NDObject *Kernel::Binary<Float16>(int op_type, NDObject *lhs, Float16 val);
-template NDObject *Kernel::Binary<BFloat16>(int op_type, NDObject *lhs, BFloat16 val);
-template NDObject *Kernel::Binary<float>(int op_type, float val, NDObject *rhs);
-template NDObject *Kernel::Binary<int32_t>(int op_type, int32_t val, NDObject *rhs);
-template NDObject *Kernel::Binary<Float16>(int op_type, Float16 val, NDObject *rhs);
-template NDObject *Kernel::Binary<BFloat16>(int op_type, BFloat16 val, NDObject *rhs);
+DEF_BINARY(BinaryType::kEqual);
+DEF_BINARY(BinaryType::kNotEqual);
+DEF_BINARY(BinaryType::kGreater);
+DEF_BINARY(BinaryType::kGreaterEqual);
+DEF_BINARY(BinaryType::kLess);
+DEF_BINARY(BinaryType::kLessEqual);
+DEF_BINARY(BinaryType::kAdd);
+DEF_BINARY(BinaryType::kSub);
+DEF_BINARY(BinaryType::kMul);
+DEF_BINARY(BinaryType::kDiv);
+DEF_BINARY(BinaryType::kPow);
+DEF_BINARY(BinaryType::kMaximum);
+DEF_BINARY(BinaryType::kMinimum);
+DEF_BINARY(BinaryType::kLogicalAnd);
+DEF_BINARY(BinaryType::kLogicalOr);
 
 NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   if (cond->type_id_ != lhs->type_id_) {
@@ -514,8 +782,8 @@ NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   return obj;
 }
 
-NDObject *Kernel::Cast(NDObject *input, DType type) {
-  static const int g_cast_staff_type[kTypeEnd][kTypeEnd] = {
+NDObject *Kernel::Cast(NDObject *input, DataType type) {
+  static const int g_cast_staff_type[kDataTypeEnd][kDataTypeEnd] = {
     {-1, -1, kFloat16, kFloat16, kFloat16},  // V_BOOL
     {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
     {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
@@ -528,14 +796,14 @@ NDObject *Kernel::Cast(NDObject *input, DType type) {
   }
   auto input_obj_type = input->GetObjectType();
   if (type == kBool && input_obj_type != kCompare && input_obj_type != kCompareS) {
-    if (input->type_id_ == kBFloat16) {
+    if (input->type_id_ == kBFloat16 && g_system.Arch() == kAiCore_C220) {
       input = Cast(input, kFloat32);
     }
-    input = Binary(BinaryOpType::kNotEqual, input, 0);
+    input = Binary<BinaryType::kNotEqual>(input, 0);
   }
   auto stuff_type = g_cast_staff_type[input->type_id_][type];
   while (stuff_type != -1) {
-    input = new CastOp(input, static_cast<DType>(stuff_type));
+    input = new CastOp(input, static_cast<DataType>(stuff_type));
     kernel_->Append(input);
     stuff_type = g_cast_staff_type[input->type_id_][type];
   }
@@ -557,27 +825,32 @@ NDObject *Kernel::ElemAny(NDObject *input) {
 }
 
 template <typename T>
-NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DType type, bool dummy_load) {
-  NDObject *load = nullptr;
-  if (dummy_load) {
-    load = new NDLoadDummy(type);
-    kernel_->Append(load);
+NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DataType type) {
+  NDObject *obj;
+  if constexpr (std::is_pointer<T>::value) {
+    obj = new BroadcastScalarRefOp<T>(val, shape, type);
+  } else {
+    obj = new BroadcastScalarOp(EncodeScalar(val, type), shape, type);
   }
-  auto obj = new BroadcastScalarOp(EncodeScalar(val, type), shape, type, load);
   kernel_->Append(obj);
   return obj;
 }
 
-template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DType type, bool dummy_load);
-template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DType type, bool dummy_load);
-template NDObject *Kernel::Broadcast<Float16>(Float16 val, ShapeRef *shape, DType type, bool dummy_load);
-template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, ShapeRef *shape, DType type, bool dummy_load);
+template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<Float16>(Float16 val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<float *>(float *val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<int32_t *>(int32_t *val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<int64_t *>(int64_t *val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<Float16 *>(Float16 *val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<BFloat16 *>(BFloat16 *val, ShapeRef *shape, DataType type);
 
 NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
-  if (input->type_id_ == DType::kBool) {
-    auto cast1 = Cast(input, DType::kFloat16);
+  if (input->type_id_ == DataType::kBool) {
+    auto cast1 = Cast(input, DataType::kFloat16);
     auto obj = Broadcast(cast1, shape);
-    auto cast2 = Cast(obj, DType::kBool);
+    auto cast2 = Cast(obj, DataType::kBool);
     return cast2;
   }
   auto obj = new BroadcastOp(input, shape);
@@ -605,11 +878,11 @@ NDObject *Kernel::Reshape(NDObject *input, ShapeRef *shape) {
   return obj;
 }
 
-NDObject *Kernel::Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims) {
-  if (input->type_id_ != DType::kFloat32) {
+NDObject *Kernel::_Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims) {
+  if (input->type_id_ != DataType::kFloat32 && op_type == kSum) {
     return nullptr;
   }
-  auto obj = new ReduceOp(input, ReduceOp::SUM, dims, keepdims);
+  auto obj = new ReduceOp(input, op_type, dims, keepdims);
   kernel_->Append(obj);
   return obj;
 }
@@ -619,7 +892,7 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
     input = Copy(input);
   }
   auto ktype = kernel_->KType();
-  if (ktype == kEager) {
+  if (ktype == kEager_) {
     if (auto store = VKernelE::GetStore(input)) {
       store->addr_.gm = addr;
       store->flags_ |= OBJ_FLAG_EAGER;
@@ -632,21 +905,22 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
 }
 
 NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
-  auto ktype = kernel_->KType();
-  if (ktype == kStaticStages) {
-    ktype = static_cast<StagesKernel *>(kernel_)->Current()->KType();
-  }
   NDObject *obj = new NDPadStore(addr, input, pad_size);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::AllReduce(NDObject *input, const Comm *comm) {
+void Kernel::SetStoreInplace(NDObject *store) {
+  ASSERT_KTYPE_SPLIT(kernel_->KType());
+  _SplitKernel::SetStoreInplace(store, 1);
+}
+
+NDObject *Kernel::_AllReduce(int op_type, NDObject *input, const Comm *comm) {
   NDObject *obj;
-  if (input->type_id_ == DType::kBFloat16) {
-    obj = new AllReduceOp<true>(input, comm->GetImpl());
+  if (input->type_id_ == DataType::kBFloat16) {
+    obj = new AllReduceOp<true>(op_type, input, comm->GetImpl());
   } else {
-    obj = new AllReduceOp<false>(input, comm->GetImpl());
+    obj = new AllReduceOp<false>(op_type, input, comm->GetImpl());
   }
   kernel_->Append(obj);
   return obj;
@@ -665,6 +939,10 @@ NDObject *Kernel::AllGatherV2(NDObject *input, const Comm *comm) {
 }
 
 NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
+  if (input->obj_id_ != ObjectType::kMultiLoad) {
+    input = new ReshapeRankOp(input, comm->GetImpl());
+    kernel_->Append(input);
+  }
   NDObject *obj = new ReduceScatterOp(input, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
@@ -672,7 +950,7 @@ NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
 
 NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
   CubeOp *obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
-  if (kernel_->KType() == KernelType::kEager) {
+  if (kernel_->KType() == KernelTypeX::kEager_) {
     return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
@@ -680,196 +958,156 @@ NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_
 }
 
 NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias,
-                                NDObject *group_list, GroupType group_type) {
-  GmmOp *obj = new GmmOp(lhs, rhs, trans_a, trans_b, bias, group_list, group_type);
-  if (kernel_->KType() == KernelType::kEager) {
+                                NDObject *group_list, GmmSplitType group_type, GmmListType group_list_type) {
+  GmmOp *obj = new GmmOp(lhs, rhs, trans_a, trans_b, bias, group_list, group_type, group_list_type);
+  if (kernel_->KType() == KernelTypeX::kEager_) {
     return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
   return obj;
 }
 
-int Kernel::ParallelNext() {
-  if (kernel_->KType() == KernelType::kStaticParallel) {
+void Kernel::ParallelNext() {
+  if (kernel_->KType() == KernelTypeX::kStaticParallel) {
     static_cast<VKernelP *>(kernel_)->AppendNext();
-  } else if (kernel_->KType() == KernelType::kStaticStages) {
-    static_cast<StagesKernel *>(kernel_)->ParallelSwitch();
   } else {
     ASSERT(0);
   }
-  return 0;
 }
 
-void Kernel::StageSwitch(KernelType type) {
-  ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  static_cast<StagesKernel *>(kernel_)->StageSwitch(type);
-}
-
-NDObject *Kernel::StageLoad(NDObject *stage_store) {
-  ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDLoad(nullptr, stage_store->shape_ref_, stage_store->type_id_);
-  static_cast<StagesKernel *>(kernel_)->StageLoad(op, static_cast<NDStore *>(stage_store));
-  return op;
-}
-
-NDObject *Kernel::StageStore(NDObject *input) {
-  ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDStore(nullptr, input);
-  static_cast<StagesKernel *>(kernel_)->StageStore(op);
-  return op;
-}
-
-NDObject *Kernel::StagePadStore(NDObject *input, int64_t pad_size) {
-  ASSERT(kernel_->KType() == KernelType::kStaticStages);
-  auto op = new NDPadStore(nullptr, input, pad_size);
-  static_cast<StagesKernel *>(kernel_)->StageStore(op);
-  return op;
-}
+void Kernel::SpecNext() { static_cast<_SpecVector *>(kernel_)->Next(); }
 
 ShapeRef *Kernel::GetShape(NDObject *op) const { return op->shape_ref_; }
 
-DType Kernel::GetDType(NDObject *op) const { return op->type_id_; }
+DataType Kernel::GetDType(NDObject *op) const { return op->type_id_; }
 
-uint64_t Kernel::CodeGen() {
+size_t Kernel::CodeGen() {
   uint64_t ws_size = kernel_->CodeGen();
   return kernel_->code_.ReserveWorkspace(ws_size);
 }
 
 void Kernel::Infer() {
-  if (kernel_->KType() != KernelType::kDynShape) {
-    return;
+  auto ktype = kernel_->KType();
+  if (ktype == KernelTypeX::kStaticSplit || ktype == KernelTypeX::kDynSplit) {
+    static_cast<_SplitGraph *>(kernel_)->Infer();
+  } else if (ktype == KernelTypeX::kDynShape) {
+    auto dyn_kernel = static_cast<VKernelD *>(kernel_);
+    dyn_kernel->Normalize(false);
   }
-  auto dyn_kernel = static_cast<VKernelD *>(kernel_);
-  dyn_kernel->Normalize();
 }
 
-int Kernel::Launch(void *workspace, void *stream) {
+int Kernel::Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace, void *stream) {
+  auto reloc = relocs;
+  for (size_t i = 0; i < reloc_size; ++i, ++reloc) {
+    static_cast<NDAccess *>(reloc->io)->addr_.Reloc(reloc->addr);
+  }
   auto &code = kernel_->code_;
   code.RelocBinds(workspace);
-  return code.Launch(workspace, stream);
-}
-
-int Kernel::MsProfLaunch(const char *op_name, const char *op_fullname, const RelocTable &reloc_table, void **inputs,
-                         void **outputs, void *workspace, void *stream) {
+  if (!g_system.enable_profile_) {
+    return code.Launch(workspace, stream);
+  }
   if (msprof_helper_ == nullptr) {
-    msprof_helper_ = new MsProfHelper();
+    msprof_helper_ = new MsprofHelper();
     auto &info = msprof_helper_->info_;
-    info.op_name = op_name;
-    info.op_fullname = op_fullname;
-    info.input_size = reloc_table.inputs_size;
-    info.output_size = reloc_table.outputs_size;
+    info.op_name = op_name_;
+    info.op_fullname = op_fullname_;
     info.block_dim = kernel_->code_.block_dim_;
-    auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
-    for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-      info.shapes.emplace_back(GetShape(*loads));
-      info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*loads)]);
-      loads++;
-    }
-    auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
-    for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-      info.shapes.emplace_back(GetShape(*stores));
-      info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(*stores)]);
-      stores++;
+    for (size_t i = 0; i < reloc_size; ++i) {
+      auto op = relocs[i].io;
+      if (op->IsLoad()) {
+        info.AppendInput(op);
+      } else {
+        info.AppendOutput(op);
+      }
     }
     msprof_helper_->InitReportNode();
   } else if (kernel_->KType() == kDynShape) {
     msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
   }
-  std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
-  ScopedValueGuard<LaunchFunc> guard(
-    System::Instance().rt_kernel_launch_,
-    [real_rt_launch = System::Instance().rt_kernel_launch_, this](const void *stub, auto &&...rest_args) {
-      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&System::Instance());
+  {
+    std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
+    ScopedValueGuard<LaunchFunc> guard(g_system.rt_kernel_launch_, [real_rt_launch = g_system.rt_kernel_launch_, this](
+                                                                     const void *stub, auto &&...rest_args) {
+      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&g_system);
       msprof_helper_->Update(target);
       auto ret = real_rt_launch(stub, std::forward<decltype(rest_args)>(rest_args)...);
       msprof_helper_->ReportTask();
       return ret;
     });
-  return Launch(reloc_table, inputs, outputs, workspace, stream);
+    return code.Launch(workspace, stream);
+  }
 }
 
-int Kernel::EagerMsProfLaunch(void *stream) {
-  auto kernel = static_cast<VKernelE *>(kernel_);
-  int kernel_begin, kernel_end;
-  const auto &kernels = kernel->GetKernels(kernel_begin, kernel_end);
-  for (int i = kernel_begin; i < kernel_end; ++i) {
-    MsProfHelper msprof_helper;
-    auto &info = msprof_helper.info_;
-    auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);
-    info.block_dim = vector_kernel->code_.block_dim_;
-    std::ostringstream oss;
-    oss << "Dvm";
-    if (vector_kernel->code_.target_ > Code::kTargetVec) {
-      oss << "MatMul";
-    }
-    for (auto op : vector_kernel->objects_) {
-      if (op->flags_ & OBJ_FLAG_EAGER) {
+int Kernel::Launch(void *stream) {
+  ASSERT_KTYPE_SPLIT(kernel_->KType());
+  auto kernel = static_cast<_SplitKernel *>(kernel_);
+  if (!g_system.enable_profile_) {
+    kernel->Launch(stream);
+  } else {
+    int kernel_begin, kernel_end;
+    const auto &kernels = kernel->GetKernels(kernel_begin, kernel_end);
+    for (int i = kernel_begin; i < kernel_end; ++i) {
+      MsprofHelper msprof_helper;
+      auto &info = msprof_helper.info_;
+      auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);
+      info.block_dim = vector_kernel->code_.block_dim_;
+      auto target = vector_kernel->code_.target_;
+      std::ostringstream oss;
+      oss << "Dvm";
+      std::vector<NDObject *> inputs;
+      std::vector<NDObject *> outputs;
+      if (target > Code::kTargetVec) {
+        auto cube_op = _SplitKernel::GetCubeOp(kernels[i]);
+        if (cube_op) {
+          cube_op->Dump(false, oss);
+          inputs.emplace_back(cube_op->lhs_);
+          inputs.emplace_back(cube_op->rhs_);
+          if (cube_op->bias_) {
+            inputs.emplace_back(cube_op->bias_);
+          }
+          if (cube_op->output_->IsStore()) {
+            outputs.emplace_back(cube_op->output_);
+          }
+        }
+      }
+      for (auto op : vector_kernel->objects_) {
         if (op->IsLoad()) {
-          info.shapes.emplace_back(GetShape(op));
-          info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
-          info.input_size++;
-        } else if (!op->IsStore()) {
+          inputs.emplace_back(op);
+        } else if (op->IsStore()) {
+          outputs.emplace_back(op);
+        }
+        if (op->GetObjectType() != kStore && op->GetObjectType() != kLoad) {
           op->Dump(false, oss);
         }
       }
-    }
-    for (auto op : vector_kernel->objects_) {
-      if (op->flags_ & OBJ_FLAG_EAGER) {
-        if (op->IsStore()) {
-          info.shapes.emplace_back(GetShape(op));
-          info.data_types.emplace_back(MAP_DTYPE_TO_MSDTYPE[GetDType(op)]);
-          info.output_size++;
+      for (auto op : inputs) {
+        if (op->flags_ & OBJ_FLAG_EAGER) {
+          info.AppendInput(op);
         }
       }
+      for (auto op : outputs) {
+        if (op->flags_ & OBJ_FLAG_EAGER) {
+          info.AppendOutput(op);
+        }
+      }
+      auto prof_name = oss.str();
+      info.op_name = prof_name.c_str();
+      info.op_fullname = info.op_name;
+      msprof_helper.InitReportNode();
+      msprof_helper.Update(target);
+      kernel->Launch(i, stream);
+      msprof_helper.ReportTask();
     }
-    auto prof_name = oss.str();
-    info.op_name = prof_name.c_str();
-    info.op_fullname = info.op_name;
-    msprof_helper.InitReportNode();
-    msprof_helper.Update(kernel->code_.target_);
-    kernel->Launch(i, stream);
-    msprof_helper.ReportTask();
   }
   return 0;
 }
 
-int Kernel::Launch(const RelocTable &reloc_table, void **inputs, void **outputs, void *workspace, void *stream) {
-  auto loads = reinterpret_cast<NDAccess **>(reloc_table.inputs);
-  for (size_t i = 0; i < reloc_table.inputs_size; ++i) {
-    (*loads++)->addr_.Reloc(*inputs++);
-  }
-  auto stores = reinterpret_cast<NDAccess **>(reloc_table.outputs);
-  for (size_t i = 0; i < reloc_table.outputs_size; ++i) {
-    (*stores++)->addr_.Reloc(*outputs++);
-  }
-  auto &code = kernel_->code_;
-  code.RelocBinds(workspace);
-  return code.Launch(workspace, stream);
+void Kernel::CodeGen(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  ASSERT_KTYPE_SPLIT(kernel_->KType());
+  static_cast<_SplitKernel *>(kernel_)->CodeGenR(relocs, reloc_size, ws_alloc);
 }
 
-void Kernel::EagerReset(WsAllocFunc ws_alloc, void *user_data) {
-  if (kernel_) {
-    delete kernel_;
-  }
-  kernel_ = new VKernelE(ws_alloc, user_data);
-}
-
-void Kernel::EagerCodeGen(const RelocEntry *reloc_table, size_t reloc_size) {
-  ASSERT(kernel_->KType() == KernelType::kEager);
-  for (auto reloc = reloc_table; reloc < reloc_table + reloc_size; ++reloc) {
-    static_cast<NDAccess *>(reloc->io)->addr_.gm = reloc->addr;
-  }
-  auto kernel = static_cast<VKernelE *>(kernel_);
-  kernel->VKernelE::CodeGen();
-}
-
-int Kernel::EagerLaunch(void *stream) {
-  auto kernel = static_cast<VKernelE *>(kernel_);
-  kernel->Launch(stream);
-  return 0;
-}
-
-void Kernel::EagerClear() {
+void Kernel::Clear() {
   auto kernel = static_cast<VKernelE *>(kernel_);
   kernel->Clear();
 }
@@ -884,18 +1122,8 @@ const char *Kernel::Das() const {
   return das.c_str();
 }
 
-void SetDeterministic(bool enable) { System::Instance().deterministic_ = enable; }
-
-void SetOnlineTuning(bool enable) {
-  auto &sys = System::Instance();
-  if (enable) {
-    sys.online_tuner_ = new OnlineCubeTuner();
-    sys.lazy_tuner_ = new LazyCubeTuner();
-  } else {
-    delete sys.online_tuner_;
-    delete sys.lazy_tuner_;
-    sys.online_tuner_ = nullptr;
-    sys.lazy_tuner_ = nullptr;
-  }
+Config &Config::Instance() {
+  g_system.Init();
+  return g_system;
 }
 }  // namespace dvm

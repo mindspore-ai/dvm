@@ -31,7 +31,7 @@ def run_perf(shape_size):
     a = np.random.normal(0, 1, shape_size).astype(np.float16)
 
     x1 = t.load(a)
-    x2 = t.allreduce(x1)
+    x2 = t.allreduce("sum", x1)
     t.store(x2)
 
     comm.Barrier()

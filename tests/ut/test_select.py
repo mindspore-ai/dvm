@@ -16,8 +16,11 @@
 import pytest
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
-@pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape", [(1024, 32), (13, 131), (16, 11), (3, 3)])
 @pytest.mark.parametrize('type', [np.float32, np.float16, np.int32])
 def test_select(shape, type):
     t = Tester()
@@ -29,33 +32,37 @@ def test_select(shape, type):
     f = t.load(b)
     g = t.load(c)
     h = t.load(d)
-    i = t.binary("Greater", e, f)
-    j = t.binary("Add", e, f)
-    k = t.binary("Add", g, h)
+    i = t.greater(e, f)
+    j = t.add(e, f)
+    k = t.add(g, h)
     l = t.select(i, j, k)
-    t.store_expect(l, np.select([np.greater(a, b),~np.greater(a, b)], [a+b,c+d]).astype(type))
-    assert(t.run_check())
+    t.store_expect(l, np.select([np.greater(a, b), ~np.greater(a, b)], [a + b, c + d]).astype(type))
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float32, np.float16, np.int32])
 def test_select_broadcast(type):
     t = Tester()
-    a = np.random.randint(1024, size=(1, 10 ,1 ,1, 50)).astype(type)
-    b = np.random.randint(1024, size=(1, 1 ,20 ,30, 1)).astype(type)
-    c = np.random.randint(1024, size=(7, 1 ,1 ,1, 50)).astype(type)
-    d = np.random.randint(1024, size=(1, 1 ,1 ,30, 1)).astype(type)
+    a = np.random.randint(1024, size=(1, 10, 1, 1, 50)).astype(type)
+    b = np.random.randint(1024, size=(1, 1, 20, 30, 1)).astype(type)
+    c = np.random.randint(1024, size=(7, 1, 1, 1, 50)).astype(type)
+    d = np.random.randint(1024, size=(1, 1, 1, 30, 1)).astype(type)
     e = t.load(a)
     f = t.load(b)
     g = t.load(c)
     h = t.load(d)
-    i = t.binary("Greater", e, f)
-    j = t.binary("Add", e, f)
-    k = t.binary("Add", g, h)
+    i = t.greater(e, f)
+    j = t.add(e, f)
+    k = t.add(g, h)
     l = t.select(i, j, k)
-    t.store_expect(l, np.select([np.greater(a, b),~np.greater(a, b)], [a+b,c+d]).astype(type))
-    assert(t.run_check())
+    t.store_expect(l, np.select([np.greater(a, b), ~np.greater(a, b)], [a + b, c + d]).astype(type))
+    assert (t.run_check())
 
-@pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])
-@pytest.mark.parametrize('type, eps', [(np.float32, 1e-5),(np.float16, 1e-3)])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape", [(1024, 32), (13, 131), (16, 11), (3, 3)])
+@pytest.mark.parametrize('type, eps', [(np.float32, 1e-5), (np.float16, 1e-3)])
 def test_select_bool_input(shape, type, eps):
     t = Tester()
     a = np.random.rand(*shape).astype(type)
@@ -65,9 +72,11 @@ def test_select_bool_input(shape, type, eps):
     y = t.load(a)
     z = t.load(b)
     z = t.select(x, y, z)
-    t.store_expect(z, np.select([c == True, c == False],[a, b]), eps)
-    assert(t.run_check())
+    t.store_expect(z, np.select([c == True, c == False], [a, b]), eps)
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_select_scalar():
     t = Tester()
     a = np.random.randint(1024, size=(1024, 10)).astype(np.float16)
@@ -77,5 +86,5 @@ def test_select_scalar():
     f = t.load(b)
     g = t.load(c)
     l = t.select(g, e, f)
-    t.store_expect(l, np.select([c,~c], [a,b]).astype(np.float16))
-    assert(t.run_check())
+    t.store_expect(l, np.select([c, ~c], [a, b]).astype(np.float16))
+    assert (t.run_check())

@@ -15,6 +15,7 @@
 
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
 
 def assert_liveness_compacked(capfd):
@@ -25,20 +26,21 @@ def assert_liveness_compacked(capfd):
     assert (peak_live_after < peak_live_before)
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_elemwise_1(capfd):
     t = Tester()
     a = np.full([128, 32], 2, np.float16)
     x0 = t.load(a)
-    x1 = t.unary("Exp", x0)
-    x2 = t.unary("Log", x1)
-    x3 = t.binary("Add", x2, x0)
-    x4 = t.binary("Add", x2, x1)
-    x5 = t.unary("Sqrt", x4)
-    x6 = t.unary("Exp", x4)
-    x7 = t.unary("Abs", x4)
-    x8 = t.binary("Add", x2, x0)
-    x9 = t.binary("Add", x3, x5)
-    x10 = t.unary("Sqrt", x3)
+    x1 = t.exp(x0)
+    x2 = t.log(x1)
+    x3 = t.add(x2, x0)
+    x4 = t.add(x2, x1)
+    x5 = t.sqrt(x4)
+    x6 = t.exp(x4)
+    x7 = t.abs(x4)
+    x8 = t.add(x2, x0)
+    x9 = t.add(x3, x5)
+    x10 = t.sqrt(x3)
     t.store(x6)
     t.store(x7)
     t.store(x8)
@@ -49,20 +51,21 @@ def test_elemwise_1(capfd):
     assert_liveness_compacked(capfd)
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_elemwise_2(capfd):
     t = Tester()
     a = np.full([128, 32], 23, np.float16)
     x0 = t.load(a)
-    x1 = t.unary("Log", x0)
-    x2 = t.unary("Log", x1)
-    x3 = t.unary("Log", x2)
-    x4 = t.binary("Add", x2, x3)
-    x5 = t.unary("Log", x2)
-    x6 = t.binary("Add", x2, x0)
-    x7 = t.unary("Log", x1)
-    x8 = t.binary("Add", x2, x5)
-    x9 = t.binary("Add", x3, x4)
-    x10 = t.unary("Log", x6)
+    x1 = t.log(x0)
+    x2 = t.log(x1)
+    x3 = t.log(x2)
+    x4 = t.add(x2, x3)
+    x5 = t.log(x2)
+    x6 = t.add(x2, x0)
+    x7 = t.log(x1)
+    x8 = t.add(x2, x5)
+    x9 = t.add(x3, x4)
+    x10 = t.log(x6)
     t.store(x7)
     t.store(x8)
     t.store(x9)
@@ -72,17 +75,18 @@ def test_elemwise_2(capfd):
     assert_liveness_compacked(capfd)
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_select(capfd):
     t = Tester()
     a = np.full([128, 32], 23, np.float16)
     x0 = t.load(a)
-    x1 = t.unary("Log", x0)
-    x2 = t.unary("Reciprocal", x0)
-    x3 = t.binary("Add", x1, x2)
-    x4 = t.binary("Greater", x1, x2)
+    x1 = t.log(x0)
+    x2 = t.reciprocal(x0)
+    x3 = t.add(x1, x2)
+    x4 = t.greater(x1, x2)
     x6 = t.cast(x1, "float32")
     x7 = t.cast(x3, "float32")
-    x8 = t.binary("Add", x6, x7)
+    x8 = t.add(x6, x7)
     x5 = t.select(x4, x2, x3)
     t.store(x5)
     t.store(x8)

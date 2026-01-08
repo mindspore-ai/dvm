@@ -30,13 +30,33 @@ class SocketChannel;
 
 class Communicator {
  public:
-  Communicator(int rank_id, int rank_size);
-  ~Communicator();
-  bool Init();
+  virtual ~Communicator() {}
 
   uint8_t *GetPeerMemPtr(size_t i) const { return peer_mem_[i % rank_size_]; };
   const int GetRankId() const { return rank_id_; }
   const int GetRankSize() const { return rank_size_; }
+
+ protected:
+  int rank_id_;         // global rank id
+  int rank_size_;       // global rank size
+  uint8_t **peer_mem_;  // virtual memory addr of peer memory
+};
+
+class DummyComm : public Communicator {
+ public:
+  DummyComm(int rank_id, int rank_size) {
+    rank_id_ = rank_id;
+    rank_size_ = rank_size;
+    peer_mem_ = peer_mem_data_;
+  }
+  uint8_t *peer_mem_data_[MAX_RANK_SIZE] = {};
+};
+
+class MemoryComm : public Communicator {
+ public:
+  MemoryComm(int rank_id, int rank_size, const uint32_t *group_ranks);
+  ~MemoryComm() override;
+  bool Init();
 
  private:
   /**
@@ -82,16 +102,26 @@ class Communicator {
   void FreeCommMem();
 
   bool inited_;
-  int rank_id_;    // global rank id
-  int rank_size_;  // global rank size
   static int communicator_id_;
   int dev_id_;                                    // local device id
   aclrtDrvMemHandle physical_mem_handle_;         // physical memory handle of current device
-  uint8_t *peer_mem_[MAX_RANK_SIZE] = {};         // virtual memory addr of peer memory
+  uint8_t *peer_mem_data_[MAX_RANK_SIZE] = {};    // virtual memory addr of peer memory
   uint64_t peer_mem_handle_[MAX_RANK_SIZE] = {};  // shareable memory handle of peer memory
   SocketChannel *socket_channel_;
   int dev_list_[MAX_RANK_SIZE];
+  std::vector<uint32_t> group_rank_list_;
 };
+
+class HcclComm : public Communicator {
+ public:
+  HcclComm(void *hccl);
+
+  void *Hccl() const { return hccl_; }
+
+ protected:
+  void *hccl_;
+};
+
 }  // namespace dvm
 
 #endif  // _DVM_COMMUNICATOR_H_

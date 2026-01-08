@@ -16,46 +16,71 @@
 import pytest
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('shape1, shape2,  shape3', [
     ([256], [256], [1024]),
-    ([8192*2], [8192*4], [4096])
-    ])
+    ([8192 * 2], [8192 * 4], [4096])
+])
 def test_basic(shape1, shape2, shape3):
     t = Tester("parallel")
-    #kernel 0
+    # kernel 0
     a0 = np.full(shape1, 0.1, np.float32)
     a = t.load(a0)
-    b = t.binary("Mul", a, 0.3)
-    c = t.store_expect(b, 0.1*0.3)
-    #kernel 1
+    b = t.mul(a, 0.3)
+    c = t.store_expect(b, 0.1 * 0.3)
+    # kernel 1
     t.p_next()
     b0 = np.full(shape2, 0.1, np.float32)
     a = t.load(b0)
-    b = t.binary("Add", a, 0.3)
-    c = t.store_expect(b, 0.1+0.3)
-    #kernel 3
+    b = t.add(a, 0.3)
+    c = t.store_expect(b, 0.1 + 0.3)
+    # kernel 3
     t.p_next()
     c0 = np.full(shape3, 0.1, np.float32)
     a = t.load(c0)
-    b = t.binary("Add", a, 0.3)
-    c = t.store_expect(b, 0.1+0.3)
-    assert(t.run_check())
+    b = t.add(a, 0.3)
+    c = t.store_expect(b, 0.1 + 0.3)
+    assert (t.run_check())
 
-def test_reduce():
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('determ', [False, True])
+def test_reduce(determ):
     t = Tester("parallel")
+    t.set_determ(determ)
     # kernel 0
     a0 = np.full((8192,), 0.1, np.float32)
-    a = t.reduce("sum", t.load(a0), [0], False)
+    a = t.sum(t.load(a0), [0], False)
     t.store_expect(a, 8192 * 0.1)
     # kernel 1
     t.p_next()
     b0 = np.full((4, 4096), 0.1, np.float32)
-    b = t.reduce("sum", t.load(b0), [0], False)
+    b = t.sum(t.load(b0), [0], False)
     t.store_expect(b, 4 * 0.1)
     # kernel 2
     t.p_next()
-    c0 = np.full((1, ), 0.1, np.float32)
-    c = t.binary("Add", t.load(c0), 1.0)
+    c0 = np.full((1,), 0.1, np.float32)
+    c = t.add(t.load(c0), 1.0)
     t.store_expect(c, 0.1 + 1.0)
-    assert(t.run_check())
+    assert (t.run_check())
+    t.set_determ(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reduce_determ_all():
+    t = Tester("parallel")
+    t.set_determ(True)
+    # kernel 0
+    a0 = np.full((8192,), 0.1, np.float32)
+    a = t.sum(t.load(a0), [0], False)
+    t.store_expect(a, 8192 * 0.1)
+    # kernel 1
+    t.p_next()
+    b0 = np.full((4, 4096), 0.1, np.float32)
+    b = t.sum(t.load(b0), [0], False)
+    t.store_expect(b, 4 * 0.1)
+    assert (t.run_check())
+    t.set_determ(False)

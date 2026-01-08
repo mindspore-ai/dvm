@@ -17,20 +17,26 @@ import pytest
 import numpy as np
 import dvm
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize('op, func', [("Sqrt", np.sqrt), ("Abs", np.abs), ("Log", np.log), ("Exp", np.exp), ("Reciprocal", np.reciprocal)])
+@pytest.mark.parametrize('op, func', [(Tester.sqrt, np.sqrt), (Tester.abs, np.abs), (Tester.log, np.log), (Tester.exp, np.exp),
+                                      (Tester.reciprocal, np.reciprocal)])
 def test_unary(type, op, func):
     t = Tester()
     a = np.full([32, 1024], 0.5, type)
     x = t.load(a)
-    y = t.unary(op, x)
+    y = op(t, x)
     t.store_expect(y, func(a))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract),  ("Div", np.divide),
-                                      ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
+@pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
+                                      (Tester.mul, np.multiply), (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
 def test_binary(type, op, func):
     t = Tester()
     a = np.full([32, 1024], 0.5, type)
@@ -39,14 +45,16 @@ def test_binary(type, op, func):
     y = t.load(b)
     x = t.copy(x)
     y = t.copy(y)
-    z = t.binary(op, x, y)
+    z = op(t, x, y)
     z = t.copy(z)
     t.store_expect(z, func(a, b))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.bool_, np.float16, np.float32])
-@pytest.mark.parametrize("shape",[(1024, 32), (1312, 131), (16, 11) ,(128, 7), (128, 777)])
-@pytest.mark.parametrize('op, func', [("LogicalOr", np.logical_or), ("LogicalAnd", np.logical_and)])
+@pytest.mark.parametrize("shape", [(1024, 32), (1312, 131), (16, 11), (128, 7), (128, 777)])
+@pytest.mark.parametrize('op, func', [(Tester.logical_or, np.logical_or), (Tester.logical_and, np.logical_and)])
 def test_logical(type, shape, op, func):
     t = Tester()
     a = np.random.choice([True, False], shape).astype(type)
@@ -55,52 +63,58 @@ def test_logical(type, shape, op, func):
     y = t.load(b)
     x = t.copy(x)
     y = t.copy(y)
-    z = t.binary(op, x, y)
+    z = op(t, x, y)
     z = t.copy(z)
     t.store_expect(z, func(a, b).astype(type))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.bool_, np.float16, np.float32, np.int32])
-@pytest.mark.parametrize("shape",[(1024, 32), (1312, 131), (16, 11) ,(128, 7), (128, 777)])
-@pytest.mark.parametrize('op, func', [("LogicalNot", np.logical_not)])
-def test_logical_not(type, shape, op, func):
+@pytest.mark.parametrize("shape", [(1024, 32), (1312, 131), (16, 11), (128, 7), (128, 777)])
+def test_logical_not(type, shape):
     t = Tester()
     a = np.random.choice([True, False], shape).astype(type)
     x = t.load(a)
     x = t.copy(x)
-    z = t.unary(op, x)
+    z = t.logical_not(x)
     z = t.copy(z)
-    t.store_expect(z, func(a).astype(type))
+    t.store_expect(z, np.logical_not(a).astype(type))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize('op, func', [("Add", np.add), ("Mul", np.multiply), ("Div", np.divide),
-                                      ("Maximum", np.maximum), ("Minimum", np.minimum)])
+@pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.mul, np.multiply), (Tester.div, np.divide),
+                                      (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
 def test_binary_s(type, op, func):
     t = Tester()
     a = np.random.normal(0, 1, [32, 1024]).astype(type)
     x = t.load(a)
     x = t.copy(x)
-    y = t.binary(op, x, 0.1)
+    y = op(t, x, 0.1)
     y = t.copy(y)
     t.store_expect(y, func(a, 0.1))
-    assert(t.run_check())
+    assert (t.run_check())
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize('op, func', [("Div", np.divide), ("Sub", np.subtract)])
+@pytest.mark.parametrize('op, func', [(Tester.div, np.divide), (Tester.sub, np.subtract)])
 def test_binary_s_l(type, op, func):
     t = Tester()
-    a = np.random.normal(0, 1, [32, 1024]).astype(type)
+    a = np.random.normal(0.05, 1, [32, 1024]).astype(type)
     x = t.load(a)
     x = t.copy(x)
-    y = t.binary(op, 0.1, x)
+    y = op(t, 0.1, x)
     y = t.copy(y)
     t.store_expect(y, func(0.1, a))
     assert (t.run_check())
 
-@pytest.mark.parametrize('type', [np.float16] if dvm.device.arch() != 'AscendC220' else [np.float16,np.float32])
-@pytest.mark.parametrize("size",[1024, 24, 66666])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('type', [np.float16, np.float32])
+@pytest.mark.parametrize("size", [1024, 24, 66666])
 def test_isfinite(type, size):
     t = Tester()
     random_numbers = np.random.randn(size)
@@ -109,21 +123,25 @@ def test_isfinite(type, size):
     np.random.shuffle(a)
     x = t.load(a)
     x = t.copy(x)
-    y = t.unary("IsFinite", x)
+    y = t.isfinite(x)
     y = t.copy(y)
     t.store_expect(y, np.isfinite(a).astype(type), 0)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_repeat_overflow(type):
     repeat = 257
-    a = np.full([32*64*repeat], 0.5, type)
+    a = np.full([32 * 64 * repeat], 0.5, type)
     t = Tester()
     x = t.load(a)
-    y = t.binary("Add", x, 0.1)
+    y = t.add(x, 0.1)
     t.store_expect(y, 0.6)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_scalar(type):
     t = Tester()
@@ -131,11 +149,13 @@ def test_scalar(type):
     b = np.full([1], 0.2, type)
     x = t.load(a)
     y = t.load(b)
-    z = t.binary("Sub", x, y)
+    z = t.sub(x, y)
     t.store_expect(z, 0.2)
-    assert(t.run_check())
+    assert (t.run_check())
 
-@pytest.mark.parametrize('type, eps, shape', [(np.float16, 1e-03, [2,3,4,5]), (np.float32, 1e-05, [1,1,4,5])])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('type, eps, shape', [(np.float16, 1e-03, [2, 3, 4, 5]), (np.float32, 1e-05, [1, 1, 4, 5])])
 def test_scalar_tensor_div(type, eps, shape):
     t = Tester()
     if (type == np.float16):
@@ -144,11 +164,13 @@ def test_scalar_tensor_div(type, eps, shape):
         x = t.broadcast(2, shape)
     a = np.random.random(shape).astype(type)
     y = t.load(a)
-    z = t.binary("Div", x, y)
+    z = t.div(x, y)
     np_res = 2 / a
     t.store_expect(z, np_res)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('data_type', [np.float16, np.float32])
 def test_mul1(data_type):
     np.random.seed(1)
@@ -157,11 +179,13 @@ def test_mul1(data_type):
     a1 = np.random.normal(0, 1, [16000, 39, 1]).astype(data_type)
     x0 = t.load(a0)
     x1 = t.load(a1)
-    y0 = t.binary("Mul", x0, x1)
+    y0 = t.mul(x0, x1)
     expect = a0 * a1
     t.store_expect(y0, expect)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_pow_1(type):
     t = Tester()
@@ -169,114 +193,197 @@ def test_pow_1(type):
     b = np.array([1, 2, 3, 0, 0.5, 0.5]).astype(type)
     x = t.load(a)
     y = t.load(b)
-    z = t.binary("Pow", x, y)
+    z = t.pow(x, y)
     t.store_expect(z, np.array([-2, 9, -64, 1, np.nan, 3]))
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize("shape",[(1024, 32), (13, 131), (16, 11) ,(3, 3)])
+@pytest.mark.parametrize("shape", [(1024, 32), (13, 131), (16, 11), (3, 3)])
 def test_pow_2(type, shape):
     t = Tester()
     a = 10 * np.random.rand(*shape).astype(type) - 5
-    b = np.random.randint(6, size = shape).astype(type)
+    b = np.random.randint(6, size=shape).astype(type)
     x = t.load(a)
     y = t.load(b)
     x = t.copy(x)
     y = t.copy(y)
-    z = t.binary("Pow", x, y)
+    z = t.pow(x, y)
     z = t.copy(z)
     t.store_expect(z, np.power(a, b))
-    assert(t.run_check())
+    assert (t.run_check())
 
-@pytest.mark.parametrize("shape",[(1024, 32), (13, 131)])
-@pytest.mark.parametrize("exponent",[0.0, 1.2 ,5.0, -7.0, -3.0])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape", [(1024, 32), (13, 131)])
+@pytest.mark.parametrize("exponent", [0.0, 1.2, 5.0, -7.0, -3.0])
 def test_pow_3(shape, exponent):
     t = Tester()
     a = np.abs(np.random.normal(0, 1, shape).astype(np.float32) - 2)
     x = t.load(a)
-    y = t.binary("Pow", x, exponent)
-    z = t.binary("Add", y, 2)
+    y = t.pow(x, exponent)
+    z = t.add(y, 2)
     z = t.copy(z)
     t.store_expect(z, np.power(a, exponent) + 2)
-    assert(t.run_check())
+    assert (t.run_check())
 
-@pytest.mark.parametrize('type, eps', [(np.float16, 1e-3), (np.float32, 1e-5)]) 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('type, eps', [(np.float16, 1e-3), (np.float32, 1e-5)])
 def test_rsqrt(type, eps):
     t = Tester()
     a = np.random.rand(32, 32).astype(type)
     x = t.load(a)
-    z = t.unary("Sqrt", x)
-    y = t.unary("Reciprocal", z)
+    z = t.sqrt(x)
+    y = t.reciprocal(z)
     t.store_expect(y, np.reciprocal(np.sqrt(a)).astype(type), eps)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.int32])
-@pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract), ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
+@pytest.mark.parametrize('op, func',
+                         [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.mul, np.multiply), (Tester.maximum, np.maximum),
+                          (Tester.minimum, np.minimum)])
 def test_binary_int(type, op, func):
     t = Tester()
-    a = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
-    b = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
+    a = np.random.randint(low=-2 ** 30, high=2 ** 30, size=(32, 1024)).astype(type)
+    b = np.random.randint(low=-2 ** 30, high=2 ** 30, size=(32, 1024)).astype(type)
     x = t.load(a)
     y = t.load(b)
     x = t.copy(x)
     y = t.copy(y)
-    z = t.binary(op, x, y)
+    z = op(t, x, y)
     z = t.copy(z)
     t.store_expect(z, func(a, b))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.int32])
-@pytest.mark.parametrize('op, func', [("Add", np.add), ("Sub", np.subtract), ("Mul", np.multiply), ("Maximum", np.maximum), ("Minimum", np.minimum)])
+@pytest.mark.parametrize('op, func',
+                         [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.mul, np.multiply), (Tester.maximum, np.maximum),
+                          (Tester.minimum, np.minimum)])
 def test_binarys_int(type, op, func):
     t = Tester()
-    a = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
+    a = np.random.randint(low=-2 ** 30, high=2 ** 30, size=(32, 1024)).astype(type)
     x = t.load(a)
     x = t.copy(x)
-    z = t.binary(op, x, 11111)
+    z = op(t, x, 11111)
     z = t.copy(z)
     t.store_expect(z, func(a, 11111))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.int32])
-@pytest.mark.parametrize('op, func', [("Abs", np.abs)])
-def test_unary_int(type, op, func):
+def test_unary_int(type):
     t = Tester()
-    a = np.random.randint(low =-2**30, high = 2**30, size=(32, 1024)).astype(type)
+    a = np.random.randint(low=-2 ** 30, high=2 ** 30, size=(32, 1024)).astype(type)
     x = t.load(a)
     x = t.copy(x)
-    z = t.unary(op, x)
+    z = t.abs(x)
     z = t.copy(z)
-    t.store_expect(z, func(a))
+    t.store_expect(z, np.abs(a))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('num, expect', [(3, 2), (10, 4), (-8, 3), (11, 5), (15, 6), (20, 5)])
 def test_power_s(num, expect):
     t = Tester()
-    arg = np.random.random([1024,]).astype(np.float32)
+    arg = np.random.random([1024, ]).astype(np.float32)
     a = t.load(arg)
-    b = t.binary("Pow", a, num)
+    b = t.pow(a, num)
     t.store_expect(b, np.power(arg, num))
     assert (t.run_check())
     assert (t.das().count("Mul.fp32") == expect)
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_pow_s_left(type):
     t = Tester()
     a = np.random.normal(0, 1, (1024, 32)).astype(type)
     x = t.load(a)
-    y = t.binary("Pow", 0.91, x)
+    y = t.pow(0.91, x)
     t.store_expect(y, np.power(0.91, a))
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float16, np.float32])
-@pytest.mark.parametrize('op, func', [("Round", np.round), ("Ceil", np.ceil), ("Floor", np.floor), ("Trunc", np.trunc)])
-@pytest.mark.parametrize('shape', [[32, 32], [128*256*2*48]])
+@pytest.mark.parametrize('op, func', [(Tester.round, np.round), (Tester.ceil, np.ceil), (Tester.floor, np.floor), (Tester.trunc, np.trunc)])
+@pytest.mark.parametrize('shape', [[32, 32], [128 * 256 * 2 * 48]])
 def test_trunc(type, op, func, shape):
     t = Tester()
     a = np.random.normal(-10, 10, shape).astype(type)
     x = t.load(a)
     x = t.copy(x)
-    z = t.unary(op, x)
+    z = op(t, x)
     z = t.copy(z)
     t.store_expect(z, func(a).astype(type))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support bfloat16 op")
+@pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
+                                      (Tester.mul, np.multiply), (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
+def test_binary_bf16(op, func):
+    t = Tester()
+    a = Tester.bf16_random_normal(-1, 1, [256, 1]).astype(np.float32)
+    b = Tester.bf16_random_normal(-1, 1, [256, 1]).astype(np.float32)
+    x = t.load(a, "bfloat16")
+    y = t.load(b, "bfloat16")
+    z = op(t, x, y)
+    t.store_expect(z, func(a, b), 1e-2)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support bfloat16 op")
+@pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
+                                      (Tester.mul, np.multiply), (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
+def test_binarys_bf16(op, func):
+    t = Tester()
+    a = Tester.bf16_random_normal(-1, 1, [1024, 1]).astype(np.float32)
+    x = t.load(a, "bfloat16")
+    z = op(t, x, 1.5)
+    t.store_expect(z, func(a, 1.5), 5e-3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
+                                      (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
+def test_binary_scalar_ref(op, func):
+    t = Tester('vec:dyn')
+    x = t.load([-1], "float32")
+    s = t.make_int()
+    a = op(t, x, s)
+    out = t.store(a)
+    d1 =  np.random.normal(-10, 10, [1024]).astype(np.float32)
+    t.input(x, d1)
+    for i in [-1, -2, -12, 5, 6, 4]:
+        s.update(i)
+        t.run()
+        assert (t.check(out, func(d1, i)))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
+                                      (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
+def test_binary_float_scalar_ref(op, func):
+    t = Tester('vec:dyn')
+    x = t.load([-1], "float32")
+    s = t.make_float()
+    a = op(t, x, s)
+    out = t.store(a)
+    d1 =  np.random.normal(-10, 10, [1024]).astype(np.float32)
+    t.input(x, d1)
+    for i in [-1.3, -2.7, -1.111, 5.55]:
+        s.update(i)
+        t.run()
+        assert (t.check(out, func(d1, i)))

@@ -25,72 +25,31 @@
 #include "pass.h"
 
 namespace dvm {
-class VectorKernel;
-class PropDomainBuilder;
-class PropDomain {
- public:
-  PropDomain(NDObject *head = nullptr) : head_(head) {}
-  virtual ~PropDomain() {
-    for (auto dom : subdoms_) {
-      delete dom;
-    }
-    subdoms_.clear();
-  }
-  void Normalize();
-  virtual void AlignProp(PropRange &range);
-  virtual void FoldProp(PropRange &range);
-  virtual void TileProp(const TileParam &tp);
 
-  NDObject *DomObject() const { return dom_; }
-
- protected:
-  NDObject *head_;
-  NDObject *dom_;
-  std::vector<PropDomain *> subdoms_;
-  friend PropDomainBuilder;
-};
-
-class RootDomain : public PropDomain {
- public:
-  RootDomain() = default;
-  void SetHead(NDObject *head) { head_ = head; }
-  void PrepareTiling(VectorKernel *kernel);
-  int64_t Tile(const TileParam tp, int64_t space) {
-    PropDomain::TileProp(tp);
-    tile_size_ = tile_size_ / space * tp.tile;
-    tile_num_ *= tp.num;
-    return tile_size_;
-  }
-  int64_t TileLead(const TileParam tp, int64_t lead_align) {
-    PropDomain::TileProp(tp);
-    tile_size_ = RoundUp<int64_t>(tp.tile, lead_align);
-    align_.space = tile_size_;
-    tile_num_ *= tp.num;
-    return tile_size_;
-  }
-  void Align(int depth, int64_t space);
-  void Shard(const ShardParam &sp);
-  void ClearShard() { shard_ = nullptr; }
-
-  const DimArray &DimSpace() const { return dom_->nd_.dims(); }
-  int64_t TileNum() const { return tile_num_; }
-  int64_t TileSize() const { return tile_size_; }
-
-  PropRange align_;
-  const ShardParam *shard_{nullptr};
-
- private:
-  int64_t tile_size_;  // shape size of object tile size
-  int64_t tile_num_;   // current tile num. multiply by tile
+enum KernelTypeX { // TODO: unify to KernelType and flags
+  kStaticShape,
+  kDynShape,
+  kStaticParallel,
+  kStaticMix,
+  kDynMix,
+  kStaticSpec,
+  kDynSpec,
+  kStaticSplit,
+  kDynSplit,
+  kEager_,
+  kStaticSplitW,
+  kDynSplitW,
+  kEagerSplitW,
+  kKernelTypelEnd,
 };
 
 class VKernel {
  public:
-  VKernel(KernelType ktype) : ktype_(ktype) {}
-  virtual ~VKernel() {}
+  explicit VKernel(KernelTypeX ktype) : ktype_(ktype) {}
+  virtual ~VKernel();
 
-  virtual void Append(NDObject *obj) = 0;
-  virtual uint64_t CodeGen() = 0;
+  virtual void Append(NDObject *obj);
+  virtual uint64_t CodeGen();
   virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
   std::string &DumpGraph() {
     std::ostringstream oss;
@@ -99,76 +58,35 @@ class VKernel {
     return dump_str_;
   }
   virtual std::string &DisAssemble();
-  KernelType KType() const { return ktype_; }
+  KernelTypeX KType() const { return ktype_; }
+
+  void UpdateIdle(const std::vector<NDObject *> &cleans);
 
   Code code_;
 
  protected:
-  KernelType ktype_;
+  KernelTypeX ktype_;
   std::string dump_str_;
 };
 
-class CodeGenHelper;
 class VectorKernel : public VKernel {
  public:
-  VectorKernel(KernelType ktype) : VKernel(ktype) {
+  explicit VectorKernel(KernelTypeX ktype) : VKernel(ktype) {
     MESS(max_type_, 100);
     MESS(min_type_, 200);
     MESS(visit_, reinterpret_cast<VisitCoder *>(100));
   }
-  virtual ~VectorKernel();
+  ~VectorKernel() override = default;
 
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
-  void SetTile(int start, int end, int64_t num, int64_t factor) {
-    tiles_.emplace_back(DimTile{start, end, num, factor});
-  }
-  int MaxType() const { return max_type_; }
-  int MinType() const { return min_type_; }
-  uint64_t LeadAlign() const { return lead_align_; }
-  inline uint64_t ReserveCodeSize() const {
-    auto res = objects_.size() * V_INSN_SIZE_MAX;
-    if (comm_op_) {
-      res += comm_op_->CodeReserve();
-    }
-    return (res + 511ul) & ~511ul;  // 512B align
-  }
-
-  virtual void Optimize() = 0;
-  uint64_t CodeGen() override;
-  void BuildDomain(const std::vector<NDObject *> &objects);
-  void NormalizeDomain() {
-    root_dom_.Normalize();
-    int op_index = 0;
-    for (auto op : objects_) {  // clear status
-      op->Clear(op_index++);
-    }
-    block_align_ = SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_];
-    visit_ = nullptr;
-  }
-  void Normalize() {
-    for (auto op : build_ops_) {
-      op->Normalize(objects_);
-      objects_.emplace_back(op);
-      if (op->IsComm()) {
-        ASSERT(comm_op_ == nullptr);
-        comm_op_ = static_cast<CommOp *>(op);
-      }
-    }
-  }
-
-  int Analyze();
-
-  uint32_t CompactBlockDim(uint64_t core_limit) {
-    auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
-    return (tile_num_ + tile_per_block - 1) / tile_per_block;
-  }
+  void BuildDomain();
+  void PrepareTiling();
 
   uint8_t *DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve);
-  uint64_t DoCodeGen(uint64_t core_limit) {
+  uint64_t DoCodeGenInner(uint64_t core_limit) {
     auto code_reserve = ReserveCodeSize();
     code_.Alloc(code_reserve + code_.HeadSize());
-    root_dom_.PrepareTiling(this);
     auto code_end = DoCodeGen(core_limit, code_.data_ + code_.HeadSize(), code_reserve);
     code_.data_size_ = code_end - code_.data_;
     if (auto visit = GetVisitor<RedVisitCoder>(); visit != nullptr) {
@@ -180,8 +98,48 @@ class VectorKernel : public VKernel {
     code_.UpdateV(tile_num_);
     return 0;
   }
+  uint64_t DoCodeGen(uint64_t core_limit) {
+    PrepareTiling();
+    if (unlikely(!tile_size_)) {
+      ProcessIdle();
+      return 0;
+    }
+    return DoCodeGenInner(core_limit);
+  }
+
+  void Shard(const ShardParam &sp) {
+    for (auto op : objects_) {
+      op->Shard(sp);
+    }
+    shard_ = &sp;
+  }
+  void ClearShard() { shard_ = nullptr; }
+
+  void SetTile(int start, int end, int64_t num, int64_t factor) {
+    tiles_.emplace_back(DimTile{start, end, num, factor});
+  }
+
+  int MaxType() const { return max_type_; }
+  int MinType() const { return min_type_; }
+  uint64_t LeadAlign() const { return lead_align_; }
+  const DimArray &DimSpace() const { return dom_->nd_.dims(); }
+
+  uint64_t ReserveCodeSize() const {
+    auto res = SIMD_BLOCK_SIZE + objects_.size() * V_INSN_SIZE_MAX;
+    if (comm_op_) {
+      res += comm_op_->CodeReserve();
+    }
+    return (res + 511ul) & ~511ul;  // 512B align
+  }
+
+  uint32_t CompactBlockDim(uint64_t core_limit) {
+    auto tile_per_block = (tile_num_ + core_limit - 1) / core_limit;
+    return (tile_num_ + tile_per_block - 1) / tile_per_block;
+  }
 
   NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
+  void CollectIdle(std::vector<NDObject *> &cleans);
+  void ProcessIdle();
 
   template <typename T>
   T *GetVisitor() {
@@ -196,11 +154,14 @@ class VectorKernel : public VKernel {
   }
 
   std::vector<NDObject *> objects_;
-  std::vector<NDObject *> build_ops_;
   CommOp *comm_op_{nullptr};
-  RootDomain root_dom_;
 
-  uint64_t tile_num_{0};
+  int64_t tile_num_{0};
+  int64_t tile_size_;  // shape size of object tile size
+  PropRange align_;
+  NDObject *dom_;
+  const ShardParam *shard_{nullptr};
+
   VisitCoder *visit_;
 
   union {
@@ -211,6 +172,33 @@ class VectorKernel : public VKernel {
   int backward_event_num_;
 
  protected:
+  int64_t Analyze();
+  void ShapeTiling(int64_t size_limit, int64_t core_limit);
+  int64_t BodyTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, const PropRange &range, TileParam &tp);
+  void LeadTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, TileParam &tp);
+  void ManualTiling();
+  void Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker);
+
+  void TileProp(const TileParam tp) {
+    for (auto op : objects_) {
+      op->Tile(tp);
+    }
+  }
+
+  int64_t Tile(const TileParam tp, int64_t space) {
+    TileProp(tp);
+    tile_size_ = tile_size_ / space * tp.tile;
+    tile_num_ *= tp.num;
+    return tile_size_;
+  }
+  int64_t TileLead(const TileParam tp, int64_t lead_align) {
+    TileProp(tp);
+    tile_size_ = RoundUp<int64_t>(tp.tile, lead_align);
+    align_.space = tile_size_;
+    tile_num_ *= tp.num;
+    return tile_size_;
+  }
+
   int max_type_;
   int min_type_;
 
@@ -223,34 +211,81 @@ class VectorKernel : public VKernel {
     int64_t factor;
   };
   std::vector<DimTile> tiles_;
-  friend CodeGenHelper;
+  friend class CodeGenHelper;
 };
 
 class VKernelS : public VectorKernel {
  public:
-  VKernelS() : VectorKernel(KernelType::kStaticShape) {}
+  VKernelS(KernelTypeX ktype = KernelTypeX::kStaticShape) : VectorKernel(ktype) {}
+  ~VKernelS() override;
   void Append(NDObject *obj) override;
-  void Optimize() override;
+  uint64_t CodeGen() override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+
+  virtual bool NormBuild();
+
+  bool Normalize(bool broker_norm) {
+    if (broker_norm && broker_num_ == -1) {
+      BrokerInit();
+    }
+    for (auto op : build_ops_) {
+      op->Normalize(objects_);
+      objects_.emplace_back(op);
+    }
+    return !broker_norm || BrokerAffine();
+  }
+
+  void StaticInit(const std::vector<NDObject *> &objects);
+  void BrokerInit();
+  bool BrokerAffine();
+  uint64_t BrokerCodeGen(VKernel **hold_kernel);
+
+  std::vector<NDObject *> build_ops_;
+
+ protected:
+  int broker_num_{-1};
+  int last_broker_;
+  VKernel *stage_kernel_{nullptr};
 };
 
-class VKernelD : public VectorKernel {
+class VKernelD : public VKernelS {
  public:
-  VKernelD() : VectorKernel(KernelType::kDynShape) {}
-  void Append(NDObject *obj) override;
-  void Optimize() override;
+  VKernelD() : VKernelS(KernelTypeX::kDynShape) {}
+  bool NormBuild() override;
 
- private:
-  void RecordOpRelation();
-  void RecoverOpRelation();
-
-  std::unordered_map<NDObject *, std::vector<NDObject *>> op_relations_;
-  std::vector<NDObject *> pd_nexts_;
-  bool elim_reshape_{false};
+  void Recover() {
+    code_.Clear();
+    objects_.clear();
+  }
 };
 
+class _SpecVector : public VKernelD {
+ public:
+  ~_SpecVector() override;
+  void Append(NDObject *obj) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Next() { last_stage_++; }
+
+ protected:
+  bool use_fall_{false};
+  int last_stage_{0};
+  std::vector<int> stage_ids_;
+  std::vector<NDObject *> post_reduces_;
+  VKernel *fall_kernel_{nullptr};
+};
+
+template <bool dyn_shape>
+class SpecVector : public _SpecVector {
+ public:
+  SpecVector(KernelTypeX ktype) : _SpecVector() { ktype_ = ktype; }
+  uint64_t CodeGen() override;
+  uint64_t FallCodeGen();
+};
+
+class IsolateWrapVP;
 class VKernelP : public VKernel {
  public:
-  VKernelP() : VKernel(KernelType::kStaticParallel) { children_.push_back(new VKernelS()); }
+  VKernelP() : VKernel(KernelTypeX::kStaticParallel) { children_.push_back(new VKernelS()); }
   ~VKernelP() override;
   void AppendNext() {
     children_.push_back(new VKernelS());
@@ -260,15 +295,17 @@ class VKernelP : public VKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
 
-  static uint64_t UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t *&summaries);
-
  protected:
+  uint64_t CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size);
+
   std::vector<VKernelS *> children_;
+  IsolateWrapVP *wrap_{nullptr};
 };
 
 class DumpRefHelper {
  public:
-  DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}
+  explicit DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}
+  virtual ~DumpRefHelper() = default;
   void Dump(NDObject *op);
   virtual NDObject *GetInput(NDObject *input);
 
@@ -276,6 +313,12 @@ class DumpRefHelper {
   std::ostringstream &oss_;
   int idx_{0};
   std::unordered_map<NDObject *, int> idx_map_;
+};
+
+class KernelBuilder : public Kernel {
+ public:
+  KernelBuilder(VKernel *k) { kernel_ = k; }
+  ~KernelBuilder() { kernel_ = nullptr; }
 };
 }  // namespace dvm
 #endif  // _DVM_KERNEL_H_

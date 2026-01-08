@@ -1,24 +1,20 @@
 #!/bin/bash
-if [ $# -lt 2 ]; then
+if [ $# -lt 1 ]; then
 echo "Usage:"
-echo "  1. setup environment: export ASCEND_CUSTOM_PATH=<path_to_ascend_toolkit>"
-echo "  2. profiling: sh build.sh <case> <910B1|910B2|910B3|910B4>"
+echo "  1. setup environment: export DVM_SOC_NAME=Ascend<910B1|910B2|910B3|910B4>"
+echo "  2. profiling: sh build.sh <case>"
 exit 0
 fi
 
-export ASCEND_TOOLKIT_HOME=${ASCEND_CUSTOM_PATH}/latest
-export DVM_SOC_NAME=Ascend${2}
 TEST_FILE="${1%.cc}"
-CFLAGS="--std=c++17 -ldl -Werror -Wall -I../../include -I${ASCEND_CUSTOM_PATH}/latest/include/aclnn/ -fvisibility=hidden"
-LDFLGAS="-L${ASCEND_CUSTOM_PATH}/latest/tools/simulator/${DVM_SOC_NAME}/lib -lruntime_camodel"
-
-export LD_LIBRARY_PATH=${ASCEND_CUSTOM_PATH}/latest/tools/simulator/${DVM_SOC_NAME}/lib:${LD_LIBRARY_PATH}
+CFLAGS="--std=c++17 -ldl -Werror -Wall -I../../include -I${ASCEND_PATH}/include/experiment/runtime -I${ASCEND_PATH}/include/experiment/msprof/ -fvisibility=hidden"
+LDFLGAS="-L${ASCEND_PATH}/lib64 -lascendcl -L${ASCEND_PATH}/tools/simulator/${DVM_SOC_NAME}/lib -lruntime_camodel"
 
 echo "----------compile----------"
 
-make -C ../../ libdvm.a sim=1 dbg=1 -j8
+make -C ../../ dbg=1 -j32
 
-echo "g++ ${CFLAGS} ${TEST_FILE}.cc ../../libdvm.a ${LDFLGAS} -o ${TEST_FILE} -ldl"
+echo "g++ ${CFLAGS} ${TEST_FILE}.cc ../../libdvm.a ${LDFLGAS} -o ${TEST_FILE}"
 
 g++ ${CFLAGS} ${TEST_FILE}.cc ../../libdvm.a ${LDFLGAS} -o ${TEST_FILE}
 

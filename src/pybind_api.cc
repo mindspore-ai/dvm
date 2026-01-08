@@ -14,31 +14,50 @@
  * limitations under the License.
  */
 
-#include <unistd.h>
 #include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <algorithm>
 #include <memory>
 #include <fstream>
+#include <securec.h>
 #include "pybind11/numpy.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
 #include "acl/acl_rt.h"
+#include "acl/acl_prof.h"
 #include "kernel.h"
 #include "pybind_api.h"
-
-#define ASCEND_CALL(func)                                                                               \
-  do {                                                                                                  \
-    auto err = (func);                                                                                  \
-    if (err != 0) {                                                                                     \
-      std::cerr << "Ascend error in function " << #func << " : " << static_cast<int>(err) << std::endl; \
-      exit(0);                                                                                          \
-    }                                                                                                   \
-  } while (0)
+#include "msprof.h"
+#include "xkernel.h"
 
 namespace dvm {
 namespace {
+const size_t TEST_NUM = 10;
+
+class ProfileMgr {
+ public:
+  ProfileMgr(const std::string &path) {
+    aclprofInit(path.c_str(), path.length());
+    int32_t device_id;
+    aclrtGetDevice(&device_id);
+    uint32_t device_list[1] = {static_cast<uint32_t>(device_id)};
+    uint32_t device_num = 1;
+    uint64_t mask =
+      ACL_PROF_ACL_API | ACL_PROF_AICORE_METRICS | ACL_PROF_TASK_TIME | ACL_PROF_TRAINING_TRACE | ACL_PROF_AICPU;
+    acl_config_ = aclprofCreateConfig(device_list, device_num, ACL_AICORE_ARITHMETIC_UTILIZATION, nullptr, mask);
+  }
+  ~ProfileMgr() {
+    aclprofDestroyConfig(acl_config_);
+    aclprofFinalize();
+  }
+  void ProfStart() { aclprofStart(acl_config_); }
+  void ProfStop() { aclprofStop(acl_config_); }
+
+ private:
+  aclprofConfig *acl_config_;
+};
+
 inline void F32ToBF16(float *input, uint16_t *output, uint32_t size) {
   while (size-- != 0) {
     *output++ = BFloat16(*input++).int_value();
@@ -51,17 +70,11 @@ inline void BF16ToF32(uint16_t *input, float *output, uint32_t size) {
   }
 }
 
-int64_t GetTimeX() {
-  struct timeval tv;
-  gettimeofday(&tv, nullptr);
-  return tv.tv_sec * 1000000 + tv.tv_usec;
-}
-
-DType StringToTypeID(const std::string &type) {
-  static std::unordered_map<std::string, DType> map;
+DataType StringToTypeID(const std::string &type) {
+  static std::unordered_map<std::string, DataType> map;
   if (map.empty()) {
-    for (int i = 0; i < DType::kTypeEnd; ++i) {
-      map[DTYPE_NAMES[i]] = DType(i);
+    for (int i = 0; i < DataType::kDataTypeEnd; ++i) {
+      map[DTYPE_NAMES[i]] = DataType(i);
     }
   }
   auto it = map.find(type);
@@ -69,8 +82,8 @@ DType StringToTypeID(const std::string &type) {
   return it->second;
 }
 
-std::string GetBufferFormat(const DType type) {
-  const std::string formats[kTypeEnd] = {
+std::string GetBufferFormat(const DataType type) {
+  const std::string formats[kDataTypeEnd] = {
     py::format_descriptor<bool>::format(),     "e",
     py::format_descriptor<uint16_t>::format(), py::format_descriptor<float>::format(),
     py::format_descriptor<int32_t>::format(),  py::format_descriptor<int64_t>::format()};
@@ -97,16 +110,30 @@ std::pair<bool, T> GetScalar(const py::object &obj) {
   return {false, (T)0};
 }
 
-std::unordered_map<std::string, KernelType> kernel_type_map = {
-  {"", kStaticShape},   {"static", kStaticShape},      {"dyn", kDynShape},        {"mix", kStaticMix},
-  {"dyn_mix", kDynMix}, {"parallel", kStaticParallel}, {"stages", kStaticStages}, {"eager", kEager}};
+inline void ResetStoreMemory(const std::vector<KernelPy::StoreInfo> &stores) {
+  for (auto &info : stores) {
+    ERROR_CHECK(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
+  }
+}
 
-void *WsAllocCallback(uint64_t size, void *user_data) {
-  void *dev_addr = nullptr;
-  ASCEND_CALL(aclrtMalloc(&dev_addr, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-  ASSERT(user_data);
-  static_cast<std::vector<void *> *>(user_data)->push_back(dev_addr);
-  return dev_addr;
+std::unordered_map<std::string, int> kernel_type_map = {{"", KernelType::kVector},
+                                                        {"vector",KernelType::kVector},
+                                                        {"cube", KernelType::kCube},
+                                                        {"mix", KernelType::kMix},
+                                                        {"parallel", KernelType::kParallel},
+                                                        {"split", KernelType::kSplit},
+                                                        {"eager", KernelType::kEager},
+                                                        {"stages", PyKernelBuilder::kExtStages}};
+
+template <typename T>
+T &FindVectorInfo(std::vector<T> &infos, NDObject *op) {
+  for (auto &info : infos) {
+    if (info.op == op) {
+      return info;
+    }
+  }
+  ASSERT(0);
+  return infos.front();
 }
 
 struct MpCtx {
@@ -120,6 +147,219 @@ struct MpCtx {
 MpCtx g_mpc;
 }  // end namespace
 
+class KernelRunner : public WsAllocator {
+ public:
+  using LoadInfo = KernelPy::LoadInfo;
+  using StoreInfo = KernelPy::StoreInfo;
+
+  virtual ~KernelRunner() {}
+  virtual void AllocLoad(const py::buffer_info &buf, LoadInfo &load) = 0;
+  virtual void AllocStore(StoreInfo &store) = 0;
+  virtual void Reset() = 0;
+  virtual int Run(PyKernelBuilder &kernel, void *workspace, bool sync) = 0;
+};
+
+class DevRunner : public KernelRunner {
+ public:
+  DevRunner(int dev_id) { dev_id_ = dev_id; }
+  ~DevRunner() override {
+    Reset();
+    aclrtResetDevice(dev_id_);
+  }
+
+  void AllocLoad(const py::buffer_info &buf, LoadInfo &load) override {
+    size_t size = buf.itemsize * buf.size;
+    if (size == 0) return;
+    ERROR_CHECK(aclrtMalloc(&load.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    ERROR_CHECK(aclrtMemcpy(load.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
+    dev_mem_.push_back(load.dev);
+  }
+
+  void AllocStore(StoreInfo &store) override {
+    if (store.size == 0) return;
+    store.host = std::malloc(store.size);
+    const uint64_t reserve_mem = 512;
+    ERROR_CHECK(aclrtMalloc(&store.dev, store.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+    if (store.clear_mem) {
+      memset_s(store.host, store.size, 0, store.size);
+      ERROR_CHECK(aclrtMemcpy(store.dev, store.size, store.host, store.size, ACL_MEMCPY_HOST_TO_DEVICE));
+    }
+    host_mem_.push_back(store.host);
+    dev_mem_.push_back(store.dev);
+  }
+
+  void *Alloc(size_t size) override {
+    void *ws = nullptr;
+    if (size > 0) {
+      ERROR_CHECK(aclrtMalloc(&ws, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+      dev_mem_.push_back(ws);
+    }
+    return ws;
+  }
+
+  int Run(PyKernelBuilder &kernel, void *workspace, bool sync) override {
+    if (kernel.IsSplit()) {
+      kernel.Launch(nullptr);
+    } else {
+      ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, nullptr));
+    }
+    return sync ? aclrtSynchronizeStream(nullptr) : 0;
+  }
+
+  void Reset() override {
+    for (auto mem : host_mem_) {
+      std::free(mem);
+    }
+    host_mem_.clear();
+    for (auto mem : dev_mem_) {
+      ERROR_CHECK(aclrtFree(mem));
+    }
+    dev_mem_.clear();
+  }
+
+  std::vector<void *> host_mem_;
+  std::vector<void *> dev_mem_;
+  int dev_id_{0};
+};
+
+void DryRunEntry(uint64_t core_idx, bool is_cube, int target);
+void DryRunExit();
+
+class DryRunner : public KernelRunner {
+ public:
+  DryRunner(int core_id) : core_id_(core_id) {}
+  void AllocLoad(const py::buffer_info &buf, LoadInfo &load) override { load.dev = buf.ptr; }
+  void AllocStore(StoreInfo &store) override {
+    store.host = std::malloc(store.size);
+    if (store.clear_mem) {
+      memset_s(store.host, store.size, 0, store.size);
+    }
+    host_mem_.push_back(store.host);
+    store.dev = store.host;
+  }
+  void *Alloc(size_t size) override {
+    void *ws = nullptr;
+    if (size > 0) {
+      ws = std::malloc(size);
+      host_mem_.push_back(ws);
+    }
+    return ws;
+  }
+  void Reset() override {
+    for (auto mem : host_mem_) {
+      std::free(mem);
+    }
+    host_mem_.clear();
+  }
+  int Run(PyKernelBuilder &kernel, void *workspace, bool sync) override {
+    DryRun(kernel, workspace, core_id_, false);
+    return 0;
+  }
+
+  void DryRun(PyKernelBuilder &kernel, void *workspace, int core_id, bool is_cube) {
+    int target = kernel.GetImpl()->code_.target_;
+    DryRunEntry(core_id, is_cube || target == Code::kTargetCube, target);
+    if (kernel.IsSplit()) {
+      kernel.Launch(nullptr);
+    } else {
+      ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, nullptr));
+    }
+    DryRunExit();
+  }
+
+ private:
+  int core_id_;
+  std::vector<void *> host_mem_;
+};
+
+class DasRunner : public KernelRunner {
+ public:
+  DasRunner() { addr_ = reinterpret_cast<uint8_t *>(0x10); }
+  void AllocLoad(const py::buffer_info &buf, LoadInfo &load) override {
+    load.dev = addr_;
+    addr_ += buf.itemsize * buf.size;
+  }
+  void AllocStore(StoreInfo &store) override {
+    store.host = std::malloc(store.size);
+    host_mem_.push_back(store.host);
+    store.dev = addr_;
+    addr_ += store.size;
+  }
+  void *Alloc(size_t size) override {
+    void *ws = nullptr;
+    if (size > 0) {
+      ws = addr_;
+      addr_ += size;
+    }
+    return ws;
+  }
+  void Reset() override {
+    addr_ = reinterpret_cast<uint8_t *>(0x10);
+    for (auto mem : host_mem_) {
+      std::free(mem);
+    }
+    host_mem_.clear();
+  }
+  int Run(PyKernelBuilder &kernel, void *workspace, bool sync) override {
+    auto &code = kernel.GetImpl()->code_;
+    code.RelocBinds(workspace);
+    return 0;
+  }
+
+ private:
+  std::vector<void *> host_mem_;
+  uint8_t *addr_;
+};
+
+class RunnerManager {
+ public:
+  ~RunnerManager() {
+    delete dev_;
+    delete dry_;
+    delete das_;
+  }
+
+  static RunnerManager &Instance() {
+    static RunnerManager mng;
+    return mng;
+  }
+
+  void ResetDevRuner() {
+    delete dev_;
+    dev_ = nullptr;
+  }
+
+  KernelRunner *Get(const std::string type, int dev_id) {
+    if (type == "dev") {
+      if (dev_) {
+        if (dev_->dev_id_ == dev_id) {
+          return dev_;
+        }
+        delete dev_;
+      }
+      dev_ = new DevRunner(dev_id);
+      return dev_;
+    } else if (type == "dry") {
+      if (!dry_) {
+        dry_ = new DryRunner(dev_id);
+      }
+      return dry_;
+    } else if (type == "das") {
+      if (!das_) {
+        das_ = new DasRunner();
+      }
+      return das_;
+    }
+    ASSERT(0);
+    return nullptr;
+  }
+
+ private:
+  DevRunner *dev_;
+  DryRunner *dry_;
+  DasRunner *das_;
+};
+
 std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
 
 void ShapeRefPy::Update(const py::object &shape) {
@@ -127,46 +367,83 @@ void ShapeRefPy::Update(const py::object &shape) {
   *shape_ref_ = shape_;
 }
 
-KernelPy::KernelPy(int dev_id, const std::string &type_str) {
-  auto it = kernel_type_map.find(type_str);
-  KernelType type = it != kernel_type_map.end() ? it->second : kStaticShape;
-  uint32_t dev_count = 0;
-  ASCEND_CALL(aclrtGetDeviceCount(&dev_count));
-  ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
-  ASCEND_CALL(aclrtSetDevice(dev_id));
-  dev_id_ = dev_id;
-  if (type == kEager) {
-    kernel_.EagerReset(WsAllocCallback, &eager_wss_);
+void PyKernelBuilder::Reset(int type, uint32_t flags) {
+  if (type == KernelType::kVector) {
+    Kernel::Reset<KernelType::kVector>(flags);
+  } else if (type == KernelType::kCube) {
+    Kernel::Reset<KernelType::kCube>(flags);
+  } else if (type == KernelType::kMix) {
+    Kernel::Reset<KernelType::kMix>(flags);
+  } else if (type == KernelType::kParallel) {
+    Kernel::Reset<KernelType::kParallel>(flags);
+  } else if (type == KernelType::kSplit) {
+    Kernel::Reset<KernelType::kSplit>(flags);
+  } else if (type == KernelType::kEager) {
+    Kernel::Reset<KernelType::kEager>(flags);
+  } else if (type == kExtStages) {
+    kernel_ = new StagesKernel();
   } else {
-    kernel_.Reset(type);
+    ASSERT(0);
   }
-  (void)System::Instance();  // early construct System
+  real_ktype_ = type;
+  flags_ = flags;
+}
+
+void PyKernelBuilder::StageSwitch(int type) {
+  auto ktype = static_cast<KernelTypeX>(type);
+  if (real_ktype_ == kExtStages) {
+    static_cast<StagesKernel *>(kernel_)->builder_.StageSwitch(ktype);
+  } else {
+    ASSERT(0);
+  }
+}
+
+NDObject *PyKernelBuilder::StageLoad(NDObject *stage_store) {
+  auto store = static_cast<NDStore *>(stage_store);
+  if (real_ktype_ == kExtStages) {
+    return static_cast<StagesKernel *>(kernel_)->builder_.StageLoad(store);
+  }
+  return nullptr;
+}
+
+NDObject *PyKernelBuilder::StageStore(NDObject *input) {
+  if (real_ktype_ == kExtStages) {
+    return static_cast<StagesKernel *>(kernel_)->builder_.StageStore(input);
+  }
+  return nullptr;
+}
+
+KernelPy::KernelPy(const std::string &ker_type, const std::string &run_type, int dev_id) {
+  uint32_t dev_count = 0;
+  ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
+  ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
+  ERROR_CHECK(aclrtSetDevice(dev_id));
+  auto pos = ker_type.find(':', 0);
+  auto type_name = ker_type.substr(0, pos);
+  uint32_t flags = 0;
+  while (pos != std::string::npos) {
+    pos++;
+    auto end = ker_type.find(',', pos);
+    auto flag_name = ker_type.substr(pos, end == std::string::npos ? end : end - pos);
+    if (flag_name == "dyn") {
+      flags |= KernelFlag::kDynamic;
+    } else if (flag_name == "unify_ws") {
+      flags |= KernelFlag::kUnifyWS;
+    } else if (flag_name == "spec") {
+      flags |= KernelFlag::kSpeculate;
+    }
+    pos = end;
+  }
+  auto it = kernel_type_map.find(type_name);
+  auto type = it != kernel_type_map.end() ? it->second : KernelType::kVector;
+  runner_ = RunnerManager::Instance().Get(run_type, dev_id);
+  kernel_.Reset(type, flags);
 }
 
 KernelPy::~KernelPy() {
-  for (auto &it : loads_) {
-    if (it.second.dev) {
-      ASCEND_CALL(aclrtFree(it.second.dev));
-    }
-  }
-  for (auto &it : stores_) {
-    if (it.second.dev) {
-      ASCEND_CALL(aclrtFree(it.second.dev));
-    }
-    if (it.second.host) {
-      std::free(it.second.host);
-    }
-  }
-  if (workspace_) {
-    ASCEND_CALL(aclrtFree(workspace_));
-  }
-  if (!eager_wss_.empty()) {
-    for (auto addr : eager_wss_) {
-      ASCEND_CALL(aclrtFree(addr));
-    }
-  }
+  runner_->Reset();
 #ifdef VK_SIM_MODEL
-  aclrtResetDevice(dev_id_);
+  RunnerManager::Instance().ResetDevRuner();
 #endif
   for (auto ref : shape_) {
     delete ref;
@@ -182,14 +459,10 @@ ShapeRef *KernelPy::GetShapeRef(const py::object &shape) {
   return shape_.emplace_back(new ShapeRef(shape_vec));
 }
 
-py::object KernelPy::Unary(const std::string &op_name, const py::object &input) {
-  int op_type = UnaryOp::QueryId(op_name);
-  if (op_type < 0) {
-    std::string err_msg = "Could not find op: " + op_name;
-    throw std::invalid_argument(err_msg);
-  }
+template <UnaryType op_type>
+py::object KernelPy::Unary(const py::object &input) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.Unary(op_type, in_obj);
+  auto op = kernel_.Unary<op_type>(in_obj);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -207,52 +480,48 @@ py::object KernelPy::Select(const py::object &cond, const py::object &lhs, const
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::Reduce(const std::string &type, const py::object &input, const py::object &dims, bool keepdims) {
+template <ReduceType op_type>
+py::object KernelPy::Reduce(const py::object &input, const py::object &dims, bool keepdims) {
   auto in_obj = input.cast<NDOpPyPtr>()->Get();
   auto dims_ref = GetShapeRef(dims);
-  auto op = kernel_.Reduce(ReduceOpType::kSum, in_obj, dims_ref, keepdims);
+  auto op = kernel_.Reduce<op_type>(in_obj, dims_ref, keepdims);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::Binary(const std::string &op_name, const py::object &lhs, const py::object &rhs) {
-  int op_type = BinaryOp::QueryId(op_name);
-  if (op_type < 0) {
-    std::string err_msg = "Could not find op: " + op_name;
-    throw std::invalid_argument(err_msg);
-  }
+template <BinaryType op_type>
+py::object KernelPy::Binary(const py::object &lhs, const py::object &rhs) {
   NDObject *op;
-  auto [lhs_is_scalar, lhs_scalar] = GetScalar<float>(lhs);
-  auto [rhs_is_scalar, rhs_scalar] = GetScalar<float>(rhs);
-  if (lhs_is_scalar) {
-    auto input2 = rhs.cast<NDOpPyPtr>()->Get();
-    if (kernel_.GetDType(input2) == dvm::kInt32) {
-      op = kernel_.Binary(op_type, GetScalar<int>(lhs).second, input2);
-    } else {
-      op = kernel_.Binary(op_type, lhs_scalar, input2);
-    }
-  } else if (rhs_is_scalar) {
-    auto input1 = lhs.cast<NDOpPyPtr>()->Get();
-    if (kernel_.GetDType(input1) == dvm::kInt32) {
-      op = kernel_.Binary(op_type, input1, GetScalar<int>(rhs).second);
-    } else {
-      op = kernel_.Binary(op_type, input1, rhs_scalar);
-    }
+  if (py::isinstance<py::int_>(lhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<int>(), rhs.cast<NDOpPyPtr>()->Get());
+  } else if (py::isinstance<py::float_>(lhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<float>(), rhs.cast<NDOpPyPtr>()->Get());
+  } else if (py::isinstance<py::int_>(rhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), rhs.cast<int>());
+  } else if (py::isinstance<py::float_>(rhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), rhs.cast<float>());
+  } else if (py::isinstance<NDSymInt>(lhs)) {
+    op = kernel_.Binary<op_type>(&(lhs.cast<NDSymIntPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
+  } else if (py::isinstance<NDSymInt>(rhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<NDSymIntPtr>()->data_));
+  } else if (py::isinstance<NDSymFloat>(lhs)) {
+    op = kernel_.Binary<op_type>(&(lhs.cast<NDSymFloatPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
+  } else if (py::isinstance<NDSymFloat>(rhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<NDSymFloatPtr>()->data_));
   } else {
     auto input1 = lhs.cast<NDOpPyPtr>()->Get();
     auto input2 = rhs.cast<NDOpPyPtr>()->Get();
-    op = kernel_.Binary(op_type, input1, input2);
+    op = kernel_.Binary<op_type>(input1, input2);
   }
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::Broadcast(const py::object &input, const py::object &shape, const std::string &dtype,
-                               bool dummy_load) {
+py::object KernelPy::Broadcast(const py::object &input, const py::object &shape, const std::string &dtype) {
   auto shape_ref = GetShapeRef(shape);
   NDObject *op;
   auto [is_scalar, scalar] = GetScalar<float>(input);
   if (is_scalar) {
     auto type_id = StringToTypeID(dtype);
-    op = kernel_.Broadcast(scalar, shape_ref, type_id, dummy_load);
+    op = kernel_.Broadcast(scalar, shape_ref, type_id);
   } else {
     auto in_obj = input.cast<NDOpPyPtr>()->Get();
     op = kernel_.Broadcast(in_obj, shape_ref);
@@ -274,7 +543,7 @@ py::object KernelPy::Copy(const py::object &input) {
 }
 
 py::object KernelPy::OneHot(const py::object &indices, int depth, int axis, const py::object &on_value,
-                           const py::object &off_value, const std::string &dtype) {
+                            const py::object &off_value, const std::string &dtype) {
   auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
   auto depth_ref = shape_.emplace_back(new ShapeRef(shape_vec_.emplace_back(1, depth)));
   auto type_id = StringToTypeID(dtype);
@@ -297,60 +566,83 @@ py::object KernelPy::OneHot(const py::object &indices, int depth, int axis, cons
 }
 
 py::object KernelPy::Load(const py::object &shape, const std::string &type) {
-  LoadInfo info;
+  auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
   auto op = kernel_.Load(nullptr, shape_ref, StringToTypeID(type));
-  loads_[op] = std::move(info);
+  info.op = op;
+  return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
+py::object KernelPy::ViewLoad(const py::object &shape, const py::object &stride, int64_t offset,
+                              const std::string &type) {
+  auto &info = loads_.emplace_back();
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto stride_ref = GetShapeRef(stride);
+  const int64_t *offset_ptr = nullptr;
+  if (offset != 0) {
+    auto &offset_vec = shape_vec_.emplace_back(1, offset);
+    offset_ptr = &offset_vec[0];
+  }
+  auto op = kernel_.Load(nullptr, shape_ref, stride_ref, offset_ptr, StringToTypeID(type));
+  info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::SliceLoad(const py::object &shape, const py::object &start, const py::object &size,
                                const std::string &type) {
-  LoadInfo info;
+  auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
   auto start_ref = GetShapeRef(start);
   auto size_ref = GetShapeRef(size);
   auto op = kernel_.SliceLoad(nullptr, shape_ref, start_ref, size_ref, StringToTypeID(type));
-  loads_[op] = std::move(info);
+  info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end,
                                       const py::object &step, const std::string &type) {
-  LoadInfo info;
+  auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
   auto start_ref = GetShapeRef(start);
   auto end_ref = GetShapeRef(end);
   auto step_ref = GetShapeRef(step);
   auto op = kernel_.StridedSliceLoad(nullptr, shape_ref, start_ref, end_ref, step_ref, StringToTypeID(type));
-  loads_[op] = std::move(info);
+  info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::MultiLoad(const py::object &shape, const std::string &type) {
-  LoadInfo info;
+  auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
   auto op = kernel_.MultiLoad(nullptr, shape_ref, StringToTypeID(type), &g_mpc.comm);
-  loads_[op] = std::move(info);
+  info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::Store(const py::object &obj) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.Store(nullptr, in_obj);
-  stores_[op] = StoreInfo();
+  auto &store = stores_.emplace_back();
+  store.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object KernelPy::PadStore(const py::object &obj, int64_t pad_size) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.PadStore(nullptr, in_obj, pad_size);
-  stores_[op] = StoreInfo();
+  auto &store = stores_.emplace_back();
+  store.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
+}
+
+void KernelPy::SetStoreInplace(const py::object &obj) {
+  auto store = obj.cast<NDOpPyPtr>()->Get();
+  kernel_.SetStoreInplace(store);
 }
 
 py::object KernelPy::ElementAny(const py::object &input) {
@@ -359,9 +651,17 @@ py::object KernelPy::ElementAny(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::AllReduce(const py::object &input) {
+py::object KernelPy::AllReduce(const std::string &type, const py::object &input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.AllReduce(input_obj, &g_mpc.comm);
+  ReduceType reduce_type{ReduceType::kReduceTypeEnd};
+  if (type == "sum") {
+    reduce_type = ReduceType::kSum;
+  } else if (type == "max") {
+    reduce_type = ReduceType::kMax;
+  } else {
+    throw py::value_error("Unsupported AllReduce type: " + type);
+  }
+  auto op = kernel_.AllReduce(reduce_type, input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -393,13 +693,14 @@ py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool t
 }
 
 py::object KernelPy::GroupedMatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b,
-                                   const py::object &bias, const py::object &group_list, int64_t group_type) {
+                                   const py::object &bias, const py::object &group_list, int64_t group_type,
+                                   int64_t group_list_type) {
   auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
   auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
   NDObject *bias_obj = bias.is_none() ? nullptr : bias.cast<NDOpPyPtr>()->Get();
   NDObject *group_list_obj = group_list.is_none() ? nullptr : group_list.cast<NDOpPyPtr>()->Get();
-  auto op =
-    kernel_.GroupedMatMul(lhs_obj, rhs_obj, trans_a, trans_b, bias_obj, group_list_obj, dvm::GroupType(group_type));
+  auto op = kernel_.GroupedMatMul(lhs_obj, rhs_obj, trans_a, trans_b, bias_obj, group_list_obj,
+                                  dvm::GmmSplitType(group_type), (GmmListType)group_list_type);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
@@ -430,11 +731,22 @@ py::object KernelPy::ConvertFromBF16(const py::object &input) {
   return py::array(new_buf);
 }
 
+py::object KernelPy::MakeIntScalar() { return py::cast(std::make_shared<NDSymInt>(-1)); }
+py::object KernelPy::MakeFloatScalar() { return py::cast(std::make_shared<NDSymFloat>(-1.0)); }
+
 void KernelPy::ParallelNext() { kernel_.ParallelNext(); }
 
 void KernelPy::StageSwitch(const std::string &ker_type) {
-  auto it = kernel_type_map.find(ker_type);
-  KernelType type = it != kernel_type_map.end() ? it->second : kStaticShape;
+  int type = KernelTypeX::kStaticShape;
+  if (ker_type == "mix") {
+    type = KernelTypeX::kStaticMix;
+  } else if (ker_type == "dyn_mix") {
+    type = KernelTypeX::kDynMix;
+  } else if (ker_type == "parallel") {
+    type = KernelTypeX::kStaticParallel;
+  } else {
+    type = KernelTypeX::kStaticShape;
+  }
   kernel_.StageSwitch(type);
 }
 
@@ -450,12 +762,6 @@ py::object KernelPy::StageStore(const py::object &input) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::StagePadStore(const py::object &input, const py::object &pad_size) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.StagePadStore(in_obj, pad_size.cast<int64_t>());
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
 void KernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
   static_cast<VectorKernel *>(kernel_.GetImpl())->SetTile(start, end, num, factor);
 }
@@ -464,35 +770,24 @@ void KernelPy::CodeGen(const py::object &pass_names) {
   const static std::unordered_map<std::string, pass::Pass> pass_map = {
     {"PrintPeakLive", pass::PrintPeakLive},       {"ReorderStore", pass::ReorderStore},
     {"ReorderLoad", pass::ReorderLoad},           {"CompactPeakLiveness", pass::CompactPeakLiveness},
-    {"EliminateReshape", pass::EliminateReshape}, {"InsertRemovePad", pass::InsertRemovePad},
-    {"NormalizeNdd", pass::NormalizeNdd}};
-  int64_t begin, end;
-  if (kernel_.GetImpl()->KType() == kEager) {
+    {"EliminateReshape", pass::EliminateReshape}, {"InsertRemovePad", pass::InsertRemovePad}};
+  if (kernel_.IsSplit()) {
     std::vector<RelocEntry> relocs;
     relocs.reserve(loads_.size() + stores_.size());
-    for (auto &it : loads_) {
-      relocs.emplace_back(it.first, it.second.dev);
+    for (auto &info : loads_) {
+      relocs.emplace_back(info.op, info.dev);
     }
-    for (auto &it : stores_) {
-      auto op = it.first;
-      auto &info = it.second;
+    kernel_.Infer();
+    for (auto &info : stores_) {
+      auto op = info.op;
       info.size = ITEM_SIZE[op->type_id_];
       for (size_t i = 0; i < op->shape_ref_->size; i++) {
         info.size *= op->shape_ref_->data[i];
       }
-      info.host = std::malloc(info.size);
-      const uint64_t reserve_mem = 512;
-      ASCEND_CALL(aclrtMalloc(&info.dev, info.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-      if (info.clear_mem) {
-        std::memset(info.host, 0, info.size);
-        ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
-      }
+      runner_->AllocStore(info);
       relocs.emplace_back(op, info.dev);
     }
-    begin = GetTimeX();
-    kernel_.EagerCodeGen(relocs.data(), relocs.size());
-    end = GetTimeX();
-    std::cout << "codegen time(us): " << end - begin << std::endl;
+    kernel_.CodeGen(relocs.data(), relocs.size(), runner_);
     return;
   }
   uint64_t workspace_size;
@@ -503,23 +798,12 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     for (auto name : names) {
       pass::passes.push_back(pass_map.at(name));
     }
-    begin = GetTimeX();
     workspace_size = kernel_.CodeGen();
-    end = GetTimeX();
     std::swap(old_passes, pass::passes);
   } else {
-    begin = GetTimeX();
     workspace_size = kernel_.CodeGen();
-    end = GetTimeX();
   }
-  std::cout << "codegen time(us): " << end - begin << std::endl;
-  if (workspace_) {
-    ASCEND_CALL(aclrtFree(workspace_));
-    workspace_ = nullptr;
-  }
-  if (workspace_size > 0) {
-    ASCEND_CALL(aclrtMalloc(&workspace_, workspace_size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-  }
+  workspace_ = runner_->Alloc(workspace_size);
 }
 
 py::object KernelPy::DisAssemble() {
@@ -532,20 +816,25 @@ py::object KernelPy::DumpGraph() {
   return py::cast(data);
 }
 
-void KernelPy::InitComm(int rank_id, int rank_size) {
-  if (g_mpc.comm.GetImpl() == nullptr) {
-    g_mpc.comm.Init(rank_id, rank_size);
+void KernelPy::InitComm(int rank_id, int rank_size, const std::string &comm_type) {
+  int type_id;
+  if (comm_type == "hccl") {
+    type_id = Comm::kHccl;
+  } else if (comm_type == "dummy") {
+    type_id = Comm::kDummy;
+  } else {
+    type_id = Comm::kMemory;
   }
+  g_mpc.rank_id = rank_id;
+  g_mpc.rank_size = rank_size;
+  g_mpc.comm.Init(rank_id, rank_size, type_id);
 }
 
 void KernelPy::Run() {
-  if (kernel_.GetImpl()->KType() == kEager) {
-    kernel_.EagerLaunch(nullptr);
-  } else {
+  if (!kernel_.IsSplit()) {
     PrepareIO();
-    ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   }
-  auto ret = aclrtSynchronizeStream(nullptr);
+  auto ret = runner_->Run(kernel_, workspace_, true);
   if (ret != 0) {
     std::cerr << kernel_.GetImpl()->DumpGraph() << std::endl;
     std::cerr << kernel_.GetImpl()->DisAssemble() << std::endl;
@@ -554,77 +843,71 @@ void KernelPy::Run() {
   }
 }
 
-void DryRunEntry(uint64_t core_idx, bool is_cube);
-void DryRunExit();
 void KernelPy::DryRun(int core_idx, bool cube_core) {
-  DryRunEntry(core_idx, cube_core);
-  Run();
-  DryRunExit();
+  static_cast<DryRunner *>(runner_)->DryRun(kernel_, workspace_, core_idx, cube_core);
 }
 
 py::object KernelPy::Perf() {
-#define TEST_NUM 10
-#ifdef VK_SIM_MODEL
-  return py::none();
-#else
   // warm up
-  if (kernel_.GetImpl()->KType() == kEager) {
-    ASCEND_CALL(kernel_.EagerLaunch(nullptr));
-  } else {
+  if (!kernel_.IsSplit()) {
     PrepareIO();
-    ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
   }
-  ASCEND_CALL(aclrtSynchronizeStream(nullptr));
-  float min_us = 1e6;
-  float max_us = 0.0f;
-  float total_us = 0.0f;
-  aclrtEvent start, end;
-  ASCEND_CALL(aclrtCreateEvent(&start));
-  ASCEND_CALL(aclrtCreateEvent(&end));
-  for (int i = 0; i < TEST_NUM; i++) {
-    for (auto &s : stores_) {
-      auto info = s.second;
-      ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
-    }
-    ASCEND_CALL(aclrtRecordEvent(start, nullptr));
-    if (kernel_.GetImpl()->KType() == kEager) {
-      ASCEND_CALL(kernel_.EagerLaunch(nullptr));
-    } else {
-      ASCEND_CALL(kernel_.Launch(workspace_, nullptr));
-    }
-    ASCEND_CALL(aclrtRecordEvent(end, nullptr));
-    ASCEND_CALL(aclrtSynchronizeStream(nullptr));
-    float time_us = 0.0f;
-    ASCEND_CALL(aclrtEventElapsedTime(&time_us, start, end));
-    time_us *= 1000.0;
-    if (time_us < min_us) {
-      min_us = time_us;
-    }
-    if (time_us > max_us) {
-      max_us = time_us;
-    }
-    total_us += time_us;
+  runner_->Run(kernel_, workspace_, true);
+  RepeatProfiler profiler;
+  profiler.Reset();
+  for (size_t i = 0; i < TEST_NUM; i++) {
+    ResetStoreMemory(stores_);
+    profiler.RecordStart(nullptr);
+    runner_->Run(kernel_, workspace_, false);
+    profiler.RecordEnd(nullptr);
   }
-  ASCEND_CALL(aclrtDestroyEvent(start));
-  ASCEND_CALL(aclrtDestroyEvent(end));
-  return py::make_tuple(py::float_(min_us), py::float_(max_us), py::float_(total_us / float(TEST_NUM)));
-#endif
+  return py::make_tuple(py::float_(profiler.min_us_), py::float_(profiler.max_us_), py::float_(profiler.total_us_ / float(TEST_NUM)));
+}
+
+py::object KernelPy::Msprof(const std::string &path, int64_t test_num) {
+  ProfileMgr mgr(path);
+  if (kernel_.IsSplit()) {
+    runner_->Run(kernel_, workspace_, true);
+    mgr.ProfStart();
+    while (test_num--) {
+      ResetStoreMemory(stores_);
+      kernel_.Launch(nullptr);
+    }
+  } else {
+    constexpr const char *kTempFusionOp = "DvmOp";
+    kernel_.SetNameHint(kTempFusionOp, kTempFusionOp);
+    PrepareIO();
+    runner_->Run(kernel_, workspace_, true);
+    mgr.ProfStart();
+    std::vector<RelocEntry> relocs;
+    relocs.reserve(loads_.size() + stores_.size());
+    std::vector<void *> inputs_addr;
+    std::vector<void *> outputs_addr;
+    std::vector<NDObject *> inputs;
+    std::vector<NDObject *> outputs;
+    for (auto &info : loads_) {
+      relocs.emplace_back(info.op, info.dev);
+    }
+    for (auto &info : stores_) {
+      relocs.emplace_back(info.op, info.dev);
+    }
+    while (test_num--) {
+      ResetStoreMemory(stores_);
+      ERROR_CHECK(kernel_.Launch(relocs.data(), relocs.size(), workspace_, nullptr));
+    }
+  }
+  aclrtSynchronizeStream(nullptr);
+  mgr.ProfStop();
+  return py::none();
 }
 
 void KernelPy::Input(const py::object &load, const py::object &array) {
   auto op = static_cast<NDAccess *>(load.cast<NDOpPyPtr>()->Get());
-  auto it = loads_.find(op);
-  ASSERT(it != loads_.end());
-  auto &info = it->second;
-  if (info.dev) {
-    ASCEND_CALL(aclrtFree(info.dev));
-  }
+  auto &info = FindVectorInfo(loads_, op);
   auto input = py::array(array);
   py::buffer_info buf = input.request();
-  size_t size = buf.itemsize * buf.size;
-  ASCEND_CALL(aclrtMalloc(&info.dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-  ASCEND_CALL(aclrtMemcpy(info.dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
-  if (kernel_.GetImpl()->KType() == kDynShape || kernel_.GetImpl()->KType() == kDynMix) {
+  runner_->AllocLoad(buf, info);
+  if (kernel_.IsDynShape()) {
     info.shape.resize(buf.ndim);
     for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
       info.shape[i] = buf.shape[i];
@@ -635,9 +918,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
 
 py::object KernelPy::Output(const py::object &store) {
   auto op = store.cast<NDOpPyPtr>()->Get();
-  auto it = stores_.find(op);
-  ASSERT(it != stores_.end());
-  auto &info = it->second;
+  auto &info = FindVectorInfo(stores_, op);
   ASSERT(info.dev);
   std::vector<ssize_t> shape;
   std::vector<ssize_t> strides;
@@ -653,78 +934,53 @@ py::object KernelPy::Output(const py::object &store) {
     }
     strides.push_back(stride);
   }
-  ASCEND_CALL(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
+  if (size > 0) {
+    ERROR_CHECK(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
+  }
   py::buffer_info buf(info.host, itemsize, GetBufferFormat(op->type_id_), ndim, shape, strides);
   return py::array(py::dtype(buf), buf.shape, buf.strides, buf.ptr, store);
 }
 
 void KernelPy::ClearStoreMemory(const py::object &store) {
   auto op = store.cast<NDOpPyPtr>()->Get();
-  auto it = stores_.find(op);
-  ASSERT(it != stores_.end());
-  it->second.clear_mem = true;
+  auto &info = FindVectorInfo(stores_, op);
+  info.clear_mem = true;
 }
 
 void KernelPy::PrepareIO() {
-  for (auto &[op, info] : loads_) {
-    static_cast<NDAccess *>(op)->addr_.Reloc(info.dev);
+  for (auto &info : loads_) {
+    static_cast<NDAccess *>(info.op)->addr_.Reloc(info.dev);
   }
-  for (auto &it : stores_) {
-    auto op = it.first;
-    auto &info = it.second;
-    if (info.host) {
-      std::free(info.host);
-    }
-    if (info.dev) {
-      ASCEND_CALL(aclrtFree(info.dev));
-    }
+  for (auto &info : stores_) {
+    auto op = info.op;
     info.size = ITEM_SIZE[op->type_id_];
     for (size_t i = 0; i < op->shape_ref_->size; i++) {
       info.size *= op->shape_ref_->data[i];
     }
-    info.host = std::malloc(info.size);
-    const uint64_t reserve_mem = 512;
-    ASCEND_CALL(aclrtMalloc(&info.dev, info.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    if (info.clear_mem) {
-      std::memset(info.host, 0, info.size);
-      ASCEND_CALL(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
-    }
+    runner_->AllocStore(info);
     static_cast<NDAccess *>(op)->addr_.Reloc(info.dev);
   }
 }
 
-void KernelPy::ResetEager() {
-  kernel_.EagerClear();
-  for (auto &it : loads_) {
-    if (it.second.dev) {
-      ASCEND_CALL(aclrtFree(it.second.dev));
+void KernelPy::Reset() {
+  runner_->Reset();
+  if (kernel_.GetImpl()->KType() == kEager_) {
+    kernel_.Clear();
+    loads_.clear();
+    stores_.clear();
+    for (auto ref : shape_) {
+      delete ref;
     }
+    shape_.clear();
+    shape_vec_.clear();
   }
-  loads_.clear();
-  for (auto &it : stores_) {
-    if (it.second.dev) {
-      ASCEND_CALL(aclrtFree(it.second.dev));
-    }
-    if (it.second.host) {
-      std::free(it.second.host);
-    }
-  }
-  stores_.clear();
-  for (auto addr : eager_wss_) {
-    ASCEND_CALL(aclrtFree(addr));
-  }
-  eager_wss_.clear();
-  for (auto ref : shape_) {
-    delete ref;
-  }
-  shape_.clear();
-  shape_vec_.clear();
 }
 
-void KernelPy::Fork(int size) {
+void KernelPy::Fork(int size, const std::string &comm_type) {
   ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
   g_mpc.rank_size = size;
-  g_mpc.shmid = ::shmget(IPC_PRIVATE, 1024, IPC_CREAT | 0600);
+  auto shm_size = 1024;
+  g_mpc.shmid = ::shmget(IPC_PRIVATE, shm_size, IPC_CREAT | 0600);
   for (int i = 1; i < size; ++i) {
     g_mpc.rank_id = i;
     auto pid = ::fork();
@@ -739,7 +995,7 @@ INIT_COMM:
   int rank_id = g_mpc.rank_id;
   g_mpc.bars = (int64_t *)shmat(g_mpc.shmid, nullptr, 0);
   g_mpc.bars[rank_id] = 0;
-  ASCEND_CALL(aclrtSetDevice(rank_id));
+  ERROR_CHECK(aclrtSetDevice(rank_id));
   g_mpc.comm.Init(rank_id, size);
 }
 
@@ -756,7 +1012,7 @@ void KernelPy::Join() {
 }
 
 void KernelPy::Barrier() {
-  if (g_mpc.rank_size > 1) {
+  if (g_mpc.rank_size > 1 && g_mpc.bars) {
     auto cur_cnt = g_mpc.bars[g_mpc.rank_id] + 1;
     g_mpc.bars[g_mpc.rank_id] = cur_cnt;
     for (int i = 0; i < g_mpc.rank_size; ++i) {
@@ -771,16 +1027,39 @@ int KernelPy::RankId() { return g_mpc.rank_id; }
 
 int KernelPy::RankSize() { return g_mpc.rank_size; }
 
+void KernelPy::SetDeterm(bool enable) {
+  auto &conf = Config::Instance();
+  if (enable) {
+    conf.SetDeterm();
+  } else {
+    conf.UnsetDeterm();
+  }
+}
+
+void KernelPy::SetTuning(bool enable) {
+  auto &conf = Config::Instance();
+  if (enable) {
+    conf.SetOnlineTuner().SetLazyTuner();
+  } else {
+    conf.UnsetOnlineTuner().UnsetLazyTuner();
+  }
+}
+
 class DevicePy {
  public:
   static std::string Arch() {
-    static const char *soc_names[] = {"AscendC220"};
-    return soc_names[System::Instance().Arch()];
+    g_system.Init();
+    static const char *soc_names[] = {"AscendC220", "AscendC310"};
+    return soc_names[g_system.Arch()];
   }
-  static int CoreNum() { return System::Instance().CoreNum(); }
+  static int CoreNum() {
+    g_system.Init();
+    return g_system.CoreNum();
+  }
   static std::string SocName() {
+    g_system.Init();
     static const char *soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
-    return soc_names[System::Instance().SocName()];
+    return soc_names[g_system.SocName()];
   }
 };
 
@@ -795,23 +1074,58 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("shape", &ShapeRefPy::GetShape, "get shape")
     .def("update", &ShapeRefPy::Update, "update shape");
 
+  (void)py::class_<NDSymInt, std::shared_ptr<NDSymInt>>(m, "NDSymInt")
+    .def("update", [](NDSymInt &self, int64_t v) { self.data_ = v; }, py::arg("value"), "Set the  int scalar value");
+  (void)py::class_<NDSymFloat, std::shared_ptr<NDSymFloat>>(m, "NDSymFloat")
+    .def("update", [](NDSymFloat &self, float v) { self.data_ = v; }, py::arg("value"), "Set the float scalar value");
+
   (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "Kernel")
-    .def(py::init<int, const std::string &>(), py::arg("dev_id"), py::arg("kernel_type"))
+    .def(py::init<const std::string &, const std::string &, int>())
+    .def("make_int", &KernelPy::MakeIntScalar, "create int scalar")
+    .def("make_float", &KernelPy::MakeFloatScalar, "create float scalar")
     .def("load", &KernelPy::Load, "load array")
+    .def("view_load", &KernelPy::ViewLoad, "load array")
     .def("slice_load", &KernelPy::SliceLoad, "load array")
     .def("stridedslice_load", &KernelPy::StridedSliceLoad, "load array")
     .def("multi_load", &KernelPy::MultiLoad, "load array(for reducescatter)")
     .def("store", &KernelPy::Store, "store array")
     .def("pad_store", &KernelPy::PadStore, "pad store array")
-    .def("unary", &KernelPy::Unary, "emit unary op")
+    .def("set_store_inplace", &KernelPy::SetStoreInplace, "store inplace")
+    .def("sqrt", &KernelPy::Unary<UnaryType::kSqrt>, "emit sqrt")
+    .def("abs", &KernelPy::Unary<UnaryType::kAbs>, "emit abs")
+    .def("log", &KernelPy::Unary<UnaryType::kLog>, "emit log")
+    .def("exp", &KernelPy::Unary<UnaryType::kExp>, "emit exp")
+    .def("reciprocal", &KernelPy::Unary<UnaryType::kReciprocal>, "emit reciprocal")
+    .def("isfinite", &KernelPy::Unary<UnaryType::kIsFinite>, "emit isfinite")
+    .def("logical_not", &KernelPy::Unary<UnaryType::kLogicalNot>, "emit logical_not")
+    .def("round", &KernelPy::Unary<UnaryType::kRound>, "emit round")
+    .def("floor", &KernelPy::Unary<UnaryType::kFloor>, "emit floor")
+    .def("ceil", &KernelPy::Unary<UnaryType::kCeil>, "emit ceil")
+    .def("trunc", &KernelPy::Unary<UnaryType::kTrunc>, "emit trunc")
     .def("cast", &KernelPy::Cast, "emit cast op")
     .def("element_any", &KernelPy::ElementAny, "emit element_any op")
-    .def("binary", &KernelPy::Binary, "emit binary op")
+    .def("equal", &KernelPy::Binary<BinaryType::kEqual>, "emit equal")
+    .def("not_equal", &KernelPy::Binary<BinaryType::kNotEqual>, "emit equal")
+    .def("greater", &KernelPy::Binary<BinaryType::kGreater>, "emit greater")
+    .def("greater_equal", &KernelPy::Binary<BinaryType::kGreaterEqual>, "emit greater_equal")
+    .def("less", &KernelPy::Binary<BinaryType::kLess>, "emit less")
+    .def("less_equal", &KernelPy::Binary<BinaryType::kLessEqual>, "emit less_equal")
+    .def("add", &KernelPy::Binary<BinaryType::kAdd>, "emit add")
+    .def("sub", &KernelPy::Binary<BinaryType::kSub>, "emit sub")
+    .def("mul", &KernelPy::Binary<BinaryType::kMul>, "emit mul")
+    .def("div", &KernelPy::Binary<BinaryType::kDiv>, "emit div")
+    .def("pow", &KernelPy::Binary<BinaryType::kPow>, "emit pow")
+    .def("maximum", &KernelPy::Binary<BinaryType::kMaximum>, "emit maximum")
+    .def("minimum", &KernelPy::Binary<BinaryType::kMinimum>, "emit minimum")
+    .def("logical_and", &KernelPy::Binary<BinaryType::kLogicalAnd>, "emit logical_add")
+    .def("logical_or", &KernelPy::Binary<BinaryType::kLogicalOr>, "emit logical_or")
     .def("select", &KernelPy::Select, "emit select op")
     .def("broadcast", &KernelPy::Broadcast, "emit broadcast op", py::arg("input"), py::arg("shape"),
-         py::arg("dtype") = "float32", py::arg("dummy_load") = true)
+         py::arg("dtype") = "float32")
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
-    .def("reduce", &KernelPy::Reduce, "emit reduce op")
+    .def("sum", &KernelPy::Reduce<ReduceType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false, "emit sum")
+    .def("max", &KernelPy::Reduce<ReduceType::kMax>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false, "emit max")
+    .def("min", &KernelPy::Reduce<ReduceType::kMin>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false, "emit min")
     .def("copy", &KernelPy::Copy, "emit copy op")
     .def("one_hot", &KernelPy::OneHot, "emit onehot op")
     .def("allreduce", &KernelPy::AllReduce, "emit allreduce op")
@@ -821,15 +1135,16 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
          py::arg("trans_b"), py::arg("bias") = py::none())
     .def("gmm", &KernelPy::GroupedMatMul, "emit grouped_matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
-         py::arg("trans_b"), py::arg("bias"), py::arg("group_list"), py::arg("group_type"))
+         py::arg("trans_b"), py::arg("bias"), py::arg("group_list"), py::arg("group_type"),
+         py::arg("group_list_type") = 0)
     .def("convert_to_bf16", &KernelPy::ConvertToBF16, "convert f32 array to bf16 array")
     .def("convert_from_bf16", &KernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("p_next", &KernelPy::ParallelNext, "parallel next")
+    .def("spec_next", &KernelPy::SpecNext, "spec next")
     .def("stage_switch", &KernelPy::StageSwitch, "stage switch")
     .def("stage_load", &KernelPy::StageLoad, "stage load")
     .def("stage_store", &KernelPy::StageStore, "stage store")
-    .def("stage_pad_store", &KernelPy::StagePadStore, "stage store")
-    .def("reset_eager", &KernelPy::ResetEager, "reset eager")
+    .def("reset", &KernelPy::Reset, "reset eager")
     .def("input", &KernelPy::Input, "get ouput array")
     .def("output", &KernelPy::Output, "get ouput array")
     .def("clear_store_memory", &KernelPy::ClearStoreMemory, "clear store memory")
@@ -838,12 +1153,14 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("perf", &KernelPy::Perf, "perf test")
+    .def("msprof", &KernelPy::Msprof, "perf test")
     .def("run", &KernelPy::Run, "run kernel")
     .def("dry_run", &KernelPy::DryRun, "dry run vm")
-    .def("init_comm", &KernelPy::InitComm, "init communicatior")
+    .def_static("init_comm", &KernelPy::InitComm, "init communicatior")
     .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
     .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning")
-    .def_static("fork", &KernelPy::Fork, "fork process")
+    .def_static("set_cube_store_type", &KernelPy::SetCubeStoreType, "set sync type")
+    .def_static("fork", &KernelPy::Fork, "fork process", py::arg("size"), py::arg("comm_type") = "")
     .def_static("join", &KernelPy::Join, "join process")
     .def_static("barrier", &KernelPy::Barrier, "barrier process")
     .def_static("rank_id", &KernelPy::RankId, "get current rank id")

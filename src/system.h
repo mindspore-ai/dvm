@@ -27,14 +27,16 @@ const int32_t RT_ERROR_NONE = 0;  // success
 typedef void *rtStream_t;
 struct tagRtSmCtrl;
 typedef struct tagRtSmCtrl rtSmDesc_t;
+struct MsprofApi;
+typedef void *VOID_PTR;
 
 namespace dvm {
 #ifdef DEBUG
 #define ASSERT(cond)                                                                                            \
   do {                                                                                                          \
     if (!(cond)) {                                                                                              \
-      std::cout << "[ASSERT ERROR]" << __FILE__ << ":" << __LINE__ << ": ASSERT(" << #cond << ")" << std::endl; \
-      exit(0);                                                                                                  \
+      std::cerr << "[ASSERT ERROR]" << __FILE__ << ":" << __LINE__ << ": ASSERT(" << #cond << ")" << std::endl; \
+      DvmException("assert");                                                                                   \
     }                                                                                                           \
   } while (0)
 
@@ -53,56 +55,102 @@ namespace dvm {
   } while (0)
 void DvmException(const char *error_str);
 
+#define ERROR_CHECK(func)  \
+  do {                     \
+    if ((func) != 0) {     \
+      DvmException(#func); \
+    }                      \
+  } while (0)
+
 enum AiCoreArch {
   kAiCore_C220,
+  kAiCore_C310,
 };
 
-enum CoreType {
-  kVector,
-  kCube,
+enum class CoreType {
+  kAIV,
+  kAIC,
 };
 
 enum SocType {
+  // C220(B)
   kAscend910B1,
   kAscend910B2,
   kAscend910B3,
   kAscend910B4,
+  // C220(C)
   kAscend910_9391,
   kAscend910_9392,
   kAscend910_9381,
   kAscend910_9382,
   kAscend910_9372,
   kAscend910_9361,
+  // C310
+  kAscend910_9589,
+  kAscend910_9599,
   kSocUnknow,
 };
 
-using LaunchFunc = std::function<rtError_t(const void*, uint32_t, void*, uint32_t, rtSmDesc_t*, rtStream_t)>;
+enum CubeStoreType {
+  kCubeStoreGM = 0,
+  kCubeStoreUB,
+  kCubeStoreUBOnce,
+};
+
+enum ProfilerLevel {
+  Level0 = 0,
+  Level1,
+  Level2,
+};
+
+using LaunchFunc = std::function<rtError_t(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>;
 
 class CubeTuner;
-class System {
+class System : public Config {
  public:
-  static System &Instance() {
-    static System obj;
-    return obj;
+  System() = default;
+  ~System();
+  void Init() {
+    if (!inited_) {
+      DoInit();
+    }
   }
 
-  ~System();
+  Config &SetDeterm() override;
+  Config &UnsetDeterm() override;
+  Config &SetOnlineTuner() override;
+  Config &UnsetOnlineTuner() override;
+  Config &SetLazyTuner() override;
+  Config &UnsetLazyTuner() override;
 
   // hardware config
   AiCoreArch Arch() const { return arch_; }
+  void SetLocalMemSize(uint64_t size) { local_mem_size_ = size; }
   uint64_t LocalMemSize() const { return local_mem_size_; }
   uint64_t UbWorkspaceSize() const { return ub_workspace_size_; }
   uint64_t L2Size() const { return l2_size_; }
   uint64_t L1Size() const { return l1_size_; }
   uint64_t L0CSize() const { return l0c_size_; }
-  uint64_t CoreNum(CoreType core_type = kVector) const {
-    return core_type == kVector ? vector_core_num_ : cube_core_num_;
+  uint64_t CoreNum(CoreType core_type = CoreType::kAIV) const {
+    return core_type == CoreType::kAIV ? vector_core_num_ : cube_core_num_;
   }
   uint64_t EventNum() const { return event_num_; }
   SocType SocName() const { return soc_name_; }
+  void SetCubeStoreType(CubeStoreType type) { cube_store_type_ = type; }
+  CubeStoreType GetCubeStoreType() { return Arch() == kAiCore_C310 ? cube_store_type_ : kCubeStoreGM; }
+
+  void *CommStream() {
+    if (comm_stream_ == nullptr) {
+      comm_stream_ = CreateStream();
+    }
+    return comm_stream_;
+  }
 
   // features config
+
   bool deterministic_{false};
+  bool enable_profile_{false};
+  ProfilerLevel profiler_level_{Level0};
   CubeTuner *online_tuner_{nullptr};
   CubeTuner *lazy_tuner_{nullptr};
 
@@ -115,9 +163,22 @@ class System {
   rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
 
   LaunchFunc rt_kernel_launch_;
+  void *CreateStream();
+  const uint64_t *g_simd_func_offset_;
+  const uint64_t *g_access_func_offset_;
+  const uint64_t *g_visit_func_offset_;
+
+  uint64_t (*msprof_sys_cycle_time_)();
+  uint64_t (*msprof_get_hash_id_)(const char *hashInfo, size_t length);
+  int32_t (*msprof_report_api_)(uint32_t agingFlag, const MsprofApi *api);
+  int32_t (*msprof_report_compact_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
+  int32_t (*msprof_report_additional_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
 
  private:
-  System();
+  void DoInit();
+  bool inited_{false};
+  CubeStoreType cube_store_type_{kCubeStoreGM};
+
   AiCoreArch arch_;
   uint64_t local_mem_size_;
   uint64_t ub_workspace_size_;
@@ -129,19 +190,19 @@ class System {
   uint64_t cube_core_num_;
   SocType soc_name_{kSocUnknow};
 
-  void *rt_handle_;
+  void *rt_handle_{nullptr};
+  void *comm_stream_{nullptr};
   rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
 };
+
+extern System g_system;
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;
 constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
 
-extern const uint64_t ITEM_SIZE[dvm::kTypeEnd];
-extern const char *DTYPE_NAMES[dvm::kTypeEnd];
-extern const uint64_t ITEM_SIMD_WIDTH_MAX[kTypeEnd];
-
-#define likely(x) __builtin_expect(!!(x), 1)
-#define unlikely(x) __builtin_expect(!!(x), 0)
+extern const uint64_t ITEM_SIZE[dvm::kDataTypeEnd];
+extern const char *DTYPE_NAMES[dvm::kDataTypeEnd];
+extern const uint64_t ITEM_SIMD_WIDTH_MAX[kDataTypeEnd];
 }  // namespace dvm
 #endif  // _DVM_SYSTEM_H_

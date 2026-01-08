@@ -16,7 +16,10 @@
 import pytest
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('dim', [1024, 1023])
 def test_tiling_broadcast_part(dim):
     t = Tester()
@@ -25,10 +28,12 @@ def test_tiling_broadcast_part(dim):
     x = t.load(a)
     y = t.load(b)
     z = t.broadcast(x, [512, dim])
-    r = t.binary("Add", z, y)
+    r = t.add(z, y)
     t.store_expect(r, 0.7)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_broadcast_part2():
     t = Tester()
     b = np.random.normal(0, 1, [16000, 39, 1]).astype(np.float32)
@@ -36,8 +41,10 @@ def test_tiling_broadcast_part2():
     z = t.broadcast(y, [16000, 39, 80])
     expect = np.broadcast_to(b, (16000, 39, 80))
     out = t.store_expect(z, expect)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_broadcast_all():
     t = Tester()
     a0 = np.random.normal(0, 1, [2, 1, 64, 1024]).astype(np.float32)
@@ -45,8 +52,10 @@ def test_tiling_broadcast_all():
     z0 = t.broadcast(la0, [2, 96, 64, 1024])
     expect = np.broadcast_to(a0, (2, 96, 64, 1024))
     t.store_expect(z0, expect)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_broadcast_round_2():
     t = Tester()
     a0 = np.random.normal(0, 1, [2, 1, 512]).astype(np.float32)
@@ -57,8 +66,10 @@ def test_tiling_broadcast_round_2():
     t.tile(2, 2, 2)
     t.tile(1, 1, 3)
     t.tile(0, 0, 4)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_broadcast_round_3():
     t = Tester()
     a0 = np.random.normal(0, 1, [2, 1, 4, 1, 512]).astype(np.float32)
@@ -70,8 +81,10 @@ def test_tiling_broadcast_round_3():
     t.tile(3, 3, 3)
     t.tile(2, 2, 4)
     t.tile(1, 1, 3)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_broadcast_round_4():
     t = Tester()
     a0 = np.random.normal(0, 1, [2, 1, 4, 1, 512]).astype(np.float32)
@@ -84,64 +97,74 @@ def test_tiling_broadcast_round_4():
     t.tile(2, 2, 4)
     t.tile(1, 1, 5)
     t.tile(0, 1, 2)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_broadcast_multi():
     t = Tester()
     a0 = np.full((1), 1.1, np.float32)
     b0 = np.full((1), 1.1, np.float32)
     la0 = t.load(a0)
     lb0 = t.load(b0)
-    x = t.binary("Div", la0, lb0)
+    x = t.div(la0, lb0)
     y = t.broadcast(x, [5120])
     c0 = np.full([5120], 1.1, np.float32)
     lc0 = t.load(c0)
-    z = t.binary("Mul", lc0, y)
-    r = t.binary("Mul", z, -1.0)
-    s = t.reshape(r, [5120,1])
+    z = t.mul(lc0, y)
+    r = t.mul(z, -1.0)
+    s = t.reshape(r, [5120, 1])
     l = t.broadcast(s, [5120, 21128])
-    d0 = np.full([5120,21128], 1, np.float32)
+    d0 = np.full([5120, 21128], 1, np.float32)
     ld0 = t.load(d0)
-    m = t.binary("Mul", l, ld0)
+    m = t.mul(l, ld0)
     t.store_expect(m, -1.1)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_tiling_align():
     t = Tester()
     a = np.full([1, 1], 0.04, np.float32)
     x = t.load(a)
-    y = t.unary("Sqrt", x)
+    y = t.sqrt(x)
     out = t.store_expect(y, 0.2)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_empty_shape():
     t = Tester()
-    x = t.broadcast(0.2, [], "float32", True)
-    x = t.binary("Mul", x, 0.3)
+    x = t.broadcast(0.2, [], "float32")
+    x = t.mul(x, 0.3)
     t.store_expect(x, 0.06)
-    assert(t.run_check())
+    assert (t.run_check())
 
-@pytest.mark.parametrize('dim1, dim2', [([2, 8], [16]), ([16], [2, 8]),([2, 16], [2, 4, 4])])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('dim1, dim2', [([2, 8], [16]), ([16], [2, 8]), ([2, 16], [2, 4, 4])])
 def test_multi_dom(dim1, dim2):
-    bdim = [1024*10]
+    bdim = [1024 * 10]
     t = Tester()
     a = np.full(dim1 + [1], 0.3, np.float32)
     x = t.load(a)
     x = t.broadcast(x, dim1 + bdim)
-    y = t.binary("Mul", x, 0.6)
+    y = t.mul(x, 0.6)
     z = t.reshape(y, dim2 + bdim)
-    r = t.unary("Sqrt", z)
+    r = t.sqrt(z)
     t.store_expect(r, 0.42426)
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_choise_dom_op_with_shape():
     t = Tester()
     g0 = np.full([32, 1], 0.1, np.float32)
     g1 = np.full([32, 1024], 0.1, np.float32)
     a = t.load(g0)
     b = t.load(g1)
-    c = t.binary("Add", a, b)
+    c = t.add(a, b)
     t.store_expect(c, 0.2)
-    d = t.binary("Add", a, 0.2)
+    d = t.add(a, 0.2)
     t.store_expect(d, 0.3)
-    assert(t.run_check())
+    assert (t.run_check())

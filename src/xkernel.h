@@ -19,13 +19,13 @@
 
 #include <string>
 #include <vector>
-#include <map>
 #include "kernel.h"
 
 namespace dvm {
+class StagesKernel;
 class MixKernel : public VKernel {
  public:
-  MixKernel() : VKernel(KernelType::kStaticMix), tuner_(System::Instance().online_tuner_) {}
+  MixKernel() : VKernel(KernelTypeX::kStaticMix), tuner_(g_system.online_tuner_) {}
   ~MixKernel() override;
 
   void Append(NDObject *obj) override;
@@ -35,35 +35,38 @@ class MixKernel : public VKernel {
 
  protected:
   void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
-  void Release();
+  virtual void Release();
   uint64_t SplitKCodeGen();
   uint64_t UnAlignCodeGen();
   uint64_t AlignCodeGen();
   uint64_t BiasBF16CodeGen();
 
-  VectorKernel *post_fusion_{nullptr};
+  VKernelS *post_fusion_{nullptr};
   CubeOp *cube_op_{nullptr};
   NDAccess *sload_{nullptr};
 
-  Kernel *stage_kernel_{nullptr};
+  StagesKernel *stage_kernel_{nullptr};
   CubeTuner *tuner_;
   RelocAddr gm_pos_;
+  std::vector<std::pair<NDAccess *, NDAccess *>> reloads_;
 };
 
 class DynMixKernel : public MixKernel {
  public:
   DynMixKernel();
-
-  void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
+
+ protected:
+  void Release() override;
+  void Record();
+  GraphTracker tracker_;
 };
 
-class StagesKernel;
 class StageCodeWrap : public CodeWrap {
  public:
-  StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
+  explicit StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
   int LaunchWrap(void *workspace, void *stream) override;
-  bool DasWrap(std::ostringstream &oss) override;
+  void DasWrap(std::ostringstream &oss) override;
 
  private:
   StagesKernel *kernel_;
@@ -71,46 +74,40 @@ class StageCodeWrap : public CodeWrap {
 
 class StagesKernel : public VKernel {
  public:
-  StagesKernel() : VKernel(KernelType::kStaticStages), code_wrap_(this) {}
+  StagesKernel() : VKernel(KernelTypeX::kKernelTypelEnd), builder_(this), code_wrap_(this) {}
   ~StagesKernel() override;
 
-  void StageSwitch(KernelType type) {
-    VKernel *kernel = nullptr;
-    if (type == KernelType::kStaticShape) {
-      kernel = new VKernelS();
-    } else if (type == KernelType::kStaticMix) {
-      kernel = new MixKernel();
-    } else if (type == KernelType::kStaticParallel) {
-      kernel = new VKernelP();
-    } else {
-      ASSERT(0);
-    }
-    stages_.push_back(new Stage(kernel));
-  }
+  VKernel *Current() const { return stages_.back()->kernel; }
+  VKernel *KernelAt(size_t idx) const { return stages_[idx]->kernel; }
 
-  void ParallelSwitch() {
-    auto current = stages_.back()->kernel;
-    ASSERT(current->KType() != KernelType::kStaticParallel);
-    static_cast<VKernelP *>(current)->AppendNext();
+  void AddStage(VKernel *k) {
+    SetStageIndex(k, stages_.size());
+    stages_.push_back(new Stage(k));
   }
-
-  void StageStore(NDAccess *store) {
+  void StageStore(VKernel *k, NDAccess *store) {
     store->SetFlag(OBJ_FLAG_STAGE_IO);
-    stages_.back()->kernel->Append(store);
-    stages_.back()->ios.push_back(store);
+    stages_[GetStageIndex(k)]->ios.push_back(store);
   }
-
-  void StageLoad(NDAccess *load, NDAccess *store) {
+  void StageLoad(VKernel *k, NDAccess *load, NDAccess *store) {
     load->SetFlag(OBJ_FLAG_STAGE_IO);
     SetStageStore(load, store);
-    stages_.back()->kernel->Append(load);
-    stages_.back()->ios.push_back(load);
+    stages_[GetStageIndex(k)]->ios.push_back(load);
   }
 
-  VKernel *Current() const { return stages_.back()->kernel; }
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+
+  class _Builder : public KernelBuilder {
+   public:
+    _Builder(StagesKernel *impl) : KernelBuilder(impl) {}
+    void StageSwitch(KernelTypeX type);
+    NDObject *StageLoad(NDObject *stage_store);
+    NDObject *StageStore(NDObject *input);
+    NDObject *StagePadStore(NDObject *input, int64_t pad_size);
+    StagesKernel *_StagesKernel() const { return static_cast<StagesKernel *>(kernel_); }
+  };
+  _Builder builder_;
 
  protected:
   static void SetWorkspace(NDAccess *op, int64_t offset) { op->addr_.ws = offset; }
@@ -119,11 +116,13 @@ class StagesKernel : public VKernel {
   static NDAccess *GetOutputReuse(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
   static void SetStageStore(NDAccess *op, NDAccess *store) { op->addr_.gm = static_cast<void *>(store); }
   static NDAccess *GetStageStore(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
+  static void SetStageIndex(VKernel *k, int idx) { k->code_.target_ = idx; }
+  static int GetStageIndex(VKernel *k) { return k->code_.target_; }
 
   uint64_t AllocWorkspace();
 
   struct Stage {
-    Stage(VKernel *k) : kernel(k) {}
+    explicit Stage(VKernel *k) : kernel(k) {}
     VKernel *kernel;
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
@@ -134,17 +133,61 @@ class StagesKernel : public VKernel {
   friend StageCodeWrap;
 };
 
+class DynStagesKernel : public StagesKernel {
+ public:
+  void Record();
+  void Reset();
+ protected:
+  std::vector<std::pair<NDAccess *, NDAccess *>> sloads_;
+};
+
+class SplitContext {
+ public:
+  enum { MEM_BLOCK_SIZE = 32 };
+  struct MemNode {
+    size_t size;
+    void *addr;
+    MemNode *next;
+  };
+
+  SplitContext();
+  ~SplitContext();
+
+  MemNode *Alloc(size_t size) { return mem_head_ && size <= mem_tail_->size ? DoAlloc(size) : nullptr; }
+  MemNode *DoAlloc(size_t size);
+  void Free(void *addr, size_t size);
+  void MemReset() {
+    mem_head_ = nullptr;
+    mem_pos_ = 0;
+  }
+
+  std::vector<NDObject *> app_;
+  std::vector<NDAccess *> gen_;
+  std::vector<std::pair<NDAccess *, size_t>> kill_;
+  std::vector<NDObject *> build_;
+
+  using SlotWorkspace = std::vector<std::pair<size_t, RelocAddr *>>;
+  SlotWorkspace slot_ws_;
+
+ protected:
+  std::vector<MemNode *> mem_blocks_;
+  MemNode *mem_head_;
+  MemNode *mem_tail_;
+  uint64_t mem_pos_;
+};
+
 class EagerVector;
 class EagerArea;
-class VKernelE : public VKernel {
+class _SplitKernel : public VKernel {
  public:
-  VKernelE(WsAllocFunc func, void *user_data);
-  ~VKernelE() override;
+  _SplitKernel(KernelTypeX type);
+  ~_SplitKernel() override;
 
   void Append(NDObject *obj) override;
-  uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   std::string &DisAssemble() override;
+  virtual void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc);
+
   NDObject *AppendCube(CubeOp *mm);
 
   const std::vector<EagerVector *> &GetKernels(int &begin, int &end) {
@@ -155,7 +198,7 @@ class VKernelE : public VKernel {
 
   void Launch(int kernel_idx, void *stream) {
     auto &code = reinterpret_cast<VKernel *>(kernels_[kernel_idx])->code_;
-    if (code.target_ == Code::kTargetCube && System::Instance().lazy_tuner_) {
+    if (code.target_ == Code::kTargetCube && g_system.lazy_tuner_) {
       TunerLaunch(kernels_[kernel_idx], stream);
     } else {
       code.Launch(extern_code_, stream);
@@ -168,27 +211,29 @@ class VKernelE : public VKernel {
     }
   }
 
-  void Clear() {
-    for (auto op : objects_) {
-      op->~NDObject();
-      NDObject::mem_pool_.Put(op);
-    }
+  void SetSlotWorkspace();
+  void SlotCodeGen(const RelocEntry *relocs, size_t reloc_size);
+
+  static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
+  static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
+  static CubeOp *GetCubeOp(EagerVector *kernel);
+
+ protected:
+  static int GetArea(NDObject *obj) { return obj->prop_id_; }
+  static void SetArea(NDObject *obj, int area_id) { obj->prop_id_ = area_id; }
+  static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t *>(store); }
+  static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }
+  static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
+  static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
+  static NDAccess *GetRecentLoad(NDAccess *store) { return reinterpret_cast<NDAccess *>(store->addr_.reloc_); }
+  static void SetRecentLoad(NDAccess *store, NDAccess *load) { store->addr_.reloc_ = reinterpret_cast<uint64_t *>(load); }
+
+  void Reset() {
     objects_.clear();
     area_used_ = 0;
     kernel_used_ = 0;
     pv_black_mask_ = 0;
   }
-
-  static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
-
- protected:
-  static int GetArea(NDObject *obj) { return obj->reserved_; }
-  static void SetArea(NDObject *obj, int area_id) { obj->reserved_ = area_id; }
-  static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t *>(store); }
-  static void SetStoreInplace(NDObject *store, int flag) { store->reuse_dep_ = flag; }
-  static int GetStoreInplace(NDObject *store) { return store->reuse_dep_; }
-  static void SetStoreSize(NDObject *store, uint64_t size) { store->xbuf_ = size; }
-  static uint64_t GetStoreSize(NDObject *store) { return store->xbuf_; }
 
   void InitObjInfo(NDObject *obj, int area = -1) {
     SetArea(obj, area);
@@ -201,38 +246,22 @@ class VKernelE : public VKernel {
     SetStoreInplace(store, 0);
   }
 
-  void *AllocWS(NDAccess *store) {
+  void *AllocWS(NDAccess *store, WsAllocator *alloc) {
     auto size = GetStoreSize(store);
-    if (auto it = wss_.upper_bound(size - 1); it != wss_.end()) {
-      store->addr_.gm = it->second;
-      wss_.erase(it);
-      SetStoreSize(store, it->first);
+    if (auto mem = ctx_->Alloc(size); mem != nullptr) {
+      store->addr_.gm = mem->addr;
+      SetStoreSize(store, mem->size);
     } else {
-      store->addr_.gm = ws_alloc_(size, user_data_);
+      store->addr_.gm = alloc->Alloc(size);
     }
     return store->addr_.gm;
   }
 
-  void AllocVectorWSS(VectorKernel *kernel, size_t obj_size) {
-    for (size_t i = obj_size; i < objects_.size(); ++i) {
-      NDAccess *io = static_cast<NDAccess *>(objects_[i]);
-      auto store = GetStore(io);
-      if (store->addr_.gm == nullptr) {
-        if (auto is =
-              kernel->FindInplaceStore(io, [](NDAccess *op) -> bool { return VKernelE::GetStoreInplace(op) == 0; })) {
-          store->addr_.gm = is->addr_.gm;
-          SetStoreInplace(is, 1);
-        } else {
-          AllocWS(store);
-        }
-      }
-      io->addr_.gm = store->addr_.gm;
-    }
-    objects_.resize(obj_size);
-  }
-
   void Split(NDObject *root);
-  NDObject *Exchange(EagerArea *area, NDObject *input);
+  NDObject *SplitPush(EagerArea *area, NDObject *input);
+  NDObject *Exchange(NDObject *input, int to_aid);
+  void BuildKernel(EagerVector *kernel, const EagerArea *area, WsAllocator *alloc);
+  void RelocBinds();
   void TunerLaunch(EagerVector *kernel, void *stream);
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;
@@ -247,11 +276,66 @@ class VKernelE : public VKernel {
     void *extern_code_;
   };
   std::vector<NDObject *> objects_;
-  std::vector<NDObject *> temp_ops_;
-  std::multimap<uint64_t, void *> wss_;
-  WsAllocFunc ws_alloc_;
-  void *user_data_;
+  SplitContext *__restrict__ ctx_;
   friend EagerArea;
+};
+
+class VKernelE : public _SplitKernel {
+ public:
+  VKernelE();
+  ~VKernelE() override;
+
+  void Clear() {
+    for (auto op : objects_) {
+      op->~NDObject();
+      NDObject::mem_pool_.Put(op);
+    }
+    Reset();
+  }
+};
+
+class _SplitGraph : public _SplitKernel {
+ public:
+  _SplitGraph(KernelTypeX type);
+  ~_SplitGraph() override;
+  void Append(NDObject *obj) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  virtual void Infer();
+
+ protected:
+  std::vector<NDObject *> build_ops_;
+};
+
+class SplitGraphD : public _SplitGraph {
+ public:
+  SplitGraphD() : _SplitGraph(KernelTypeX::kDynSplit) {}
+  void Append(NDObject *obj) override;
+  void Infer() override;
+  void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+
+ protected:
+  GraphTracker tracker_;
+};
+
+class SplitGraphS : public _SplitGraph {
+ public:
+  SplitGraphS(bool single_ws) : _SplitGraph(KernelTypeX::kStaticSplit), single_ws_(single_ws) {}
+  void Infer() override;
+  void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+
+ protected:
+  SplitContext::SlotWorkspace slot_ws_;
+  bool single_ws_;
+};
+
+class SplitEagerW : public VKernelE {
+ public:
+  void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+};
+
+class SplitGraphDW : public SplitGraphD {
+ public:
+  void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 };
 }  // namespace dvm
 #endif  // _DVM_X_KERNEL_H_

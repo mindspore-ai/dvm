@@ -20,7 +20,10 @@
 #include <stdint.h>
 
 #ifdef _CCE_KERNEL_
-#define __aicore_inline__ static inline[aicore]
+#ifndef inline
+#define inline __inline__ __attribute__((always_inline))
+#endif
+#define __aicore_inline__ static[aicore] inline
 #define __bcode__ __gm__
 #define bcodeptr_t __bcode__ uint64_t *__restrict__
 #define __aicore__ [aicore]
@@ -32,18 +35,15 @@
 #define __aicore__
 #endif
 
-enum vPipe {
-  V_PIPE_LOAD = 0,
-  V_PIPE_STORE,
-  V_PIPE_SIMD,
-  V_PIPE_ALL,
-};
+#define likely(x) __builtin_expect(!!(x), 1)
+#define unlikely(x) __builtin_expect(!!(x), 0)
 
 enum vAccInsnID {
   V_LOAD = 0,
   V_LOAD_DUMMY,
-  V_SLICE_LOAD,
+  V_LOAD_VIEW,
   V_SLOAD,
+  V_LOAD_CC, // [c310]
   V_MULTI_LOAD,
   V_PINGPONG_LOAD,
   V_PINGPONG_PEER_LOAD,
@@ -63,6 +63,7 @@ enum vAccInsnID {
 
 enum vSimdInsnID {
   V_COPY = 0,
+  V_COPY_CUBE_TILE, // [c310]
   V_NOP,
   V_BROADCAST_Y,
   V_BROADCAST_S,
@@ -76,6 +77,7 @@ enum vSimdInsnID {
   V_TRUNC,
   V_ADDS,
   V_MULS,
+  V_DIVS,
   V_SDIV,
   V_CMPS,
   V_ADD,
@@ -89,6 +91,10 @@ enum vSimdInsnID {
   V_CAST_FP32_TO_INT32,
   V_RSUM_X,
   V_RSUM_Y,
+  V_RMAX_X,
+  V_RMAX_Y,
+  V_RMIN_X,
+  V_RMIN_Y,
   V_RSUM_JOIN,
   V_SEL,
   V_POW,
@@ -103,6 +109,7 @@ enum vSimdInsnID {
   V_EXP_FP16,
   V_ADDS_FP16,
   V_MULS_FP16,
+  V_DIVS_FP16,
   V_SDIV_FP16,
   V_CMPS_FP16,
   V_ADD_FP16,
@@ -114,6 +121,11 @@ enum vSimdInsnID {
   V_CAST_FP16_TO_BOOL,
   V_CAST_FP16_TO_FP32,
   V_CAST_FP16_TO_INT32,
+  V_RMAX_X_FP16,
+  V_RMAX_Y_FP16,
+  V_RMIN_X_FP16,
+  V_RMIN_Y_FP16,
+  V_CLR_PAD_B16,
   V_CMP_FP16,
   V_SEL_FP16,
   V_ISFINITE_FP16,
@@ -125,12 +137,9 @@ enum vSimdInsnID {
   V_MUL_INT32,
   V_MIN_INT32,
   V_MAX_INT32,
-  V_CMP_INT32,
   V_SEL_INT32,
   V_CAST_INT32_TO_FP16,
   V_CAST_INT32_TO_FP32,
-  V_RESHAPE_B32,
-  V_RESHAPE_B16,
   V_ISFINITE,
   V_MAXS,
   V_MINS,
@@ -143,9 +152,26 @@ enum vSimdInsnID {
   V_REMOVEPAD_U16,
   V_REMOVEPAD,
   V_ATOMICCUM,
+  V_ATOMICCUM_FP16,
   V_CAST_FP32_TO_BF16,
   V_CAST_BF16_TO_FP32,
   V_CAST_BF16_TO_INT32,
+  V_CMP_INT32,
+  V_ABS_INT32, // [c310]
+  V_CMPS_INT32, // [c310]
+  V_ADDS_BF16, // [c310]
+  V_MULS_BF16, // [c310]
+  V_MAXS_BF16, // [c310]
+  V_MINS_BF16, // [c310]
+  V_CMP_BF16, // [c310]
+  V_CMPS_BF16, // [c310]
+  V_ADD_BF16, // [c310]
+  V_SUB_BF16, // [c310]
+  V_MUL_BF16, // [c310]
+  V_MIN_BF16, // [c310]
+  V_MAX_BF16, // [c310]
+  V_ISFINITE_BF16, // [c310]
+  V_SEL_BF16, // [c310]
   V_NONE,
 };
 
@@ -155,6 +181,9 @@ enum vVisitID {
   V_VISIT_RED_3,
   V_VISIT_RED_4,
   V_VISIT_MIX,
+  V_VISIT_REORDER, // [c220]
+  V_VISIT_PIPE_SET, // [c220]
+  V_VISIT_PIPE_WAIT, // [c220]
   V_VISIT_NONE,
 };
 
@@ -162,6 +191,18 @@ enum CommType {
   kCommAllReduce = 0,
   kCommReduceScatter,
   kCommAllGather,
+};
+
+enum vReduceOpType {
+  V_RED_SUM = 0,
+  V_RED_MAX,
+  V_RED_MIN,
+  V_END,
+};
+
+enum vAtomicType {
+  V_ATOMIC_FP32 = 0,
+  V_ATOMIC_FP16,
 };
 
 // head(simd):
@@ -203,6 +244,14 @@ enum CommType {
 #define V_M_HEAD_EXT_MASK 0x3fffffffful
 #define V_M_HEAD_SIZE_MASK 0xful
 
+#define V_FFTS_GM_MIX_FORWARD_ID 0
+#define V_FFTS_GM_MIX_BACKWARD_ID 1
+#define V_INTRA_GM_MIX_FORWARD_ID 2
+#define V_INTRA_GM_MIX_BACKWARD_ID 3
+#define V_INTRA_UB_MIX_FORWARD_ID 4
+#define V_INTRA_UB_MIX_BACKWARD_ID 5
+#define V_INTRA_BLOCK_AIV_OFFSET 16
+
 // Comm related
 #define PEERMEM_FLAG_OFFSET (200 * 1024 * 1024)          // 200MB
 #define PEERMEM_TWOSHOT_OFFSET (100 * 1024 * 1024)       // 100MB
@@ -221,22 +270,22 @@ enum CommType {
 #define vDeCompactX(x) ((x) << 5)
 
 #ifndef _CCE_KERNEL_
-extern const uint64_t g_simd_func_offset[];
-extern const uint64_t g_access_func_offset[];
-__aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) {
-  if (pipe == V_PIPE_SIMD) {
-    return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET | g_simd_func_offset[id] << V_HEAD_ID_OFFSET |
-           1 << V_HEAD_SIMD_FLAG_OFFSET;
-  } else {
-    return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET | g_access_func_offset[id] << V_HEAD_ID_OFFSET;
-  }
+#include "system.h"
+__aicore_inline__ uint64_t vMakeAccHead(uint64_t id, uint64_t ext, uint64_t len) {
+  return ext << V_M_HEAD_EXT_OFFSET | len << V_M_HEAD_SIZE_OFFSET |
+         dvm::g_system.g_access_func_offset_[id] << V_HEAD_ID_OFFSET;
+}
+__aicore_inline__ uint64_t vMakeSimdHead(uint64_t id, uint64_t ext, uint64_t len) {
+  return ext << V_HEAD_EXT_OFFSET | len << V_HEAD_SIZE_OFFSET |
+         dvm::g_system.g_simd_func_offset_[id] << V_HEAD_ID_OFFSET | 1 << V_HEAD_SIMD_FLAG_OFFSET;
 }
 template <typename T>
 __aicore_inline__ T min(T a, T b) {
   return a < b ? a : b;
 }
 #else
-__aicore_inline__ uint64_t vMakeHead(uint64_t id, uint64_t ext, uint64_t len, vPipe pipe) { return 0; }
+__aicore_inline__ uint64_t vMakeAccHead(uint64_t id, uint64_t ext, uint64_t len) { return 0; }
+__aicore_inline__ uint64_t vMakeSimdHead(uint64_t id, uint64_t ext, uint64_t len) { return 0; }
 #endif
 
 __aicore_inline__ uint64_t vGetBitRange(uint64_t x, uint64_t offset, uint64_t len) {
@@ -254,7 +303,7 @@ __aicore_inline__ T DecodeScalar(__bcode__ uint32_t *scalr_offset) {
 
 template <typename T>
 __aicore_inline__ T CeilDiv(T a, T b) {
-  return (a - 1) / b + 1;
+  return (a + b - 1) / b;
 }
 
 template <typename T>
@@ -300,9 +349,9 @@ struct vUnary {
     op.count = data & 0xfffful;
     op.xn = data >> 32;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vUnary &op) {
-    uint32_t size = 2;
-    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vUnary &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.xn << 32 | op.count;
     return size;
   }
@@ -314,21 +363,23 @@ struct vAtomicCum {
   uint64_t xn;
   uint64_t count;
   uint64_t round_rank;
+  uint64_t red_op;
   // pc[0]: xd
-  // pc[1]: xn(18) << 32 | count(16) | round_rank
+  // pc[1]: red_op(4) << 60 | xn(18) << 32 | count(16) | round_rank
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vAtomicCum &op) {
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
+    op.red_op = (data >> 60) & 0xful;
     op.count = (data >> 16) & 0xfffful;
-    op.xn = data >> 32;
+    op.xn = (data >> 32) & V_X_MASK;
     op.round_rank = data & 0xful;
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vAtomicCum &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vAtomicCum &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vAtomicCum::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
-    pc[1] = op.xn << 32 | op.count << 16 | op.round_rank;
+    pc[0] = vMakeSimdHead(id, op.xd, size);
+    pc[1] = op.red_op << 60 | op.xn << 32 | op.count << 16 | op.round_rank;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vAtomicCum::ROUND_OFFSET + i] = rounds[i];
     }
@@ -352,9 +403,9 @@ struct vRemovePad {
     op.xn = data >> 46;
     op.rs = (data >> 32) & 0xfful;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vRemovePad &op) {
-    uint32_t size = 2;
-    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vRemovePad &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.xn << 46 | op.rs << 32 | op.iter_num << 16 | op.repeat;
     return size;
   }
@@ -377,9 +428,9 @@ struct vBinaryS {
   __aicore_inline__ T GetScalar(bcodeptr_t pc) {
     return DecodeScalar<T>((__bcode__ uint32_t *)pc + 3);
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryS &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryS &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = op.scalar << 32 | vCompactX(op.xd) << 16 | op.count;
     return size;
   }
@@ -399,9 +450,9 @@ struct vBinary {
     op.xd = (data >> 18) & V_X_MASK;
     op.count = data >> 48;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinary &op) {
-    uint32_t size = 2;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBinary &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = op.count << 48 | op.xd << 18 | op.xm;
     return size;
   }
@@ -427,9 +478,9 @@ struct vBinaryWS {
     op.ws0 = data & V_X_MASK;
     op.ws1 = (data >> 18) & V_X_MASK;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryWS &op) {
-    uint32_t size = 3;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBinaryWS &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = op.count << 48 | op.xd << 18 | op.xm;
     pc[2] = op.ws1 << 18 | op.ws0;
     return size;
@@ -464,9 +515,9 @@ struct vCompare {
     op.ws = vDeCompactX(vGetBitRange(data, 36, 13));
     op.count = data >> 49;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCompare &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vCompare &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.type << 18 | op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.type << 18 | op.xn, size);
     pc[1] = op.count << 49 | vCompactX(op.ws) << 36 | op.xd << 18 | op.xm;
     return size;
   }
@@ -494,9 +545,9 @@ struct vCompareS {
   __aicore_inline__ T GetScalar(bcodeptr_t pc) {
     return DecodeScalar<T>((__bcode__ uint32_t *)pc + 4);
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCompareS &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vCompareS &op) {
     uint64_t size = 3;
-    pc[0] = vMakeHead(id, op.type << 18 | op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.type << 18 | op.xn, size);
     pc[1] = op.count << 48 | op.ws << 18 | op.xd;
     pc[2] = op.scalar;
     return size;
@@ -515,9 +566,9 @@ struct vBroadcastS {
     op.count = data & 0xfffffffful;
     op.scalar = (data >> 32) & 0xfffffffful;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastS &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastS &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.scalar << 32 | op.count;
     return size;
   }
@@ -543,9 +594,9 @@ struct vSelect {  // 24B
     op.xd = (data >> 32) & V_X_MASK;
     op.ws = data & V_X_MASK;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSelect &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vSelect &op) {
     uint64_t size = 3;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = op.count << 48 | op.xm << 18 | op.cond;
     pc[2] = op.xd << 32 | op.ws;
     return size;
@@ -571,9 +622,9 @@ struct vBroadcastX {
     op.iter_num = (data >> 32) & 0xfffful;
     op.xd = vDeCompactX(data >> 48);
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastX &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastX &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.lead_pad << 18 | op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.lead_pad << 18 | op.xn, size);
     pc[1] = vCompactX(op.xd) << 48 | op.iter_num << 32 | op.lead_num << 16 | op.count;
     return size;
   }
@@ -596,9 +647,9 @@ struct vBroadcastY {
     op.iter_num = (data >> 32) & 0xfffful;
     op.xd = vDeCompactX(data >> 48);
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastY &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastY &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = vCompactX(op.xd) << 48 | op.iter_num << 32 | op.dup_num << 16 | op.dup_stride;
     return size;
   }
@@ -631,9 +682,9 @@ struct vReduceX {
     op.dup_block = data2 & 0xfffful;
     op.dup_pad = (data2 >> 16) & 0xfffful;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vReduceX &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vReduceX &op) {
     uint64_t size = 3;
-    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.dup_size << 32 | op.red_tail << 16 | op.red_size;
     pc[2] = op.simd_width << 56 | op.xn << 32 | op.dup_pad << 16 | op.dup_block;
     return size;
@@ -664,9 +715,9 @@ struct vReduceY {
   }
   __aicore_inline__ uint64_t GetXd(bcodeptr_t pc, uint64_t head) { return (head >> V_HEAD_EXT_OFFSET) & V_X_MASK; }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vReduceY &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vReduceY &op) {
     uint64_t size = 3;
-    pc[0] = vMakeHead(id, op.xd, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.dup_num << 48 | op.red_tail << 32 | op.red_size << 16 | op.iter_size;
     pc[2] = op.xn << 16 | op.simd_width;
     return size;
@@ -697,9 +748,9 @@ struct vReduceJoin {
     op.xn = vGetBitRange(data, 0, 18);
     op.ws = pc[2];
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, const vReduceJoin &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, const vReduceJoin &op) {
     uint64_t size = 4;
-    pc[0] = vMakeHead(V_RSUM_JOIN, vCompactX(op.xd) << V_C_X_BITS, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(V_RSUM_JOIN, vCompactX(op.xd) << V_C_X_BITS, size);
     pc[1] = op.iter_num << 48 | op.iter_stride << 31 | vCompactX(op.xs) << 18 | op.xn;
     pc[2] = op.ws;
     pc[3] = 0;
@@ -710,30 +761,32 @@ struct vReduceJoin {
 struct vCopy {
   uint64_t xd;
   uint64_t xn;
-  uint64_t config;
-  // pc[0]: c_xd(13) << 13 | c_xn(13)
-  // pc[1]: simd_width(8) << 48 | iter_stride(16) << 32 | iter_size(16) << 16 | iter_num(16)
+  uint64_t lenburst;
+  // pc[0]: xn(18)
+  // pc[1]: lenburst(16) << 32 |  xd(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCopy &op) {
-    op.xd = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET + V_C_X_BITS, V_C_X_BITS));
-    op.xn = vDeCompactX(vGetBitRange(head, V_HEAD_EXT_OFFSET, V_C_X_BITS));
-    op.config = pc[1];
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.xd = data & V_X_MASK;
+    op.lenburst = (data >> 32) & 0xfffful;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vCopy &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vCopy &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(V_COPY, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
-    pc[1] = op.config;
+    pc[0] = vMakeSimdHead(id, op.xn, size);
+    pc[1] = op.lenburst << 32 | op.xd;
     return size;
   }
 };
 
 struct vNop {
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc) {
     uint64_t size = 1;
-    pc[0] = vMakeHead(V_NOP, 0, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(V_NOP, 0, size);
     return size;
   }
 };
 
+// [iter_num, iter_size/iter_stride]
 // [iter_num, iter_size/iter_stride]
 struct vClearPad {
   uint64_t xd;
@@ -742,8 +795,10 @@ struct vClearPad {
   uint64_t iter_stride;
   uint64_t simd_width;
   uint64_t iter_tail;
+  uint64_t scalar;
   // pc[0]: simd_width(8) << 18 | xd(18)
-  // pc[1]: iter_tail(16) << 48 | iter_stride(16) << 32 | iter_size(16) << 16 | iter_num(16)
+  // pc[1]: iter_tail(16) << 48 | iter_stride(16) << 32 | iter_size(16) << 16  | iter_num(16)
+  // pc[2]: scalar
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vClearPad &op) {
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.simd_width = vGetBitRange(head, V_HEAD_EXT_OFFSET + V_X_BITS, 8);
@@ -752,11 +807,13 @@ struct vClearPad {
     op.iter_stride = (data >> 32) & 0xfffful;
     op.iter_size = (data >> 16) & 0xfffful;
     op.iter_num = data & 0xfffful;
+    op.scalar = pc[2];
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vClearPad &op) {
-    uint32_t size = 2;
-    pc[0] = vMakeHead(id, op.simd_width << V_X_BITS | op.xd, size, V_PIPE_SIMD);
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vClearPad &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeSimdHead(id, op.simd_width << V_X_BITS | op.xd, size);
     pc[1] = op.iter_tail << 48 | op.iter_stride << 32 | op.iter_size << 16 | op.iter_num;
+    pc[2] = op.scalar;
     return size;
   }
 };
@@ -780,9 +837,9 @@ struct vElementAny {
     op.repeat = data & 0xfffful;
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vElementAny &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vElementAny &op) {
     uint64_t size = 3;
-    pc[0] = vMakeHead(id, op.simd_width << V_X_BITS | op.xn, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, op.simd_width << V_X_BITS | op.xn, size);
     pc[1] = op.xd << 32 | op.repeat_tail << 16 | op.repeat;
     pc[2] = 0;
     return size;
@@ -802,7 +859,7 @@ struct vOneHot {
   uint64_t data_size;
   uint64_t iter_num;
   uint64_t depth;
-  uint64_t dup_round; // Y: dup_num. TILE_xx: tile_round
+  uint64_t dup_round;  // Y: dup_num. TILE_xx: tile_round
   uint64_t mode;
   // pc[0]: reserved(26)
   // pc[1]: data_size(18) << 36 | xd(18) << 18 | xn(18)
@@ -827,10 +884,10 @@ struct vOneHot {
     on_value = (data << 32) >> 32;
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, uint32_t on_value, uint32_t off_value,
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, uint32_t on_value, uint32_t off_value,
                                     const vOneHot &op) {
     uint64_t size = 4;
-    pc[0] = vMakeHead(id, 0, size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, 0, size);
     pc[1] = op.data_size << 36 | op.xd << 18 | op.xn;
     pc[2] = op.mode << 48 | op.dup_round << 32 | op.depth << 16 | op.iter_num;
     pc[3] = uint64_t(off_value) << 32 | on_value;
@@ -859,10 +916,23 @@ struct vReshape {
     op.xn_pad = (data >> 48) & 0xfful;
     op.xd_pad = data >> 56;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vReshape &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vReshape &op) {
     uint64_t size = 2;
-    pc[0] = vMakeHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size, V_PIPE_SIMD);
+    pc[0] = vMakeSimdHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size);
     pc[1] = op.xd_pad << 56 | op.xn_pad << 48 | op.dup_size << 32 | op.xd_lead << 16 | op.xn_lead;
+    return size;
+  }
+};
+
+struct vccload {
+  uint64_t xn;
+  // pc[0]: xn(18)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vccload &op) {
+    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vccload &op) {
+    uint64_t size = 1;
+    pc[0] = vMakeAccHead(id, op.xn, size);
     return size;
   }
 };
@@ -896,10 +966,10 @@ struct vSLoad {
     op.shard_rel = data & 0xffful;
     op.gm = reinterpret_cast<__gm__ void *>(pc[2]);
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vSLoad &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vSLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vSLoad::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.xn, size, V_PIPE_LOAD);
+    pc[0] = vMakeAccHead(id, op.xn, size);
     pc[1] = op.tile_stride << 40 | op.type_size << 28 | op.pad_size << 20 | op.round_rank << 14 |
             uint64_t(op.broadcast_m) << 13 | uint64_t(op.broadcast_n) << 12;
     pc[2] = reinterpret_cast<uint64_t>(op.gm);
@@ -951,11 +1021,10 @@ struct vSliceSL {
     op.offset = pc[4];
   }
 
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vSliceSL &op,
-                                    const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vSliceSL &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vSliceSL::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, pipe);
+    pc[0] = vMakeAccHead(id, op.tile_stride << 13 | vCompactX(op.xn), size);
     pc[1] = reinterpret_cast<uint64_t>(op.gm);
     pc[2] = op.slice_n << 44 | op.slice_m << 24 | op.src_n << 4 | op.type_size;
     pc[3] = op.slice_k << 44 | op.src_m << 24 | op.round_rank << 16 | op.pad_size << 4 | op.one_flag;
@@ -992,10 +1061,10 @@ struct vLoad {
     op.tail_iter = (data >> 16) & 0x3fffful;
     op.body_iter = data & 0xfffful;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vLoad &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vLoad::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, V_PIPE_LOAD);
+    pc[0] = vMakeAccHead(id, op.tile_stride << 13 | vCompactX(op.xn), size);
     pc[1] = reinterpret_cast<uint64_t>(op.from);
     pc[2] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.tail_iter << 16 | op.body_iter;
     for (uint64_t i = 0; i < round_size; ++i) {
@@ -1003,6 +1072,62 @@ struct vLoad {
     }
     return size;
   }
+};
+
+struct vViewLoad {
+  enum { RELOC_OFFSET = 3 };
+  enum { VAR_OFFSET = 4 };
+  uint64_t xd;
+  uint64_t from;
+  uint64_t offset;
+  uint64_t iter_size;
+  uint64_t iter_num;
+  uint64_t src_gap;
+  uint64_t dst_gap;
+  uint64_t tail_size;
+  uint64_t loop_depth;
+  uint64_t tile_depth;
+  // pc[0]: reserved(16) << 18 | xd(18)
+  // pc[1]: dst_gap(4) << 62 | loop_depth(4) << 56 | tile_depth(4) << 52 | tail_size(18) << 34 | iter_size(18) << 16 |
+  // iter_num(16)
+  // pc[2]: src_gap(32) << 32 | offset(32) pc[3]: from(64) pc[VAR::loop_depth]: loop_size(16) << 48 |
+  // dst_stride(16) << 32 | src_stride(32) pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoad &op) {
+    op.xd = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data1 = pc[1];
+    op.iter_num = data1 & 0xfffful;
+    op.iter_size = vGetBitRange(data1, 16, 18);
+    op.tail_size = vGetBitRange(data1, 34, 18);
+    op.tile_depth = vGetBitRange(data1, 52, 4);
+    op.loop_depth = vGetBitRange(data1, 56, 4);
+    op.dst_gap = data1 >> 62;
+    uint64_t data2 = pc[2];
+    op.src_gap = data2 >> 32;
+    op.offset = vGetBitRange(data2, 0, 32);
+    op.from = pc[3];
+  }
+  __aicore_inline__ void DecodeLoop(uint64_t data, uint64_t &loop_size, uint64_t &dst_stride, uint64_t &src_stride) {
+    loop_size = data >> 48;
+    dst_stride = (data >> 32) & 0xfffful;
+    src_stride = vGetBitRange(data, 0, 32);
+  }
+  __aicore_inline__ void DecodeTile(uint64_t data, uint64_t &tile_space, uint64_t &tile_stride) {
+    tile_space = data >> 32;
+    tile_stride = vGetBitRange(data, 0, 32);
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewLoad &op) {
+    uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
+    pc[0] = vMakeAccHead(id, op.xd, size);
+    pc[1] = op.dst_gap << 62 | op.loop_depth << 56 | op.tile_depth << 52 | op.tail_size << 34 | op.iter_size << 16 |
+            op.iter_num;
+    pc[2] = op.src_gap << 32 | op.offset;
+    pc[3] = op.from;
+    return size;
+  }
+  __aicore_inline__ uint64_t EncodeLoop(uint64_t loop_size, uint64_t dst_stride, uint64_t src_stride) {
+    return loop_size << 48 | dst_stride << 32 | src_stride;
+  }
+  __aicore_inline__ uint64_t EncodeTile(uint64_t space, uint64_t stride) { return space << 32 | stride; }
 };
 
 struct vMultiLoad {
@@ -1059,10 +1184,10 @@ struct vMultiLoad {
     data ^= ((data >> 32) & 1ul) << 33;
     data ^= 1ul << 32;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vMultiLoad &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vMultiLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vMultiLoad::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, V_PIPE_LOAD);
+    pc[0] = vMakeAccHead(id, op.tile_stride << 13 | vCompactX(op.xn), size);
     pc[1] = reinterpret_cast<uint64_t>(op.from);
     pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
     for (uint64_t i = 0; i < round_size; ++i) {
@@ -1108,10 +1233,10 @@ struct vPingPongLoad {
     op.pingpong = data & 0xfffful;
   }
   __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) { pc[3] ^= 0x1ul; }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongLoad &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vPingPongLoad::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.tile_stride << 13 | vCompactX(op.xn), size, V_PIPE_LOAD);
+    pc[0] = vMakeAccHead(id, op.tile_stride << 13 | vCompactX(op.xn), size);
     pc[1] = reinterpret_cast<uint64_t>(op.from);
     pc[2] = op.round_rank << 60 | op.pad_size << 50 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
     pc[3] = op.pingpong_stride << 32 | op.pingpong;
@@ -1152,10 +1277,10 @@ struct vPingPongPeerLoad {
     op.unique_id = pc[5] & 0xfffffffful;
   }
   __aicore_inline__ void PingPongSwitch(bcodeptr_t pc) { pc[3] ^= 0x1ul; }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongPeerLoad &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vPingPongPeerLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.base.round_rank + 1) / 2;
     uint64_t size = vPingPongPeerLoad::ROUND_OFFSET + round_size;  // Do we need round?
-    pc[0] = vMakeHead(id, op.base.tile_stride << 13 | vCompactX(op.base.xn), size, V_PIPE_LOAD);
+    pc[0] = vMakeAccHead(id, op.base.tile_stride << 13 | vCompactX(op.base.xn), size);
     pc[1] = reinterpret_cast<uint64_t>(op.base.from);
     pc[2] = op.base.round_rank << 60 | op.base.pad_size << 50 | op.base.iter_size << 32 | op.base.tail_iter << 16 |
             op.base.body_iter;
@@ -1197,11 +1322,11 @@ struct vStore {
     op.round_rank = data >> 60;
     op.to = pc[2];
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStore &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vStore &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vStore::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | vCompactX(op.xn);
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[0] = vMakeAccHead(id, ext, size);
     pc[1] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.iter_tail << 16 | op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
@@ -1248,11 +1373,11 @@ struct vStoreCond {
     op.to = pc[2];
     return true;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreCond &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vStoreCond &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vStore::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | op.cond_offset;
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[0] = vMakeAccHead(id, ext, size);
     pc[1] = op.round_rank << 60 | op.dtype_shift << 52 | op.iter_size << 34 | op.xn << 16 | op.pad_size;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
@@ -1278,9 +1403,12 @@ struct vStoreAtomic {
   uint64_t tile_stride;
   uint64_t round_rank;
   uint64_t cum_flag;
+  uint64_t red_op;
+  uint64_t atmoic_type;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
   // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 |
-  // iter_num(16) pc[2]: to
+  // atmoic_type(2) << 14| red_op(2) << 12| iter_num(12)
+  // pc[2]: to
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomic &op) {
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
     op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
@@ -1290,16 +1418,18 @@ struct vStoreAtomic {
     op.pad_size = (data >> 50) & 0xfful;
     op.iter_size = (data >> 32) & 0x3fffful;
     op.iter_tail = (data >> 16) & 0xfffful;
-    op.iter_num = data & 0xfffful;
+    op.atmoic_type = (data >> 14) & 0x3ul;
+    op.red_op = (data >> 12) & 0x3ul;
+    op.iter_num = data & 0xffful;
     op.to = pc[2];
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreAtomic &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vStoreAtomic &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vStoreAtomic::ROUND_OFFSET + round_size;
     uint64_t ext = op.tile_stride << 13 | vCompactX(op.xn);
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[0] = vMakeAccHead(id, ext, size);
     pc[1] = op.round_rank << 60 | op.cum_flag << 58 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 |
-            op.iter_num;
+            op.atmoic_type << 14 | op.red_op << 12 | op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vStoreAtomic::ROUND_OFFSET + i] = rounds[i];
@@ -1337,11 +1467,11 @@ struct vStoreRS {
     op.iter_num = data & 0xfffful;
     op.to = pc[2];
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreRS &op, const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vStoreRS &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vStoreAtomic::ROUND_OFFSET + round_size;
     uint64_t ext = op.rank_id << 29 | op.iter_tail << 13 | vCompactX(op.xn);
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[0] = vMakeAccHead(id, ext, size);
     pc[1] = op.round_rank << 60 | op.pad_size << 52 | op.iter_size << 34 | op.tile_stride << 16 | op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
@@ -1377,10 +1507,10 @@ struct vStoreAG {
     op.xbuf_size = pc[3] & 0xfffffffful;
     op.shard_stride = pc[4];
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, const vStoreAG &op) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vStoreAG &op) {
     uint64_t size = 5;
     uint64_t ext = op.rank_id << 29 | op.rank_size << 24 | vCompactX(op.xn);
-    pc[0] = vMakeHead(id, ext, size, V_PIPE_STORE);
+    pc[0] = vMakeAccHead(id, ext, size);
     pc[1] = op.to;
     pc[2] = op.pad_size << 52 | op.iter_size << 34 | op.tile_stride << 16 | op.iter_num;
     pc[3] = op.iter_tail << 32 | op.xbuf_size;
@@ -1402,6 +1532,11 @@ struct vStoreAG {
 #define V_CUBE_FLAG_PEER_STORE (1ul << 12)
 #define V_CUBE_FLAG_GROUPED_LIST (1ul << 13)
 #define V_CUBE_FLAG_GROUP_K (1ul << 14)
+#define V_CUBE_FLAG_STORE_UB (1ul << 15)
+#define V_CUBE_FLAG_DIS_UNITFLAG (1ul << 16)
+#define V_CUBE_FLAG_STORE_UB_ONCE (1ul << 17)
+#define V_CUBE_FLAG_GMM_SIZE_MODE (1ul << 18)
+#define V_CUBE_FLAG_PIPELINE (1ul << 19)
 #define V_CUBE_FLAG_DTYPE_OFFSET 30  // [30, 31]
 
 #define V_CUBE_SWIZ_VISIT_nZ 0
@@ -1419,11 +1554,13 @@ struct vStoreAG {
 
 struct vCubeOp {
   enum { FP16, BF16 };
-
+  union {
+    uint64_t gm_c;
+    uint64_t ub_c;
+  };
   uint64_t group_num;
   uint64_t gm_a;
   uint64_t gm_b;
-  uint64_t gm_c;
   uint64_t gm_bias;
   uint64_t gm_group_list;
 
@@ -1447,10 +1584,20 @@ struct vCubeOp {
   uint32_t unique_id;
   uint32_t rank_size;
 
+  __aicore_inline__ uint64_t UbInfoEncode(uint64_t xbuf, uint64_t subtile0, uint64_t subtile1) {
+    return xbuf << 32 | subtile0 << 16 | subtile1;
+  }
+
+  __aicore_inline__ void UbInfoDecode(uint64_t data, uint64_t &xbuf, uint64_t &subtile0, uint64_t &subtile1) {
+    subtile1 = data & 0xfffful;
+    subtile0 = (data >> 16) & 0xfffful;
+    xbuf = data >> 32;
+  }
+
   __aicore_inline__ uint32_t SwizzleEncode(uint32_t visit_type, uint32_t data) { return visit_type << 16 | data; }
 
   __aicore_inline__ void SwizzleDiagonalZ(uint64_t tile_idx, uint64_t swiz_cnt, uint64_t m_loop, uint64_t n_loop,
-                                         uint64_t &midx, uint64_t &nidx) {
+                                          uint64_t &midx, uint64_t &nidx) {
     uint64_t m_block_idx = tile_idx / (swiz_cnt * n_loop);
     tile_idx -= m_block_idx * (swiz_cnt * n_loop);
     uint64_t m_row = min(swiz_cnt, m_loop - m_block_idx * swiz_cnt);
@@ -1479,9 +1626,12 @@ struct vCubeOp {
   }
 
   __aicore_inline__ void IndexCompute(uint64_t tile_idx, uint64_t swizzle, uint64_t m_loop, uint64_t n_loop,
-                                      uint64_t &midx, uint64_t &nidx) {
+                                      uint64_t &midx, uint64_t &nidx, uint64_t &cidx) {
+    uint64_t core_loop = m_loop * n_loop;
     uint64_t swiz_cnt = swizzle & 0xffff;
     uint64_t swiz_type = swizzle >> 16;
+    cidx = tile_idx / core_loop;
+    tile_idx -= cidx * core_loop;
     if ((swiz_type == V_CUBE_SWIZ_VISIT_DIAGONAL_Z || V_CUBE_SWIZ_VISIT_DIAGONAL_N) &&
         (m_loop < V_CUBE_DIAGONAL_MIN_DIM || n_loop < V_CUBE_DIAGONAL_MIN_DIM)) {
       swiz_type = m_loop < n_loop ? V_CUBE_SWIZ_VISIT_zN : V_CUBE_SWIZ_VISIT_nZ;
@@ -1502,6 +1652,22 @@ struct vCubeOp {
       default:
         break;
     }
+  }
+};
+
+struct vPipeCubeOp {
+  vCubeOp base;
+  uint64_t step; // uid(16) << 48 | wait_prod_num(16) << 32 | wait_step(16) << 16 | set_step(16)
+  uint64_t set_gm;
+  uint64_t wait_gm;
+  __aicore_inline__ uint64_t EncodeStep(uint64_t set_step, uint64_t wait_step, uint64_t wait_prod_num, uint64_t uid) {
+    return uid << 48 | wait_prod_num << 32 | wait_step << 16 | set_step;
+  }
+  __aicore_inline__ void DecodeStep(uint64_t step, uint64_t &set_step, uint64_t &wait_step, uint64_t &wait_prod_num, uint64_t &uid) {
+    set_step = step & 0xfffful;
+    wait_step = (step >> 16) & 0xfffful;
+    wait_prod_num = (step >> 32) & 0xfffful;
+    uid = step >> 48;
   }
 };
 
@@ -1552,11 +1718,10 @@ struct vPeerDMA {
     data ^= ((data >> 37) & 1ul) << 38;
     data ^= 1ul << 37;
   }
-  __aicore_inline__ uint32_t Encode(bcodeptr_t pc, uint64_t id, vPipe pipe, const vPeerDMA &op,
-                                    const uint64_t *rounds) {
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vPeerDMA &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
     uint64_t size = vPeerDMA::ROUND_OFFSET + round_size;
-    pc[0] = vMakeHead(id, op.round_rank << 20 | op.xn, size, pipe);
+    pc[0] = vMakeAccHead(id, op.round_rank << 20 | op.xn, size);
     pc[1] = reinterpret_cast<uint64_t>(op.peer_mem);
     pc[2] = op.tile_stride << 32 | op.tail_lenburst << 16 | op.lenburst;
     pc[3] = reinterpret_cast<uint64_t>(op.flag_mem);
@@ -1571,6 +1736,126 @@ struct vPeerDMA {
       pc[vPeerDMA::ROUND_OFFSET + i] = rounds[i];
     }
     return size;
+  }
+};
+
+struct vVisitReorder {
+  enum { COORD_OFFSET = 3 };
+  uint64_t loop_stride;
+  uint64_t loop_num;
+  uint64_t loop_tail;
+  uint64_t parallel_stride;
+  uint64_t parallel_extent;
+  uint64_t coord_num;
+  uint64_t wave_tidx;
+  uint64_t wave_block;
+  // pc[0]: wave_block(32) << 32 | wave_tidx(32)
+  // pc[1]: loop_stride(32) << 32 | loop_tail(16) << 16 | loop_num(16)
+  // pc[2]: coord_num(4) << 60 | parallel_extent(28) << 32 | parallel_stride(32)
+  // pc[3:]: stride(32) << 32 | extent(16) << 16 | coord_value(16)
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, const vVisitReorder &op) {
+    pc[0] = op.wave_tidx;
+    pc[1] = op.loop_stride << 32 | op.loop_tail << 16 | op.loop_num;
+    pc[2] = op.coord_num << 60 | op.parallel_extent << 32 | op.parallel_stride;
+    return op.coord_num + COORD_OFFSET;
+  }
+  __aicore_inline__ void EncodeCoord(bcodeptr_t pc, int idx, uint64_t stride, uint64_t extent) {
+    pc[idx + COORD_OFFSET] = stride << 32 | extent << 16;
+  }
+  __aicore_inline__ void Decode(bcodeptr_t pc, vVisitReorder &op) {
+    uint64_t data = pc[0];
+    op.wave_tidx = vGetBitRange(data, 0, 32);
+    op.wave_block = data >> 32;
+    data = pc[1];
+    op.loop_stride = data >> 32;
+    op.loop_tail = (data >> 16) & 0xfffful;
+    op.loop_num = data & 0xfffful;
+    data = pc[2];
+    op.coord_num = data >> 60;
+    op.parallel_extent = vGetBitRange(data, 32, 28);
+    op.parallel_stride = vGetBitRange(data, 0, 32);
+  }
+  __aicore_inline__ void DecodeCoord(bcodeptr_t pc, int idx, uint64_t &stride, uint64_t &extent, uint64_t &value) {
+    uint64_t data = pc[idx + COORD_OFFSET];
+    stride = data >> 32;
+    extent = (data >> 16) & 0xfffful;
+    value = data & 0xfffful;
+  }
+  __aicore_inline__ void UpdateWave(bcodeptr_t pc, uint64_t wave_block, uint64_t wave_tidx) { pc[0] = wave_block << 32 | wave_tidx; }
+  __aicore_inline__ void UpdateCoord(bcodeptr_t pc, int idx, uint16_t value) {
+    *reinterpret_cast<__bcode__ uint16_t *>(pc + (idx + COORD_OFFSET)) = value;
+  }
+  __aicore_inline__ void ClearCoord(bcodeptr_t pc) { pc[2] = (pc[2] << 4) >> 4; }
+};
+
+struct vPipeMsg {
+  uint64_t pipe_cnt;
+  uint64_t magic_id;
+  __aicore_inline__ uint64_t MagicID(uint64_t uid) { return 0xc25f90ae4761ul << 16 | uid; }
+};
+
+struct vVisitPipeSet {
+  enum { RELOC_OFFSET = 1 };
+  enum { NEST_VISIT_OFFSET = 3 };
+  uint32_t idx;
+  uint64_t visit_id;
+  uint64_t step;
+  uint64_t gm;
+  uint64_t uid;
+  // pc[0]: visit_id(16) << 48 | step(16) << 32 | idx(32)
+  // pc[1]: gm
+  // pc[2]: uid(16)
+  // pc[3:]: visit code
+  __aicore_inline__ void Decode(bcodeptr_t pc, vVisitPipeSet &op) {
+    uint64_t data = pc[0];
+    op.idx = vGetBitRange(data, 0, 32);
+    op.visit_id = data >> 48;
+    op.step = (data >> 32) & 0xfffful;
+    op.gm = pc[1];
+    op.uid = pc[2];
+  }
+  __aicore_inline__ void UpdateIdx(bcodeptr_t pc, uint32_t idx) {
+    *reinterpret_cast<__bcode__ uint32_t *>(pc) = idx;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, const vVisitPipeSet &op) {
+    pc[0] = op.visit_id << 48 | op.step << 32;
+    pc[1] = op.gm;
+    pc[2] = op.uid;
+    return NEST_VISIT_OFFSET;
+  }
+};
+
+struct vVisitPipeWait {
+  enum { RELOC_OFFSET = 2 };
+  enum { NEST_VISIT_OFFSET = 3 };
+  uint32_t idx;
+  uint64_t visit_id;
+  uint64_t prod_num;
+  uint64_t step;
+  uint64_t gm;
+  uint64_t uid;
+  // pc[0]: visit_id(16) << 48 | step(16) << 32 | idx(32)
+  // pc[1]: uid(16) << 16 | prod_num(16)
+  // pc[2]: gm
+  // pc[3:]: visit code
+  __aicore_inline__ void Decode(bcodeptr_t pc, vVisitPipeWait &op) {
+    uint64_t data = pc[0];
+    op.idx = vGetBitRange(data, 0, 32);
+    op.visit_id = data >> 48;
+    op.step = (data >> 32) & 0xfffful;
+    data = pc[1];
+    op.prod_num = data & 0xfffful;
+    op.uid = data >> 16;
+    op.gm = pc[2];
+  }
+  __aicore_inline__ void UpdateIdx(bcodeptr_t pc, uint32_t idx) {
+    *reinterpret_cast<__bcode__ uint32_t *>(pc) = idx;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, const vVisitPipeWait &op) {
+    pc[0] = op.visit_id << 48 | op.step << 32;
+    pc[1] = op.uid << 16 | op.prod_num;
+    pc[2] = op.gm;
+    return NEST_VISIT_OFFSET;
   }
 };
 
@@ -1693,35 +1978,28 @@ struct vVisitMix {
 
 // [entry]
 // common:
-//  data(36) << 28 | reserved(8) << 20 | code_size_8B(12) << 8 | next_stage(reserve: 1) << 5 | extern_code(1) << 4 |
+//  data(32) << 32 | reserved(12) << 20 | code_size_8B(12) << 8 | next_stage(reserve: 1) << 5 | extern_code(1) << 4 |
 //  cube_mix(1) << 3 | type(3)
 // data:
-//  cube: reserved(36) << 28 | common(28)
-//  parallel: block_sum(16) << 48 | reserved(20) << 28 | common(28)
-//  vector:   tile_body(24) << 40 | tail_tail(6) << 34 | block_num(6) << 28 | common(28)
-//  vectorEx: visit_offset_8B(16) << 48 | visit_id(16) << 32 | reserve(4) << 28 | common(28)
+//  cube: reserved(32) << 32 | common(32)
+//  vector:   tile_body(24) << 40 | tail_tail(8) << 32 | common(32)
+//  vectorEx: visit_offset_8B(16) << 48 | visit_id(16) << 32 | common(32)
+//  parallel: aiv_lookup(16) << 48 | aic_lookup(16) << 32 | common(32)
 
 #define V_ENTRY_TYPE_V 0
 #define V_ENTRY_TYPE_VE 1  // vector ext
-#define V_ENTRY_TYPE_VP 2  // vector parallel
-#define V_ENTRY_TYPE_C 3
+#define V_ENTRY_TYPE_C 2
+#define V_ENTRY_TYPE_P 3
 
 #define V_ENTRY_MASK_TYPE 7ul
 #define V_ENTRY_FLAG_CUBE_MIX 8
 #define V_ENTRY_FLAG_EXTERN_CODE 16
-#define V_ENTRY_FLAG_NEXT_STAGE 32
 #define V_ENTRY_CODE_SIZE_OFFSET 8
 #define V_ENTRY_CODE_SIZE_BITS 12
 
-// parallel
-#define V_ENTRY_VP_BLOCK_SUM_OFFSET 48
-#define V_ENTRY_VP_BLOCK_SUM_BITS 16
-
 // vector
-#define V_ENTRY_V_BLOCK_NUM_OFFSET 28
-#define V_ENTRY_V_BLOCK_NUM_BITS 6
-#define V_ENTRY_V_TILE_TAIL_OFFSET 34
-#define V_ENTRY_V_TILE_TAIL_BITS 6
+#define V_ENTRY_V_TILE_TAIL_OFFSET 32
+#define V_ENTRY_V_TILE_TAIL_BITS 8
 #define V_ENTRY_V_TILE_BODY_OFFSET 40
 #define V_ENTRY_V_TILE_BODY_BITS 24
 
@@ -1730,6 +2008,36 @@ struct vVisitMix {
 #define V_ENTRY_VE_VISIT_ID_BITS 16
 #define V_ENTRY_VE_VISIT_OFFSET_OFFSET 48
 #define V_ENTRY_VE_VISIT_OFFSET_BITS 16
+
+// parallel
+#define V_ENTRY_P_AIC_LKUP_OFFSET 32
+#define V_ENTRY_P_AIV_LKUP_OFFSET 48
+#define V_ENTRY_P_LKUP_MASK 0xfffful
+#define V_ENTRY_P_LKUP_INVALID 0xff
+struct vProgEntry {
+  enum { CODE_SIZE = 2 };
+  uint64_t entry;
+  uint64_t b_begin;
+  uint64_t b_num;
+  uint64_t offset;
+  // pc[0]: entry
+  // pc[1]: reserve(16) << 48 | offset(16) << 32 | b_num(16) << 16 | b_begin(16)
+  __aicore_inline__ void Decode(bcodeptr_t pc, vProgEntry &e) {
+    e.entry = pc[0];
+    uint64_t data = pc[1];
+    e.offset = (data >> 32) & 0xfffful;
+    e.b_num = (data >> 16) & 0xfffful;
+    e.b_begin = data & 0xfffful;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t entry, uint64_t offset) {
+    pc[0] = entry;
+    pc[1] = offset << 32;
+    return CODE_SIZE;
+  }
+  __aicore_inline__ void UpdateBlock(bcodeptr_t pc, uint64_t b_begin, uint64_t b_num) {
+    pc[1] |= b_num << 16 | b_begin;
+  }
+};
 
 __aicore_inline__ uint64_t vFftsSyncConfig(uint64_t mode, uint64_t event_id) { return 1ul | mode << 4 | event_id << 8; }
 #endif  // _DVM_ISA_H_

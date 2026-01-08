@@ -15,82 +15,99 @@
 
 import pytest
 import numpy as np
+import dvm
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
-@pytest.mark.parametrize("shape",[(32, 32), (1024, 32), (1024, 2000)])
-@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16])
-@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
-                                      ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape", [(32, 32), (1024, 32), (1024, 2000)])
+@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16, np.bool_])
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
 def test_cmp(shape, type, op, func):
     t = Tester()
     a = np.random.randint(1024, size=shape).astype(type)
     b = np.random.randint(1024, size=shape).astype(type)
-    if type != np.int32:
+    if type != np.int32 and type != np.bool_:
         a[0] = np.nan
         b[0] = np.nan
     x = t.load(a)
     y = t.load(b)
     y = t.copy(y)
     x = t.copy(x)
-    z = t.binary(op,x, y)
+    z = op(t, x, y)
     z = t.copy(z)
     t.store_expect(z, func(a, b).astype(type))
-    assert(t.run_check())
+    assert (t.run_check())
 
-@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16])
-@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
-                                      ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('type', [np.int32, np.float32, np.float16, np.bool_])
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
 def test_cmp_s_r(type, op, func):
     t = Tester()
     a = np.random.randint(1024, size=(1024, 32)).astype(type)
-    if type != np.int32:
+    if type != np.int32 and type != np.bool_:
         a[0] = np.nan
     b = 30
     x = t.load(a)
     x = t.copy(x)
-    z = t.binary(op, x, b)
+    z = op(t, x, b)
     z = t.copy(z)
     t.store_expect(z, func(a, b).astype(type))
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.int32, np.float32, np.float16])
-@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
-                                      ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
 def test_cmp_s_l(type, op, func):
     t = Tester()
     a = np.random.randint(1024, size=(1024, 32)).astype(type)
     b = 30
     x = t.load(a)
     x = t.copy(x)
-    z = t.binary(op, b, x)
+    z = op(t, b, x)
     z = t.copy(z)
     t.store_expect(z, func(b, a).astype(type))
-    assert(t.run_check())
+    assert (t.run_check())
 
-@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("NotEqual", np.not_equal)])
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.not_equal, np.not_equal)])
 def test_cmp_over_repeat(op, func):
     t = Tester()
     a = np.random.randint(1024, size=(100000, 1)).astype(np.float16)
     b = np.random.randint(1024, size=(100000, 7)).astype(np.float16)
     x = t.load(a)
     y = t.load(b)
-    z = t.binary(op,x, y)
+    z = op(t, x, y)
     t.store_expect(z, func(a, b).astype(np.float16))
-    assert(t.run_check())
+    assert (t.run_check())
 
 
-@pytest.mark.parametrize('op, func', [("Equal", np.equal), ("Less", np.less), ("Greater", np.greater),
-                                      ("GreaterEqual", np.greater_equal), ("LessEqual", np.less_equal), ("NotEqual", np.not_equal)])
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
 def test_cmp_int(op, func):
     t = Tester()
     a = np.random.randint(-2147483648, 2147483647, (1024, 1024)).astype(np.int32)
     b = np.random.randint(-2147483648, 2147483647, (1024, 1024)).astype(np.int32)
     x = t.load(a)
     y = t.load(b)
-    z = t.binary(op,x, y)
+    z = op(t, x, y)
     t.store_expect(z, func(a, b).astype(np.int32))
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_cmp_ws_inplace():
     t = Tester()
     a = np.random.randint(1024, size=(32, 512)).astype(np.float16)
@@ -99,15 +116,33 @@ def test_cmp_ws_inplace():
     y = t.load(b)
     x = t.copy(x)
     y = t.copy(y)
-    z = t.binary("Equal", x, y)
+    z = t.equal(x, y)
     t.store_expect(z, np.equal(a, b).astype(np.float16))
-    assert(t.run_check())
+    assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_cmp_s_ws_inplace():
     t = Tester()
     a = np.random.randint(1024, size=(32, 512)).astype(np.float16)
     x = t.load(a)
     x = t.copy(x)
-    z = t.binary("Equal", x, 1.0)
+    z = t.equal(x, 1.0)
     t.store_expect(z, np.equal(a, 1.0).astype(np.float16))
-    assert(t.run_check())
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support bfloat16 compare op")
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
+def test_cmp_bf16(op, func):
+    t = Tester()
+    a = Tester.bf16_random_normal(-1, 1, [1024, 1]).astype(np.float32)
+    b = Tester.bf16_random_normal(-1, 1, [1024, 1]).astype(np.float32)
+    x = t.load(a, "bfloat16")
+    y = t.load(b, "bfloat16")
+    z = op(t, x, y)
+    t.store_expect(z, func(a, b))
+    assert (t.run_check())

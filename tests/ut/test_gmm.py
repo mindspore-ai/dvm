@@ -16,6 +16,7 @@
 import pytest
 import numpy as np
 from dvm.tester import Tester
+from tests.mark_utils import arg_mark
 
 import numpy as np
 
@@ -76,13 +77,13 @@ def np_gmm_split_k(x, w, b, group_list):
     return out
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 @pytest.mark.parametrize(
     "m, n, k, group_list",
     [
-        [1024, 4096, 512, [512, 1024]],
         [2333, 1111, 2222, [777, 2333]],
-        [4096, 4096, 4096, [10, 256, 3000, 4096]],
+        [4096, 4096, 4096, [10, 256, 256, 3000, 4096]],
     ],
 )
 @pytest.mark.parametrize(
@@ -92,8 +93,8 @@ def test_gmm(m, n, k, group_list, trans):
     b = len(group_list)
     x_shape = [k, m] if trans[0] else [m, k]
     w_shape = [b, n, k] if trans[1] else [b, k, n]
-    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
-    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
+    x = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float16)
+    w = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float16)
     group_list = np.array(group_list).astype(np.int64)
     expect = np_gmm_split_m(x if not trans[0] else x.T, w if not trans[1] else w.transpose(
         0, 2, 1), None, group_list)
@@ -101,27 +102,29 @@ def test_gmm(m, n, k, group_list, trans):
     x_d = t.load(x)
     w_d = t.load(w)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, trans[0], trans[1],  None, group_list_d, 0)
+    res = t.gmm(x_d, w_d, trans[0], trans[1], None, group_list_d, 0)
     t.store_expect(res, expect)
     assert t.run_check()
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
+@pytest.mark.parametrize("mode", ["mix", "eager"])
 @pytest.mark.parametrize(
     "m, n, k, group_list",
-    [[1024, 4096, 512, [512, 1024]], [4096, 4096, 4096, [10, 1024, 2048, 4096]]],
+    [[1024, 4096, 512, [512, 1024]], [4096, 4096, 4096, [10, 500, 1024, 2048, 3333, 4096]]],
 )
-def test_gmm_bias(m, n, k, group_list):
+def test_gmm_bias(mode, m, n, k, group_list):
     b = len(group_list)
     x_shape = [m, k]
     w_shape = [b, k, n]
     bias_shape = [b, n]
-    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
-    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
-    bias = np.random.normal(0, 0.01, bias_shape).astype(np.float16)
+    x = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float16)
+    w = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float16)
+    bias = Tester.fast_random_normal(0, 0.01, bias_shape).astype(np.float16)
     group_list = np.array(group_list).astype(np.int64)
     expect = np_gmm_split_m(x, w, bias, group_list)
-    t = Tester("mix")
+    t = Tester(mode)
     x_d = t.load(x)
     w_d = t.load(w)
     bias_d = t.load(bias)
@@ -131,6 +134,7 @@ def test_gmm_bias(m, n, k, group_list):
     assert t.run_check()
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 @pytest.mark.parametrize("m, n, k, group_list", [[1024, 4096, 512, [512, 1024]]])
 def test_gmm_bias_bf16(m, n, k, group_list):
@@ -138,9 +142,9 @@ def test_gmm_bias_bf16(m, n, k, group_list):
     x_shape = [m, k]
     w_shape = [b, k, n]
     bias_shape = [b, n]
-    x = np.random.normal(0, 0.01, x_shape).astype(np.float32)
-    w = np.random.normal(0, 0.01, w_shape).astype(np.float32)
-    bias = np.random.normal(0, 0.01, bias_shape).astype(np.float32)
+    x = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float32)
+    w = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float32)
+    bias = Tester.fast_random_normal(0, 0.01, bias_shape).astype(np.float32)
     group_list = np.array(group_list).astype(np.int64)
     expect = np_gmm_split_m(x, w, bias, group_list)
     t = Tester("mix")
@@ -153,8 +157,10 @@ def test_gmm_bias_bf16(m, n, k, group_list):
     assert t.run_check()
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
 def test_dyn_gmm_type0():
-    t = Tester("dyn_mix")
+    t = Tester("mix:dyn")
     x = t.load([-1, 256], "float16")
     w = t.load([4, 256, 2048], "float16")
     group_list = t.load([-1], "int64")
@@ -165,17 +171,18 @@ def test_dyn_gmm_type0():
         [[4096, 256], [4, 256, 2048], [1024, 1256, 2000, 4096]],
     ]
     for x_shape, w_shape, group_list_d in iterations:
-        x_data = np.random.normal(0, 0.01, x_shape).astype(np.float16)
-        w_data = np.random.normal(0, 0.01, w_shape).astype(np.float16)
+        x_data = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float16)
+        w_data = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float16)
         group_list_data = np.array(group_list_d).astype(np.int64)
         expect = np_gmm_split_m(x_data, w_data, None, group_list_data)
         t.input(x, x_data)
         t.input(w, w_data)
         t.input(group_list, group_list_data)
         t.run()
-        t.check(out, expect, 1e-3)
+        assert (t.check(out, expect, 1e-3))
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 @pytest.mark.parametrize(
     "m, n, k, group_list",
@@ -190,8 +197,8 @@ def test_dyn_gmm_type0():
 def test_gmm_type2(m, n, k, group_list, trans):
     x_shape = [k, m] if trans[0] else [m, k]
     w_shape = [n, k] if trans[1] else [k, n]
-    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
-    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
+    x = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float16)
+    w = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float16)
     group_list = np.array(group_list).astype(np.int64)
     expect = np_gmm_split_k(
         x if not trans[0] else x.T, w if not trans[1] else w.T, None, group_list)
@@ -199,9 +206,106 @@ def test_gmm_type2(m, n, k, group_list, trans):
     x_d = t.load(x)
     w_d = t.load(w)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, trans[0], trans[1],  None, group_list_d, 2)
+    res = t.gmm(x_d, w_d, trans[0], trans[1], None, group_list_d, 2)
     t.store_expect(res, expect)
     assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+@pytest.mark.parametrize(
+    "m, n, k, group_list",
+    [
+        [1024, 512, 3333, [0, 0, 10, 128, 256, 256, 1024, 2048, 2048, 3333]],
+    ],
+)
+def test_gmm_type2_zero(m, n, k, group_list):
+    # Produce dirty data for L0A and L0B"
+    t = Tester("mix")
+    x = np.full([1024, 1024], np.nan, np.float16)
+    w = np.full([1024, 1024], np.nan, np.float16)
+    x_d = t.load(x)
+    w_d = t.load(w)
+    res = t.matmul(x_d, w_d, False, False)
+    t.store(res)
+    t.run()
+    
+    x_shape = [m, k]
+    w_shape = [k, n]
+    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
+    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
+    group_list = np.array(group_list).astype(np.int64)
+    expect = np_gmm_split_k(
+        x, w, None, group_list)
+    t = Tester("mix")
+    x_d = t.load(x)
+    w_d = t.load(w)
+    group_list_d = t.load(group_list)
+    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2)
+    t.store_expect(res, expect)
+    assert t.run_check()
+
+
+@pytest.mark.mix
+@pytest.mark.parametrize("mode", ["mix", "eager"])
+@pytest.mark.parametrize(
+    "m, n, k, group_list",
+    [
+        [1280, 2560, 1024, [0, 256, 256, 800, 1024, 1024]],
+        [4096, 4096, 4096, [10, 256, 3000, 4096]],
+    ],
+)
+def test_gmm_type2_postfusion(mode, m, n, k, group_list):
+    b = len(group_list)
+    x_shape = [m, k]
+    w_shape = [k, n]
+    d_shape = [b, m, n]
+    x = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float16)
+    w = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float16)
+    d = Tester.fast_random_normal(0, 0.01, d_shape).astype(np.float32)
+    group_list = np.array(group_list).astype(np.int64)
+    expect = np_gmm_split_k(x, w, None, group_list)
+    t = Tester(mode)
+    x_d = t.load(x)
+    w_d = t.load(w)
+    d_d = t.load(d)
+    group_list_d = t.load(group_list)
+    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2)
+    res = t.cast(res, "float32")
+    res = t.add(d_d, res)
+    t.store_expect(res, expect.astype(np.float16).astype(np.float32) + d, 1e-3)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_dyn_gmm_type2():
+    t = Tester("mix:dyn")
+    x = t.load([4096, -1], "float16")
+    w = t.load([-1, 2048], "float16")
+    z = t.load([-1, -1], "float32")
+    group_list = t.load([-1], "int64")
+    c = t.gmm(x, w, False, False, None, group_list, 2)
+    c = t.cast(c, "float32")
+    c = t.add(c, z)
+    out = t.store(c)
+    iterations = [
+        [[4096, 256], [256, 2048], [10, 100, 200, 256], [4, 1, 2048]],
+        [[4096, 2000], [2000, 2048], [1024, 1256, 1999, 2000], [4, 1, 1]],
+        [[4096, 2560], [2560, 2048], [1024, 1256, 2000, 2560], [4, 4096, 2048]],
+    ]
+    for x_shape, w_shape, group_list_d, z_shape in iterations:
+        x_data = Tester.fast_random_normal(0, 0.1, x_shape).astype(np.float16)
+        w_data = Tester.fast_random_normal(0, 0.1, w_shape).astype(np.float16)
+        z_data = Tester.fast_random_normal(0, 0.1, z_shape).astype(np.float32)
+        group_list_data = np.array(group_list_d).astype(np.int64)
+        expect = np_gmm_split_k(x_data, w_data, None, group_list_data)
+        t.input(x, x_data)
+        t.input(w, w_data)
+        t.input(z, z_data)
+        t.input(group_list, group_list_data)
+        t.run()
+        assert (t.check(out, expect + z_data, 1e-3))
 
 
 @pytest.mark.mix
@@ -209,52 +313,43 @@ def test_gmm_type2(m, n, k, group_list, trans):
     "m, n, k, group_list",
     [
         [1280, 2560, 1024, [256, 512, 800, 1024]],
-        [4096, 4096, 4096, [10, 256, 3000, 4096]],
     ],
 )
-def test_gmm_type2_postfusion(m, n, k, group_list):
+def test_gmm_group_list_type_2(m, n, k, group_list):
     b = len(group_list)
     x_shape = [m, k]
     w_shape = [k, n]
     d_shape = [b, m, n]
-    x = np.random.normal(0, 0.01, x_shape).astype(np.float16)
-    w = np.random.normal(0, 0.01, w_shape).astype(np.float16)
-    d = np.random.normal(0, 0.01, d_shape).astype(np.float32)
+    x = Tester.fast_random_normal(0, 0.01, x_shape).astype(np.float16)
+    w = Tester.fast_random_normal(0, 0.01, w_shape).astype(np.float16)
+    d = Tester.fast_random_normal(0, 0.01, d_shape).astype(np.float32)
     group_list = np.array(group_list).astype(np.int64)
     expect = np_gmm_split_k(
         x, w, None, group_list)
+    group_list = np.diff(group_list, prepend=0)
     t = Tester("mix")
     x_d = t.load(x)
     w_d = t.load(w)
     d_d = t.load(d)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False,  None, group_list_d, 2)
+    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2,  1)
     res = t.cast(res, "float32")
-    res = t.binary("Add", d_d, res)
+    res = t.add(d_d, res)
     t.store_expect(res, expect.astype(np.float16).astype(np.float32) + d, 1e-3)
     assert t.run_check()
 
 
-def test_dyn_gmm_type2():
-    t = Tester("dyn_mix")
-    x = t.load([4096, -1], "float16")
-    w = t.load([-1, 2048], "float16")
-    group_list = t.load([-1], "int64")
-    c = t.gmm(x, w, False, False, None, group_list, 2)
-    c = t.cast(c, "float32")
-    c = t.binary("Add", c, 1)
-    out = t.store(c)
-    iterations = [
-        [[4096, 256], [256, 2048], [10, 100, 200, 256]],
-        [[4096, 2560], [2560, 2048], [1024, 1256, 2000, 2560]],
-    ]
-    for x_shape, w_shape, group_list_d in iterations:
-        x_data = np.random.normal(0, 0.01, x_shape).astype(np.float16)
-        w_data = np.random.normal(0, 0.01, w_shape).astype(np.float16)
-        group_list_data = np.array(group_list_d).astype(np.int64)
-        expect = np_gmm_split_k(x_data, w_data, None, group_list_data)
-        t.input(x, x_data)
-        t.input(w, w_data)
-        t.input(group_list, group_list_data)
-        t.run()
-        t.check(out, expect + 1, 1e-3)
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_gmm_split_graph():
+    x = Tester.fast_random_normal(0, 0.01, [4096, 4096]).astype(np.float16)
+    w = Tester.fast_random_normal(0, 0.01, [4, 4096, 4096]).astype(np.float16)
+    group_list = np.array([10, 256, 3000, 4096]).astype(np.int64)
+    expect = np_gmm_split_m(x, w, None, group_list)
+    t = Tester("split")
+    x_d = t.load(x)
+    w_d = t.load(w)
+    group_list_d = t.load(group_list)
+    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 0)
+    t.store_expect(res, expect)
+    assert t.run_check()

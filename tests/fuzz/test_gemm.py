@@ -40,7 +40,7 @@ def test_gemm_post_fusion():
     res = t.matmul(mat_a, mat_b, False, False)
     c = t.load(np_cc)
     res = t.cast(res, "float32")
-    res = t.binary("Add", res, c)
+    res = t.add(res, c)
     t.store_expect(res, expect, 2e-3)
     assert(t.run_check())
 
@@ -59,7 +59,7 @@ def test_gemm_row_nopad_transposeB():
     mat_a = t.load(np_a)
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, True)
-    res = t.binary("Add", res, 2.5)
+    res = t.add(res, 2.5)
     t.store_expect(res, np_c)
     assert(t.run_check())
 
@@ -78,7 +78,7 @@ def test_gemm_row_nopad_transposeA():
     mat_a = t.load(np_a)
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, True, False)
-    res = t.binary("Add", res, 2.5)
+    res = t.add(res, 2.5)
     t.store_expect(res, np_c)
     assert(t.run_check())
 

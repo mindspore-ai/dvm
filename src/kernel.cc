@@ -17,9 +17,118 @@
 #include <queue>
 #include <unordered_map>
 #include <climits>
+#include <memory>
+#include <securec.h>
 #include "kernel.h"
+#include "xkernel.h"
 
 namespace dvm {
+class IdleCleanWrap : public CodeWrap {
+ public:
+  ~IdleCleanWrap() override { Clear(); }
+
+  void CodeGen(const std::vector<NDObject *> &cleans) {
+    Clear();
+    for (auto op : cleans) {
+      auto store = static_cast<NDAccess *>(op);
+      auto k = new VKernelD();
+      KernelBuilder b(k);
+      auto broadcast = b.Broadcast(0, store->shape_ref_, store->type_id_);
+      auto out = static_cast<NDAccess *>(b.Store(store->addr_.gm, broadcast));
+      k->CodeGen();
+      auto &addr = store->addr_;
+      addr.Update(&addr.data);
+      k->code_.BindOpFast(out->addr_, addr);
+      kernels_.push_back(k);
+    }
+  }
+
+  void Clear() {
+    if (!kernels_.empty()) {
+      for (auto k : kernels_) {
+        delete k;
+      }
+      kernels_.clear();
+    }
+  }
+
+  int LaunchWrap(void *workspace, void *stream) override {
+    for (auto k : kernels_) {
+      k->code_.RelocBinds(nullptr);
+      k->code_.Launch(nullptr, stream);
+    }
+    return 0;
+  }
+
+  void DasWrap(std::ostringstream &oss) override {
+    for (auto k : kernels_) {
+      k->code_.DisAssemble(oss);
+    }
+    oss << "\nvmain.idle() {}";
+  }
+
+ private:
+  std::vector<VKernelD *> kernels_;
+};
+
+class IdleCodeWrap : public CodeWrap {
+ public:
+  int LaunchWrap(void *workspace, void *stream) override { return 0; }
+  void DasWrap(std::ostringstream &oss) override {
+    oss << "vmain.idle() {}";
+  }
+
+  IdleCleanWrap *Erase(VKernel *k) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto it = wraps_.find(k);
+    if (it != wraps_.end()) {
+      auto wrap = it->second;
+      wraps_.erase(it);
+      return wrap;
+    }
+    return nullptr;
+  }
+
+  IdleCleanWrap *Get(VKernel *k) {
+    std::lock_guard<std::mutex> guard(mutex_);
+    auto it = wraps_.find(k);
+    if (it != wraps_.end()) {
+      return it->second;
+    } else {
+      auto wrap = new IdleCleanWrap();
+      wraps_[k] = wrap;
+      return wrap;
+    }
+  }
+
+ private:
+  std::mutex mutex_;
+  std::unordered_map<VKernel *, IdleCleanWrap *> wraps_;
+};
+
+static std::unique_ptr<IdleCodeWrap> g_idle_wrap;
+
+VKernel::~VKernel() {
+  if (g_idle_wrap) {
+    if (auto wrap = g_idle_wrap->Erase(this)) {
+      delete wrap;
+    }
+  }
+}
+
+void VKernel::UpdateIdle(const std::vector<NDObject *> &cleans) {
+  if (!g_idle_wrap) {
+    g_idle_wrap = std::make_unique<IdleCodeWrap>();
+  }
+  if (cleans.empty()) {
+    code_.InsertWrap(g_idle_wrap.get());
+  } else {
+    auto wrap = g_idle_wrap->Get(this);
+    wrap->CodeGen(cleans);
+    code_.InsertWrap(wrap);
+  }
+}
+
 class CodeGenHelper {
  public:
   struct EventManager {
@@ -29,21 +138,23 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VectorKernel &kernel) : kernel_(kernel) {}
-  uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
+  CodeGenHelper(VectorKernel &kernel, uint32_t xbuf_size) : xbuf_size_(xbuf_size), kernel_(kernel) {}
+  uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve, uint32_t tile_size) {
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
-    static_xbuf_ = System::Instance().UbWorkspaceSize() + code_reserve;
+    static_xbuf_ = code_reserve;
     for (auto op : kernel_.static_ops_) {
       op->xbuf_ = static_xbuf_;
-      static_xbuf_ += xbuf_size_;
       if (op->obj_id_ == kMultiLoad) {
-        static_xbuf_ += xbuf_size_;
+        static_xbuf_ += xbuf_size_ + xbuf_size_;
         static_cast<NDMultiLoad *>(op)->xbuf_size_ = xbuf_size_;
+      } else if (op->type_id_ != kernel_.max_type_) {
+        static_xbuf_ += tile_size * ITEM_SIZE[op->type_id_];
+      } else {
+        static_xbuf_ += xbuf_size_;
       }
     }
-    if (kernel_.comm_op_) {
-      auto comm = kernel_.comm_op_;
-      for (size_t i = 0; i < comm->XbufReserve(); ++i) {
+    if (auto comm = kernel_.comm_op_) {
+      for (int i = 0; i < comm->XbufReserve(); ++i) {
         comm->xbufs_.push_back(static_xbuf_);
         static_xbuf_ += xbuf_size_;
       }
@@ -54,7 +165,7 @@ class CodeGenHelper {
         continue;
       }
       op->tail_insn_ = op->insn_ = code_ptr;
-      switch (NDObject::attrs_[op->obj_id_].cg_tmpl) {
+      switch (op->CgTmpl()) {
         case kGenSimd0: {
           auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           code_ptr += op->Emit(kernel_);
@@ -172,7 +283,7 @@ class CodeGenHelper {
           ASSERT(0);
           break;
       }  // end switch
-    }  // end for op
+    }    // end for op
     *code_ptr++ = 0;
     BackwardSync();
     return reinterpret_cast<uint8_t *>(code_ptr);
@@ -183,13 +294,13 @@ class CodeGenHelper {
     auto &objects = kernel_.objects_;
     EventManager vl_event, sv_event;
     auto alloc_event = [backward_event_num = kernel_.backward_event_num_](EventManager &m, uint64_t &event) -> bool {
-      event = m.hold_event + 1;
-      if ((int)event >= backward_event_num) {
-        event = m.hold_event;
-        return false;
+      if (auto next = m.hold_event + 1; next < backward_event_num) {
+        m.hold_event = next;
+        event = static_cast<uint64_t>(next);
+        return true;
       }
-      m.hold_event = event;
-      return true;
+      event = static_cast<uint64_t>(m.hold_event);
+      return false;
     };
     vl_event.sync_idx = sv_event.sync_idx = static_cast<int>(objects.size());
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
@@ -204,7 +315,7 @@ class CodeGenHelper {
           if (alloc_event(sv_event, event)) {
             *(op->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
           } else {
-            auto to_sync = kernel_.objects_[sv_event.sync_idx]->insn_;
+            auto to_sync = objects[sv_event.sync_idx]->insn_;
             *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
           }
           *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
@@ -227,7 +338,7 @@ class CodeGenHelper {
           if (alloc_event(vl_event, event)) {
             *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
           } else {
-            auto to_sync = kernel_.objects_[vl_event.sync_idx]->insn_;
+            auto to_sync = objects[vl_event.sync_idx]->insn_;
             *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
           }
           *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
@@ -282,7 +393,7 @@ class CodeGenHelper {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
       xbuf = free_xbuf_.front().first;
       free_xbuf_.pop();
-    } else if (static_xbuf_ + xbuf_size_ <= System::Instance().LocalMemSize()) {
+    } else if (static_xbuf_ + xbuf_size_ <= g_system.LocalMemSize()) {
       xbuf = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     } else {
@@ -353,453 +464,324 @@ class CodeGenHelper {
   inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
     int total = kernel_.forward_event_num_;
     for (int i = 1; i <= total; ++i) {
-      event = (m.hold_event + i) % total;
-      if (from_idx >= m.hold_idx[event]) {
-        m.hold_idx[event] = to_idx;
-        m.hold_event = event;
+      if (int next = (m.hold_event + i) % total; from_idx >= m.hold_idx[next]) {
+        event = static_cast<uint64_t>(next);
+        m.hold_idx[next] = to_idx;
+        m.hold_event = next;
         return true;
       }
     }
-    event = m.hold_event;
+    event = static_cast<uint64_t>(m.hold_event);
     return false;
   }
 
-  uint32_t xbuf_size_{0};
-  uint64_t static_xbuf_{0};
+  uint64_t static_xbuf_;
   std::queue<std::pair<uint64_t, NDObject *>> free_xbuf_;
+
+  uint32_t xbuf_size_;
 
   int vector_vector_sync = 0;
   EventManager lv_event_;
   EventManager vs_event_;
 
   VectorKernel &kernel_;
-  friend VectorKernel;
 };
 
-void PropDomain::Normalize() {
-  dom_ = nullptr;
-  auto select_dom = [this](NDObject *cand) -> bool {
+void VectorKernel::BuildDomain() {
+  uint32_t one_bits = 0;
+  auto select_dom = [this, &one_bits](NDObject *cand) -> bool {
     auto &dom_nd = dom_->nd_;
     auto &cand_nd = cand->nd_;
     if (cand_nd.size() != dom_nd.size()) {
       return cand_nd.size() > dom_nd.size();
     }
-    for (size_t i = 0; i < dom_nd.size(); ++i) {
-      if (cand_nd[i] > dom_nd[i]) return true;
+    uint32_t bits = one_bits;
+    while (bits) {
+      size_t idx = 31 - __builtin_clz(bits);
+      uint32_t unmask = 1u << idx;
+      bits &= ~unmask;
+      if (cand_nd[idx] == 1) continue;
+      for (size_t n_idx = 0; n_idx < idx; ++n_idx) {
+        if (cand_nd[n_idx] == 1) {
+          if ((one_bits & (1u << n_idx)) == 0) {
+            return false;
+          }
+        } else {
+          unmask |= 1u << n_idx;
+        }
+      }
+      one_bits &= ~unmask;
+      return true;
     }
     return false;
   };
-  for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    NDObject *cand = nullptr;
-    switch (op->obj_id_) {
-      case kPadStore:
-      case kStore:
-      case kReduceScatter:
-      case kElementAny:
-      case kReduce: {
-        cand = op->lhs_;
-        break;
-      }
-      case kBroadcastS:
-      case kBroadcastTo: {
-        cand = op;
-        break;
-      }
-      case kOneHot: {
-        cand = op;
-        static_cast<OneHotOp *>(op)->UpdateDomain(head_);
-        break;
-      }
-      default: {
-        if (dom_ == nullptr) {
-          dom_ = op;
-        }
-        break;
-      }
-    }
-    if (cand != nullptr && (dom_ == nullptr || (dom_ != cand && select_dom(cand)))) {
-      dom_ = cand;
+  dom_ = *objects_.rbegin();
+  for (size_t i = 0; i < dom_->nd_.size(); ++i) {
+    if (dom_->nd_[i] == 1) {
+      one_bits |= 1u << i;
     }
   }
-  ASSERT(dom_ != nullptr);
+  for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
+    auto op = *it;
+    if (op->MetaFlags() & (ObjectMeta::kLhsDom | ObjectMeta::kDom)) {
+      auto cand = op->MetaFlags() & ObjectMeta::kLhsDom ? op->lhs_ : op;
+      if (dom_ != cand && select_dom(cand)) {
+        dom_ = cand;
+      }
+    }
+  }
   auto nd_size = std::max(dom_->nd_.size(), 1ul);
-  for (auto op = head_; op != nullptr; op = op->pd_next_) {
+  int op_index = 0;
+  for (auto op : objects_) {
     // Make rank of all ops equal by broadcast to (..., 1, 1, .., 1)
     if (auto ndd = op->Ndd(); ndd != nullptr && ndd->dims.size() < nd_size) {
       ndd->dims.resize(nd_size, 1);
     }
+    op->Clear(op_index++);
   }
-  if (!subdoms_.empty()) {
-    for (auto sd : subdoms_) {
-      sd->Normalize();
-    }
-  }
+  block_align_ = SIMD_BLOCK_SIZE / ITEM_SIZE[min_type_];
+  visit_ = nullptr;
 }
 
-void PropDomain::AlignProp(PropRange &range) {
-  for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    op->AlignProp(range);
-  }
-  if (!subdoms_.empty()) {
-    for (auto sd : subdoms_) {
-      sd->AlignProp(range);
-    }
-  }
-}
-
-void PropDomain::FoldProp(PropRange &range) {
-  int old_depth = range.depth;
-  for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    op->FoldProp(range);
-  }
-  if (range.depth < old_depth || range.space == -1) {
-    int64_t space = dom_->nd_[range.base];
-    for (int i = 1; i < range.depth; ++i) {
-      space *= dom_->nd_[range.base - i];
-    }
-    range.space = space;
-  }
-  if (!subdoms_.empty()) {
-    for (auto sd : subdoms_) {
-      sd->FoldProp(range);
-    }
-  }
-}
-
-void PropDomain::TileProp(const TileParam &tp) {
-  for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    op->Tile(tp);
-  }
-  if (!subdoms_.empty()) {
-    for (auto sd : subdoms_) {
-      sd->TileProp(tp);
-    }
-  }
-}
-
-void RootDomain::PrepareTiling(VectorKernel *kernel) {
+void VectorKernel::PrepareTiling() {
   tile_num_ = 1;
   auto &nd = dom_->nd_;
   align_.base = 0;
   align_.depth = shard_ ? shard_->base + 1 : nd.size();
-  PropDomain::AlignProp(align_);
+  align_.affine = PropRange::ELEMWISE;
+  align_.simd_dim = -1;
+  for (auto op : objects_) {
+    op->AlignProp(align_);
+  }
   tile_size_ = 1;
   for (int i = 0; i < align_.depth; ++i) {
     tile_size_ *= nd[i];
   }
   align_.space = tile_size_;
-  tile_size_ = RoundUp<int64_t>(tile_size_, kernel->block_align_);
+  tile_size_ = RoundUp<int64_t>(tile_size_, block_align_);
   for (size_t i = align_.depth; i < nd.size(); ++i) {
     tile_size_ *= nd[i];
   }
 }
 
-void RootDomain::Align(int depth, int64_t space) {
+void VectorKernel::ManualTiling() {
+  auto &dims = DimSpace();
   TileParam tp;
-  tp.start = 0;
-  tp.end = depth - 1;
-  tp.num = 1;
-  tp.tile = space;
-  tp.tail = 0;
-  PropDomain::TileProp(tp);
-}
-
-void RootDomain::Shard(const ShardParam &sp) {
-  for (auto op = head_; op != nullptr; op = op->pd_next_) {
-    op->Shard(sp);
-  }
-  ASSERT(subdoms_.empty());
-  shard_ = &sp;
-}
-
-class ReshapeDomain : public PropDomain {
- public:
-  ReshapeDomain(NDObject *head, const DimArray &src, const DimArray &dst) : PropDomain(head), src_(src), dst_(dst) {}
-  void FoldProp(PropRange &range) override {
-    PropRange dst_range;
-    dst_range.base = 0;
-    for (int i = dst_.size() - 1; i >= 0; --i) {
-      if (dst_[i] > 1) {
-        dst_range.base = i;
-        break;
-      }
+  for (auto &t : tiles_) {
+    int64_t space = dims[t.start];
+    for (int i = t.start + 1; i <= t.end; ++i) {
+      space *= dims[i];
     }
-    int start = dst_range.base;
-    int64_t space = dst_[start];
-    while (space < range.space && start > 0) {
-      space *= dst_[--start];
-    }
-    dst_range.depth = dst_range.base - start + 1;
-    dst_range.space = range.space;
-    PropDomain::FoldProp(dst_range);
-    if (range.space > dst_range.space) {
-      int src_start = range.base - range.depth;
-      while (range.space > dst_range.space) {
-        range.space /= src_[++src_start];
-      }
-      range.depth = range.base - src_start;
-    }
-    if (dst_range.affine > range.affine) {
-      range.affine = dst_range.affine;
-    }
-    prop_base = dst_range.base;
-  }
-  void AlignProp(PropRange &range) override {
-    int64_t space = src_[0];
-    for (int i = 1; i < range.depth; ++i) {
-      space *= src_[i];
-    }
-    int dst_init_depth = 0;
-    while (space > 1) {
-      space /= dst_[dst_init_depth++];
-    }
-    PropRange dst_range;
-    dst_range.depth = dst_init_depth;
-    PropDomain::AlignProp(dst_range);
-    if (dst_range.depth < dst_init_depth) {
-      int64_t delta_space = dst_[dst_range.depth];
-      for (int i = dst_range.depth + 1; i < dst_init_depth; ++i) {
-        delta_space *= dst_[i];
-      }
-      while (delta_space > 1) {
-        delta_space /= src_[--range.depth];
-      }
-    }
-    if (dst_range.affine > range.affine) {
-      range.affine = dst_range.affine;
-    }
-  }
-  void TileProp(const TileParam &tp) override {
-    int64_t dim_space = tp.tile * tp.num;
-    if (tp.tail) {
-      dim_space -= tp.tile - tp.tail;
-    }
-    TileParam t;
-    int64_t dst_space = 1;
-    if (tp.start == 0) {
-      t.start = 0;
-      t.end = 0;
-      while (true) {
-        dst_space *= dst_[t.end];
-        if (dst_space > dim_space || t.end + 1 == static_cast<int>(dst_.size())) break;
-        t.end++;
-      }
+    tp.start = t.start;
+    tp.end = t.end;
+    tp.num = t.num;
+    tp.tile = t.factor ? t.factor : CeilDiv(space, t.num);
+    tp.tail = space % tp.tile;
+    if (t.start > 0) {
+      Tile(tp, space);
     } else {
-      t.end = prop_base;
-      t.start = t.end;
-      while (true) {
-        dst_space *= dst_[t.start];
-        if (dst_space >= dim_space || t.start == 0) break;
-        t.start--;
-      }
+      TileLead(tp, LeadAlign());
     }
-    t.num = tp.num;
-    t.tile = CeilDiv(dst_space, t.num);
-    t.tail = dst_space % t.tile;
-    PropDomain::TileProp(t);
   }
+}
 
- private:
-  const DimArray &src_;
-  const DimArray &dst_;
-  int prop_base = -1;
-};
-
-class ShapeTiling {
- public:
-  ShapeTiling(VectorKernel *kernel, RootDomain &prim_dom, int64_t core_limit)
-      : kernel_(kernel), prim_dom_(prim_dom), core_limit_(core_limit) {}
-  ~ShapeTiling() = default;
-  void Run(int64_t tile_size_limit) {
-    tile_size_limit_ = tile_size_limit;
-    int align_depth = prim_dom_.align_.depth;
-    PropRange fold;
-    fold.base = prim_dom_.DimSpace().size() - 1;
-    int64_t tile_size = prim_dom_.TileSize();
-    TileParam tp;
-    do {
-      if (fold.base + 1 > align_depth) {
-        if (prim_dom_.shard_ && fold.base > prim_dom_.shard_->base) {
-          int partial_end = prim_dom_.shard_->base + ShardParam::PARTIAL_SIZE;
-          fold.depth = fold.base >= partial_end ? fold.base - partial_end + 2 : 1;
-          fold.space = prim_dom_.DimSpace()[fold.base + 1 - fold.depth];
-        } else {
-          fold.space = -1;
-          fold.depth = fold.base + 1;
-          prim_dom_.FoldProp(fold);
-        }
-        tp.start = fold.base + 1 - fold.depth;
-        ASSERT(tp.start > 0);
-        if (tp.start < align_depth) {  // axis of 1
-          tp.start = align_depth;
-        }
-        if (fold.space > 1) {
-          tp.end = fold.base;
-          tile_size = BodyTile(tile_size, fold, tp);
-        }
-        fold.base = tp.start - 1;
+void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit) {
+  int align_depth = align_.depth;
+  PropRange fold;
+  fold.base = DimSpace().size() - 1;
+  int64_t tile_size = tile_size_;
+  TileParam tp;
+  do {
+    if (fold.base + 1 > align_depth) {
+      if (shard_ && fold.base > shard_->base) {
+        int partial_end = shard_->base + ShardParam::PARTIAL_SIZE;
+        fold.depth = fold.base >= partial_end ? fold.base - partial_end + 2 : 1;
+        fold.space = DimSpace()[fold.base + 1 - fold.depth];
       } else {
-        tp.start = 0;
-        tp.end = fold.base;
-        LeadTile(tile_size, prim_dom_.align_, tp);
-        return;
-      }
-    } while (tile_size > tile_size_limit_ || (tp.num > 1 && tp.num == fold.space));
-    if (align_depth > 1) {
-      prim_dom_.Align(align_depth, prim_dom_.align_.space);
-    }
-  }
-
- protected:
-  int64_t GetDivision(int64_t val, int64_t min) {
-    int64_t div = min;
-    int64_t factor = val / div;
-    while (div <= factor) {
-      if (div * factor == val) {
-        return div;
-      }
-      div++;
-      factor = val / div;
-    }
-    while (div <= val) {
-      div = val / (val / div);
-      if (val % div == 0) {
-        return div;
-      }
-      div++;
-    }
-    ASSERT(0);
-    return -1;
-  }
-  int64_t CostMeasure(int64_t factor, int64_t tile_num) { return CeilDiv(tile_num, core_limit_) * (factor + 2); }
-  int64_t BodyTile(int64_t tile_size, const PropRange &range, TileParam &tp) {
-    // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
-    // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
-    // floor(a/b) <= c --> b >= floor(a/c)
-    // floor(tile_size_/tile_num) <= tile_size_limit_ --> tile_num >= floor(tile_size_/tile_size_limit_)
-    // (tile_size / space) * floor(space /tile_num) <= tile_size_limit_) --> tile_num >= floor(space/max_factor)
-    // EQUAL TO:
-    //  int64_t tile_num = (space + max_factor - 1) / max_factor;
-    //  while (tile_num < space && ((space + tile_num - 1) / tile_num) > max_factor) {
-    //    tile_num++;
-    //  }
-    int64_t space = range.space;
-    int64_t init_tile_num;
-    if (tile_size > tile_size_limit_) {
-      int64_t max_factor = tile_size_limit_ / (tile_size / space);
-      if (max_factor <= 1) {
-        tp.num = space;
-        tp.tile = 1;
-        tp.tail = 0;
-        return prim_dom_.Tile(tp, space);
-      }
-      init_tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(tile_size_limit_, tile_size));
-    } else {
-      init_tile_num = 1;
-    }
-    if (prim_dom_.TileNum() > 1) {  // avoid tile range pad
-      tp.num = GetDivision(space, init_tile_num);
-      tp.tile = space / tp.num;
-      if (tp.num < space && range.affine < PropRange::REDUCE) {
-        int64_t tile_num_base = prim_dom_.TileNum();
-        int64_t cost = CostMeasure(tp.tile, tp.num * tile_num_base);
-        int64_t div_tile = tp.num;
-        while (div_tile < space) {
-          div_tile = GetDivision(space, div_tile + 1);
-          int64_t factor = space / div_tile;
-          int64_t div_cost = CostMeasure(factor, div_tile * tile_num_base);
-          if (div_cost >= cost) break;
-          cost = div_cost;
-          tp.num = div_tile;
-          tp.tile = factor;
+        fold.depth = fold.base + 1;
+        fold.affine = PropRange::ELEMWISE;
+        for (auto op : objects_) {
+          op->FoldProp(fold);
+        }
+        fold.space = dom_->nd_[fold.base];
+        for (int i = 1; i < fold.depth; ++i) {
+          fold.space *= dom_->nd_[fold.base - i];
         }
       }
-      tp.tail = 0;
+      tp.start = fold.base + 1 - fold.depth;
+      ASSERT(tp.start > 0);
+      if (tp.start < align_depth) {  // axis of 1
+        tp.start = align_depth;
+      }
+      if (fold.space > 1) {
+        tp.end = fold.base;
+        tile_size = BodyTiling(tile_size, size_limit, core_limit, fold, tp);
+      }
+      fold.base = tp.start - 1;
     } else {
-      int64_t factor = CeilDiv(space, init_tile_num);
-      tp.num = init_tile_num;
-      tp.tile = factor;
-      int64_t best_cost = CostMeasure(factor, init_tile_num);
-      int64_t start_num = init_tile_num + 1;
-      while (factor > 1) {
-        int64_t align_tile = RoundUp(start_num, core_limit_);
-        start_num = align_tile + core_limit_;
-        int64_t align_factor = CeilDiv(space, align_tile);
-        if (align_factor >= factor) continue;
+      tp.start = 0;
+      tp.end = fold.base;
+      LeadTiling(tile_size, size_limit, core_limit, tp);
+      return;
+    }
+  } while (tile_size > size_limit || (tp.num > 1 && tp.num == fold.space));
+  if (align_depth > 1) {
+    TileParam tp;
+    tp.start = 0;
+    tp.end = align_depth - 1;
+    tp.num = 1;
+    tp.tile = align_.space;
+    tp.tail = 0;
+    TileProp(tp);
+  }
+}
+
+static int64_t GetDivision(int64_t val, int64_t min) {
+  int64_t div = min;
+  int64_t factor = val / div;
+  while (div <= factor) {
+    if (div * factor == val) {
+      return div;
+    }
+    div++;
+    factor = val / div;
+  }
+  while (div <= val) {
+    div = val / (val / div);
+    if (val % div == 0) {
+      return div;
+    }
+    div++;
+  }
+  ASSERT(0);
+  return -1;
+}
+
+int64_t VectorKernel::BodyTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, const PropRange &range,
+                                 TileParam &tp) {
+  auto cost_measure = [core_limit](int64_t factor, int64_t tile_num) -> int64_t {
+    return CeilDiv(tile_num, core_limit) * (factor + 2);
+  };
+  // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
+  // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
+  // floor(a/b) <= c --> b >= floor(a/c)
+  // floor(tile_size_/tile_num) <= tile_size_limit_ --> tile_num >= floor(tile_size_/tile_size_limit_)
+  // (tile_size / space) * floor(space /tile_num) <= tile_size_limit_) --> tile_num >= floor(space/max_factor)
+  // EQUAL TO:
+  //  int64_t tile_num = (space + max_factor - 1) / max_factor;
+  //  while (tile_num < space && ((space + tile_num - 1) / tile_num) > max_factor) {
+  //    tile_num++;
+  //  }
+  int64_t space = range.space;
+  int64_t init_tile_num;
+  if (tile_size > size_limit) {
+    int64_t max_factor = size_limit / (tile_size / space);
+    if (max_factor <= 1) {
+      tp.num = space;
+      tp.tile = 1;
+      tp.tail = 0;
+      return Tile(tp, space);
+    }
+    init_tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(size_limit, tile_size));
+  } else {
+    init_tile_num = 1;
+  }
+  if (tile_num_ > 1) {  // avoid tile range pad
+    tp.num = GetDivision(space, init_tile_num);
+    tp.tile = space / tp.num;
+    if (tp.num < space && range.affine < PropRange::REDUCE) {
+      int64_t tile_num_base = tile_num_;
+      int64_t cost = cost_measure(tp.tile, tp.num * tile_num_base);
+      int64_t div_tile = tp.num;
+      while (div_tile < space) {
+        div_tile = GetDivision(space, div_tile + 1);
+        int64_t factor = space / div_tile;
+        int64_t div_cost = cost_measure(factor, div_tile * tile_num_base);
+        if (div_cost >= cost) break;
+        cost = div_cost;
+        tp.num = div_tile;
+        tp.tile = factor;
+      }
+    }
+    tp.tail = 0;
+  } else {
+    int64_t factor = CeilDiv(space, init_tile_num);
+    tp.num = init_tile_num;
+    tp.tile = factor;
+    int64_t best_cost = cost_measure(factor, init_tile_num);
+    int64_t start_num = init_tile_num + 1;
+    while (factor > 1) {
+      int64_t align_tile = RoundUp(start_num, core_limit);
+      start_num = align_tile + core_limit;
+      int64_t align_factor = CeilDiv(space, align_tile);
+      if (align_factor >= factor) continue;
+      factor = align_factor;
+      int64_t t_num = CeilDiv(space, factor);
+      int64_t cost = cost_measure(factor, t_num);
+      if (cost < best_cost) {
+        best_cost = cost;
+        tp.num = t_num;
+        tp.tile = factor;
+      }
+      if (align_tile > core_limit * 4) break;
+    }
+    tp.tail = space % tp.tile;
+  }
+  return tp.num > 1 ? Tile(tp, space) : tile_size;
+}
+
+void VectorKernel::LeadTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, TileParam &tp) {
+  auto cost_measure = [this, core_limit](int64_t block_num, int64_t tile_num) -> int64_t {
+    int64_t core_tile = CeilDiv(tile_num * tile_num_, core_limit);
+    return core_tile * (CeilDiv(block_num, 8L) + 2);
+  };
+  int64_t block_size = block_align_;
+  int64_t space = align_.space;
+  if (tile_num_ > 1) {  // avoid tile range pad
+    tp.num = GetDivision(space, CeilDiv(tile_size, size_limit));
+    tp.tile = space / tp.num;
+    if (tp.num < space && align_.affine < PropRange::REDUCE) {
+      int64_t best_cost = cost_measure(CeilDiv(tp.tile, block_size), tp.num);
+      int64_t div_tile = tp.num;
+      while (div_tile < space) {
+        div_tile = GetDivision(space, div_tile + 1);
+        int64_t factor = space / div_tile;
+        int64_t cost = cost_measure(CeilDiv(factor, block_size), div_tile);
+        if (cost >= best_cost) break;
+        best_cost = cost;
+        tp.num = div_tile;
+        tp.tile = factor;
+      }
+    }
+    tp.tail = 0;
+  } else {
+    constexpr int64_t min_factor = 512L;
+    int64_t align_width = space > min_factor ? block_size : space;
+    auto factor = RoundDown(std::min(space, size_limit), align_width);
+    auto tile_num = CeilDiv(space, factor);
+    auto best_cost = cost_measure(factor / block_size, tile_num);
+    tp.num = tile_num;
+    tp.tile = factor;
+    auto align_num = RoundUp(tile_num + 1, core_limit);
+    while (align_num < core_limit * 5) {
+      auto factor_min = CeilDiv(space, align_num);
+      if (auto align_factor = RoundUp(factor_min, align_width); align_factor < factor) {
+        if (align_factor < min_factor) break;
         factor = align_factor;
-        int64_t t_num = CeilDiv(space, factor);
-        int64_t cost = CostMeasure(factor, t_num);
+        tile_num = CeilDiv(space, factor);
+        auto cost = cost_measure(factor / block_size, tile_num);
         if (cost < best_cost) {
           best_cost = cost;
-          tp.num = t_num;
-          tp.tile = factor;
-        }
-        if (align_tile > core_limit_ * 4) break;
-      }
-      tp.tail = space % tp.tile;
-    }
-    return tp.num > 1 ? prim_dom_.Tile(tp, space) : tile_size;
-  }
-
-  int64_t CostMeasure2(int64_t block_num, int64_t tile_num) {
-    int64_t core_tile = CeilDiv(tile_num * prim_dom_.TileNum(), core_limit_);
-    return core_tile * (CeilDiv(block_num, 8L) + 2);
-  }
-
-  void LeadTile(int64_t tile_size, const PropRange &range, TileParam &tp) {
-    int64_t block_size = kernel_->block_align_;
-    int64_t space = range.space;
-    if (prim_dom_.TileNum() > 1) {  // avoid tile range pad
-      tp.num = GetDivision(space, CeilDiv(tile_size, tile_size_limit_));
-      tp.tile = space / tp.num;
-      if (tp.num < space && range.affine < PropRange::REDUCE) {
-        int64_t best_cost = CostMeasure2(CeilDiv(tp.tile, block_size), tp.num);
-        int64_t div_tile = tp.num;
-        while (div_tile < space) {
-          div_tile = GetDivision(space, div_tile + 1);
-          int64_t factor = space / div_tile;
-          int64_t cost = CostMeasure2(CeilDiv(factor, block_size), div_tile);
-          if (cost >= best_cost) break;
-          best_cost = cost;
-          tp.num = div_tile;
+          tp.num = tile_num;
           tp.tile = factor;
         }
       }
-      tp.tail = 0;
-    } else {
-      constexpr int64_t min_factor = 512L;
-      int64_t align_width = space > min_factor ? block_size : space;
-      auto factor = RoundDown(std::min(space, tile_size_limit_), align_width);
-      auto tile_num = CeilDiv(space, factor);
-      auto best_cost = CostMeasure2(factor / block_size, tile_num);
-      tp.num = tile_num;
-      tp.tile = factor;
-      auto align_num = RoundUp(tile_num + 1, core_limit_);
-      while (align_num < core_limit_ * 5) {
-        auto factor_min = CeilDiv(space, align_num);
-        if (auto align_factor = RoundUp(factor_min, align_width); align_factor < factor) {
-          if (align_factor < min_factor) break;
-          factor = align_factor;
-          tile_num = CeilDiv(space, factor);
-          auto cost = CostMeasure2(factor / block_size, tile_num);
-          if (cost < best_cost) {
-            best_cost = cost;
-            tp.num = tile_num;
-            tp.tile = factor;
-          }
-        }
-        align_num = RoundUp(align_num + core_limit_, core_limit_);
-      }
-      tp.tail = space % tp.tile;
+      align_num = RoundUp(align_num + core_limit, core_limit);
     }
-    prim_dom_.TileLead(tp, block_size);
+    tp.tail = space % tp.tile;
   }
-
-  VectorKernel *kernel_;
-  RootDomain &prim_dom_;
-  int64_t tile_size_limit_;
-  int64_t core_limit_;
-};
+  TileLead(tp, block_size);
+}
 
 void DumpRefHelper::Dump(NDObject *op) {
   int idx = idx_++;
@@ -827,7 +809,7 @@ void DumpRefHelper::Dump(NDObject *op) {
       if (op->flags_ & OBJ_FLAG_XHS) {
         oss_ << ", ";
         dump_var(GetInput(static_cast<FlexOp *>(op)->xhs_));
-      } else if (op->obj_id_ == ObjectType::kCubeOp) {
+      } else if (op->IsCube()) {
         auto cube = static_cast<CubeOp *>(op);
         if (cube->bias_) {
           oss_ << ", ";
@@ -846,6 +828,9 @@ NDObject *DumpRefHelper::GetInput(NDObject *input) {
   return input;
 }
 
+void VKernel::Append(NDObject *obj) {}
+uint64_t VKernel::CodeGen() { return 0; }
+
 std::string &VKernel::DisAssemble() {
   std::ostringstream oss;
   code_.DisAssemble(oss);
@@ -853,48 +838,21 @@ std::string &VKernel::DisAssemble() {
   return dump_str_;
 }
 
-VectorKernel::~VectorKernel() {
-  for (auto &op : build_ops_) {
-    delete op;
-  }
-}
-
 uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve) {
-  int peak_live = Analyze();
-  int64_t free_mem = System::Instance().LocalMemSize() - System::Instance().UbWorkspaceSize() - ReserveCodeSize();
-  int64_t tile_size_limit = free_mem / (ITEM_SIZE[max_type_] * peak_live);  // max tile_size for each op
+  int64_t tile_size_limit = Analyze();
   // tiling
-  ShapeTiling tiling(this, root_dom_, core_limit);
-  if (tiles_.empty()) {
-    tiling.Run(tile_size_limit);
+  if (likely(tiles_.empty())) {
+    ShapeTiling(tile_size_limit, core_limit);
   } else {
-    auto &dims = root_dom_.DimSpace();
-    TileParam tp;
-    for (auto &t : tiles_) {
-      int64_t space = dims[t.start];
-      for (int i = t.start + 1; i <= t.end; ++i) {
-        space *= dims[i];
-      }
-      tp.start = t.start;
-      tp.end = t.end;
-      tp.num = t.num;
-      tp.tile = t.factor ? t.factor : CeilDiv(space, t.num);
-      tp.tail = space % tp.tile;
-      if (t.start > 0) {
-        root_dom_.Tile(tp, space);
-      } else {
-        root_dom_.TileLead(tp, LeadAlign());
-      }
-    }
+    ManualTiling();
   }
-  tile_num_ = root_dom_.TileNum();
   // simd_width
-  uint64_t tile_size = root_dom_.TileSize();
-  if (root_dom_.align_.simd_dim >= 0) {
-    int64_t lead_dim = root_dom_.DimSpace()[0];
+  uint64_t tile_size = tile_size_;
+  if (align_.simd_dim >= 0) {
+    int64_t lead_dim = DimSpace()[0];
     int64_t block_sw = block_align_;
     int64_t block_lead = RoundUp(lead_dim, block_sw);
-    int64_t tile_outer = root_dom_.TileSize() / block_lead;
+    int64_t tile_outer = tile_size / block_lead;
     int64_t lead_limit = tile_size_limit / tile_outer;
     int64_t simd_width = std::min(static_cast<int64_t>(ITEM_SIMD_WIDTH_MAX[max_type_]), block_lead);
     while (simd_width > block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
@@ -905,27 +863,14 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   }
   // codegen
   code_.block_dim_ = core_limit;
-  forward_event_num_ = backward_event_num_ = System::Instance().EventNum();
-  CodeGenHelper helper(*this);
-  helper.xbuf_size_ = tile_size * ITEM_SIZE[max_type_];
-  auto code_end = helper.Generate(code_ptr, code_reserve);
+  forward_event_num_ = backward_event_num_ = g_system.EventNum();
+  CodeGenHelper helper(*this, tile_size * ITEM_SIZE[max_type_]);
+  auto code_end = helper.Generate(code_ptr, code_reserve, tile_size);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
   return code_end;
 }
 
 void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (tile_num_ == 0) {
-    DumpRefHelper helper(oss);
-    oss << indent << "rgraph.vec() {" << std::endl;
-    std::string body_indent = indent + "  ";
-    for (auto op : build_ops_) {
-      oss << body_indent;
-      helper.Dump(op);
-      oss << std::endl;
-    }
-    oss << indent << "}";
-    return;
-  }
   auto dump_op = [&oss](NDObject *op) {
     oss << "%" << op->index_ << op->nd_ << "<" << DTYPE_NAMES[op->type_id_] << ">";
   };
@@ -977,38 +922,16 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 #define OP_LIVE(op) (op->xbuf_)
 #define OP_LIVE_D(op) (op->xbuf_ == 1)
 
-static inline bool RhsInplaceCheck(NDObject *obj) {
-  switch (obj->obj_id_) {
-    case kBinary:
-    case kSelect:
-    case kCompare:
-      return true;
-    default:
-      return false;
-  }
-}
+static inline bool RhsInplaceCheck(NDObject *obj) { return obj->MetaFlags() & ObjectMeta::kRhsReuse; }
 
 static inline bool LhsInplaceCheck(NDObject *obj) {
-  switch (obj->obj_id_) {
-    case kUnary:
-    case kBinaryS:
-    case kCompareS:
-    case kBinary:
-    case kCopy:
-    case kSelect:
-    case kReduce:
-    case kCompare:
-    case kAllReduce:
-    case kReduceScatter:
-      return true;
-    case kCast:
-      return (obj->type_id_ <= obj->lhs_->type_id_);
-    default:
-      return false;
+  if (obj->obj_id_ == kCast) {
+    return (obj->type_id_ <= obj->lhs_->type_id_);
   }
+  return obj->MetaFlags() & ObjectMeta::kLhsReuse;
 }
 
-int VectorKernel::Analyze() {
+int64_t VectorKernel::Analyze() {
   constexpr int REUSE_REJECT = -1;
   constexpr int REUSE_READY = 0;
   constexpr int REUSE_SUCC = 1;
@@ -1135,109 +1058,273 @@ int VectorKernel::Analyze() {
       }
     }
   }
-  return live_peak;
+  int64_t free_mem = g_system.LocalMemSize() - ReserveCodeSize();
+  int64_t peak_size = ITEM_SIZE[max_type_] * live_peak;
+  if (max_type_ != min_type_ && !comm_op_) {
+    for (auto &op : static_ops_) {
+      peak_size -= ITEM_SIZE[max_type_] - ITEM_SIZE[op->type_id_];
+    }
+  }
+  return free_mem / peak_size;  // max tile_size for each op
 }
 
-class PropDomainBuilder {
- public:
-  void Build(const std::vector<NDObject *> &objects, RootDomain &root) {
-    for (auto op : objects) {
-      op->pd_next_ = nullptr;
-      SetHead(op, nullptr);
-    }
-    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-      NDObject *op = *it;
-      if (GetHead(op) == nullptr) {
-        SetHead(op, op);
+void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {
+  max_type_ = min_type_ = objects.front()->type_id_;
+  for (auto op : objects) {
+    if (op->IsLoad()) {
+      static_ops_.push_back(op);
+    } else if (op->IsStore()) {
+      static_ops_.push_back(op->lhs_);
+    } else if (op->IsComm()) {
+      ASSERT(comm_op_ == nullptr);
+      comm_op_ = static_cast<CommOp *>(op);
+      if (comm_op_->max_type_ > max_type_) {
+        max_type_ = comm_op_->max_type_;
       }
-      if (op->lhs_) {
-        BuildOp(op, op->lhs_);
-        if (op->rhs_) {
-          BuildOp(op, op->rhs_);
-          if (op->flags_ & OBJ_FLAG_XHS) {
-            BuildOp(op, static_cast<FlexOp *>(op)->xhs_);
+    }
+    int type = op->type_id_;
+    if (type > max_type_) {
+      max_type_ = type;
+    } else if (type < min_type_) {
+      min_type_ = type;
+    }
+  }
+}
+
+static inline void SetPdHead(NDObject *op, NDObject *head) { op->insn_ = reinterpret_cast<uint64_t *>(head); }
+static inline NDObject *GetPdHead(NDObject *op) { return reinterpret_cast<NDObject *>(op->insn_); }
+static inline bool IsBroker(NDObject *op) { return op->obj_id_ == kReshape || op->obj_id_ == kOneHot; }
+
+void VKernelS::BrokerInit() {
+  broker_num_ = 0;
+  for (auto op : build_ops_) {
+    SetPdHead(op, nullptr);
+    op->prop_id_ = 0;
+    if (IsBroker(op)) {
+      broker_num_++;
+    }
+  }
+  if (broker_num_ == 0) {
+    return;
+  }
+  last_broker_ = 0;
+  int idx = build_ops_.size() - 1;
+  for (auto it = build_ops_.rbegin(); it != build_ops_.rend(); ++it) {
+    auto op = *it;
+    op->index_ = idx--;
+    auto head = GetPdHead(op);
+    if (head == nullptr) {
+      head = op;
+      SetPdHead(op, head);
+    }
+    if (IsBroker(op)) {
+      if (GetPdHead(op->lhs_) == nullptr) {
+        SetPdHead(op->lhs_, op->lhs_);
+      }
+      if (!last_broker_) last_broker_ = op->index_;
+    } else {
+      op->ForInput([head, op](NDObject *input) {
+        auto input_head = GetPdHead(input);
+        if (input_head == nullptr) {
+          SetPdHead(input, head);
+        } else {
+          auto root = GetPdHead(head);
+          auto input_root = GetPdHead(input_head);
+          if (root->index_ > input_root->index_) {
+            SetPdHead(input_root, root);
+          } else {
+            SetPdHead(root, input_root);
+          }
+        }
+      });
+    }
+  }
+  int prop_id = 0;
+  for (auto it = build_ops_.rbegin(); it != build_ops_.rend(); ++it) {
+    auto op = *it;
+    if (GetPdHead(op) == op) {
+      op->prop_id_ = prop_id++;
+    } else {
+      op->prop_id_ = GetPdHead(op)->prop_id_;
+    }
+  }
+}
+
+class DomainUnifier {
+ public:
+  DomainUnifier(std::vector<NDObject *> &objects) : objects_(objects) {
+    // TODO: move to stuff ops..
+    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+      auto op = *it;
+      if (auto lhs = op->lhs_) {
+        if (lhs->prop_id_ == -1) lhs->prop_id_ = op->prop_id_;
+        if (auto rhs = op->rhs_) {
+          if (rhs->prop_id_ == -1) rhs->prop_id_ = op->prop_id_;
+        }
+      }
+    }
+  }
+
+  bool Process(ReshapeOp *op) {
+    ReshapeOp::ChangeRange range;
+    DimArray update;
+    auto gen_update = [&update](const DimArray &src, int begin, int size) {
+      update.resize(size);
+      for (int i = 0; i < size; ++i) {
+        update[i] = src[begin + i];
+      }
+    };
+    while (op->VisitChangeRange(range)) {
+      if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.in_begin, range.in_size)) {
+        gen_update(op->nd_.data->dims, range.begin, range.size);
+        ReshapeRange(prop, range.in_begin, range.in_size, update);
+      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size)) {
+        gen_update(op->lhs_->nd_.data->dims, range.in_begin, range.in_size);
+        ReshapeRange(prop, range.begin, range.size, update);
+      } else {
+        return false;
+      }
+    }
+    op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
+    return true;
+  }
+
+  void Process(OneHotOp *op) {
+    ExpandDim(op->lhs_->prop_id_, op->DepthDim());
+    op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
+  }
+
+ private:
+  int BrokerRemap(NDObject *op, int dim) {
+    if (op->obj_id_ == kOneHot) {
+      return dim < static_cast<OneHotOp *>(op)->DepthDim() || op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) ? dim : dim + 1;
+    } else if (op->obj_id_ == kReshape && op->CheckFlag(OBJ_FLAG_BROKER_AFFINED)) {
+      return dim;
+    }
+    return -1;
+  }
+
+  bool AffineCheck(int prop, int range_begin, int range_size) {
+    PropRange range;
+    range.base = range_begin + range_size - 1;
+    range.depth = range_size;
+    range.affine = PropRange::ELEMWISE;
+    for (auto op : objects_) {
+      if (op->prop_id_ != prop) continue;
+      if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
+        return false;
+      }
+      op->FoldProp(range);
+      if (range.depth != range_size) {
+        return false;
+      }
+      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  void ReshapeRange(int prop, int range_begin, int range_size, const DimArray &update) {
+    for (auto op : objects_) {
+      if (op->prop_id_ != prop) continue;
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        auto &dims = ndd->dims;
+        int dim_size = static_cast<int>(dims.size());
+        int dim_end = range_begin + range_size;
+        if (dim_end <= dim_size) {
+          int update_size = static_cast<int>(update.size());
+          bool strict_elemwise = false;
+          for (int i = range_begin; i < dim_end; ++i) {
+            if (dims[i] != 1) {
+              strict_elemwise = true;
+              break;
+            }
+          }
+          if (int delta = update_size - range_size; delta != 0) {
+            dims.resize(dim_size + delta);
+            if (delta > 0) {
+              for (int i = dim_size - 1; i >= dim_end; --i) {
+                dims[i + delta] = dims[i];
+              }
+            } else {
+              for (int i = dim_end; i < dim_size; ++i) {
+                dims[i + delta] = dims[i];
+              }
+            }
+          }
+          for (int i = 0; i < update_size; ++i) {
+            dims[range_begin + i] = strict_elemwise ? update[i] : 1;
           }
         }
       }
-    }  // end for
-    auto dom_op = GetHead(objects.back());
-    root.SetHead(dom_op);
-    link_num_ = link_ops_.size();
-    if (link_num_) {
-      BuildSumDomain(&root, dom_op);
+      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0) {
+        ReshapeRange(op->lhs_->prop_id_, rmap, range_size, update);
+      }
+      op->DimChanged();
+    }
+  }
+
+  void ExpandDim(int prop, int idx) {
+    for (auto op : objects_) {
+      if (op->prop_id_ != prop) continue;
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        auto &dims = ndd->dims;
+        if (int dim_size = dims.size(); idx < dim_size) {
+          for (int i = dim_size - 1; i >= idx; --i) {
+            dims[i + 1] = dims[i];
+          }
+          dims[idx] = 1;
+          dims.resize(dim_size + 1);
+        }
+      }
+      if (auto rmap = BrokerRemap(op, idx); rmap >= 0) {
+        ExpandDim(op->lhs_->prop_id_, rmap);
+      }
+      op->DimChanged();
     }
   }
 
  private:
-  NDObject *GetHead(NDObject *op) { return reinterpret_cast<NDObject *>(op->insn_); }
-  void SetHead(NDObject *op, NDObject *head) { op->insn_ = reinterpret_cast<uint64_t *>(head); }
-  void BuildOp(NDObject *op, NDObject *next) {
-    auto op_head = GetHead(op);
-    auto next_head = GetHead(next);
-    if (op_head == next_head) return;
-    if (op->GetObjectType() == kReshape) {
-      SetHead(next, next);
-      link_ops_.push_back(op);
-      return;
-    }
-    if (next_head == nullptr) {
-      next->pd_next_ = op->pd_next_;
-      op->pd_next_ = next;
-      SetHead(next, op_head);
-    } else {
-      auto old_next = op->pd_next_;
-      op->pd_next_ = next_head;
-      while (true) {
-        SetHead(next_head, op_head);
-        if (next_head->pd_next_ == nullptr) {
-          next_head->pd_next_ = old_next;
-          break;
-        }
-        next_head = next_head->pd_next_;
-      }
-    }
-  }
-  void BuildSumDomain(PropDomain *dom, NDObject *head) {
-    for (size_t i = 0; i < link_ops_.size(); ++i) {
-      auto op = link_ops_[i];
-      if (op == nullptr) continue;
-      auto head1 = GetHead(op);
-      auto head2 = GetHead(op->lhs_);
-      if (head1 == head2) {
-        link_ops_[i] = nullptr;
-        link_num_--;
-        continue;
-      }
-      if (head1 == head) {
-        auto sdom = new ReshapeDomain(head2, op->nd_.dims(), op->lhs_->nd_.dims());
-        dom->subdoms_.push_back(sdom);
-        link_ops_[i] = nullptr;
-        if (--link_num_) {
-          BuildSumDomain(sdom, head2);
-        }
-      } else if (head2 == head) {
-        auto sdom = new ReshapeDomain(head1, op->lhs_->nd_.dims(), op->nd_.dims());
-        dom->subdoms_.push_back(sdom);
-        link_ops_[i] = nullptr;
-        if (--link_num_) {
-          BuildSumDomain(sdom, head1);
-        }
-      }
-    }
-  }
-  std::vector<NDObject *> link_ops_;
-  int link_num_;
+  std::vector<NDObject *> &objects_;
 };
 
-void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
-  static_ops_.clear();
-  max_type_ = comm_op_ ? comm_op_->max_type_ : objects.front()->type_id_;
-  min_type_ = objects.front()->type_id_;
-  bool slow_build_path = false;
-  for (auto op : objects) {
-    if (op->GetObjectType() == kReshape) {
-      slow_build_path = true;
-    } else {
+bool VKernelS::BrokerAffine() {
+  if (auto broker_num = broker_num_; broker_num > 0) {
+    DomainUnifier unifier(objects_);
+    for (int idx = last_broker_; broker_num > 0; --idx) {
+      auto op = build_ops_[idx];
+      ASSERT(!IsBroker(op) || op->prop_id_ != op->lhs_->prop_id_);
+      if (op->obj_id_ == kReshape) {
+        if (!unifier.Process(static_cast<ReshapeOp *>(op))) return false;
+      } else if (op->obj_id_ == kOneHot) {
+        unifier.Process(static_cast<OneHotOp *>(op));
+      } else {
+        continue;
+      }
+      broker_num--;
+    }
+  }
+  return true;
+}
+
+class SplitVector : public VectorKernel {
+ public:
+  SplitVector() : VectorKernel(kStaticShape) {}
+  ~SplitVector() override {
+    for (auto op : build_ops_) {
+      delete op;
+    }
+  }
+  uint64_t CodeGen() override {
+    max_type_ = comm_op_ ? comm_op_->max_type_ : objects_.front()->type_id_;
+    min_type_ = objects_.front()->type_id_;
+    for (auto op : objects_) {
+      if (op->IsLoad()) {
+        static_ops_.push_back(op);
+      } else if (op->IsStore()) {
+        static_ops_.push_back(op->lhs_);
+      }
       int type = op->type_id_;
       if (type > max_type_) {
         max_type_ = type;
@@ -1245,23 +1332,57 @@ void VectorKernel::BuildDomain(const std::vector<NDObject *> &objects) {
         min_type_ = type;
       }
     }
-    if (op->IsLoad()) {
-      static_ops_.push_back(op);
-    } else if (op->IsStore()) {
-      static_ops_.push_back(op->lhs_);
-    }
+    BuildDomain();
+    return DoCodeGen(g_system.CoreNum());
   }
-  if (slow_build_path) {
-    PropDomainBuilder builder;
-    builder.Build(objects, root_dom_);
-  } else {
-    NDObject *next = nullptr;
-    for (auto obj : objects) {
-      obj->pd_next_ = next;
-      next = obj;
+  std::vector<NDObject *> build_ops_;
+};
+
+uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
+  auto set_sstore = [](NDObject *op, NDStore *st) { op->tail_insn_ = reinterpret_cast<uint64_t *>(st); };
+  auto get_sstore = [](NDObject *op) { return reinterpret_cast<NDStore *>(op->tail_insn_); };
+  StagesKernel *stage = new StagesKernel();
+  GraphTracker tracker;
+  std::vector<SplitVector *> children;
+  children.resize(broker_num_ * 2, nullptr);
+  for (auto op : objects_) {
+    set_sstore(op, nullptr);
+    auto k = children[op->prop_id_];
+    if (k == nullptr) {
+      k = new SplitVector();
+      stage->AddStage(k);
+      children[op->prop_id_] = k;
     }
-    root_dom_.SetHead(next);
+    if (IsBroker(op)) {
+      auto input_k = children[op->lhs_->prop_id_];
+      auto store = get_sstore(op->lhs_);
+      if (store == nullptr) {
+        store = new NDStore(op->lhs_);
+        set_sstore(op->lhs_, store);
+        store->Normalize(input_k->objects_);
+        input_k->objects_.push_back(store);
+        stage->StageStore(input_k, store);
+        input_k->build_ops_.push_back(store);
+      }
+      auto load = new NDLoad(nullptr, op->shape_ref_, op->type_id_);
+      load->Normalize(k->objects_);
+      if (op->obj_id_ == kOneHot) {
+        auto ndd = load->Ndd();
+        ndd->dims[static_cast<OneHotOp *>(op)->DepthDim()] = 1;
+      }
+      k->objects_.push_back(load);
+      k->build_ops_.push_back(load);
+      stage->StageLoad(k, load, store);
+      tracker.Record(&op->lhs_);
+      op->lhs_ = load;
+    }
+    k->objects_.push_back(op);
   }
+  auto ws_size = stage->CodeGen();
+  tracker.RecoverClear();
+  code_ = std::move(stage->code_);
+  *hold_kernel = stage;
+  return ws_size;
 }
 
 NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const {
@@ -1282,7 +1403,7 @@ NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
     auto op = objects_[i];
     auto &flag = elem_flags[op->index_];
     if (op->lhs_) {
-      auto elem_type = NDObject::attrs_[op->obj_id_].inplace_prop;
+      auto elem_type = op->InplaceProp();
       update_flag(elem_flags[op->lhs_->index_], elem_type, flag);
       if (op->rhs_) {
         update_flag(elem_flags[op->rhs_->index_], elem_type, flag);
@@ -1299,172 +1420,363 @@ NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
   return nullptr;
 }
 
-uint64_t VectorKernel::CodeGen() {
-  Optimize();
-  return DoCodeGen(System::Instance().CoreNum());
-}
-
-void VKernelS::Append(NDObject *obj) {
-  build_ops_.push_back(obj);
-  obj->Normalize(objects_);
-  objects_.emplace_back(obj);
-  if (obj->IsComm()) {
-    ASSERT(comm_op_ == nullptr);
-    comm_op_ = static_cast<CommOp *>(obj);
+void VectorKernel::CollectIdle(std::vector<NDObject *> &cleans) {
+  for (auto op : objects_) {
+    if (op->IsStore()) {
+      auto shape = op->shape_ref_->data;
+      auto size = op->shape_ref_->size;
+      bool zero = false;
+      for (size_t i = 0; i < size; ++i) {
+        if (auto dim = *shape++; dim == 0) {
+          zero = true;
+          break;
+        }
+      }
+      if (!zero) {
+        cleans.push_back(op);
+      }
+    }
   }
 }
 
-void VKernelS::Optimize() {
-  auto bb = pass::BasicBlock(objects_, build_ops_);
+void VectorKernel::ProcessIdle() {
+  std::vector<NDObject *> cleans;
+  CollectIdle(cleans);
+  UpdateIdle(cleans);
+}
+
+void VectorKernel::Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker) {
+  auto bb = pass::BasicBlock(objects_, build_ops, tracker);
   for (auto pass : pass::passes) {
     pass(bb);
   }
   bb.Export(objects_);
-  BuildDomain(objects_);
-  NormalizeDomain();
 }
 
-void VKernelD::Append(NDObject *obj) {
-  build_ops_.push_back(obj);
-  if (obj->obj_id_ == ObjectType::kReshape) {
-    elim_reshape_ = true;
+VKernelS::~VKernelS() {
+  delete stage_kernel_;
+  for (auto &op : build_ops_) {
+    delete op;
   }
 }
 
-void VKernelD::RecordOpRelation() {
-  for (auto op : objects_) {
-    if (op_relations_.find(op) != op_relations_.end()) {
-      // already recorded during the first iteration
-      continue;
+uint64_t VKernelS::CodeGen() {
+  auto broker_succ = NormBuild();
+  if (!broker_succ) {
+    delete stage_kernel_;
+    return BrokerCodeGen(&stage_kernel_);
+  }
+  return DoCodeGen(g_system.CoreNum());
+}
+
+void VKernelS::Append(NDObject *obj) { build_ops_.push_back(obj); }
+
+bool VKernelS::NormBuild() {
+  if (!Normalize(true)) {
+    return false;
+  }
+  Optimize(build_ops_, nullptr);
+  StaticInit(objects_);
+  BuildDomain();
+  return true;
+}
+
+void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (tile_num_ > 0) {
+    return VectorKernel::Dump(oss, indent);
+  }
+  DumpRefHelper helper(oss);
+  oss << indent << "rgraph.vec() {" << std::endl;
+  std::string body_indent = indent + "  ";
+  for (auto op : build_ops_) {
+    oss << body_indent;
+    helper.Dump(op);
+    oss << std::endl;
+  }
+  oss << indent << "}";
+}
+
+bool VKernelD::NormBuild() {
+  Recover();
+  if (static_ops_.empty()) {
+    StaticInit(build_ops_);
+  }
+  if (!Normalize(true)) {
+    return false;
+  }
+  BuildDomain();
+  return true;
+}
+
+_SpecVector::~_SpecVector() {
+  if (fall_kernel_) {
+    delete fall_kernel_;
+  }
+}
+
+void _SpecVector::Append(NDObject *obj) {
+  VKernelS::Append(obj);
+  stage_ids_.push_back(last_stage_);
+  obj->ForInput([this](NDObject *in) {
+    if (in->obj_id_ == ObjectType::kReduce) {
+      post_reduces_.push_back(in);
     }
-    NDObject *xhs = op->flags_ & OBJ_FLAG_XHS ? static_cast<FlexOp *>(op)->xhs_ : nullptr;
-    auto is_select = op->obj_id_ == ObjectType::kSelect;
-    bool has_reshape = op->obj_id_ == ObjectType::kReshape ||
-                       (op->lhs_ != nullptr && op->lhs_->obj_id_ == ObjectType::kReshape) ||
-                       (op->rhs_ != nullptr && op->rhs_->obj_id_ == ObjectType::kReshape) ||
-                       (xhs != nullptr && xhs->obj_id_ == ObjectType::kReshape);
-    if (has_reshape) {
-      auto input_num = is_select ? 3 : 2;
-      op_relations_[op].resize(input_num);
-      op_relations_[op][0] = op->lhs_;
-      op_relations_[op][1] = op->rhs_;
-      if (xhs) {
-        op_relations_[op][2] = xhs;
+  });
+}
+
+void _SpecVector::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (use_fall_) {
+    fall_kernel_->Dump(oss, indent);
+  } else {
+    VKernelS::Dump(oss, indent);
+  }
+}
+
+template <bool dyn_shape>
+uint64_t SpecVector<dyn_shape>::CodeGen() {
+  auto reduce_fall_check = [this]() ->  bool {
+    if (!post_reduces_.empty()) {
+      int tile_size_limit = Analyze();
+      auto ndd = dom_->nd_.data;
+      const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
+      for (auto op : post_reduces_) {
+        auto end_dim = static_cast<ReduceOp *>(op)->EndDim();
+        auto size = ndd->stride(end_dim);
+        if (size > tile_size_limit || size == ndd->stride_back()) {
+          return true;
+        }
       }
     }
-  }
-}
-
-void VKernelD::RecoverOpRelation() {
-  for (const auto &item : op_relations_) {
-    auto op = item.first;
-    op->lhs_ = item.second[0];
-    op->rhs_ = item.second[1];
-    if (op->flags_ & OBJ_FLAG_XHS) {
-      static_cast<FlexOp *>(op)->xhs_ = item.second[2];
+    return false;
+  };
+  if constexpr (dyn_shape) {
+    Recover();
+    if (static_ops_.empty()) {
+      StaticInit(build_ops_);
+    }
+    if (!Normalize(true)) {
+      return FallCodeGen();
+    }
+    BuildDomain();
+    PrepareTiling();
+    if (reduce_fall_check()) {
+      return FallCodeGen();
+    }
+  } else {
+    if (!Normalize(true)) {
+      return FallCodeGen();
+    }
+    GraphTracker tracker;
+    Optimize(build_ops_, &tracker);
+    StaticInit(objects_);
+    BuildDomain();
+    PrepareTiling();
+    if (reduce_fall_check()) {
+      tracker.Recover();
+      return FallCodeGen();
     }
   }
+  use_fall_ = false;
+  if (unlikely(!tile_size_)) {
+    ProcessIdle();
+    return 0;
+  }
+  return DoCodeGenInner(g_system.CoreNum());
 }
 
-void VKernelD::Optimize() {
-  objects_.clear();
-  code_.Clear();
-  if (elim_reshape_) {
-    RecoverOpRelation();
-    Normalize();
-    RecordOpRelation();
-    pass::BasicBlock bb(objects_, build_ops_);  // build_ops_ is not used
-    pass::EliminateReshape(bb);
-    bb.Export(objects_);
-    BuildDomain(objects_);
-    NormalizeDomain();
-    return;
+template <typename T>
+class RemapKernel : public T {
+ public:
+  void Remap(NDAccess *op, NDAccess *orig) {
+    remap_.emplace_back(op, orig);
+    orig->addr_.Update(&orig->addr_.data);
   }
-  if (pd_nexts_.empty()) {  // first
-    BuildDomain(build_ops_);
-    for (auto op : build_ops_) {
-      pd_nexts_.push_back(op->pd_next_);
+  uint64_t CodeGen() override {
+    auto ws_size = T::CodeGen();
+    for (auto &r : remap_) {
+      this->code_.BindOpFast(r.first->addr_, r.second->addr_);
     }
+    return ws_size;
   }
-  size_t start = 0;
-  for (size_t i = 0; i < build_ops_.size(); ++i) {
-    auto op = build_ops_[i];
-    op->Normalize(objects_);
-    auto pd_next = pd_nexts_[i];
-    size_t size = objects_.size();
-    if (size > start) {
-      for (size_t j = start; j < size; ++j) {
-        objects_[j]->pd_next_ = pd_next;
-        pd_next = objects_[j];
+ protected:
+  std::vector<std::pair<NDAccess *, NDAccess *>> remap_;
+};
+
+#define INIT_SSTORE(op) do { (op)->insn_ = nullptr; } while (0)
+#define SET_SSTORE(op, st) do { (op)->insn_ = reinterpret_cast<uint64_t *>(st); } while (0)
+#define GET_SSTORE(op) reinterpret_cast<NDStore *>((op)->insn_)
+
+template <bool dyn_shape>
+uint64_t SpecVector<dyn_shape>::FallCodeGen() {
+  struct _CloneHelper : public CloneHelper {
+    NDObject *GetClone(NDObject *op) override { return clones_[op->index_]; }
+    std::vector<NDObject *> clones_;
+  };
+  if (fall_kernel_ == nullptr) {
+    auto stage_kernel = new RemapKernel<std::conditional_t<dyn_shape, DynStagesKernel, StagesKernel>>();
+    for (int i = 0; i <= last_stage_; ++i) {
+      stage_kernel->AddStage(new std::conditional_t<dyn_shape, VKernelD, VKernelS>());
+    }
+    _CloneHelper  helper;
+    helper.clones_.reserve(stage_ids_.size());
+    for (size_t i = 0; i < stage_ids_.size(); ++i) {
+      auto src_op = build_ops_[i];
+      src_op->index_ = i;
+      auto clone_op = src_op->Clone(helper);
+      INIT_SSTORE(clone_op);
+      clone_op->index_ = i;
+      helper.clones_.push_back(clone_op);
+      if (!clone_op->IsSimd()) {
+        stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
       }
+      auto out_sid = stage_ids_[i];
+      clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
+        auto in_sid = stage_ids_[in->index_];
+        if (in_sid == out_sid) {
+          return;
+        }
+        auto out_stage = stage_kernel->KernelAt(out_sid);
+        NDAccess *load;
+        if (in->IsLoad()) {
+          load = static_cast<NDAccess *>(in->Clone(helper));
+          stage_kernel->Remap(load, static_cast<NDAccess *>(in));
+        } else {
+          auto store = GET_SSTORE(in);
+          if (store == nullptr) {
+            store = new NDStore(in);
+            SET_SSTORE(in, store);
+            auto in_stage = stage_kernel->KernelAt(in_sid);
+            in_stage->Append(store);
+            stage_kernel->StageStore(in_stage, store);
+          }
+          load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
+          stage_kernel->StageLoad(out_stage, load, store);
+        }
+        out_stage->Append(load);
+        in = load;
+      });
+      stage_kernel->KernelAt(out_sid)->Append(clone_op);
     }
-    objects_.emplace_back(op);
-    op->pd_next_ = pd_next;
-    start = size + 1;
+    if constexpr (dyn_shape) {
+      stage_kernel->Record();
+    }
+    fall_kernel_ = stage_kernel;
+  } else if constexpr (dyn_shape) {
+    static_cast<DynStagesKernel *>(fall_kernel_)->Reset();
   }
-  NormalizeDomain();
-  return;
+  use_fall_ = true;
+  auto ws_size = fall_kernel_->CodeGen();
+  code_ = std::move(fall_kernel_->code_);
+  return ws_size;
 }
+
+template class SpecVector<false>;
+template class SpecVector<true>;
+
+class IsolateWrapVP : public CodeWrap {
+ public:
+  int LaunchWrap(void *workspace, void *stream) override {
+    for (auto &code : codes_) {
+      code->RelocBinds(workspace);
+      code->Launch(workspace, stream);
+    }
+    return term_ ? 0 : next_->LaunchWrap(workspace, stream);
+  }
+  void DasWrap(std::ostringstream &oss) override {
+    for (auto &code : codes_) {
+      code->DisAssemble(oss);
+      oss << std::endl;
+    }
+    if (!term_) {
+      next_->DasWrap(oss);
+    }
+  }
+  std::vector<Code *> codes_;
+  bool term_{false};
+};
 
 VKernelP::~VKernelP() {
   for (auto k : children_) {
     delete k;
   }
+  if (wrap_) {
+    delete wrap_;
+  }
 }
 
 void VKernelP::Append(NDObject *obj) { children_.back()->Append(obj); }
 
-uint64_t VKernelP::UpdateSummary(VectorKernel *k, uint64_t code_offset, uint64_t code_size, uint64_t *&summaries) {
-  uint64_t lenburst = CeilDiv(code_size, 32ul);
-  uint64_t summary = lenburst << 58 | ((code_offset - Code::HeadSize()) >> 5) << 49;
-  uint64_t block_dim = k->code_.block_dim_;
-  uint64_t tile_per_block = (k->tile_num_ - 1) / block_dim + 1;
-  uint64_t start_idx = 0;
-  for (uint64_t i = 0; i < block_dim - 1; ++i) {
-    *summaries++ = summary | tile_per_block << 20 | start_idx;
-    start_idx += tile_per_block;
-  }
-  *summaries++ = summary | (k->tile_num_ - start_idx) << 20 | start_idx | 1ul << 40;
-  return code_offset + RoundUp<uint64_t>(code_size, 32ul);
-}
-
 uint64_t VKernelP::CodeGen() {
-  uint64_t core_num = System::Instance().CoreNum();
-  uint64_t summaries_offset = code_.HeadSize();
-  uint64_t child_offset = summaries_offset + RoundUp(core_num * sizeof(uint64_t), 32ul);
-  uint64_t code_reserve = child_offset;
-  auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
+  auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->tile_size_ * k->objects_.size(); };
   uint64_t total_workload = 0;
+  uint64_t code_reserve = 0;
   for (auto k : children_) {
-    k->Optimize();
-    k->root_dom_.PrepareTiling(k);
+    if (!k->NormBuild()) DvmException("VKernelP broker affine failed");
+    k->PrepareTiling();
     total_workload += WorkLoad(k);
-    code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);
+    code_reserve += k->ReserveCodeSize();
   }
   std::sort(children_.begin(), children_.end(),
             [&WorkLoad](VKernelS *a, VKernelS *b) -> bool { return WorkLoad(a) < WorkLoad(b); });
-  code_.Alloc(code_reserve);
-  uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + summaries_offset);
-  code_.block_dim_ = 0;
+  PCodeEncoder encoder;
+  uint64_t core_num = g_system.CoreNum();
+  uint64_t block_begin = 0;
+  uint64_t ws_size = 0;
+  encoder.Reset(&code_, Code::kTargetVec, children_.size(), code_reserve);
   for (size_t i = 0; i < children_.size(); ++i) {
     auto k = children_[i];
     auto workload = WorkLoad(k);
     // If workload is inbalanced, make sure that each workload occupies at least one core
     uint64_t core_limit = std::max(core_num * workload / total_workload, 1ul);
-    auto &code = k->code_;
-    auto code_begin = code_.data_ + child_offset;
+    auto code_begin = encoder.ProgData();
     uint64_t code_size = k->DoCodeGen(core_limit, code_begin, k->ReserveCodeSize()) - code_begin;
-    code.block_dim_ = k->CompactBlockDim(core_limit);
+    if (auto visit = k->GetVisitor<RedVisitCoder>(); visit != nullptr) {
+      ws_size += CodeGenVE(k, visit, code_begin, code_size, ws_size);
+      continue;
+    }
+    uint64_t block_dim = k->CompactBlockDim(core_limit);
     total_workload -= workload;
-    core_num -= code.block_dim_;
-    code_.block_dim_ += code.block_dim_;
-    // summary
-    child_offset = UpdateSummary(k, child_offset, code_size, summaries);
-    code_.Combine(code, 0);
+    core_num -= block_dim;
+    auto prog = encoder.Append(Code::GenEntryV(k->tile_num_, block_dim, code_size), code_size);
+    encoder.AssignAiv(block_begin, block_dim, prog);
+    block_begin += block_dim;
+    code_.Combine(k->code_, 0);
   }
-  code_.data_size_ = child_offset;
-  code_.UpdateVP();
-  return 0;
+  encoder.Submit(block_begin);
+  if (!block_begin) {
+    wrap_->term_ = true;
+  }
+  return ws_size;
+}
+
+uint64_t VKernelP::CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size,
+                             uint64_t ws_size) {
+  auto &code = kernel->code_;
+  code.Alloc(code_size + Code::HeadSize() + RedVisitCoder::BCODE_MAX);
+  memcpy_s(code.data_ + Code::HeadSize(), code_size, code_begin, code_size);
+  for (auto op : kernel->build_ops_) {
+    if (op->IsLoad() || op->IsStore()) {
+      auto ac = static_cast<NDAccess *>(op);
+      ac->addr_.Update(code.data_ + Code::HeadSize(), code_begin);
+    }
+  }
+  for (auto op = code.bind_ops_; op != nullptr; op = op->bind_list_) {
+    op->Update(code.data_ + Code::HeadSize(), code_begin);
+  }
+  visit->Update(code.data_ + Code::HeadSize(), code_begin);
+  for (auto op = code.bind_wss_; op != nullptr; op = op->bind_list_) {
+    op->ws += ws_size;
+    op->Update(code.data_ + Code::HeadSize(), code_begin);
+  }
+  code.data_size_ = code_size + Code::HeadSize();
+  code.block_dim_ = CeilDiv<uint32_t>(visit->block_num_, 2);
+  code.UpdateVE(visit);
+  if (wrap_ == nullptr) {
+    wrap_ = new IsolateWrapVP();
+    code_.InsertWrap(wrap_);
+  }
+  wrap_->codes_.push_back(&code);
+  return ws_size + visit->ws_size_;
 }
 
 void VKernelP::Dump(std::ostringstream &oss, const std::string &indent) {

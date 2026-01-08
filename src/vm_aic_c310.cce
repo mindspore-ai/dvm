@@ -1,0 +1,879 @@
+/**
+ * Copyright 2025 Huawei Technologies Co., Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#define _CCE_KERNEL_
+#include "isa.h"
+
+template <typename T>
+__aicore_inline__ void Swap(T &x, T &y) {
+  T t = x;
+  x = y;
+  y = t;
+}
+
+template <typename T>
+__aicore_inline__ QuantMode_t GetQuantMode() {
+  QuantMode_t type;
+  if constexpr (std::is_same<T, float>::value) {
+    type = NoQuant;
+  } else if constexpr (std::is_same<T, half>::value) {
+    type = F322F16;
+  } else if constexpr (std::is_same<T, bfloat16_t>::value) {
+    type = F322BF16;
+  }
+  return type;
+}
+
+#define __force_inline__ inline __attribute__((always_inline))
+
+constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
+constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
+constexpr uint64_t BIAS_ADDR = 0;
+constexpr uint64_t BLOCK_SIZE = 16;
+
+#define V_PINGPONG_FLAG_EVENT  0x1ul
+#define V_PINGPONG_FLAG_STORE  0x2ul
+#define V_PINGPONG_FLAG_GROUP_MSG 0x4ul
+
+template <typename T>
+class MatMul {
+ public:
+  __aicore__ MatMul(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx) {
+    gm_a = reinterpret_cast<__gm__ T *>(op->gm_a) + op->offset_a;
+    gm_b = reinterpret_cast<__gm__ T *>(op->gm_b) + op->offset_b;
+    gm_c = op->gm_c;
+    gm_bias = reinterpret_cast<__gm__ uint8_t*>(op->gm_bias);
+    m_real = op->m_real;
+    n_real = op->n_real;
+    k_real = op->k_real;
+    m_align = op->m_align;
+    n_align = op->n_align;
+    k_align = op->k_align;
+    batch_cast = op->batch_cast;
+    ka_align = op->ka_align;
+    kb_align = op->kb_align;
+    m0 = op->m0;
+    n0 = op->n0;
+    k0 = op->k0;
+    flags = op->flags;
+    k0_part_len = min(L0_PINGPONG_BUFFER_LEN / max(m0, n0) / 16 * 16, k0);
+    m_loop = op->m_loop;
+    n_loop = op->n_loop;
+    k_loop = op->k_loop;
+    shuffle_k = blockidx % k_loop;
+    k_actual = (shuffle_k == k_loop - 1) ? (k_real - shuffle_k * k0) : k0;
+  }
+
+  __force_inline__ __aicore__ uint64_t GmOffset(uint64_t cidx, uint64_t midx, uint64_t nidx) {
+    return cidx * m_real * n_real + midx * m0 * n_real + nidx * n0;
+  }
+
+  __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst,
+                                         __gm__ T *__restrict__ src,
+                                         uint64_t midx,
+                                         uint64_t kidx,
+                                         uint64_t m_actual,
+                                         uint64_t k_actual) {
+    // load GM to L1: ND -> zN
+    bool transpose_a = flags & V_CUBE_FLAG_TRANS_A;
+    uint64_t offset_a = transpose_a ? (kidx * k0 * m_align + midx * m0) : (midx * m0 * k_align + kidx * k0);
+    uint16_t loop2_dst_stride = 1;
+    uint16_t loop3_dst_stride = transpose_a ? RoundUp(k_actual, BLOCK_SIZE) : RoundUp(m_actual, BLOCK_SIZE);
+    uint16_t loop4_dst_stride = 0;
+    // loop4_dst_stride | loop3_dst_stride | loop2_dst_stride | num of nd matrix
+    uint64_t mte2_nz_para = (static_cast<uint64_t>(loop4_dst_stride) << 48) |
+                            (static_cast<uint64_t>(loop3_dst_stride) << 32) |
+                            (static_cast<uint64_t>(loop2_dst_stride) << 16) | 1ul;
+    uint16_t loop1_src_stride = (transpose_a ? m_align : k_align) * sizeof(T);
+    uint16_t loop4_src_stride = 0;
+    uint8_t cache_mode = false;
+    uint16_t n_value = transpose_a ? k_actual : m_actual;
+    uint16_t d_value = transpose_a ? m_actual : k_actual;
+    if (m_actual == 1 && !transpose_a) {
+      // GEMV mode
+      // since it's normal mode by default, burst dst stride is 32B aligned, left and right padding num are unused
+      // since burst num is 1, src strice and dst stride are unnecessary
+      // TODO: figure out how to change mode
+      copy_gm_to_cbuf_align_v2(
+        dst,                                                                  // dst
+        src + offset_a,                                                       // src
+        0,                                                                    // sid
+        1,                                                                    // burst num
+        k_actual * sizeof(T),                                                 // len burst
+        0,                                                                    // left padding num
+        0,                                                                    // right padding num
+        true,                                                                 // constant padding ctl
+        cache_mode,                                                           // l2 cache ctl
+        0,                                                                    // burst src stride
+        0                                                                     // burst dst stride
+      );
+    } else {
+      set_mte2_nz_para(mte2_nz_para);
+      copy_gm_to_cbuf_multi_nd2nz(
+        dst,
+        src + offset_a,
+        0,                                                                    // sid
+        loop1_src_stride,
+        cache_mode,                                                           // cache mode TODO: figure out the meaning of this field, important for further optimization
+        n_value,                                                              // n value
+        d_value,                                                              // d value
+        loop4_src_stride,
+        false                                                                 // enable small c0 // TODO: figure out the meaning of this field, what is small c0? D < 4?
+      );
+    }
+  }
+
+  __force_inline__ __aicore__ void LoadB(__cbuf__ T *__restrict__ dst,
+                                         __gm__ T *__restrict__ src,
+                                         uint64_t kidx,
+                                         uint64_t nidx,
+                                         uint64_t k_actual,
+                                         uint64_t n_actual) {
+    bool transpose_b = flags & V_CUBE_FLAG_TRANS_B;
+    uint64_t offset_b = transpose_b ? (nidx * n0 * k_align + kidx * k0) : (kidx * k0 * n_align + nidx * n0);
+    uint16_t loop2_dst_stride = 1;
+    uint16_t loop3_dst_stride = transpose_b ? RoundUp(n_actual, BLOCK_SIZE) : RoundUp(k_actual, BLOCK_SIZE);
+    uint16_t loop4_dst_stride = 0;
+    // loop4_dst_stride | loop3_dst_stride | loop2_dst_stride | num of nd matrix
+    uint64_t mte2_nz_para = (static_cast<uint64_t>(loop4_dst_stride) << 48) |
+                            (static_cast<uint64_t>(loop3_dst_stride) << 32) |
+                            (static_cast<uint64_t>(loop2_dst_stride) << 16) | 1ul;
+    uint16_t loop1_src_stride = (transpose_b ? k_align : n_align) * sizeof(T);
+    uint16_t loop4_src_stride = 0;
+    uint8_t cache_mode = false;
+    uint16_t n_value = transpose_b ? n_actual : k_actual;
+    uint16_t d_value = transpose_b ? k_actual : n_actual;
+    set_mte2_nz_para(mte2_nz_para);
+    // load GM to L1: ND -> zN
+    copy_gm_to_cbuf_multi_nd2nz(
+      dst,
+      src + offset_b,
+      0,                                                                      // sid
+      loop1_src_stride,
+      cache_mode,                                                             // cache mode TODO: figure out the meaning of this field, important for further optimization
+      n_value,                                                                // n value
+      d_value,                                                                // d value
+      loop4_src_stride,
+      false                                                                   // enable small c0 // TODO: figure out the meaning of this field, what is small c0?
+    );
+  }
+
+  __force_inline__ __aicore__ void LoadL0A(__ca__ T *__restrict__ dst,
+                                           __cbuf__ T *__restrict__ src,
+                                           uint64_t total_k,
+                                           uint64_t k_part_idx,
+                                           uint64_t k_round,
+                                           uint64_t k0_round,
+                                           uint64_t m_actual) {
+    // load L1 to L0A: zN -> zN (Notice: This is DIFFERENT from c220)
+    uint64_t m_round = RoundUp(m_actual, BLOCK_SIZE);
+    constexpr uint64_t fractal_size = BLOCK_SIZE * BLOCK_SIZE;
+    if ((m_actual == 1 && !(flags & V_CUBE_FLAG_TRANS_A))) {
+      load_cbuf_to_ca(
+        dst,                                             // dst addr
+        src,                                             // src addr
+        k_part_idx * k0_part_len / fractal_size,         // m start position (unit: fractal)
+        0,                                               // k start position (uint: fractal)
+        (k0_round + fractal_size - 1) / fractal_size,    // m step (num of fractal along m-axis)
+        1,                                               // k step (num of fractal along k-axis)
+        m_round / BLOCK_SIZE,                            // src stride
+        1,                                               // dst stride
+        false                                            // transpose
+      );
+    } else {
+      // total fractal : (k0_round / BLOCK_SIZE) * (m_round / BLOCK_SIZE)
+      if (flags & V_CUBE_FLAG_TRANS_A) {
+        load_cbuf_to_ca(
+          dst,                                            // dst addr
+          src,                                            // src addr
+          k_part_idx * k0_part_len / BLOCK_SIZE,          // m start position (unit: fractal)
+          0,                                              // k start position (uint: fractal)
+          k0_round / BLOCK_SIZE,                          // m step (num of fractal along m-axis)
+          m_round / BLOCK_SIZE,                           // k step (num of fractal along k-axis)
+          k_round / BLOCK_SIZE,                           // src stride
+          m_round / BLOCK_SIZE,                           // dst stride
+          true                                            // transpose
+        );
+      } else {
+        // total fractal: (m_round / BLOCK_SIZE) * (k0_round / BLOCK_SIZE)
+        load_cbuf_to_ca(
+          dst,                                            // dst addr
+          src,                                            // src addr
+          0,                                              // m start position (unit: fractal)
+          k_part_idx * k0_part_len / BLOCK_SIZE,          // k start position (uint: fractal)
+          m_round / BLOCK_SIZE,                           // m step (num of fractal along m-axis)
+          k0_round / BLOCK_SIZE,                          // k step (num of fractal along k-axis)
+          m_round / BLOCK_SIZE,                           // src stride
+          m_round / BLOCK_SIZE,                           // dst stride
+          false                                           // transpose
+        );
+      }
+    }
+  }
+
+  __force_inline__ __aicore__ void LoadL0B(__cb__ T *__restrict__ dst,
+                                           __cbuf__ T *__restrict__ src,
+                                           uint64_t total_k,
+                                           uint64_t k_part_idx,
+                                           uint64_t k_round,
+                                           uint64_t k0_round,
+                                           uint64_t n_actual) {
+    // load L1 to L0A: zN -> nZ
+    uint64_t n_round = RoundUp(n_actual, BLOCK_SIZE);
+    // total fractal: (n_round / BLOCK_SIZE) * (k0_round / BLOCK_SIZE)
+    if (flags & V_CUBE_FLAG_TRANS_B) {
+      load_cbuf_to_cb(
+        dst,                                             // dst addr
+        src,                                             // src addr
+        0,                                               // m start position (unit: fractal)
+        k_part_idx * k0_part_len / BLOCK_SIZE,           // k start position (uint: fractal)
+        n_round / BLOCK_SIZE,                            // m step (num of fractal along m-axis)
+        k0_round / BLOCK_SIZE,                           // k step (num of fractal along k-axis)
+        n_round / BLOCK_SIZE,                            // src stride
+        n_round / BLOCK_SIZE,                            // dst stride
+        false                                            // transpose
+      );
+    } else {
+      // total fractal: (k0_round / BLOCK_SIZE) * (n_round / BLOCK_SIZE)
+      for (uint64_t i = 0; i < k0_round / BLOCK_SIZE; i++) {
+        load_cbuf_to_cb(
+          dst + i * BLOCK_SIZE * n_round,                 // dst addr
+          src,                                            // src addr
+          k_part_idx * k0_part_len / BLOCK_SIZE + i,      // m start position (unit: fractal)
+          0,                                              // k start position (uint: fractal)
+          1,                                              // m step (num of fractal along m-axis)
+          n_round / BLOCK_SIZE,                           // k step (num of fractal along k-axis)
+          k_round / BLOCK_SIZE,                           // src stride
+          1,                                              // dst stride
+          true                                            // transpose
+        );
+      }
+    }
+  }
+
+  __force_inline__ __aicore__ void MM(__cc__ float *__restrict__ c,
+                                       __ca__ T *__restrict__ a,
+                                       __cb__ T *__restrict__ b,
+                                       bool init_c,
+                                       uint8_t unit_flag,
+                                       uint64_t m_actual,
+                                       uint64_t n_actual,
+                                       uint64_t k0_actual) {
+    // zN x nZ -> zN
+    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+      m_actual = 16;
+    }
+    mad(
+      c,
+      a,
+      b,
+      m_actual,                               // m
+      k0_actual,                              // k
+      n_actual,                               // n
+      unit_flag,                              // unitFlag
+      0,                                      // kDirectionAlign
+      0,                                      // cmatrixSource
+      init_c                                  // cmatrixInitVal
+    );
+    if ((m_actual / BLOCK_SIZE) * (n_actual / BLOCK_SIZE) < 10) {
+      pipe_barrier(PIPE_M);
+    }
+  }
+
+  __force_inline__ __aicore__ void LoadBias(__cbuf__ void *__restrict__ dst,
+                                            __gm__ void *__restrict__ src,
+                                            uint64_t n_actual) {
+    // TODO
+  }
+
+  __force_inline__ __aicore__ void LoadBt(uint64_t dst, __cbuf__ void *__restrict__ src, uint64_t n_actual) {
+    // TODO
+  }
+
+  __force_inline__ __aicore__ void MAD(__cc__ float *__restrict__ c, 
+                                        __ca__ T *__restrict__ a, 
+                                        __cb__ T *__restrict__ b, 
+                                        bool init_c, 
+                                        uint8_t unit_flag, 
+                                        uint64_t m_actual, 
+                                        uint64_t n_actual,
+                                        uint64_t k0_actual) {
+    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+      m_actual = 16;
+    }
+    mad(
+      c,
+      a,
+      b,
+      BIAS_ADDR,
+      m_actual,                               // m
+      k0_actual,                              // k
+      n_actual,                               // n
+      unit_flag,                              // unitFlag
+      0,                                      // kDirectionAlign
+      1,                                      // cmatrixSource
+      0                                       // cmatrixInitVal
+    );
+    if ((m_actual / BLOCK_SIZE) * (n_actual / BLOCK_SIZE) < 10) {
+      pipe_barrier(PIPE_M);
+    }
+  }
+
+  template <typename G>
+  __force_inline__ __aicore__ void StoreC(__gm__ G *__restrict__ dst,
+                                          __cc__ float *__restrict__ src,
+                                          uint8_t unit_flag,
+                                          QuantMode_t type,
+                                          uint64_t m_actual,
+                                          uint64_t n_actual,
+                                          uint64_t dstStride,
+                                          uint64_t srcStride) {
+    copy_matrix_cc_to_gm(dst,        // dst
+                         src,        // src
+                         0,          // sid
+                         n_actual,   // NSize
+                         m_actual,   // MSize
+                         dstStride,  // dstStride_dst_D
+                         srcStride,  // srcStride
+                         0, 0,
+                         unit_flag,  // UnitFlag
+                         type,       // QuantPRE
+                         0,          // ReLUPRE
+                         false,      // channelSplit
+                         true,       // NZ2ND_EN
+                         0, 0, false, false, 0, false, false, false, false, false, false);
+  }
+
+  template <typename G>
+  __force_inline__ __aicore__ void StoreC(__ubuf__ G *__restrict__ dst,
+                                          __cc__ float *__restrict__ c,
+                                          uint8_t unit_flag,
+                                          QuantMode_t type,
+                                          uint64_t m_actual,
+                                          uint64_t n_actual,
+                                          uint64_t dstStride, 
+                                          uint64_t srcStride, 
+                                          uint64_t subblock_id) {
+    copy_matrix_cc_to_ub(dst,        // dst
+                         c,          // src
+                         0,          // sid
+                         n_actual,   // NSize
+                         m_actual,   // MSize
+                         dstStride,  // dstStride_dst_D
+                         srcStride,  // srcStride
+                         0, subblock_id, 0,
+                         unit_flag,  // UnitFlagMode
+                         type,       // QuantPRE
+                         0,          // ReLUPRE
+                         false,      // channelSplit
+                         true,       // NZ2ND_EN
+                         0, 0, false, false, 0, false, false, false, false, false, false);
+  }
+
+  __force_inline__ __aicore__ uint64_t BiasTypeSize() {
+    return (flags & V_CUBE_FLAG_BIAS_FP16) ? sizeof(half) : sizeof(float);
+  }
+
+  // Compute global memory offset of matrix A and B based on batch idx of matrix C
+  __force_inline__ __aicore__ void ComputeOffset(uint64_t c_idx, uint64_t &offset_a, uint64_t &offset_b) {
+    uint64_t a_idx = c_idx;
+    uint64_t b_idx = c_idx;
+    if (batch_cast) {
+      uint64_t batch_c1 = vGetBitRange(batch_cast, V_CUBE_BCAST_C1_OFFSET, V_CUBE_BCAST_C1_BITS);
+      uint64_t c_idx0 = c_idx / batch_c1;
+      uint64_t c_idx1 = c_idx - c_idx0 * batch_c1;
+      if (uint64_t cast_a = batch_cast & (V_CUBE_BCAST_FLAG_BCAST_A0 | V_CUBE_BCAST_FLAG_BCAST_A1)) {
+        a_idx = cast_a == V_CUBE_BCAST_FLAG_BCAST_A0 ? c_idx1 : (cast_a == V_CUBE_BCAST_FLAG_BCAST_A1 ? c_idx0 : 0);
+      }
+      if (uint64_t cast_b = batch_cast & (V_CUBE_BCAST_FLAG_BCAST_B0 | V_CUBE_BCAST_FLAG_BCAST_B1)) {
+        b_idx = cast_b == V_CUBE_BCAST_FLAG_BCAST_B0 ? c_idx1 : (cast_b == V_CUBE_BCAST_FLAG_BCAST_B1 ? c_idx0 : 0);
+      }
+    }
+    offset_a = a_idx * m_align * ka_align;
+    offset_b = b_idx * n_align * kb_align;
+  }
+  union {
+    uint64_t gm_c;
+    uint64_t ub_c;
+  };
+  __gm__ T *__restrict__ gm_a;
+  __gm__ T *__restrict__ gm_b;
+  __gm__ uint8_t *__restrict__ gm_bias;
+  uint64_t n_loop, m_loop, k_loop;
+  uint64_t k0_part_len;
+  uint64_t m_real, n_real, k_real;
+  uint64_t m_align, n_align, k_align;
+  uint64_t ka_align, kb_align;
+  uint64_t batch_cast;
+  uint64_t m0, n0, k0;
+  uint64_t flags;
+  uint64_t k_actual, shuffle_k;
+};
+
+#define V_GMM_BLOCK_OFF_OFFSET 32
+#define V_GMM_BLOCK_OFF_BIT 32
+#define V_GMM_LAST_OFFSET 8
+#define V_GMM_LAST_BIT 24
+#define V_GMM_G_SIZE_OFFSET 0
+#define V_GMM_G_SIZE_BITS 8
+
+template <typename M>
+class TileVisitor {
+ public:
+  static constexpr uint64_t INVALID_TILE_POS = uint64_t(-1);
+  __aicore__ TileVisitor(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx, uint64_t blocknum, uint64_t tile_num, M &m) {
+    swizzle_ = op->swizzle;
+    gm_msg_ = reinterpret_cast<__gm__ vMixGroupMsg *>(op->gm_pos + sizeof(vMixGroupMsg) * blockidx);
+    pos_last_ = pos_ = INVALID_TILE_POS;
+    vblock_ = blockidx | blocknum << 48;
+    if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {
+      group_info_ = op->group_list_size << V_GMM_G_SIZE_OFFSET;
+      gm_group_list_ = reinterpret_cast<__gm__ int64_t *>(op->gm_group_list);
+      tile_loop_ = blockidx;
+      UpdateGmm<true>(m);
+    } else {
+      group_info_ = 0;
+      tile_loop_ = tile_num << 32 | blockidx;
+    }
+    UpdateNext(m);
+  }
+
+  template <bool init>
+  __force_inline__ __aicore__ void UpdateGmm(M &m) {
+    if constexpr (!init) {
+      if (m.flags & V_CUBE_FLAG_GROUP_K) {
+        m.gm_a += (m.flags & V_CUBE_FLAG_TRANS_A) ? m.k_real * m.m_align : m.k_real;
+        m.gm_b += (m.flags & V_CUBE_FLAG_TRANS_B) ? m.k_real : m.k_real * m.n_align;
+        m.gm_bias += m.n_real * m.BiasTypeSize();
+      } else {
+        m.gm_a += (m.flags & V_CUBE_FLAG_TRANS_A) ? m.m_real : m.m_real * m.ka_align;
+        m.gm_b += m.kb_align * m.n_align;
+        m.gm_bias += m.n_real * m.BiasTypeSize();
+      }
+      if (!(m.flags & V_CUBE_FLAG_PINGPONG_STORE)) {
+        m.gm_c += m.m_real * m.n_real * (m.flags & V_CUBE_FLAG_OUT_FP32 ? sizeof(float) : sizeof(M));
+      }
+      group_info_ += (m.m_loop * m.n_loop) << V_GMM_BLOCK_OFF_OFFSET;
+    }
+    int64_t stride = *gm_group_list_ - LastList();
+    if (!(m.flags & V_CUBE_FLAG_GMM_SIZE_MODE)) {
+      group_info_ += stride << V_GMM_LAST_OFFSET;
+    }
+    group_info_--;
+    if (m.flags & V_CUBE_FLAG_GROUP_K) {
+      m.k_real = static_cast<uint64_t>(stride);
+      m.k_loop = CeilDiv(m.k_real, m.k0);
+      m.shuffle_k = vBlockIdx() % m.k_loop;
+      m.k_actual = (m.shuffle_k == m.k_loop - 1) ? (m.k_real - m.shuffle_k * m.k0) : m.k0;
+    } else {
+      m.m_real = static_cast<uint64_t>(stride);
+      m.m_loop = CeilDiv(m.m_real, m.m0);
+    }
+    gm_group_list_++;
+    pos_last_ = pos_ = INVALID_TILE_POS;
+    tile_loop_ += (m.m_loop * m.n_loop) << 32;
+  }
+
+  __force_inline__ __aicore__ bool Forward(M &m) {
+    if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
+      set_intra_block(PIPE_FIX, V_INTRA_GM_MIX_FORWARD_ID);
+      set_intra_block(PIPE_FIX, V_INTRA_GM_MIX_FORWARD_ID + V_INTRA_BLOCK_AIV_OFFSET);
+      uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
+      if (tile_idx > vBlockIdx() + vBlockNum()) {
+        wait_intra_block(PIPE_FIX, V_INTRA_GM_MIX_BACKWARD_ID);
+        wait_intra_block(PIPE_FIX, V_INTRA_GM_MIX_BACKWARD_ID + V_INTRA_BLOCK_AIV_OFFSET);
+      }
+    }
+    while (GroupListSize() > 0 && !HasNext()) {
+      UpdateGmm<false>(m);
+      UpdateNext(m);
+    }
+    if (!HasNext()) {
+      return false;
+    }
+    pos_last_ = pos_;
+    pos_ = pos_next_;
+    tile_loop_ += vBlockNum();
+    UpdateNext(m);
+    return true;
+  }
+
+  __aicore__ void UpdateNext(const M &m) {
+    uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
+    uint64_t tile_num = vGetBitRange(tile_loop_, 32, 32);
+    if (tile_idx < tile_num) {
+      tile_idx -= BlockIdxOffset();
+      uint64_t midx, nidx, cidx;
+      vCubeOp::IndexCompute(tile_idx, swizzle_, m.m_loop, m.n_loop, midx, nidx, cidx);
+      pos_next_ = cidx << V_MM_POS_C_OFFSET | midx << V_MM_POS_M_OFFSET | nidx << V_MM_POS_N_OFFSET;
+    } else {
+      pos_next_ = INVALID_TILE_POS;
+    }
+  }
+
+  __force_inline__ __aicore__ bool HasNext() const { return pos_next_ != INVALID_TILE_POS; }
+  __force_inline__ __aicore__ bool HasLast() const { return pos_last_ != INVALID_TILE_POS; }
+  __force_inline__ __aicore__ uint64_t CurC() const { return vGetBitRange(pos_, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS); }
+  __force_inline__ __aicore__ uint64_t CurM() const { return vGetBitRange(pos_, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS); }
+  __force_inline__ __aicore__ uint64_t CurN() const { return vGetBitRange(pos_, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS); }
+  __force_inline__ __aicore__ uint64_t NextC() const { return vGetBitRange(pos_next_, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS); }
+  __force_inline__ __aicore__ uint64_t NextM() const { return vGetBitRange(pos_next_, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS); }
+  __force_inline__ __aicore__ uint64_t NextN() const { return vGetBitRange(pos_next_, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS); }
+  __force_inline__ __aicore__ uint64_t LastC() const { return vGetBitRange(pos_last_, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS); }
+  __force_inline__ __aicore__ uint64_t LastM() const { return vGetBitRange(pos_last_, V_MM_POS_M_OFFSET, V_MM_POS_M_BITS); }
+  __force_inline__ __aicore__ uint64_t LastN() const { return vGetBitRange(pos_last_, V_MM_POS_N_OFFSET, V_MM_POS_N_BITS); }
+
+  __force_inline__ __aicore__ uint64_t GroupListSize() const {
+    return vGetBitRange(group_info_, V_GMM_G_SIZE_OFFSET, V_GMM_G_SIZE_BITS);
+  }
+  __force_inline__ __aicore__ uint64_t BlockIdxOffset() const {
+    return vGetBitRange(group_info_, V_GMM_BLOCK_OFF_OFFSET, V_GMM_BLOCK_OFF_BIT);
+  }
+  __force_inline__ __aicore__ uint64_t LastList() const {
+    return vGetBitRange(group_info_, V_GMM_LAST_OFFSET, V_GMM_LAST_BIT);
+  }
+
+  __force_inline__ __aicore__ uint64_t vBlockIdx() const { return vblock_ & 0xfffful; }
+  __force_inline__ __aicore__ uint64_t vBlockNum() const { return vblock_ >> 48; }
+
+  uint64_t pos_;
+  uint64_t pos_next_;
+  uint64_t pos_last_;
+  uint64_t swizzle_;
+  uint64_t tile_loop_;
+  __gm__ vMixGroupMsg *gm_msg_;
+  __gm__ int64_t *__restrict__ gm_group_list_;
+  uint64_t group_info_;
+  uint64_t vblock_;
+};
+
+template <typename T>
+__aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx, uint64_t blocknum, uint64_t tile_end) {
+  set_padding((uint64_t)0);
+  uint64_t config = 0x1;
+  set_nd_para(config);
+  MatMul<T> mat(op, blockidx);
+  TileVisitor<MatMul<T>> visit(op, blockidx, blocknum, tile_end, mat);
+  if (mat.flags & V_CUBE_FLAG_ATOMIC_ADD) {
+    set_atomic_add();
+    set_atomic_f32();
+  } else {
+    set_atomic_none();
+  }
+  uint64_t offset_mk = RoundUp(op->m0 * op->k0 * sizeof(T), 256UL);
+  uint64_t offset_nk = RoundUp(op->n0 * op->k0 * sizeof(T), 256UL);
+  __cbuf__ T *__restrict__ l1a = reinterpret_cast<__cbuf__ T*>(0);
+  __cbuf__ T *__restrict__ l1b = reinterpret_cast<__cbuf__ T*>(offset_mk);
+  __cbuf__ T *__restrict__ n_l1a = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE);
+  __cbuf__ T *__restrict__ n_l1b = reinterpret_cast<__cbuf__ T*>(L1_PINGPONG_BUFFER_SIZE + offset_mk);
+  __cbuf__ void *__restrict__ bias_l1 = reinterpret_cast<__cbuf__ void*>(L1_PINGPONG_BUFFER_SIZE + offset_mk + offset_nk);
+  __ca__ T *__restrict__ l0a_base = reinterpret_cast<__ca__ T*>(0);
+  __cb__ T *__restrict__ l0b_base = reinterpret_cast<__cb__ T*>(0);
+  __ca__ T *__restrict__ l0a_next = reinterpret_cast<__ca__ T*>(L0_PINGPONG_BUFFER_SIZE);
+  __cb__ T *__restrict__ l0b_next = reinterpret_cast<__cb__ T*>(L0_PINGPONG_BUFFER_SIZE);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
+  set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+  set_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+  set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+
+  while (visit.Forward(mat)) {
+    __cc__ float *__restrict__ l0c = reinterpret_cast<__cc__ float *>((uintptr_t)0);
+    uint64_t cidx = visit.CurC();
+    uint64_t midx = visit.CurM();
+    uint64_t nidx = visit.CurN();
+    uint64_t offset_a, offset_b;
+    mat.ComputeOffset(cidx, offset_a, offset_b);
+    uint64_t m_actual = (midx == (mat.m_loop - 1)) ? (mat.m_real - midx * mat.m0) : mat.m0;
+    uint64_t n_actual = (nidx == (mat.n_loop - 1)) ? (mat.n_real - nidx * mat.n0) : mat.n0;
+
+    if (likely(mat.k_loop > 0)) {
+      if (!visit.HasLast()) {
+        auto event_id = mat.flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+        mat.LoadA(l1a, mat.gm_a + offset_a, midx, mat.shuffle_k, m_actual, mat.k_actual);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+        mat.LoadB(l1b, mat.gm_b + offset_b, mat.shuffle_k, nidx, mat.k_actual, n_actual);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+      }
+      if (mat.flags & V_CUBE_FLAG_WITH_BIAS) {
+        wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+        if (nidx != visit.LastN()) {
+          mat.LoadBias(bias_l1, mat.gm_bias + mat.BiasTypeSize() * nidx * mat.n0, n_actual);
+        }
+        set_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
+      }
+    } else {
+      __ca__ T *__restrict__ l0a = l0a_base;
+      __cb__ T *__restrict__ l0b = l0b_base;
+      if (!visit.HasLast()) {
+        auto event_id = mat.flags & V_PINGPONG_FLAG_EVENT ? EVENT_ID0 : EVENT_ID1;
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+        create_cbuf_matrix(l1a, (L1_PINGPONG_BUFFER_SIZE >> 5) << 16 | 1, T(0));
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+
+        wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+
+        wait_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+        wait_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+        mat.LoadL0A(l0a, l1a, 1, 0, BLOCK_SIZE, BLOCK_SIZE, m_actual);
+        mat.LoadL0B(l0b, l1a, 1, 0, BLOCK_SIZE, BLOCK_SIZE, n_actual);
+        set_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+        set_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+
+        set_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID0);
+      }
+      uint8_t unit_flag = 0b11;
+      if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
+        unit_flag = 0b00;
+      }
+      mat.MM(l0c, l0a, l0b, true, unit_flag, m_actual, n_actual, BLOCK_SIZE);
+      if (!visit.HasNext()) {
+        set_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+        mat.flags ^= V_PINGPONG_FLAG_EVENT;
+        Swap(l1a, n_l1a);
+        Swap(l1b, n_l1b);
+      }
+    }
+    uint64_t shuffle_k = mat.shuffle_k;
+    for (uint64_t k = 0; k < mat.k_loop; ++k) {
+      uint64_t k_actual = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
+      uint64_t k_round = RoundUp(k_actual, BLOCK_SIZE);
+      uint64_t k_part_loop = CeilDiv(k_actual, mat.k0_part_len);
+      event_t event_id, event_id_next;
+      if (mat.flags & V_PINGPONG_FLAG_EVENT) {
+        event_id = EVENT_ID0;
+        event_id_next = EVENT_ID1;
+      } else {
+        event_id = EVENT_ID1;
+        event_id_next = EVENT_ID0;
+      }
+      if (k < mat.k_loop - 1) {
+        shuffle_k = (shuffle_k + 1) % mat.k_loop;
+        uint64_t k_actual_next = (shuffle_k == mat.k_loop - 1) ? (mat.k_real - shuffle_k * mat.k0) : mat.k0;
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
+        mat.LoadA(n_l1a, mat.gm_a + offset_a, midx, shuffle_k, m_actual, k_actual_next);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
+        mat.LoadB(n_l1b, mat.gm_b + offset_b, shuffle_k, nidx, k_actual_next, n_actual);
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
+      } else if (visit.HasNext()) {
+        uint64_t n_cidx = visit.NextC();
+        uint64_t n_midx = visit.NextM();
+        uint64_t n_nidx = visit.NextN();
+        mat.ComputeOffset(n_cidx, offset_a, offset_b);
+        uint64_t m_actual_next = (n_midx == (mat.m_loop - 1)) ? (mat.m_real - n_midx * mat.m0) : mat.m0;
+        uint64_t n_actual_next = (n_nidx == (mat.n_loop - 1)) ? (mat.n_real - n_nidx * mat.n0) : mat.n0;
+        bool load_a_flag = false;
+        bool load_b_flag = false;
+        if (mat.k_loop == 1 && visit.HasLast()) {
+          uint64_t c_idx_n_last = visit.LastC();
+          uint64_t last_offset_a, last_offset_b;
+          mat.ComputeOffset(c_idx_n_last, last_offset_a, last_offset_b);
+          load_a_flag = (offset_a == last_offset_a && visit.LastM() == n_midx);
+          load_b_flag = (offset_b == last_offset_b && visit.LastN() == n_nidx);
+        }
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next);
+        if (!load_a_flag) {
+          mat.LoadA(n_l1a, mat.gm_a + offset_a, n_midx, mat.shuffle_k, m_actual_next, mat.k_actual);
+        }
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next);
+        wait_flag(PIPE_MTE1, PIPE_MTE2, event_id_next + 2);
+        if (!load_b_flag) {
+          mat.LoadB(n_l1b, mat.gm_b + offset_b, mat.shuffle_k, n_nidx, mat.k_actual, n_actual_next);
+        }
+        set_flag(PIPE_MTE2, PIPE_MTE1, event_id_next + 2);
+      }
+      for (uint64_t k_part_idx = 0; k_part_idx < k_part_loop; ++k_part_idx) {
+        __ca__ T *__restrict__ l0a = (k_part_idx & 1) ? l0a_next : l0a_base;
+        __cb__ T *__restrict__ l0b = (k_part_idx & 1) ? l0b_next : l0b_base;
+        uint64_t k0_round = (k_part_idx == k_part_loop - 1) ? k_round - k_part_idx * mat.k0_part_len : mat.k0_part_len;
+        uint64_t k0_actual = (k_part_idx == k_part_loop - 1) ? k_actual - k_part_idx * mat.k0_part_len : mat.k0_part_len;
+        auto mte1_mad_event_id = (k_part_idx & 1) ? EVENT_ID1 : EVENT_ID0;
+        if (k_part_idx == 0) {
+          wait_flag(PIPE_MTE2, PIPE_MTE1, event_id);
+        }
+        wait_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
+        mat.LoadL0A(l0a, l1a, k_part_loop, k_part_idx, k_round, k0_round, m_actual);
+        if (k_part_idx == k_part_loop - 1) {
+          set_flag(PIPE_MTE1, PIPE_MTE2, event_id);
+        }
+        if (k_part_idx == 0) {
+          wait_flag(PIPE_MTE2, PIPE_MTE1, event_id + 2);
+        }
+        mat.LoadL0B(l0b, l1b, k_part_loop, k_part_idx, k_round, k0_round, n_actual);
+        if (k_part_idx == k_part_loop - 1) {
+          set_flag(PIPE_MTE1, PIPE_MTE2, event_id + 2);
+        }
+        set_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
+        wait_flag(PIPE_MTE1, PIPE_M, mte1_mad_event_id);
+        bool init_c = (k == 0 && k_part_idx == 0);
+        uint8_t unit_flag = 0b10;  // do not allow reading from L0C
+        if (k == mat.k_loop - 1 && k_part_idx == k_part_loop - 1) {
+          unit_flag = 0b11;  // allow reading from L0C
+        }
+        if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
+          unit_flag = 0b00;
+        }
+        if ((mat.flags & V_CUBE_FLAG_WITH_BIAS) && init_c) {
+          wait_flag(PIPE_MTE2, PIPE_MTE1, EVENT_ID5);
+          if (nidx != visit.LastN()) {
+            mat.LoadBt(BIAS_ADDR, bias_l1, n_actual);
+          }
+          set_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);  // bias ready, mte2 can begin move A/B or scale
+          set_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);     // bias ready, mmad can begin
+          wait_flag(PIPE_MTE1, PIPE_M, EVENT_ID4);    // wait move bias fron L1 to BT
+          mat.MAD(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
+        } else {
+          mat.MM(l0c, l0a, l0b, init_c, unit_flag, m_actual, n_actual, k0_actual);
+        }
+        set_flag(PIPE_M, PIPE_MTE1, mte1_mad_event_id);
+      }
+      mat.flags ^= V_PINGPONG_FLAG_EVENT;
+      Swap(l1a, n_l1a);
+      Swap(l1b, n_l1b);
+    }
+    uint8_t unit_flag = 0b11;
+    uint64_t src_stride = RoundUp(m_actual, BLOCK_SIZE);
+    QuantMode_t type = GetQuantMode<T>();
+    if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
+      uint64_t blockidx = visit.vBlockIdx();
+      uint64_t blocknum = visit.vBlockNum();
+      uint64_t pingpong_offset = mat.flags & V_PINGPONG_FLAG_STORE ? blocknum + blockidx : blockidx;
+      mat.flags ^= V_PINGPONG_FLAG_STORE;
+      mat.StoreC((__gm__ T *)mat.gm_c + mat.m0 * mat.n0 * pingpong_offset, l0c, unit_flag, type, m_actual, n_actual,
+                 mat.n0, src_stride);
+    } else if (mat.flags & V_CUBE_FLAG_OUT_FP32) {
+      mat.StoreC((__gm__ float *)mat.gm_c + mat.GmOffset(cidx, midx, nidx), l0c, unit_flag, GetQuantMode<float>(),
+                 m_actual, n_actual, mat.n_real, src_stride);
+    } else if (mat.flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+      uint64_t subtile0, subtile1, dst;
+      vCubeOp::UbInfoDecode(mat.ub_c, dst, subtile0, subtile1);
+      uint64_t aiv_m = CeilDiv(mat.m0, subtile0 + subtile1) * subtile0;
+      uint64_t n_size = RoundUp(n_actual, BLOCK_SIZE);
+      for (uint64_t i = 0; i < 2; i++, dst += aiv_m * mat.n0 * sizeof(T)) {
+        wait_intra_block(PIPE_FIX, V_INTRA_UB_MIX_BACKWARD_ID + i * V_INTRA_BLOCK_AIV_OFFSET);
+        uint64_t l_m = i * aiv_m;
+        uint64_t r_m = (i + 1) * aiv_m;
+        if (m_actual > r_m) {
+          r_m = max(RoundDown(r_m, BLOCK_SIZE), l_m);
+          uint64_t move_m = r_m - l_m;
+          if (move_m > 0) {
+            mat.StoreC((__ubuf__ T *)dst, l0c + l_m * BLOCK_SIZE, unit_flag, type, move_m, n_size, mat.n0, src_stride,
+                       i);
+          }
+          if (aiv_m > move_m) {
+            mat.StoreC((__ubuf__ T *)dst + move_m * mat.n0, l0c + r_m * BLOCK_SIZE, 0b10, type, aiv_m - move_m, n_size,
+                       mat.n0, src_stride, i);
+          }
+        } else if (m_actual > l_m) {
+          mat.StoreC((__ubuf__ T *)dst, l0c + l_m * BLOCK_SIZE, unit_flag, type, m_actual - l_m, n_size, mat.n0,
+                     src_stride, i);
+        }
+        set_intra_block(PIPE_FIX, V_INTRA_UB_MIX_FORWARD_ID + i * V_INTRA_BLOCK_AIV_OFFSET);
+      }
+    } else if (mat.flags & V_CUBE_FLAG_STORE_UB) {
+      if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
+        set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+        wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+        unit_flag = 0b00;
+      }
+      uint64_t subtile0, subtile1, dst;
+      vCubeOp::UbInfoDecode(mat.ub_c, dst, subtile0, subtile1);
+      uint64_t tile_num = subtile0 + subtile1;
+      uint64_t aiv_m = CeilDiv(mat.m0, tile_num);
+      uint64_t n_size = RoundUp(n_actual, BLOCK_SIZE);
+      for (uint64_t i = 0; i < tile_num; i++) {
+        uint64_t subblock_id = i & 1;
+        uint64_t aiv_tile_idx = (i >> 1) + subblock_id * subtile0;
+        uint64_t offset = aiv_tile_idx * aiv_m;
+        wait_intra_block(PIPE_FIX, V_INTRA_UB_MIX_BACKWARD_ID + subblock_id * V_INTRA_BLOCK_AIV_OFFSET);
+        if (m_actual > offset) {
+          uint64_t real_aiv_m = min(aiv_m, m_actual - offset);
+          mat.StoreC((__ubuf__ T *)dst, l0c + offset * BLOCK_SIZE, unit_flag, type, real_aiv_m, n_size, mat.n0,
+                     src_stride, subblock_id);
+        }
+        set_intra_block(PIPE_FIX, V_INTRA_UB_MIX_FORWARD_ID + subblock_id * V_INTRA_BLOCK_AIV_OFFSET);
+      }
+      if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
+        set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+        wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+      }
+    } else {
+      mat.StoreC((__gm__ T *)mat.gm_c + mat.GmOffset(cidx, midx, nidx), l0c, unit_flag, type, m_actual, n_actual,
+                 mat.n_real, src_stride);
+    }
+  }
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID1);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID2);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID3);
+  wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
+  wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
+  wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+}
+
+extern "C"  __global__ __aicore__ void dvm_mix_aic(uint64_t ffts_addr, uint64_t entry) {
+  __gm__ uint64_t * body_addr = (__gm__ uint64_t*)(get_para_base()) + 2;
+  if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
+    __gm__ uint64_t *ext_addr = reinterpret_cast<__gm__ uint64_t*>(ffts_addr);
+    ffts_addr = *ext_addr;
+    body_addr = ext_addr + 2;
+  }
+  uint64_t blockidx = block_idx;
+  uint64_t blocknum = block_num;
+  if ((entry & V_ENTRY_MASK_TYPE) == V_ENTRY_TYPE_P) {
+    uint64_t lookup_offset = (entry >> V_ENTRY_P_AIC_LKUP_OFFSET) & V_ENTRY_P_LKUP_MASK;
+    uint8_t prog_offset = *(reinterpret_cast<__gm__ uint8_t *>(body_addr) + lookup_offset + blockidx);
+    if (prog_offset != V_ENTRY_P_LKUP_INVALID) {
+      vProgEntry prog;
+      vProgEntry::Decode(body_addr + prog_offset, prog);
+      entry = prog.entry;
+      blockidx -= prog.b_begin;
+      blocknum = prog.b_num;
+      body_addr += (prog.offset >> 3);
+    }
+  }
+  if (entry & V_ENTRY_FLAG_CUBE_MIX) {
+    // Notice: l0c -> ub directly, ffts is not necessary.
+    set_ffts_base_addr(ffts_addr);
+    __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
+    uint64_t flags = op->flags;
+    uint64_t tile_num = op->group_num;
+    if (flags & V_CUBE_FLAG_PEER_STORE) {
+      // TODO: Overlap computation with communication.
+    }
+    if (blockidx < tile_num) {
+      switch (flags >> V_CUBE_FLAG_DTYPE_OFFSET) {
+        case vCubeOp::FP16:
+          CutMKN<half>(op, blockidx, blocknum, tile_num);
+          break;
+        case vCubeOp::BF16:
+          CutMKN<bfloat16_t>(op, blockidx, blocknum, tile_num);
+          break;
+        default: break;
+      }
+    }
+  }
+  pipe_barrier(PIPE_ALL);
+}

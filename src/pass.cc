@@ -34,33 +34,11 @@ constexpr int kNumUsers2 = 2;
 
 inline std::vector<NDObject *> GetPreds(NDObject *obj) {
   std::vector<NDObject *> res;
-  if (obj->lhs_ == nullptr) {
-    return res;
-  }
-  res.emplace_back(obj->lhs_);
-  if (obj->rhs_ == nullptr) {
-    return res;
-  }
-  res.emplace_back(obj->rhs_);
-  if (obj->flags_ & OBJ_FLAG_XHS) {
-    res.emplace_back(static_cast<FlexOp *>(obj)->xhs_);
-  }
+  obj->ForInput([&res](NDObject *op) { res.push_back(op); });
   return res;
 }
 
-inline void ItePreds(NDObject *obj, std::function<void(NDObject *)> fun) {
-  if (obj->lhs_ == nullptr) {
-    return;
-  }
-  fun(obj->lhs_);
-  if (obj->rhs_ == nullptr) {
-    return;
-  }
-  fun(obj->rhs_);
-  if (obj->flags_ & OBJ_FLAG_XHS) {
-    fun(static_cast<FlexOp *>(obj)->xhs_);
-  }
-}
+inline void ItePreds(NDObject *obj, std::function<void(NDObject *)> fun) { obj->ForInput(fun); }
 
 size_t GetInputsNum(NDObject *obj) {
   if (obj->lhs_ == nullptr) {
@@ -127,18 +105,7 @@ size_t MaxLive(BasicBlock &bb) {
     }
 
     // deallocate variable
-    if (obj.lhs_ == nullptr) {
-      continue;
-    }
-    try_deallcate(obj.lhs_);
-    if (obj.rhs_ == nullptr) {
-      continue;
-    }
-    try_deallcate(obj.rhs_);
-    // SelectOp has three inpus
-    if (obj.flags_ & OBJ_FLAG_XHS) {
-      try_deallcate(static_cast<FlexOp *>(&obj)->xhs_);
-    }
+    obj.ForInput(try_deallcate);
   }
   return peak;
 }
@@ -379,7 +346,8 @@ void ObjectList::Build(const std::vector<NDObject *> &objects, bool reindex) {
   }
 }
 
-BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner) : objects_owner_(owner) {
+BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner, GraphTracker *tracker)
+  : objects_owner_(owner), tracker_(tracker) {
   // build linked list from objects
   list_.Build(objects, true);
   for (auto obj : objects) {
@@ -469,8 +437,11 @@ BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, NDObject *obj) 
 
 void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
   if (obj->lhs_ == old) {
+    if (tracker_) {
+      tracker_->Record(&obj->lhs_);
+    }
     obj->lhs_ = update;
-    if (NDObject::attrs_[obj->obj_id_].share_ndd) {
+    if (obj->SharedNdd()) {
       auto old_ndd = obj->nd_.data;
       auto new_ndd = update->nd_.data;
       if (old_ndd != new_ndd) {
@@ -489,11 +460,18 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
       }
     }
   } else if (obj->rhs_ == old) {
+    if (tracker_) {
+      tracker_->Record(&obj->rhs_);
+    }
     obj->rhs_ = update;
   } else {
     // Now only select have more than 2 inputs
     ASSERT(obj->flags_ & OBJ_FLAG_XHS);
-    static_cast<FlexOp *>(obj)->xhs_ = update;
+    auto flex = static_cast<FlexOp *>(obj);
+    if (tracker_) {
+      tracker_->Record(&flex->xhs_);
+    }
+    flex->xhs_ = update;
   }
 }
 
@@ -570,6 +548,9 @@ void InsertRemovePad(BasicBlock &block) {
       if (iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE) {
         auto remove_pad = new RemovePadOp(iter->lhs_);
         remove_pad->nd_ = iter->lhs_->nd_;
+        if (auto tracker = block.Tracker()) {
+          tracker->Record(&iter->lhs_);
+        }
         iter->lhs_ = remove_pad;
         block.Insert(iter, remove_pad);
       }
@@ -579,7 +560,7 @@ void InsertRemovePad(BasicBlock &block) {
 
 void PrintPeakLive(BasicBlock &bb) {
   auto maxlive = MaxLive(bb);
-  printf("peak live: %lu\n", maxlive);
+  std::cout << "peak live: " << maxlive << std::endl;
 }
 
 void CompactPeakLiveness(BasicBlock &bb) {
@@ -594,394 +575,42 @@ void CompactPeakLiveness(BasicBlock &bb) {
   }
 }
 
-namespace eliminate_reshape {
-struct PropagateArgs {
-  bool is_forward;
-  NDObject *obj;
-  NDObject *last;
-  DimArray new_shape;
-};
-struct AnalysisIntermediate {
-  std::vector<std::optional<std::vector<int64_t>>> need_reshape;  // idx corresbond to NDObject's index_
-  std::vector<NDObject *> visited;
-  std::vector<PropagateArgs> todos;
-
-  inline void RegisterNewShape(NDObject *obj, const DimArray &new_shape) {
-    std::vector<int64_t> shape;
-    shape.reserve(new_shape.size());
-    for (size_t i = 0; i < new_shape.size(); ++i) {
-      shape.push_back(new_shape[i]);
-    }
-    RegisterNewShape(obj, shape);
-  }
-  inline void RegisterNewShape(NDObject *obj, const std::vector<int64_t> &new_shape) {
-    need_reshape[obj->index_] = new_shape;
-    visited.push_back(obj);
-  }
-};
-struct ShapePacket {
-  size_t start;
-  size_t end;
-  bool is_broadcast_axis;
-};
-std::vector<ShapePacket> GetShapePackets(const DimArray &shape_ori, const DimArray &shape_to_change) {
-  std::vector<ShapePacket> shape_packets;
-  shape_packets.reserve(3);
-  ASSERT(shape_ori.size() >= 1);
-  bool is_curr_broadcast_axis = false;
-  ShapePacket shape_packet{0, 1, shape_to_change[0] != shape_ori[0]};
-  bool &is_prev_broadcast_axis = shape_packet.is_broadcast_axis;
-  for (size_t i = 1; i < shape_to_change.size(); ++i) {
-    is_curr_broadcast_axis = shape_to_change[i] != shape_ori[i];
-    if (is_curr_broadcast_axis != is_prev_broadcast_axis) {
-      shape_packets.push_back(shape_packet);
-      shape_packet.start = shape_packet.end;
-      shape_packet.is_broadcast_axis = is_curr_broadcast_axis;
-    }
-    ++shape_packet.end;
-  }
-  shape_packets.push_back(shape_packet);
-  return shape_packets;
-}
-
-std::vector<int64_t> TryReshape(DimArray &shape_to_change, DimArray &shape_ori, const DimArray &shape_new) {
-  if (shape_to_change.size() < shape_ori.size()) {
-    shape_to_change.resize(shape_ori.size(), 1);
-  } else if (shape_to_change.size() > shape_ori.size()) {
-    shape_ori.resize(shape_to_change.size(), 1);
-  }
-  auto shape_packets = GetShapePackets(shape_ori, shape_to_change);
-
-  std::vector<int64_t> res;
-  size_t j = 0;
-  for (size_t i = 0; i < shape_packets.size(); ++i) {
-    int64_t ori_size = 1;
-    const ShapePacket &shape_packet = shape_packets[i];
-    for (size_t ii = shape_packet.start; ii < shape_packet.end; ++ii) {
-      ori_size *= shape_ori[ii];
-    }
-    size_t j_start = j;
-    // Case when shape_ori has trailing 1, e.g. (8,2,1,1) -> (8,2)
-    if (j_start == shape_new.size() && i == shape_packets.size() - 1 && ori_size == 1 &&
-        !shape_packet.is_broadcast_axis) {
-      return res;
-    }
-
-    // Find shape packet in shape_new
-    int64_t new_size = 1;
-    while (new_size < ori_size && j < shape_new.size()) {
-      new_size *= shape_new[j];
-      ++j;
-    }
-    // Case when shape is 1
-    if (j == j_start && j < shape_new.size() && shape_new[j] == 1) {
-      ++j;
-    }
-    if (new_size != ori_size) {
-      // Can't reshape
-      return {};
-    }
-    // Add shapes corresponding to this shape packet
-    if (shape_packet.is_broadcast_axis) {
-      auto new_len = j - j_start;
-      if (new_len == 0) {
-        return {};
-      }
-      auto old_len = shape_packet.end - shape_packet.start;
-      if (old_len <= new_len) {
-        for (size_t ii = shape_packet.start; ii < shape_packet.start + old_len; ++ii) {
-          res.push_back(shape_to_change[ii]);
-        }
-        for (size_t ii = old_len; ii < new_len; ++ii) {
-          res.push_back(1);
-        }
-      } else {
-        int64_t first = 1;
-        for (size_t ii = 0; ii < old_len - new_len + 1; ++ii) {
-          first *= shape_to_change[shape_packet.start + ii];
-        }
-        res.push_back(first);
-        for (size_t ii = shape_packet.start + old_len - new_len + 1; ii < old_len; ++ii) {
-          res.push_back(shape_to_change[ii]);
-        }
-      }
-    } else {
-      // Case of not broadcast packet
-      for (size_t ii = j_start; ii < j; ++ii) {
-        res.push_back(shape_new[ii]);
-      }
-    }
-  }
-  // Case when shape_new has trailing 1, e.g. (32, 4) -> (16, 2, 4, 1, 1)
-  while (j < shape_new.size()) {
-    if (shape_new[j++] != 1) {
-      return {};
-    }
-    res.push_back(1);
-  }
-  return res;
-}
-
-bool Propagate(NDObject *obj, const DimArray &new_shape, NDObject *last, bool is_forward, const BasicBlock &bb,
-               AnalysisIntermediate &intermediate) {
-  auto &need_reshape = intermediate.need_reshape;
-  auto &todos = intermediate.todos;
-  if (need_reshape[obj->index_].has_value()) {
-    return true;
-  }
-  if (obj->nd_.dims() == new_shape) {
-    return true;
-  }
-  DimArray forward_shape;
-  DimArray backward_shape;
-  auto type = obj->GetObjectType();
-  switch (type) {
-    case kCopy:
-    case kUnary:
-    case kBinary:
-    case kBinaryS:
-    case kSelect:
-    case kCast:
-      // Elementwise
-      intermediate.RegisterNewShape(obj, new_shape);
-      forward_shape = new_shape;
-      backward_shape = new_shape;
-      break;
-    case kLoad:
-      if (obj->flags_ & OBJ_FLAG_LOAD_FROM_CUBE) return false;
-    case kBroadcastS: {
-      ASSERT(!is_forward);
-      intermediate.RegisterNewShape(obj, new_shape);
-      forward_shape = new_shape;
-      break;
-    }
-    case kPadStore:
-    case kStore:
-      ASSERT(is_forward);
-      intermediate.RegisterNewShape(obj, new_shape);
-      return true;
-    case kReshape: {
-      if (is_forward) {
-        // Only change shape of input of this Reshape, no need to propagate further
-        return true;
-      }
-      intermediate.RegisterNewShape(obj, new_shape);
-      auto users = bb.GetUsers(obj);
-      if (users.size() == 1) return true;
-      // Need to change all other users of this Reshape
-      for (auto succ : users) {
-        if (succ == last) {
-          continue;
-        }
-        todos.push_back({true, succ, obj, new_shape});
-      }
-      return true;
-    }
-    case kBroadcastTo:
-    case kOneHot:
-    case kReduce: {
-      DimArray shape_to_change, shape_ori;
-      if (is_forward) {
-        shape_to_change = obj->nd_.dims();
-        shape_ori = obj->lhs_->nd_.dims();
-      } else {
-        shape_to_change = obj->lhs_->nd_.dims();
-        shape_ori = obj->nd_.dims();
-      }
-      auto shape_change = TryReshape(shape_to_change, shape_ori, new_shape);
-      if (shape_change.empty()) {
-        return false;
-      }
-      if (is_forward) {
-        intermediate.RegisterNewShape(obj, shape_change);
-        forward_shape = shape_change;
-      } else {
-        intermediate.RegisterNewShape(obj, new_shape);
-        backward_shape = shape_change;
-        forward_shape = new_shape;
-      }
-      break;
-    }
-    case kElementAny: {
-      if (new_shape.size() == obj->nd_.size()) {
-        return true;
-      }
-      if (is_forward) {
-        forward_shape.resize(new_shape.size(), 1);
-        intermediate.RegisterNewShape(obj, forward_shape);
-      } else {
-        auto new_size = new_shape.size();
-        auto old_size = obj->nd_.size();
-        if (new_size > old_size) {
-          backward_shape = obj->lhs_->nd_.dims();
-          while (old_size++ < new_size) {
-            backward_shape.push_back(1);
-          }
-        } else {
-          int64_t first = 1;
-          size_t i = 0;
-          while (i < old_size - new_size + 1) {
-            first *= obj->lhs_->nd_[i++];
-          }
-          backward_shape.push_back(first);
-          while (i < old_size) {
-            backward_shape.push_back(obj->lhs_->nd_[i++]);
-          }
-          forward_shape = new_shape;
-          intermediate.RegisterNewShape(obj, forward_shape);
-        }
-      }
-      break;
-    }
-    default:
-      return false;
-  }
-
-  if (!forward_shape.empty()) {
-    for (auto succ : bb.GetUsers(obj)) {
-      todos.push_back({true, succ, obj, forward_shape});
-    }
-  }
-  if (!backward_shape.empty()) {
-    for (auto prev : GetPreds(obj)) {
-      todos.push_back({false, prev, obj, backward_shape});
-    }
-  }
-  return true;
-}
-}  // namespace eliminate_reshape
-
 void EliminateReshape(BasicBlock &bb) {
-  using namespace eliminate_reshape;
-
-  std::unordered_set<NDObject *> cleanup_ops;
-  auto eliminate_reshape_impl = [&bb, &cleanup_ops](bool is_forward) {
-    for (auto &reshape : bb) {
-      if (reshape.GetObjectType() != kReshape) {
-        continue;
-      }
-      AnalysisIntermediate inter;
-      inter.need_reshape.resize(bb.capacity());
-      inter.visited.reserve(bb.capacity());
-      const DimArray &new_shape = is_forward ? reshape.lhs_->nd_.dims() : reshape.nd_.dims();
-      inter.RegisterNewShape(&reshape, new_shape);
-      bool can_eliminate = true;
-      if (is_forward) {
-        for (auto user : bb.GetUsers(&reshape)) {
-          if (!Propagate(user, new_shape, &reshape, true, bb, inter)) {
-            can_eliminate = false;
-            break;
-          }
-        }
-      } else {
-        for (auto user : GetPreds(&reshape)) {
-          if (!Propagate(user, new_shape, &reshape, false, bb, inter)) {
-            can_eliminate = false;
-            break;
-          }
-        }
-      }
-      auto &todos = inter.todos;
-      while (!todos.empty() && can_eliminate) {
-        auto todo = std::move(todos.back());
-        todos.pop_back();
-        can_eliminate = Propagate(todo.obj, todo.new_shape, todo.last, todo.is_forward, bb, inter);
-      }
-      if (!can_eliminate) {
-        continue;
-      }
-      // Reshape
-      for (auto to_update : inter.visited) {
-        if (auto ndd = to_update->Ndd(); ndd != nullptr) {
-          ndd->dims = inter.need_reshape[to_update->index_].value();
-        }
-        if (NDObject::attrs_[to_update->obj_id_].dim_changed != nullptr) {
-          cleanup_ops.insert(to_update);
-        }
-      }
-      // Delete Reshape op, and manually fix context to reduce execution time used in UpdateContext
-      auto prev = reshape.lhs_;
-      for (auto succ : bb.GetUsers(&reshape)) {
-        if (succ->IsStore() && prev->IsLoad()) {
-          auto copy = new CopyOp(prev);
+  for (auto it = bb.begin(); it != bb.end(); ++it) {
+    auto op = it.get();
+    if (op->GetObjectType() != kReshape) continue;
+    auto lhs = op->lhs_;
+    auto small = &lhs->nd_.dims();
+    auto big = &op->nd_.dims();
+    if (small->size() > big->size()) {
+      std::swap(small, big);
+    }
+    for (size_t i = 0; i < small->size(); ++i) {
+      if (small->operator[](i) != big->operator[](i)) continue;
+    }
+    for (size_t i = small->size(); i < big->size(); ++i) {
+      if (big->operator[](i) != 1) continue;
+    }
+    if (lhs->IsLoad()) {
+      for (auto succ : bb.GetUsers(op)) {
+        if (succ->IsStore()) {
+          auto copy = new CopyOp(lhs);
           std::vector<NDObject *> stuff_ops;
           copy->Normalize(stuff_ops);
           ASSERT(stuff_ops.empty());
-          bb.Insert(BasicBlock::iterator(&reshape), copy);
-          prev = copy;
+          bb.Insert(BasicBlock::iterator(op), copy);
+          lhs = copy;
+          break;
         }
       }
-      for (auto succ : bb.GetUsers(&reshape)) {
-        bb.UpdateInput(succ, &reshape, prev);
-        bb.AddUser(prev, succ);
-      }
-      bb.Erase(&reshape);
     }
-  };
-
-  eliminate_reshape_impl(true);
-  eliminate_reshape_impl(false);
-  for (auto obj : cleanup_ops) {
-    obj->DimChanged();
+    for (auto succ : bb.GetUsers(op)) {
+      bb.UpdateInput(succ, op, lhs);
+      bb.AddUser(lhs, succ);
+    }
+    bb.Erase(op);
   }
 }
 
-void NormalizeNdd(BasicBlock &block) {
-  auto init_ndd = [&block]() {
-    for (auto &op : block) {
-      if (auto ndd = op.Ndd(); ndd != nullptr) {
-        ndd->lidx = 0;
-      }
-    }
-  };
-  auto onehot_align = [&block](OneHotOp *onehot) {
-    std::unordered_set<NDObject *> visited = {onehot, onehot->lhs_};
-    std::vector<NDObject *> stack = {onehot->lhs_};
-    auto stack_push = [&visited, &stack](NDObject *op) {
-      if (!visited.count(op)) {
-        stack.push_back(op);
-        visited.insert(op);
-      }
-    };
-    while (!stack.empty()) {
-      auto top = stack.back();
-      stack.pop_back();
-      if (top->obj_id_ == kReshape) continue;
-      if (auto ndd = top->Ndd(); ndd != nullptr && onehot->AlignNdd(ndd)) {
-        ndd->lidx = 1;
-      }
-      if (top->lhs_) {
-        stack_push(top->lhs_);
-        if (top->rhs_) {
-          stack_push(top->rhs_);
-          if (top->flags_ & OBJ_FLAG_XHS) {
-            stack_push(static_cast<FlexOp *>(top)->xhs_);
-          }
-        }
-      }
-      for (auto op : block.GetUsers(top)) {
-        stack_push(op);
-      }
-    }
-  };
-  bool init = false;
-  for (auto &op : block) {
-    if (op.obj_id_ == kOneHot) {
-      if (!init) {
-        init_ndd();
-        init = true;
-      }
-      onehot_align(static_cast<OneHotOp *>(&op));
-    }
-  }
-  if (init) {
-    for (auto &op : block) {
-      if (op.nd_.data->lidx) {
-        op.DimChanged();
-      }
-    }
-  }
-}
-
-std::vector<Pass> passes = {&NormalizeNdd, &EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
+std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
 }  // namespace dvm::pass

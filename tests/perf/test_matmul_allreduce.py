@@ -33,7 +33,7 @@ def run_perf(m, n, k):
     x1 = t.load(a)
     x2 = t.load(b)
     c = t.matmul(x1, x2, False, False)
-    x2 = t.allreduce(c)
+    x2 = t.allreduce("sum", c)
     t.store(x2)
 
     comm.Barrier()

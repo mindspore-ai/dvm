@@ -15,12 +15,47 @@
  */
 
 #include <cstdlib>
-#include <cstring>
+#include <queue>
 #include "xkernel.h"
 #include "comm.h"
 #include "tuning.h"
 
 namespace dvm {
+namespace {
+void ReplaceOperands(NDObject *replaced, NDObject *replacing, NDObject *obj) {
+  obj->ForInput([replaced, replacing](NDObject *&op) {
+    if (op && op == replaced) {
+      op = replacing;
+    }
+  });
+}
+
+void TryBatchFold(CubeOp *mm, int dim_size, const std::vector<NDObject *> &objects) {
+  PropRange range;
+  range.base = dim_size - 1;
+  range.depth = range.base;
+  range.affine = PropRange::ELEMWISE;
+  for (auto op : objects) {
+    op->FoldProp(range);
+  }
+  if (range.depth < range.base) {
+    mm->batch_fold_ = false;
+  } else {
+    for (auto op : objects) {
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        auto &dims = ndd->dims;
+        if (dims.size() <= 2) continue;
+        for (size_t i = 2; i < dims.size(); ++i) {
+          dims[1] *= dims[i];
+        }
+        dims.resize(2);
+      }
+      op->DimChanged();
+    }
+  }
+}
+}  // namespace
+
 MixKernel::~MixKernel() {
   if (cube_op_) {
     delete cube_op_->lhs_;
@@ -37,125 +72,148 @@ MixKernel::~MixKernel() {
 }
 
 void MixKernel::Append(NDObject *obj) {
-  const uint32_t LOAD_PENDING = 1;
+  constexpr uint32_t LOAD_VEC_USED = 0;
+  constexpr uint32_t LOAD_PENDING = 1;
+  constexpr uint32_t LOAD_CUBE_USED = 2;
   if (obj->IsLoad()) {
     obj->xbuf_ = LOAD_PENDING;
   } else if (obj->IsCube()) {
     EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
-    std::vector<NDObject *> empty_run_ops;
-    obj->lhs_->Normalize(empty_run_ops);
-    obj->rhs_->Normalize(empty_run_ops);
     cube_op_ = static_cast<CubeOp *>(obj);
-    cube_op_->NormalizeCube();
+    auto reload_check = [this](NDObject *&input) {
+      auto load = static_cast<NDAccess *>(input);
+      if (load->xbuf_ == LOAD_PENDING) {
+        load->xbuf_ = LOAD_CUBE_USED;
+      } else {
+        auto new_load = new NDLoad(nullptr, load->shape_ref_, load->type_id_);
+        reloads_.emplace_back(new_load, load);
+        input = new_load;
+      }
+    };
+    reload_check(cube_op_->lhs_);
+    reload_check(cube_op_->rhs_);
+    if (cube_op_->bias_) {
+      reload_check(cube_op_->bias_);
+    }
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
-    obj->nd_ = cube_op_->nd_;
     cube_op_->output_ = static_cast<NDAccess *>(obj);
   } else {
     if (post_fusion_ == nullptr) {
-      post_fusion_ = new VKernelS();
+      if (ktype_ == kDynMix) {
+        post_fusion_ = new VKernelD();
+      } else {
+        post_fusion_ = new VKernelS();
+      }
     }
-    auto WorkLoad = [this](NDObject *&op) {
+    obj->ForInput([this](NDObject *&op) {
       if (op == cube_op_) {
         if (sload_ == nullptr) {
           sload_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
           sload_->flags_ |= OBJ_FLAG_LOAD_FROM_CUBE;
-          post_fusion_->build_ops_.emplace_back(sload_);
+          post_fusion_->Append(sload_);
         }
         op = sload_;
-      } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
-        op->xbuf_ = 0;
-        post_fusion_->build_ops_.emplace_back(op);
-      }
-    };
-    if (obj->lhs_) {
-      WorkLoad(obj->lhs_);
-      if (obj->rhs_) {
-        WorkLoad(obj->rhs_);
-        if (obj->flags_ & OBJ_FLAG_XHS) {
-          WorkLoad(static_cast<FlexOp *>(obj)->xhs_);
+      } else if (op->IsLoad() && op->xbuf_ != LOAD_VEC_USED) {
+        if (op->xbuf_ == LOAD_PENDING) {
+          op->xbuf_ = LOAD_VEC_USED;
+        } else { // LOAD_CUBE_USED
+          auto new_load = new NDLoad(nullptr, op->shape_ref_, op->type_id_);
+          reloads_.emplace_back(new_load, static_cast<NDAccess *>(op));
+          op = new_load;
         }
+        post_fusion_->Append(op);
       }
-    }
-    post_fusion_->build_ops_.emplace_back(obj);
+    });
+    post_fusion_->Append(obj);
   }
 }
 
 void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node) {
-  auto InplaceOp = [replaced_node, replacing_node](NDObject *&op) {
-    if (op && op == replaced_node) {
-      op = replacing_node;
-    }
-  };
   for (auto &op : post_fusion_->build_ops_) {
     if (op != replaced_node) {
-      InplaceOp(op->lhs_);
-      InplaceOp(op->rhs_);
-      if (op->flags_ & OBJ_FLAG_XHS) {
-        InplaceOp(static_cast<FlexOp *>(op)->xhs_);
-      }
-      stage_kernel_->GetImpl()->Append(op);
+      ReplaceOperands(replaced_node, replacing_node, op);
+      stage_kernel_->Append(op);
     }
   }
-  post_fusion_->build_ops_.clear();
-  if (replaced_node) {
-    post_fusion_->Append(replaced_node);
-  }
 }
+
 void MixKernel::Release() {
-  cube_op_->bias_ = nullptr;
-  if (cube_op_->GetObjectType() == kGmmOp) {
-    static_cast<GmmOp *>(cube_op_)->group_list_ = nullptr;
+  cube_op_->Recover();
+  if (!stage_kernel_) {
+    return;
+  }
+  auto current_kernel = static_cast<MixKernel *>(stage_kernel_->Current());
+  auto target_post_fusion = current_kernel->post_fusion_;
+  if (post_fusion_) {
+    std::unordered_set<NDObject *> post_ops_set(post_fusion_->build_ops_.begin(), post_fusion_->build_ops_.end());
+    for (auto &obj : target_post_fusion->build_ops_) {
+      if (post_ops_set.find(obj) != post_ops_set.end()) {
+        obj = nullptr;
+      }
+    }
+    for (auto &op : post_fusion_->build_ops_) {
+      ReplaceOperands(current_kernel->sload_, sload_, op);
+    }
+  }
+
+  auto cube_op = current_kernel->cube_op_;
+  if (cube_op->GetObjectType() == kGmmOp) {
+    static_cast<GmmOp *>(cube_op)->group_list_ = nullptr;
   }
 }
 
 uint64_t MixKernel::UnAlignCodeGen() {
-  stage_kernel_ = new Kernel();
-  stage_kernel_->Reset(KernelType::kStaticStages);
+  stage_kernel_ = new StagesKernel();
+  auto &builder = stage_kernel_->builder_;
   int64_t pad_size[2] = {cube_op_->tactics_.lhs_pad_size, cube_op_->tactics_.rhs_pad_size};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
   for (size_t i = 0; i < 2; i++) {
     if (pad_size[i]) {
-      stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
-      pad_inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
-      auto load = stage_kernel_->Copy(pad_inputs[i]);
-      inputs[i] = stage_kernel_->StagePadStore(load, pad_size[i]);
+      builder.StageSwitch(dvm::KernelTypeX::kStaticShape);
+      pad_inputs[i] = builder.Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
+      auto load = builder.Copy(pad_inputs[i]);
+      inputs[i] = builder.StagePadStore(load, pad_size[i]);
     }
   }
-  stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
+  builder.StageSwitch(ktype_);
   for (size_t i = 0; i < 2; i++) {
     if (pad_size[i]) {
-      inputs[i] = stage_kernel_->StageLoad(inputs[i]);
+      inputs[i] = builder.StageLoad(inputs[i]);
     } else {
-      inputs[i] = stage_kernel_->Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
+      inputs[i] = builder.Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
       pad_inputs[i] = inputs[i];
     }
   }
+  auto src_bias = cube_op_->bias_;
+  NDObject *bias = src_bias ? builder.Load(nullptr, src_bias->shape_ref_, src_bias->type_id_) : nullptr;
   NDObject *matmul_op;
   if (cube_op_->GetObjectType() == kCubeOp) {
-    matmul_op = stage_kernel_->MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, cube_op_->bias_);
+    matmul_op = builder.MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, bias);
   } else {
-    matmul_op = stage_kernel_->GroupedMatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_,
-                                             cube_op_->bias_, static_cast<GmmOp *>(cube_op_)->group_list_,
-                                             static_cast<GmmOp *>(cube_op_)->group_type_);
+    auto gmm_op = static_cast<GmmOp *>(cube_op_);
+    matmul_op = builder.GroupedMatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, bias,
+                                      gmm_op->group_list_, gmm_op->group_type_, gmm_op->group_list_type_);
   }
-  Release();
   static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
   }
   NDAccess *real_out{nullptr};
   if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op));
+    real_out = static_cast<NDAccess *>(builder.Store(nullptr, matmul_op));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
   auto workspace_size = stage_workspace_size;
-  code_ = std::move(stage_kernel_->GetImpl()->code_);
+  code_ = std::move(stage_kernel_->code_);
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
   src_lhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[0])->addr_);
   src_rhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[1])->addr_);
+  if (bias) {
+    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias)->addr_);
+  }
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
   }
@@ -167,48 +225,50 @@ uint64_t MixKernel::SplitKCodeGen() {
   auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
   size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
 
-  stage_kernel_ = new Kernel();
-  stage_kernel_->Reset(KernelType::kStaticStages);
+  stage_kernel_ = new StagesKernel();
+  auto &builder = stage_kernel_->builder_;
   std::vector<NDAccess *> split_lhs;
   std::vector<NDAccess *> split_rhs;
   std::vector<NDAccess *> split_out;
+  NDObject *bias_op = nullptr;
   for (size_t i = 0; i < split_num; i++) {
     size_t offset_a = i * k_stride;
     size_t offset_b = i * k_stride;
     if (cube_op_->trans_a_) offset_a *= cube_op_->m_align_;
     if (!cube_op_->trans_b_) offset_b *= cube_op_->n_align_;
-    stage_kernel_->StageSwitch(KernelType::kStaticMix);
-    auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
-    auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
+    builder.StageSwitch(ktype_);
+    auto x = builder.Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
+    auto y = builder.Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
     (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
     (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
     NDObject *matmul_op;
-    NDObject *bias_op = (i == 0 ? cube_op_->bias_ : nullptr);
+    if (i + 1 == split_num && cube_op_->bias_) {
+      bias_op = builder.Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
+    }
     if (cube_op_->GetObjectType() == kCubeOp) {
-      matmul_op = stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op);
+      matmul_op = builder.MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op);
     } else {
-      matmul_op = stage_kernel_->GroupedMatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op,
-                                               static_cast<GmmOp *>(cube_op_)->group_list_,
-                                               static_cast<GmmOp *>(cube_op_)->group_type_);
+      auto gmm_op = static_cast<GmmOp *>(cube_op_);
+      matmul_op = builder.GroupedMatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op, gmm_op->group_list_,
+                                        gmm_op->group_type_, gmm_op->group_list_type_);
     }
     static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_,
                                                    i + 1 == split_num ? k_tail : k_stride, offset_a, offset_b);
     static_cast<CubeOp *>(matmul_op)->SetOutFp32(i != 0);
-    (void)split_out.emplace_back(static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op)));
+    (void)split_out.emplace_back(static_cast<NDAccess *>(builder.Store(nullptr, matmul_op)));
   }
-  Release();
   auto matmul_fp32 = split_out.back()->lhs_;
-  auto matmul_fp16 = stage_kernel_->Cast(matmul_fp32, cube_op_->lhs_->type_id_);
+  auto matmul_fp16 = builder.Cast(matmul_fp32, cube_op_->lhs_->type_id_);
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_fp16);
   }
   NDAccess *real_out{nullptr};
   if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_fp16));
+    real_out = static_cast<NDAccess *>(builder.Store(nullptr, matmul_fp16));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
   auto workspace_size = stage_workspace_size + split_out.back()->Size();
-  code_ = std::move(stage_kernel_->GetImpl()->code_);
+  code_ = std::move(stage_kernel_->code_);
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
@@ -220,6 +280,9 @@ uint64_t MixKernel::SplitKCodeGen() {
     code_.BindOpFast(split_rhs[i]->addr_, src_rhs->addr_);
     code_.BindWorkspace(split_out[i]->addr_, stage_workspace_size);
   }
+  if (bias_op) {
+    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_op)->addr_);
+  }
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
   }
@@ -227,40 +290,40 @@ uint64_t MixKernel::SplitKCodeGen() {
 }
 
 uint64_t MixKernel::BiasBF16CodeGen() {
-  stage_kernel_ = new Kernel();
-  stage_kernel_->Reset(KernelType::kStaticStages);
-  stage_kernel_->StageSwitch(dvm::KernelType::kStaticShape);
-  stage_kernel_->GetImpl()->Append(cube_op_->bias_);
-  auto bias_fp32 = stage_kernel_->StageStore(stage_kernel_->Cast(cube_op_->bias_, kFloat32));
+  stage_kernel_ = new StagesKernel();
+  auto &builder = stage_kernel_->builder_;
+  builder.StageSwitch(dvm::KernelTypeX::kStaticShape);
+  auto bias_bf16 = builder.Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
+  auto bias_fp32 = builder.StageStore(builder.Cast(bias_bf16, kFloat32));
 
-  stage_kernel_->StageSwitch(dvm::KernelType::kStaticMix);
-  auto x = stage_kernel_->Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
-  auto y = stage_kernel_->Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
+  builder.StageSwitch(ktype_);
+  auto x = builder.Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
+  auto y = builder.Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
   NDObject *matmul_op;
+  auto bias_obj = builder.StageLoad(bias_fp32);
   if (cube_op_->GetObjectType() == kCubeOp) {
-    matmul_op =
-      stage_kernel_->MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32));
+    matmul_op = builder.MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_obj);
   } else {
-    matmul_op = stage_kernel_->GroupedMatMul(
-      x, y, cube_op_->trans_a_, cube_op_->trans_b_, stage_kernel_->StageLoad(bias_fp32),
-      static_cast<GmmOp *>(cube_op_)->group_list_, static_cast<GmmOp *>(cube_op_)->group_type_);
+    auto gmm_op = static_cast<GmmOp *>(cube_op_);
+    matmul_op = builder.GroupedMatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_obj, gmm_op->group_list_,
+                                      gmm_op->group_type_, gmm_op->group_list_type_);
   }
-  Release();
   if (post_fusion_) {
     EmplacePostFusion(sload_, matmul_op);
   }
   NDAccess *real_out{nullptr};
   if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    real_out = static_cast<NDAccess *>(stage_kernel_->Store(nullptr, matmul_op));
+    real_out = static_cast<NDAccess *>(builder.Store(nullptr, matmul_op));
   }
   auto stage_workspace_size = stage_kernel_->CodeGen();
   auto workspace_size = stage_workspace_size;
-  code_ = std::move(stage_kernel_->GetImpl()->code_);
+  code_ = std::move(stage_kernel_->code_);
 
   auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
   auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
   src_lhs->addr_.Update(static_cast<NDAccess *>(x)->addr_);
   src_rhs->addr_.Update(static_cast<NDAccess *>(y)->addr_);
+  static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_bf16)->addr_);
   if (real_out) {
     cube_op_->output_->addr_.Update(real_out->addr_);
   }
@@ -270,27 +333,18 @@ uint64_t MixKernel::BiasBF16CodeGen() {
 uint64_t MixKernel::AlignCodeGen() {
   size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
   size_t post_reserve = 0;
-  cube_op_->batch_fold_ = cube_op_->CanBatchFold();
   if (post_fusion_) {
-    post_fusion_->Normalize();
-    post_reserve = post_fusion_->ReserveCodeSize();
-    if (cube_op_->batch_fold_) {
-      auto fold_check = [this]() -> bool {
-        NDSpaceData &cube_nd = cube_op_->ndd_;
-        for (auto op : post_fusion_->objects_) {
-          if (auto ndd = op->Ndd(); ndd != nullptr) {
-            if (ndd->dims.size() != cube_nd.size()) return false;
-            for (size_t i = 1; i < cube_nd.size(); ++i) {
-              if (ndd->dims[i] != cube_nd[i]) return false;
-            }
-          }
-        }
-        return true;
-      };
-      if (!fold_check()) {
-        cube_op_->batch_fold_ = false;
+    if (auto comm = post_fusion_->comm_op_) {
+      comm->mix_ = true;
+      if (comm->lhs_ == sload_) {
+        comm->SetCubeOp(cube_op_);
       }
     }
+    if (!post_fusion_->NormBuild()) DvmException("MixKernel broker affine failed");
+    if (cube_op_->batch_fold_) {
+      TryBatchFold(cube_op_, sload_->nd_.size(), post_fusion_->objects_);
+    }
+    post_reserve = post_fusion_->ReserveCodeSize();
   }
   code_.Alloc(head_reserve + post_reserve);
   vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
@@ -310,23 +364,6 @@ uint64_t MixKernel::AlignCodeGen() {
     code_.UpdateC();
     return 0;
   }
-  if (cube_op_->batch_fold_) {
-    for (auto op : post_fusion_->objects_) {
-      if (auto ndd = op->Ndd(); ndd != nullptr) {
-        ASSERT(ndd->dims.prod() == sload_->nd_.dims().prod());
-        ndd->dims[1] = cube_op_->m_real_;
-        ndd->dims.resize(2);
-      }
-      op->DimChanged();
-    }
-  }
-  if (auto comm = post_fusion_->comm_op_) {
-    comm->mix_ = true;
-    if (comm->lhs_ == sload_) {
-      comm->SetCubeOp(cube_op_);
-    }
-  }
-  post_fusion_->Optimize();
   uint64_t ws_size = sizeof(vMixGroupMsg) * code_.block_dim_;
   gm_pos_.reloc_ = &cube_code->gm_pos;
   code_.BindWorkspace(gm_pos_, 0);
@@ -340,7 +377,14 @@ uint64_t MixKernel::AlignCodeGen() {
     cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
     code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
   } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
+    CubeStoreType sync_type = (cube_code->flags & V_CUBE_FLAG_OUT_FP32) ? kCubeStoreGM : g_system.GetCubeStoreType();
+    if (sync_type == kCubeStoreUBOnce) {
+      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC_ONCE;
+      cube_code->flags |= V_CUBE_FLAG_STORE_UB_ONCE;
+    } else if (sync_type == kCubeStoreUB) {
+      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC;
+      cube_code->flags |= V_CUBE_FLAG_STORE_UB;
+    } else if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
       code_.BindOpFast(cube_op_->output_->addr_, inplace_store->addr_);
       code_.BindOpFast(sload_->addr_, inplace_store->addr_);
     } else {
@@ -356,6 +400,7 @@ uint64_t MixKernel::AlignCodeGen() {
   }
   ShardParam shard;
   shard.base = 0;
+  shard.sink = true;
   shard.dom = &cube_op_->ndd_.dims;
   shard.tile[0] = cube_op_->n0_;
   shard.tail[0] = cube_op_->n_real_ % cube_op_->n0_;
@@ -363,16 +408,32 @@ uint64_t MixKernel::AlignCodeGen() {
   shard.tail[1] = cube_op_->m_real_ % cube_op_->m0_;
   shard.stride[0] = cube_op_->n_real_;
   shard.stride[1] = cube_op_->n_real_ * cube_op_->m_real_;
-  post_fusion_->root_dom_.Shard(shard);
-  post_fusion_->root_dom_.PrepareTiling(post_fusion_);
+  post_fusion_->Shard(shard);
+  post_fusion_->PrepareTiling();
   MixVisitCoder visit;
   post_fusion_->AddVisitor(&visit);
-  auto code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
-  uint64_t subtile_0 = (post_fusion_->tile_num_ + 1) / 2;
-  uint64_t subtile_1 = post_fusion_->tile_num_ - subtile_0;
-  cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
+  uint8_t *code_end;
+  if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+    g_system.SetLocalMemSize(g_system.LocalMemSize() - cube_op_->BaseSize());
+    code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
+    g_system.SetLocalMemSize(g_system.LocalMemSize() + cube_op_->BaseSize());
+  } else {
+    code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
+  }
+  uint64_t subtile0 = (post_fusion_->tile_num_ + 1) / 2;
+  uint64_t subtile1 = post_fusion_->tile_num_ - subtile0;
+  if (cube_code->flags & V_CUBE_FLAG_STORE_UB) {
+    if (CeilDiv(cube_op_->m0_, post_fusion_->tile_num_) % CubeOp::BLOCK_SIZE) {
+      cube_code->flags |= V_CUBE_FLAG_DIS_UNITFLAG;
+    }
+    cube_code->ub_c = vCubeOp::UbInfoEncode(sload_->xbuf_, subtile0, subtile1);
+  } else if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+    cube_code->ub_c = vCubeOp::UbInfoEncode(g_system.LocalMemSize() - cube_op_->BaseSize(), subtile0, subtile1);
+  } else {
+    cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
+  }
   code_.data_size_ = code_end - code_.data_;
-  code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile_0, subtile_1);
+  code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1);
   code_.Combine(post_fusion_->code_, 0);
   return ws_size;
 }
@@ -383,17 +444,29 @@ uint64_t MixKernel::CodeGen() {
     output->SetFlag(OBJ_FLAG_STAGE_IO);
     cube_op_->output_ = output;
   }
+  std::vector<NDObject *> empty_run_ops;
+  cube_op_->lhs_->Normalize(empty_run_ops);
+  cube_op_->rhs_->Normalize(empty_run_ops);
+  cube_op_->NormalizeCube();
+  cube_op_->output_->Normalize(empty_run_ops);
   cube_op_->InferCubeConfig();
+  uint64_t workspace_size = 0;
   if (cube_op_->tactics_.enable_bias_cast) {
-    return BiasBF16CodeGen();
+    workspace_size = BiasBF16CodeGen();
+  } else if (cube_op_->tactics_.enable_pad) {
+    workspace_size = UnAlignCodeGen();
+  } else if (cube_op_->tactics_.enable_splitk) {
+    workspace_size = SplitKCodeGen();
+  } else {
+    workspace_size = AlignCodeGen();
   }
-  if (cube_op_->tactics_.enable_pad) {
-    return UnAlignCodeGen();
+  if (!reloads_.empty()) {
+    for (auto &r : reloads_) {
+      code_.BindOpFast(r.first->addr_, r.second->addr_);
+    }
   }
-  if (cube_op_->tactics_.enable_splitk) {
-    return SplitKCodeGen();
-  }
-  return AlignCodeGen();
+  Release();
+  return workspace_size;
 }
 
 void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
@@ -420,71 +493,30 @@ DynMixKernel::DynMixKernel() : MixKernel() {
   tuner_ = nullptr;
 }
 
+void DynMixKernel::Record() {
+  if (post_fusion_) {
+    static_cast<VKernelD *>(post_fusion_)->Recover();
+    for (auto op : post_fusion_->build_ops_) {
+      op->ForInput([this](NDObject *&in) { tracker_.Record(&in); });
+    }
+  }
+}
+
+void DynMixKernel::Release() {
+  tracker_.RecoverClear();
+  MixKernel::Release();
+}
+
 uint64_t DynMixKernel::CodeGen() {
   delete stage_kernel_;
+  stage_kernel_ = nullptr;
   code_.~Code();
   code_.data_ = nullptr;
   code_ = std::move(Code());
-  if (cube_op_->output_ == nullptr) {
-    auto output = new NDStore(nullptr, cube_op_);
-    output->SetFlag(OBJ_FLAG_STAGE_IO);
-    cube_op_->output_ = output;
-  }
-  std::vector<NDObject *> empty_run_ops;
-  cube_op_->lhs_->Normalize(empty_run_ops);
-  cube_op_->rhs_->Normalize(empty_run_ops);
-  cube_op_->NormalizeCube();
-  cube_op_->output_->Normalize(empty_run_ops);
-  cube_op_->InferCubeConfig();
-  if (cube_op_->tactics_.enable_bias_cast) {
-    return BiasBF16CodeGen();
-  }
-  if (cube_op_->tactics_.enable_pad) {
-    return UnAlignCodeGen();
-  }
-  if (cube_op_->tactics_.enable_splitk) {
-    return SplitKCodeGen();
-  }
-  return AlignCodeGen();
-}
-
-void DynMixKernel::Append(NDObject *obj) {
-  const uint32_t LOAD_PENDING = 1;
-  if (obj->IsLoad()) {
-    obj->xbuf_ = LOAD_PENDING;
-  } else if (obj->IsCube()) {
-    EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
-    cube_op_ = static_cast<CubeOp *>(obj);
-  } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
-    cube_op_->output_ = static_cast<NDAccess *>(obj);
-  } else {
-    if (post_fusion_ == nullptr) {
-      post_fusion_ = new VKernelD();
-    }
-    auto WorkLoad = [this](NDObject *&op) {
-      if (op == cube_op_) {
-        if (sload_ == nullptr) {
-          sload_ = new NDLoad(nullptr, cube_op_->shape_ref_, cube_op_->type_id_);
-          sload_->flags_ |= OBJ_FLAG_LOAD_FROM_CUBE;
-          post_fusion_->Append(sload_);
-        }
-        op = sload_;
-      } else if (op->IsLoad() && op->xbuf_ == LOAD_PENDING) {
-        op->xbuf_ = 0;
-        post_fusion_->Append(op);
-      }
-    };
-    if (obj->lhs_) {
-      WorkLoad(obj->lhs_);
-      if (obj->rhs_) {
-        WorkLoad(obj->rhs_);
-        if (obj->flags_ & OBJ_FLAG_XHS) {
-          WorkLoad(static_cast<FlexOp *>(obj)->xhs_);
-        }
-      }
-    }
-    post_fusion_->Append(obj);
-  }
+  Record();
+  auto ws_size = MixKernel::CodeGen();
+  Release();
+  return ws_size;
 }
 
 int StageCodeWrap::LaunchWrap(void *workspace, void *stream) {
@@ -494,12 +526,11 @@ int StageCodeWrap::LaunchWrap(void *workspace, void *stream) {
   return 0;
 }
 
-bool StageCodeWrap::DasWrap(std::ostringstream &oss) {
+void StageCodeWrap::DasWrap(std::ostringstream &oss) {
   for (auto s : kernel_->stages_) {
     s->kernel->code_.DisAssemble(oss);
     oss << std::endl;
   }
-  return false;
 }
 
 StagesKernel::~StagesKernel() {
@@ -667,9 +698,67 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
+void StagesKernel::_Builder::StageSwitch(KernelTypeX type) {
+  VKernel *kernel = nullptr;
+  if (type == KernelTypeX::kStaticShape) {
+    kernel = new VKernelS();
+  } else if (type == KernelTypeX::kStaticMix) {
+    kernel = new MixKernel();
+  } else if (type == KernelTypeX::kStaticParallel) {
+    kernel = new VKernelP();
+  } else if (type == KernelTypeX::kDynMix) {
+    kernel = new DynMixKernel();
+  } else {
+    ASSERT(0);
+  }
+  _StagesKernel()->AddStage(kernel);
+}
+
+NDObject *StagesKernel::_Builder::StageLoad(NDObject *stage_store) {
+  auto store = static_cast<NDAccess *>(stage_store);
+  auto op = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+  auto current = _StagesKernel()->Current();
+  current->Append(op);
+  _StagesKernel()->StageLoad(current, op, store);
+  return op;
+}
+
+NDObject *StagesKernel::_Builder::StageStore(NDObject *input) {
+  auto op = new NDStore(nullptr, input);
+  auto current = _StagesKernel()->Current();
+  current->Append(op);
+  _StagesKernel()->StageStore(current, op);
+  return op;
+}
+
+NDObject *StagesKernel::_Builder::StagePadStore(NDObject *input, int64_t pad_size) {
+  auto op = new NDPadStore(nullptr, input, pad_size);
+  auto current = _StagesKernel()->Current();
+  current->Append(op);
+  _StagesKernel()->StageStore(current, op);
+  return op;
+}
+
+void DynStagesKernel::Record() {
+  for (auto s : stages_) {
+    for (auto io : s->ios) {
+      if (io->CheckFlag(OBJ_FLAG_STAGE_IO) && io->IsLoad()) {
+        sloads_.emplace_back(io, GetStageStore(io));
+      }
+    }
+  }
+}
+
+void DynStagesKernel::Reset() {
+  for (auto &s : sloads_) {
+    SetStageStore(s.first, s.second);
+  }
+  code_.Clear();
+}
+
 class CubeOptimizer {
  public:
-  CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
+  explicit CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
 
   bool AlignA(std::vector<NDObject *> &ops) {
     if (dom_->tactics_.lhs_pad_size == 0) {
@@ -716,19 +805,28 @@ class CubeOptimizer {
     size_t k_tail = dom_->k_real_ % k_stride ? dom_->k_real_ % k_stride : k_stride;
     size_t offset_a = 0;
     size_t offset_b = 0;
-    dom_->output_->type_id_ = DType::kFloat32;
+    dom_->output_->type_id_ = DataType::kFloat32;
     for (size_t i = 0; i < split_num - 1; ++i) {
-      auto op = new CubeOp(dom_->lhs_, dom_->rhs_, dom_->trans_a_, dom_->trans_b_, i == 0 ? dom_->bias_ : nullptr);
-      op->NormalizeCube();
+      CubeOp *op;
+      if (dom_->obj_id_ == kCubeOp) {
+        op = new CubeOp(dom_->lhs_, dom_->rhs_, dom_->trans_a_, dom_->trans_b_, i == 0 ? dom_->bias_ : nullptr);
+      } else {
+        auto gmm_op = static_cast<GmmOp *>(dom_);
+        op = new GmmOp(dom_->lhs_, dom_->rhs_, dom_->trans_a_, dom_->trans_b_, (i == 0 ? dom_->bias_ : nullptr),
+                       gmm_op->group_list_, gmm_op->group_type_, gmm_op->group_list_type_);
+      }
       op->SetRealShape(dom_->m_real_, dom_->n_real_, k_stride, offset_a, offset_b);
+      op->NormalizeCube();
       op->SetOutFp32(i > 0);
       ops.push_back(op);
       offset_a += dom_->trans_a_ ? dom_->m_align_ * k_stride : k_stride;
       offset_b += dom_->trans_b_ ? k_stride : dom_->n_align_ * k_stride;
       op->output_ = dom_->output_;
+      op->batch_fold_ = dom_->batch_fold_;
     }
     dom_->SetRealShape(dom_->m_real_, dom_->n_real_, k_tail, offset_a, offset_b);
     dom_->SetOutFp32(true);
+    dom_->NormalizeOutput();
     load->Normalize(ops);
     cast->Normalize(ops);
     ops.push_back(load);
@@ -754,8 +852,8 @@ class CubeOptimizer {
     auto m = dom_->m_real_;
     auto n = dom_->n_real_;
     auto k = dom_->k_real_;
-    dom_->NormalizeCube();
     dom_->SetRealShape(m, n, k, 0, 0);
+    dom_->NormalizeCube();
   }
 
   CubeOp *dom_;
@@ -763,7 +861,7 @@ class CubeOptimizer {
 
 class EagerVector : public VectorKernel {
  public:
-  EagerVector() : VectorKernel(KernelType::kEager) {
+  EagerVector() : VectorKernel(KernelTypeX::kEager_) {
     objects_.reserve(64);
     static_ops_.reserve(16);
   }
@@ -771,8 +869,6 @@ class EagerVector : public VectorKernel {
   void Append(NDObject *obj) override {
     obj->index_ = objects_.size();
     objects_.push_back(obj);
-    obj->pd_next_ = next_;
-    next_ = obj;
     int type = obj->type_id_;
     if (type > max_type_) {
       max_type_ = type;
@@ -786,20 +882,10 @@ class EagerVector : public VectorKernel {
     }
   }
 
-  void Optimize() override {
-    ASSERT(0);
-    return;
-  }
-
-  uint64_t CodeGen() override {
-    ASSERT(0);
-    return 0;
-  }
-
   void Reset(NDObject *dom) {
     max_type_ = dom->type_id_;
     min_type_ = dom->type_id_;
-    next_ = nullptr;
+    mm_ = nullptr;
     objects_.clear();
     code_.Clear();
     static_ops_.clear();
@@ -809,24 +895,43 @@ class EagerVector : public VectorKernel {
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
-    mm->CodeGen(body, System::Instance().lazy_tuner_);
+    if (unlikely(!mm->m_align_ || !mm->n_align_ || !mm->k_align_)) {
+      static_ops_.clear();
+      if (mm->m_align_ && mm->n_align_) {
+        static_ops_.push_back(mm->output_);
+      }
+      UpdateIdle(static_ops_);
+      return;
+    }
+    mm->CodeGen(body, g_system.lazy_tuner_);
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
     code_.UpdateC();
-    next_ = mm;
+    mm_ = mm;
   }
 
   vCubeOp *CodeGenMix(CubeOp *mm) {
     size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
-    size_t post_reserve = ReserveCodeSize(); // TODO: visit size
+    size_t post_reserve = ReserveCodeSize();  // TODO: visit size
     code_.Alloc(head_reserve + post_reserve);
+    if (mm->batch_fold_) {
+      TryBatchFold(mm, mm->nd_.size(), objects_);
+    }
     vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
-    mm->CodeGen(cube_code, System::Instance().lazy_tuner_);
-    ASSERT(!mm->batch_fold_);
-    root_dom_.SetHead(next_);
-    NormalizeDomain();
+    if (unlikely(!mm->m_align_ || !mm->n_align_ || !mm->k_align_)) {
+      static_ops_.clear();
+      if (mm->m_align_ && mm->n_align_) {
+        static_ops_.push_back(mm->output_);
+      }
+      CollectIdle(static_ops_);
+      UpdateIdle(static_ops_);
+      return cube_code;
+    }
+    mm->CodeGen(cube_code, g_system.lazy_tuner_);
+    BuildDomain();
     ShardParam shard;
     shard.base = 0;
+    shard.sink = true;
     shard.dom = &mm->ndd_.dims;
     shard.tile[0] = mm->n0_;
     shard.tail[0] = mm->n_real_ % mm->n0_;
@@ -834,83 +939,103 @@ class EagerVector : public VectorKernel {
     shard.tail[1] = mm->m_real_ % mm->m0_;
     shard.stride[0] = mm->n_real_;
     shard.stride[1] = mm->n_real_ * mm->m_real_;
-    root_dom_.Shard(shard);
-    root_dom_.PrepareTiling(this);
+    Shard(shard);
+    PrepareTiling();
     MixVisitCoder visit;
     AddVisitor(&visit);
     auto code_end = DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
-    root_dom_.ClearShard();
-    uint64_t subtile_0 = (tile_num_ + 1) / 2;
-    uint64_t subtile_1 = tile_num_ - subtile_0;
+    ClearShard();
+    uint64_t subtile0 = (tile_num_ + 1) / 2;
+    uint64_t subtile1 = tile_num_ - subtile0;
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
     code_.data_size_ = code_end - code_.data_;
     code_.block_dim_ = mm->block_dim_;
-    code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile_0, subtile_1);
-    next_ = mm;
+    code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1);
+    mm_ = mm;
     return cube_code;
   }
 
   enum { kMaxPvNum = 8 };
   uint64_t CodeGenV(EagerVector **others, int other_num) {
-    uint64_t core_total = System::Instance().CoreNum();
-    root_dom_.SetHead(next_);
-    NormalizeDomain();
+    uint64_t core_total = g_system.CoreNum();
+    BuildDomain();
     if (other_num == 0) {
       return DoCodeGen(core_total);
     }
-    root_dom_.PrepareTiling(this);
-    auto GetWorkLoad = [](EagerVector *k) -> uint64_t { return k->root_dom_.TileSize() * k->objects_.size(); };
-    uint64_t child_offset = Code::HeadSize() + RoundUp(core_total * sizeof(uint64_t), 32ul);
-    uint64_t code_reserve = child_offset + RoundUp(ReserveCodeSize(), 32ul);
-    uint64_t prim_load = GetWorkLoad(this);
-    uint64_t total_load = prim_load;
-    uint64_t other_loads[EagerVector::kMaxPvNum];
-    for (int i = 0; i < other_num; ++i) {
-      auto k = others[i];
-      k->root_dom_.SetHead(k->next_);
-      k->NormalizeDomain();
-      k->root_dom_.PrepareTiling(k);
-      other_loads[i] = GetWorkLoad(k);
-      total_load += other_loads[i];
-      code_reserve += RoundUp(k->ReserveCodeSize(), 32ul);
+    PrepareTiling();
+    std::pair<EagerVector *, uint64_t> children[EagerVector::kMaxPvNum + 1];
+    uint64_t total_load = 0;
+    uint64_t code_reserve = 0;
+    int child_num = 0;
+    int max_idx = 0;
+    for (int i = 0; i < other_num + 1; ++i) {
+      EagerVector *kernel;
+      if (i < other_num) {
+        kernel = others[i];
+        kernel->BuildDomain();
+        kernel->PrepareTiling();
+      } else {
+        kernel = this;
+      }
+      uint64_t load = kernel->tile_size_ * kernel->objects_.size();
+      if (load > 0) {
+        auto &node = children[child_num];
+        node.first = kernel;
+        node.second = load;
+        if (max_idx > 0 && load >= children[max_idx].second) {
+          max_idx = child_num;
+        }
+        total_load += load;
+        child_num++;
+        code_reserve += kernel->ReserveCodeSize();
+      }
     }
-    code_.Alloc(code_reserve);
-    uint64_t *summaries = reinterpret_cast<uint64_t *>(code_.data_ + Code::HeadSize());
-    uint64_t core_free = core_total;
-    auto GenChild = [this, &core_free, &child_offset, &total_load, &summaries](uint64_t workload, EagerVector *k) {
-      uint64_t core_limit = std::max(core_free * workload / total_load, 1ul);
-      auto code_begin = code_.data_ + child_offset;
+    if (unlikely(child_num == 0)) {
+      static_ops_.clear();
+      CollectIdle(static_ops_);
+      for (int i = 0; i < other_num; ++i) {
+        others[i]->CollectIdle(static_ops_);
+      }
+      UpdateIdle(static_ops_);
+      return 0;
+    }
+    if (max_idx != child_num - 1) {
+      std::swap(children[max_idx], children[child_num - 1]); // avoid blockdim overflow
+    }
+    PCodeEncoder encoder;
+    encoder.Reset(&code_, Code::kTargetVec, child_num, code_reserve);
+    uint64_t block_begin = 0;
+    for (int i = 0; i < child_num; ++i) {
+      auto k = children[i].first;
+      uint64_t workload = children[i].second;
+      uint64_t core_limit = std::max((core_total - block_begin) * workload / total_load, 1ul);
+      auto code_begin = encoder.ProgData();
       uint64_t code_size = k->DoCodeGen(core_limit, code_begin, k->ReserveCodeSize()) - code_begin;
       ASSERT(k->visit_ == nullptr);
       uint64_t block_dim = k->CompactBlockDim(core_limit);
       total_load -= workload;
-      core_free -= block_dim;
-      k->code_.block_dim_ = block_dim;
-      child_offset = VKernelP::UpdateSummary(k, child_offset, code_size, summaries);
-    };
-    GenChild(prim_load, this);
-    for (int i = 0; i < other_num; ++i) {
-      auto k = others[i];
-      GenChild(other_loads[i], k);
-      code_.Combine(k->code_, 0);
+      auto prog = encoder.Append(Code::GenEntryV(k->tile_num_, block_dim, code_size), code_size);
+      encoder.AssignAiv(block_begin, block_dim, prog);
+      block_begin += block_dim;
+      if (k != this) {
+        code_.Combine(k->code_, 0);
+      }
     }
-    code_.data_size_ = child_offset;
-    code_.block_dim_ = core_total - core_free;
-    code_.UpdateVP();
+    encoder.Submit(block_begin);
+    ASSERT(block_begin <= core_total);
     return 0;
   }
 
   void Dump(std::ostringstream &oss, const std::string &indent) {
-    if (next_ && next_->obj_id_ == ObjectType::kCubeOp) {
-      auto mm = static_cast<CubeOp *>(next_);
+    if (mm_) {
       oss << indent << "vgraph_cube() {" << std::endl;
       auto body_indent = indent + "  ";
-      oss << body_indent << "%0" << mm->nd_ << " = ";
-      mm->Dump(true, oss);
-      oss << "(%1" << mm->lhs_->nd_;
-      oss << ", %2" << mm->rhs_->nd_;
-      if (mm->bias_) {
-        oss << ", %3" << mm->bias_->nd_;
+      oss << body_indent << "%0" << mm_->nd_ << " = ";
+      mm_->Dump(true, oss);
+      oss << "(%1" << mm_->lhs_->nd_;
+      oss << ", %2" << mm_->rhs_->nd_;
+      if (mm_->bias_) {
+        oss << ", %3" << mm_->bias_->nd_;
       }
       oss << ")" << std::endl << indent << "}";
       if (objects_.empty()) return;
@@ -919,7 +1044,7 @@ class EagerVector : public VectorKernel {
     VectorKernel::Dump(oss, indent);
   }
 
-  NDObject *next_;
+  CubeOp *mm_;
 };
 
 class EagerArea {
@@ -932,8 +1057,13 @@ class EagerArea {
   ~EagerArea() = default;
 
   void Reset(NDObject *dom) {
-    dom_ = dom->obj_id_ != kReduce ? dom : dom->lhs_;
-    state_ = kPending;
+    if (dom->obj_id_ != kReduce) {
+      dom_ = dom;
+      state_ = kPending;
+    } else {
+      dom_ = dom->lhs_;
+      state_ = kSubmitted;
+    }
     objects_.clear();
     fused_.clear();
   }
@@ -958,7 +1088,7 @@ class EagerArea {
     return true;
   }
 
-  static EagerArea *Assign(VKernelE *k, size_t aid) {
+  static EagerArea *Assign(_SplitKernel *k, size_t aid) {
     EagerArea *area;
     auto &pool = k->areas_;
     if (aid == pool.size()) {
@@ -982,22 +1112,94 @@ class EagerArea {
   uint64_t depend_mask_;
 };
 
+SplitContext::SplitContext() {
+  app_.reserve(24);
+  gen_.reserve(12);
+  kill_.reserve(12);
+  build_.reserve(64);
+  mem_blocks_.push_back(new MemNode[MEM_BLOCK_SIZE]);
+}
+
+SplitContext::~SplitContext() {
+  for (auto block : mem_blocks_) {
+    delete []block;
+  }
+}
+
+SplitContext::MemNode *SplitContext::DoAlloc(size_t size) {
+  if (size <= mem_head_->size) {
+    auto node = mem_head_;
+    mem_head_ = mem_head_->next;
+    return node;
+  }
+  auto last = mem_head_;
+  for (auto node = last->next; node != nullptr; node = node->next) {
+    if (size <= node->size) {
+      last->next = node->next;
+      if (node == mem_tail_) {
+        mem_tail_ = last;
+      }
+      return node;
+    }
+    last = node;
+  }
+  ASSERT(0);
+  return nullptr;
+}
+
+void SplitContext::Free(void *addr, size_t size) {
+  MemNode *node;
+  uint64_t block_idx = mem_pos_ >> 32;
+  uint64_t node_idx = mem_pos_ & 0xfffffffful;
+  if (node_idx < MEM_BLOCK_SIZE) {
+    node = &mem_blocks_[block_idx][node_idx];
+    mem_pos_++;
+  } else {
+    block_idx++;
+    if (block_idx == mem_blocks_.size()) {
+      mem_blocks_.push_back(new MemNode[MEM_BLOCK_SIZE]);
+    }
+    node = &mem_blocks_[block_idx][0];
+    mem_pos_ = block_idx << 32 | 1ul;
+  }
+  node->size = size;
+  node->addr = addr;
+  if (mem_head_ == nullptr) {
+    mem_head_ = mem_tail_ = node;
+    node->next = nullptr;
+  } else if (size <= mem_head_->size) {
+    node->next = mem_head_;
+    mem_head_ = node;
+  } else if (size >= mem_tail_->size) {
+    mem_tail_->next = node;
+    node->next = nullptr;
+    mem_tail_ = node;
+  } else {
+    auto last = mem_head_;
+    for (auto x = last->next; x != nullptr; x = x->next) {
+      if (size <= x->size) {
+        last->next = node;
+        node->next = x;
+        break;
+      }
+      last = x;
+    }
+  }
+}
+
 static int g_eager_pv_width = -1;
-VKernelE::VKernelE(WsAllocFunc func, void *user_data)
-    : VKernel(KernelType::kEager), ws_alloc_(func), user_data_(user_data) {
-  objects_.reserve(128);
-  temp_ops_.reserve(64);
-  areas_.reserve(16);
-  kernels_.reserve(8);
+_SplitKernel::_SplitKernel(KernelTypeX type) : VKernel(type) {
   if (g_eager_pv_width == -1) {
-    const char *width = getenv("DVM_EAGER_PV_WIDTH");
-    g_eager_pv_width = width != nullptr ? std::stoi(width) : 8;
+    if (const char *width = getenv("DVM_EAGER_PV_WIDTH"); width != nullptr) {
+      g_eager_pv_width = std::stoi(width);
+    } else {
+      g_eager_pv_width = 0;
+    }
     ASSERT(g_eager_pv_width <= EagerVector::kMaxPvNum);
   }
 }
 
-VKernelE::~VKernelE() {
-  Clear();
+_SplitKernel::~_SplitKernel() {
   for (auto k : kernels_) {
     delete k;
   }
@@ -1006,117 +1208,128 @@ VKernelE::~VKernelE() {
   }
 }
 
-NDObject *VKernelE::Exchange(EagerArea *area, NDObject *input) {
+NDObject *_SplitKernel::Exchange(NDObject *input, int to_aid) {
   ASSERT(!input->IsLoad());
   NDAccess *store = GetStore(input);
   if (store == nullptr) {
     store = new NDStore(nullptr, input);
-    store->Normalize(temp_ops_);
+    store->Normalize(ctx_->app_);
     InitStoreInfo(store, GetArea(input));
     SetStore(input, store);
     objects_.push_back(store);
+    ASSERT(GetRecentLoad(store) == nullptr);  // construct to nullptr
+  } else if (auto recent = GetRecentLoad(store); recent != nullptr && GetArea(recent) == to_aid) {
+    return recent;
   }
   auto load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+  SetRecentLoad(store, load);
   SetStore(load, store);
-  load->Normalize(area->objects_);
+  load->Normalize(objects_);
   objects_.push_back(load);
   return load;
 }
 
-void VKernelE::Split(NDObject *root) {
-  int kidx = area_used_++;
-  EagerArea *area = EagerArea::Assign(this, kidx);
-  area->Reset(root);
-  auto push_input = [area, this](NDObject *input, NDObject *&update) {
-    if (auto idx = GetArea(input); idx >= 0) {
-      if (auto a = areas_[idx].second; a != area) {
-        if (a->state_ == EagerArea::kPending) {
-          if (area->FuseCheck(a)) {
-            if (a->dom_->obj_id_ == ObjectType::kCubeOp) {
-              if (input == a->dom_) {
-                update = Exchange(area, input);
-                temp_ops_.push_back(update);
-              }
-              area->dom_ = a->dom_;
-              pv_black_mask_ |= 1ul << area->area_id_;
-            }
-            area->fused_.push_back(a);
-            areas_[a->area_id_].second = area;
-            if (!a->fused_.empty()) {
-              for (auto x : a->fused_) {
-                area->fused_.push_back(x);
-                areas_[x->area_id_].second = area;
-              }
-            }
-            kernel_used_--;
-            pv_black_mask_ |= 1ul << a->area_id_;
-            area->depend_mask_ |= a->depend_mask_;
-            return;
+NDObject *_SplitKernel::SplitPush(EagerArea *area, NDObject *input) {
+  if (auto idx = GetArea(input); idx >= 0) {
+    auto a = areas_[idx].second;
+    if (a == area) return input;
+    if (a->state_ == EagerArea::kPending) {
+      if (area->FuseCheck(a)) {
+        if (a->dom_->IsCube()) {
+          if (input == a->dom_) {
+            input = Exchange(input, area->area_id_);
+            SetArea(input, area->area_id_);
+            ctx_->app_.push_back(input);
           }
-          if (!input->IsLoad()) {
-            a->state_ = EagerArea::kSubmitted;
+          area->dom_ = a->dom_;
+          pv_black_mask_ |= 1ul << area->area_id_;
+        }
+        area->fused_.push_back(a);
+        areas_[a->area_id_].second = area;
+        if (!a->fused_.empty()) {
+          for (auto x : a->fused_) {
+            area->fused_.push_back(x);
+            areas_[x->area_id_].second = area;
           }
         }
-        if (input->IsLoad()) {
-          auto ac = static_cast<NDAccess *>(input);
-          auto load = new NDLoad(ac->addr_.gm, ac->shape_ref_, ac->type_id_);
-          SetStore(load, input);
-          load->Normalize(a->objects_);
-          objects_.push_back(load);
-          update = input = load;
-        } else {
-          area->depend_mask_ |= a->depend_mask_;
-          update = input = Exchange(a, input);
-        }
+        kernel_used_--;
+        pv_black_mask_ |= 1ul << a->area_id_;
+        area->depend_mask_ |= a->depend_mask_;
+        return input;
       }
-    } else if (input->IsLoad()) {
-      if (auto store = GetStore(input); store != nullptr && store->IsStore()) {
+      if (!input->IsLoad()) {
+        a->state_ = EagerArea::kSubmitted;
+      }
+    }
+    if (input->IsLoad()) {
+      auto ac = static_cast<NDAccess *>(input);
+      auto load = new NDLoad(ac->addr_.gm, ac->shape_ref_, ac->type_id_);
+      if (input->CheckFlag(OBJ_FLAG_EAGER)) {
+        SetStore(load, input);  // TRICK: force load entry wss alloc as swap load to update its gm
+      } else {
+        auto store = GetStore(input);
+        ASSERT(store != nullptr && store->IsStore());
+        SetStore(load, store);
         auto a = areas_[GetArea(store)].second;
         area->depend_mask_ |= a->depend_mask_;
         a->state_ = EagerArea::kSubmitted;
       }
+      load->Normalize(a->objects_);
+      objects_.push_back(load);
+      input = load;
+    } else {
+      area->depend_mask_ |= a->depend_mask_;
+      input = Exchange(input, area->area_id_);
     }
-    temp_ops_.push_back(input);
-  };
-  temp_ops_.push_back(root);
-  while (!temp_ops_.empty()) {
-    auto op = temp_ops_.back();
-    temp_ops_.pop_back();
-    SetArea(op, kidx);
+  } else if (input->IsLoad()) {
+    if (auto store = GetStore(input); store != nullptr && store->IsStore()) {
+      auto a = areas_[GetArea(store)].second;
+      area->depend_mask_ |= a->depend_mask_;
+      a->state_ = EagerArea::kSubmitted;
+    }
+  }
+  SetArea(input, area->area_id_);
+  ctx_->app_.push_back(input);
+  return input;
+}
+
+void _SplitKernel::Split(NDObject *root) {
+  int kidx = area_used_++;
+  EagerArea *area = EagerArea::Assign(this, kidx);
+  area->Reset(root);
+  SetArea(root, kidx);
+  auto &stack = ctx_->app_;
+  stack.push_back(root);
+  while (!stack.empty()) {
+    auto op = stack.back();
+    stack.pop_back();
     area->objects_.push_back(op);
-    if (auto lhs = op->lhs_) {
-      push_input(lhs, op->lhs_);
-      if (auto rhs = op->rhs_) {
-        push_input(rhs, op->rhs_);
-      }
-    }
+    op->ForInput([this, area](NDObject *&in) { in = SplitPush(area, in); });
   }
 }
 
-void VKernelE::Append(NDObject *obj) {
+void _SplitKernel::Append(NDObject *obj) {
   obj->flags_ |= OBJ_FLAG_EAGER;  // TODO: add eager param for Normalize
   if (obj->IsStore()) {
     obj->Normalize(objects_);
-    InitStoreInfo(obj);
     auto src = obj->lhs_;
-    SetStore(src, obj);
-    if (GetArea(src) == -1) {
+    auto area_id = GetArea(src);
+    if (area_id == -1) {
       Split(src);
+      area_id = GetArea(src);
     }
+    SetStore(src, obj);
+    InitStoreInfo(obj, area_id);
   } else {
-    auto fuse_break = [](NDObject *op) -> bool { return op->obj_id_ == ObjectType::kReduce; };
-    if (auto lhs = obj->lhs_) {
-      if (fuse_break(lhs) && GetArea(lhs) == -1) {
-        Split(lhs);
-        obj->lhs_ = Exchange(areas_[GetArea(lhs)].second, lhs);
-        SetArea(obj->lhs_, -1);
+    obj->ForInput([this](NDObject *&op) {
+      if (op->obj_id_ == ObjectType::kReduce) {
+        if (GetArea(op) == -1) {
+          Split(op);
+        }
+        op = Exchange(op, -1);
+        SetArea(op, -1);
       }
-      if (auto rhs = obj->rhs_; rhs != nullptr && fuse_break(rhs) && GetArea(rhs) == -1) {
-        Split(rhs);
-        obj->rhs_ = Exchange(areas_[GetArea(rhs)].second, rhs);
-        SetArea(obj->rhs_, -1);
-      }
-    }
+    });
     InitObjInfo(obj);
     auto add_idx = objects_.size();
     obj->Normalize(objects_);
@@ -1129,19 +1342,20 @@ void VKernelE::Append(NDObject *obj) {
   objects_.push_back(obj);
 }
 
-NDObject *VKernelE::AppendCube(CubeOp *mm) {
+NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
   mm->flags_ |= OBJ_FLAG_EAGER;
   mm->NormalizeCube();
   CubeOptimizer opt(mm);
+  auto &temp_ops = ctx_->app_;
   uint64_t dep_mask = 0;
-  auto prepare_input = [this, &dep_mask](bool is_stuff, NDObject *&input) {
+  auto prepare_input = [this, &dep_mask, &temp_ops](bool is_stuff, NDObject *&input) {
     if (is_stuff) {
-      for (auto op : temp_ops_) {
+      for (auto op : temp_ops) {
         InitObjInfo(op);
         objects_.push_back(op);
       }
-      auto store = temp_ops_[temp_ops_.size() - 2];
-      temp_ops_.clear();
+      auto store = temp_ops[temp_ops.size() - 2];
+      temp_ops.clear();
       InitStoreInfo(store);
       Split(store);
       SetStore(input, store);
@@ -1155,24 +1369,25 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
         aid = GetArea(input);
       }
       auto area = areas_[aid].second;
-      input = Exchange(area, input);
+      input = Exchange(input, area_used_);
       area->state_ = EagerArea::kSubmitted;
       dep_mask |= 1ul << aid;
     }
+    SetArea(input, area_used_);
   };
-  prepare_input(opt.AlignA(temp_ops_), mm->lhs_);
-  prepare_input(opt.AlignB(temp_ops_), mm->rhs_);
+  prepare_input(opt.AlignA(temp_ops), mm->lhs_);
+  prepare_input(opt.AlignB(temp_ops), mm->rhs_);
   if (mm->bias_) {
-    prepare_input(opt.CastBias(temp_ops_), mm->bias_);
+    prepare_input(opt.CastBias(temp_ops), mm->bias_);
   }
   auto output = new NDStore(nullptr, mm);
-  output->Normalize(temp_ops_);
+  output->Normalize(temp_ops);
   objects_.push_back(output);
   mm->output_ = output;
   NDObject *ret = mm;
-  if (opt.SplitK(temp_ops_)) {
-    for (auto op : temp_ops_) {
-      if (op->obj_id_ == kCubeOp) {
+  if (opt.SplitK(temp_ops)) {
+    for (auto op : temp_ops) {
+      if (op->IsCube()) {
         int aid = area_used_++;
         auto area = EagerArea::Assign(this, aid);
         area->ResetMix(op, EagerArea::kSubmitted);
@@ -1184,9 +1399,9 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
       }
       objects_.push_back(op);
     }
-    SetStore(temp_ops_[temp_ops_.size() - 2], output);
-    ret = temp_ops_.back();
-    temp_ops_.clear();
+    SetStore(temp_ops[temp_ops.size() - 2], output);
+    ret = temp_ops.back();
+    temp_ops.clear();
   }
   int aid = area_used_++;
   auto area = EagerArea::Assign(this, aid);
@@ -1200,35 +1415,93 @@ NDObject *VKernelE::AppendCube(CubeOp *mm) {
   return ret;
 }
 
-uint64_t VKernelE::CodeGen() {
-  auto append_ops = [this](EagerVector *kernel, const std::vector<NDObject *> &objects) {
-    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-      auto op = *it;
-      if (GetArea(op) == -1) continue;
-      SetArea(op, -1);
-      if (NDObject::attrs_[op->obj_id_].share_ndd) {
-        op->nd_.data = op->lhs_->nd_.data;
+void _SplitKernel::BuildKernel(EagerVector *kernel, const EagerArea *area, WsAllocator *ws_alloc) {
+  auto push_input = [](std::vector<NDObject *> &stack, NDObject *op) {
+    bool pend = false;
+    op->ForInput([&pend, &stack](NDObject *in) {
+      if (GetArea(in) >= 0) {
+        stack.push_back(in);
+        pend = true;
       }
-      kernel->EagerVector::Append(op);
-      if (op->IsLoad()) {
-        if (!(op->flags_ & OBJ_FLAG_EAGER)) {
-          objects_.push_back(op);
-        }
-      } else if (auto store = GetStore(op)) {
-        ASSERT(NDObject::attrs_[store->obj_id_].share_ndd);
-        store->nd_.data = op->nd_.data;
-        kernel->EagerVector::Append(store);
-        temp_ops_.push_back(store);
+    });
+    return pend;
+  };
+  auto build_op = [this, kernel](NDObject *op) {
+    if (op->SharedNdd()) {
+      op->nd_.data = op->lhs_->nd_.data;
+    }
+    kernel->EagerVector::Append(op);
+    if (op->IsLoad()) {
+      if (!(op->flags_ & OBJ_FLAG_EAGER)) {
+        ctx_->gen_.push_back(static_cast<NDAccess *>(op));
+      }
+    } else if (auto store = GetStore(op); store && store->addr_.gm) {
+      ASSERT(store->SharedNdd());
+      store->nd_.data = op->nd_.data;
+      kernel->EagerVector::Append(store);
+      if (!GetStoreInplace(store)) {
+        ctx_->kill_.emplace_back(store, GetStoreSize(store));
       }
     }
+    SetArea(op, -1);
   };
-  size_t obj_size = objects_.size();
+  kernel->Reset(area->dom_);
+  size_t kill_begin = ctx_->kill_.size();
+  size_t fused_size = area->fused_.size();
+  auto &stack = ctx_->build_;
+  const EagerArea *cur = nullptr;
+  do {
+    cur = fused_size ? area->fused_[--fused_size] : area;
+    for (auto it = cur->objects_.rbegin(); it != cur->objects_.rend(); ++it) {
+      auto op = *it;
+      if (GetArea(op) < 0) continue;
+      if (push_input(stack, op)) {
+        while (!stack.empty()) {
+          auto top = stack.back();
+          if (!push_input(stack, top)) {
+            stack.pop_back();
+            if (GetArea(top) >= 0) {
+              build_op(top);
+            }
+          }
+        }
+      }
+      build_op(op);
+    }
+  } while (cur != area);
+  for (auto gen : ctx_->gen_) {
+    auto store = GetStore(gen);
+    if (store->addr_.gm == nullptr) {
+      bool inplaced = false;
+      auto store_size = GetStoreSize(store);
+      for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
+        if (it->first != nullptr && store_size == it->second && gen->nd_.dims() == it->first->nd_.dims()) {
+          store->addr_.gm = it->first->addr_.gm;
+          it->first = nullptr;
+          inplaced = true;
+          break;
+        }
+      }
+      if (!inplaced) {
+        AllocWS(store, ws_alloc);
+      }
+    }
+    gen->addr_.gm = store->addr_.gm;
+  }
+  ctx_->gen_.clear();
+}
+
+void _SplitKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  for (auto reloc = relocs; reloc < relocs + reloc_size; ++reloc) {
+    static_cast<NDAccess *>(reloc->io)->addr_.gm = reloc->addr;
+  }
   int kidx = kernel_used_;
-  if (static_cast<size_t>(kidx) > kernels_.size()) {
-    for (int i = kernels_.size(); i < kidx; ++i) {
+  if (int ksize = static_cast<int>(kernels_.size()); kidx > ksize) {
+    for (int i = ksize; i < kidx; ++i) {
       kernels_.push_back(new EagerVector());
     }
   }
+  ctx_->MemReset();
   uint64_t extern_code_size = 0;
   int kernel_begin = 0;
   while (area_used_ > 0 && kidx > kernel_begin) {
@@ -1236,41 +1509,37 @@ uint64_t VKernelE::CodeGen() {
     if (area->state_ == EagerArea::kFree) continue;
     area->state_ = EagerArea::kFree;
     auto kernel = kernels_[--kidx];
-    kernel->Reset(area->dom_);
-    if (!area->fused_.empty()) {
-      for (auto it = area->fused_.rbegin(); it != area->fused_.rend(); ++it) {
-        append_ops(kernel, (*it)->objects_);
-      }
-    }
-    append_ops(kernel, area->objects_);
-    if (area->dom_->obj_id_ == ObjectType::kCubeOp) {
+    BuildKernel(kernel, area, ws_alloc);
+    if (area->dom_->IsCube()) {
       auto mm = static_cast<CubeOp *>(area->dom_);
-      if (auto io = static_cast<NDAccess *>(mm->lhs_); io->addr_.gm == nullptr) {
-        io->addr_.gm = AllocWS(GetStore(io));
-      }
-      if (auto io = static_cast<NDAccess *>(mm->rhs_); io->addr_.gm == nullptr) {
-        io->addr_.gm = AllocWS(GetStore(io));
-      }
-      if (auto io = static_cast<NDAccess *>(mm->bias_); io && io->addr_.gm == nullptr) {
-        io->addr_.gm = AllocWS(GetStore(io));
+      auto cube_gen = [this, ws_alloc](NDObject *in) {
+        if (auto io = static_cast<NDAccess *>(in); io->addr_.gm == nullptr) {
+          auto store = GetStore(io);
+          io->addr_.gm = store->addr_.gm ? store->addr_.gm : AllocWS(store, ws_alloc);
+        }
+      };
+      cube_gen(mm->lhs_);
+      cube_gen(mm->rhs_);
+      if (mm->bias_) {
+        cube_gen(mm->bias_);
       }
       if (kernel->objects_.empty()) {
         kernel->CodeGenCube(mm);
       } else {
-        AllocVectorWSS(kernel, obj_size);
         auto cube_code = kernel->CodeGenMix(mm);
         uint64_t pos_size = sizeof(vMixGroupMsg) * mm->block_dim_;
         void *pos_mem;
-        if (auto it = wss_.upper_bound(pos_size - 1); it != wss_.end()) {
-          pos_mem = it->second;
+        if (auto mem = ctx_->Alloc(pos_size)) {
+          pos_mem = mem->addr;
+          pos_size = mem->size;
         } else {
-          pos_mem = ws_alloc_(pos_size, user_data_);
-          wss_.insert({pos_size, pos_mem});
+          pos_mem = ws_alloc->Alloc(pos_size);
         }
+        ctx_->Free(pos_mem, pos_size);
         cube_code->gm_pos = reinterpret_cast<uint64_t>(pos_mem);
       }
       if (auto output = mm->output_; !mm->atomic_add_ && !(output->flags_ & OBJ_FLAG_EAGER)) {
-        wss_.insert({GetStoreSize(output), output->addr_.gm});
+        ctx_->Free(output->addr_.gm, GetStoreSize(output));
       }
     } else {
       EagerVector **pv_kernels = nullptr;
@@ -1280,26 +1549,20 @@ uint64_t VKernelE::CodeGen() {
         for (; pv_mask && pv_num < g_eager_pv_width; ++pv_num) {
           int area_id = 63 - __builtin_clzl(pv_mask);
           pv_mask &= ~(1ul << area_id);
+          pv_black_mask_ |= 1ul << area_id;
           auto a = areas_[area_id].second;
           a->state_ = EagerArea::kFree;
           auto k = kernels_[kernel_begin++];
-          k->Reset(a->dom_);
-          if (!a->fused_.empty()) {
-            for (auto it = a->fused_.rbegin(); it != a->fused_.rend(); ++it) {
-              append_ops(k, (*it)->objects_);
-            }
-          }
-          append_ops(k, a->objects_);
+          BuildKernel(k, a, ws_alloc);
         }
       }
-      AllocVectorWSS(kernel, obj_size);
       if (uint64_t ws_size = kernel->EagerVector::CodeGenV(pv_kernels, pv_num); ws_size > 0) {
         void *ws_mem;
-        if (auto it = wss_.upper_bound(ws_size - 1); it != wss_.end()) {
-          ws_mem = it->second;
+        if (auto mem = ctx_->Alloc(ws_size)) {
+          ws_mem = mem->addr;
         } else {
-          ws_mem = ws_alloc_(ws_size, user_data_);
-          wss_.insert({ws_size, ws_mem});
+          ws_mem = ws_alloc->Alloc(ws_size);
+          ctx_->Free(ws_mem, ws_size);
         }
         for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
           op->Reloc(static_cast<char *>(ws_mem) + op->ws);
@@ -1311,30 +1574,33 @@ uint64_t VKernelE::CodeGen() {
       extern_code_size = code_size;
     }
     if (kidx > kernel_begin + 1) {
-      for (auto op : temp_ops_) {
-        if (auto store = static_cast<NDAccess *>(op); !GetStoreInplace(store)) {
-          wss_.insert({GetStoreSize(store), store->addr_.gm});
+      for (auto &kill : ctx_->kill_) {
+        if (kill.first) {
+          ctx_->Free(kill.first->addr_.gm, kill.second);
         }
       }
     }
-    temp_ops_.clear();
+    ctx_->kill_.clear();
   }
   kernel_begin_ = kernel_begin;
-  wss_.clear();
   if (extern_code_size) {
-    extern_code_ = ws_alloc_(extern_code_size, user_data_);
+    extern_code_ = ws_alloc->Alloc(extern_code_size);
   }
-  return 0;
 }
+
+CubeOp *_SplitKernel::GetCubeOp(EagerVector *kernel) { return kernel->mm_; }
 
 class EagerDumpRef : public DumpRefHelper {
  public:
-  EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
-  virtual NDObject *GetInput(NDObject *input) {
+  explicit EagerDumpRef(std::ostringstream &oss) : DumpRefHelper(oss) {}
+  NDObject *GetInput(NDObject *input) override {
     while (input && idx_map_.count(input) == 0) {
       if (input->IsLoad()) {
-        auto acc = VKernelE::GetStore(input);
+        auto acc = _SplitKernel::GetStore(input);
         if (acc) {
+          if (acc->IsLoad()) {
+            return acc;
+          }
           input = acc->lhs_;
           continue;
         }
@@ -1345,7 +1611,7 @@ class EagerDumpRef : public DumpRefHelper {
   }
 };
 
-void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
+void _SplitKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   if (kernel_used_ == 0) return;
   if (kernel_begin_ < kernel_used_) {
     oss << "vgraph.eager() {" << std::endl;
@@ -1382,7 +1648,7 @@ void VKernelE::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << "}";
 }
 
-std::string &VKernelE::DisAssemble() {
+std::string &_SplitKernel::DisAssemble() {
   std::ostringstream oss;
   for (int i = kernel_begin_; i < kernel_used_; ++i) {
     oss << "// eager " << i << std::endl;
@@ -1393,8 +1659,274 @@ std::string &VKernelE::DisAssemble() {
   return dump_str_;
 }
 
-void VKernelE::TunerLaunch(EagerVector *kernel, void *stream) {
-  auto tuner = static_cast<LazyCubeTuner *>(System::Instance().lazy_tuner_);
-  tuner->Launch(static_cast<CubeOp *>(kernel->next_), kernel->code_, stream);
+void _SplitKernel::TunerLaunch(EagerVector *kernel, void *stream) {
+  auto tuner = static_cast<LazyCubeTuner *>(g_system.lazy_tuner_);
+  tuner->Launch(kernel->mm_, kernel->code_, stream);
+}
+
+
+class SlotWsAllocator : public WsAllocator {
+ public:
+  SlotWsAllocator(SplitContext::SlotWorkspace &ws) : ws_(ws) {}
+  void *Alloc(uint64_t size) override {
+    if (size > 0) {
+      ws_.emplace_back(size, nullptr);
+    }
+    return reinterpret_cast<void *>(ws_.size());
+  }
+  SplitContext::SlotWorkspace &ws_;
+};
+
+void _SplitKernel::SlotCodeGen(const RelocEntry *relocs, size_t reloc_size) {
+  auto add_reloc = [this](uint64_t &insn, uint64_t ws_size) {
+    auto op = new NDLoadDummy(kFloat32);
+    objects_.push_back(op);
+    op->addr_.data = insn;
+    op->addr_.Update(&insn);
+  };
+  SlotWsAllocator slot_alloc(ctx_->slot_ws_);
+  _SplitKernel::CodeGenR(relocs, reloc_size, &slot_alloc);
+  uint64_t ws_size = ctx_->slot_ws_.size();
+  for (int i = kernel_begin_; i < kernel_used_; ++i) {
+    if (auto mm = kernels_[i]->mm_) {
+      auto code = reinterpret_cast<vCubeOp *>(kernels_[i]->code_.data_ + Code::HeadSize());
+      if (mm->atomic_add_) {
+        add_reloc(code->gm_a, ws_size);
+        add_reloc(code->gm_b, ws_size);
+        if (mm->bias_) {
+          add_reloc(code->gm_bias, ws_size);
+        }
+        add_reloc(code->gm_c, ws_size);
+        if (mm->obj_id_ == ObjectType::kGmmOp) {
+          add_reloc(code->gm_group_list, ws_size);
+        }
+      } else {
+        static_cast<NDAccess *>(mm->lhs_)->addr_.Update(&code->gm_a);
+        static_cast<NDAccess *>(mm->rhs_)->addr_.Update(&code->gm_b);
+        if (mm->bias_) {
+          static_cast<NDAccess *>(mm->bias_)->addr_.Update(&code->gm_bias);
+        }
+        static_cast<NDAccess *>(mm->output_)->addr_.Update(&code->gm_c);
+        if (mm->obj_id_ == ObjectType::kGmmOp) {
+          auto gmm = static_cast<GmmOp *>(mm);
+          static_cast<NDAccess *>(gmm->group_list_)->addr_.Update(&code->gm_group_list);
+        }
+      }
+      if (code->flags & V_CUBE_FLAG_GROUP_SET) {
+        add_reloc(code->gm_pos, ws_size);
+      }
+    }
+  }
+  auto &ws = ctx_->slot_ws_;
+  if (!ws.empty()) {
+    for (auto op : objects_) {
+      if (op->IsSimd()) continue;
+      auto &addr = static_cast<NDAccess *>(op)->addr_;
+      if (addr.data > 0 && addr.data <= ws_size) {
+        auto &slot = ws[addr.data - 1];
+        if (slot.second == nullptr) {
+          slot.second = &addr;
+        } else {
+          code_.BindOpFast(addr, *slot.second);
+        }
+      }
+    }
+    ASSERT(std::find_if(ws.begin(), ws.end(), [](std::pair<size_t, RelocAddr *> &slot)
+                        { return slot.second == nullptr; }) == ws.end());
+  }
+}
+
+void _SplitKernel::RelocBinds() {
+  code_.RelocBinds(0);
+  code_.bind_ops_ = nullptr;
+  code_.bind_wss_ = nullptr;
+  for (int i = kernel_begin_; i < kernel_used_; ++i) {
+    auto &code = kernels_[i]->code_;
+    code.RelocBinds(0);
+    code.bind_ops_ = nullptr;
+    code.bind_wss_ = nullptr;
+  }
+}
+
+VKernelE::VKernelE() : _SplitKernel(KernelTypeX::kEager_) {
+  static SplitContext ctx;
+  ctx_ = &ctx;
+  objects_.reserve(128);
+  areas_.reserve(16);
+  kernels_.reserve(8);
+}
+
+VKernelE::~VKernelE() { Clear(); }
+
+_SplitGraph::_SplitGraph(KernelTypeX type) : _SplitKernel(type) {
+  static SplitContext ctx;
+  ctx_ = &ctx;
+}
+
+_SplitGraph:: ~_SplitGraph() {
+  auto &del_ops = objects_.empty() ? build_ops_ : objects_;
+  for (auto op : del_ops) {
+    delete op;
+  }
+}
+
+void _SplitGraph::Append(NDObject *obj) {
+  if (obj->IsStore() && obj->lhs_ != build_ops_.back()) {
+    build_ops_.push_back(build_ops_.back());
+    for (size_t i = build_ops_.size() - 2; i > 0; --i) {
+      if (build_ops_[i - 1] == obj->lhs_) {
+        build_ops_[i] = obj;
+        break;
+      }
+      build_ops_[i] = build_ops_[i - 1];
+    }
+  } else {
+    build_ops_.push_back(obj);
+  }
+}
+
+void _SplitGraph::Infer() {
+  for (auto op : build_ops_) {
+    if (op->IsCube()) {
+      auto mm = static_cast<CubeOp *>(op);
+      // TODO: cube support reuse
+      mm->atomic_add_ = false;
+      mm->batch_fold_ = false;
+      mm->set_real_ = false;
+      auto real_out = AppendCube(mm);
+      mm->block_dim_ = reinterpret_cast<uint64_t>(real_out);
+    } else {
+      op->ForInput([op](NDObject *&input) {
+        if (input->IsCube()) {
+          auto mm = static_cast<CubeOp *>(input);
+          auto real_out = reinterpret_cast<NDObject *>(mm->block_dim_);
+          if (real_out != mm) {
+            input = real_out;
+          } else if (op->IsStore()) {
+            mm->output_ = static_cast<NDAccess *>(op);
+          }
+        }
+      });
+      _SplitKernel::Append(op);
+    }
+  }
+}
+
+void _SplitGraph::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (!objects_.empty()) {
+    _SplitKernel::Dump(oss, indent);
+    return;
+  }
+  DumpRefHelper helper(oss);
+  oss << indent << "rgraph.split() {" << std::endl;
+  std::string body_indent = indent + "  ";
+  for (auto op : build_ops_) {
+    oss << body_indent;
+    helper.Dump(op);
+    oss << std::endl;
+  }
+  oss << indent << "}";
+}
+
+void SplitGraphD::Append(NDObject *op) {
+  if (op->lhs_) {
+    tracker_.Record(&op->lhs_);
+    if (op->rhs_) {
+      tracker_.Record(&op->rhs_);
+      if (op->flags_ & OBJ_FLAG_XHS) {
+        tracker_.Record(&static_cast<FlexOp *>(op)->xhs_);
+      } else if (op->IsCube()) {
+        tracker_.Record(&static_cast<CubeOp *>(op)->bias_);
+      }
+    }
+  }
+  _SplitGraph::Append(op);
+}
+
+void SplitGraphD::Infer() {
+  Reset();
+  tracker_.Recover();
+  for (auto op : objects_) {
+    if (!(op->flags_ & OBJ_FLAG_EAGER)) {
+      op->~NDObject();
+      NDObject::mem_pool_.Put(op);
+    }
+  }
+  _SplitGraph::Infer();
+}
+
+void SplitGraphD::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  _SplitGraph::CodeGenR(relocs, reloc_size, ws_alloc);
+  RelocBinds();
+}
+
+void SplitGraphS::Infer() {
+  if (!objects_.empty()) {
+    return;
+  }
+  std::unordered_set<void *> ios;
+  for (auto op : build_ops_) {
+    if (!op->IsSimd()) {
+      static_cast<NDAccess *>(op)->addr_.gm = op;
+      ios.insert(op);
+    }
+  }
+  _SplitGraph::Infer();
+  SlotCodeGen(nullptr, 0);
+  slot_ws_ = std::move(ctx_->slot_ws_);
+  size_t slot_size = slot_ws_.size();
+  for (auto op : objects_) {
+    if (!(op->IsSimd() || (op->flags_ & OBJ_FLAG_EAGER))) {
+      auto &addr = static_cast<NDAccess *>(op)->addr_;
+      if (addr.data > slot_size && ios.count(addr.gm)) {
+        auto bind_op = reinterpret_cast<NDAccess *>(addr.gm);
+        code_.BindOpFast(addr, bind_op->addr_);
+      }
+    }
+  }
+}
+
+static void CombineAlloc(SplitContext::SlotWorkspace &ws, WsAllocator *alloc) {
+  uint64_t total_size = 0;
+  for (auto &slot : ws) {
+    slot.first = RoundUp(slot.first, 512ul);
+    total_size += slot.first;
+  }
+  uint8_t *ws_mem = static_cast<uint8_t *>(alloc->Alloc(total_size));
+  for (auto &slot : ws) {
+    slot.second->Reloc(ws_mem);
+    ws_mem += slot.first;
+  }
+}
+
+void SplitGraphS::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  for (size_t i = 0; i < reloc_size; ++i, ++relocs) {
+    static_cast<NDAccess *>(relocs->io)->addr_.Reloc(relocs->addr);
+  }
+  if (single_ws_) {
+    CombineAlloc(slot_ws_, ws_alloc);
+  } else {
+    for (auto &slot : slot_ws_) {
+      slot.second->Reloc(ws_alloc->Alloc(slot.first));
+    }
+  }
+  code_.RelocBinds(0);
+  for (int i = kernel_begin_; i < kernel_used_; ++i) {
+    kernels_[i]->code_.RelocBinds(0);
+  }
+}
+
+void SplitEagerW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  SlotCodeGen(relocs, reloc_size);
+  CombineAlloc(ctx_->slot_ws_, ws_alloc);
+  ctx_->slot_ws_.clear();
+  RelocBinds();
+}
+
+void SplitGraphDW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  SlotCodeGen(relocs, reloc_size);
+  CombineAlloc(ctx_->slot_ws_, ws_alloc);
+  ctx_->slot_ws_.clear();
+  RelocBinds();
 }
 }  // namespace dvm

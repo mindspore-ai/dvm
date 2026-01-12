@@ -55,7 +55,7 @@ void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
     ERROR_CHECK(aclrtMalloc(&dev_N_, op->rhs_->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     ERROR_CHECK(aclrtMalloc(&dev_O_, op->Size() + 512, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     TuneData td;
-    td.kernel.Reset<KernelType::kCube>(0);
+    td.kernel.Reset(KernelType::kCube, 0);
     auto m_input = td.kernel.Load(dev_M_, op->lhs_->shape_ref_, DataType::kFloat16);
     auto n_input = td.kernel.Load(dev_N_, op->rhs_->shape_ref_, DataType::kFloat16);
     auto matmul = new CubeOp(m_input, n_input, op->trans_a_, op->trans_b_);

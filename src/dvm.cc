@@ -21,7 +21,6 @@
 #include "kernel.h"
 #include "xkernel.h"
 #include "msprof.h"
-#include "tuning.h"
 #include "comm.h"
 
 namespace dvm {
@@ -493,6 +492,57 @@ class ReshapeRankOp : public ReshapeOp {
   NDObject *Clone(CloneHelper &h) override { return new ReshapeRankOp(h.GetClone(lhs_), comm_); }
   const Communicator *comm_;
 };
+
+VKernel *NewKernel(KernelType type, uint32_t flags) {
+  VKernel *kernel;
+  switch (type) {
+    case KernelType::kVector: {
+      bool dynamic = flags & KernelFlag::kDynamic;
+      if (flags & KernelFlag::kSpeculate) {
+        if (dynamic) {
+          kernel = new SpecVector<true>();
+        } else {
+          kernel = new SpecVector<false>();
+        }
+      } else {
+        kernel = dynamic ? new VKernelD() : new VKernelS();
+      }
+      break;
+    }
+    case KernelType::kCube:
+    case KernelType::kMix: {
+      kernel = flags & KernelFlag::kDynamic ? new DynMixKernel() : new MixKernel();
+      break;
+    }
+    case KernelType::kParallel: {
+      EXCEPTION_IF(flags & KernelFlag::kDynamic, "dynamic shape parallel is not support");
+      kernel = new VKernelP();
+      break;
+    }
+    case KernelType::kSequence: {
+      kernel = new SequenceKernel(flags);
+      break;
+    }
+    case KernelType::kSplit: {
+      bool unify_ws = flags & KernelFlag::kUnifyWS;
+      if (flags & KernelFlag::kDynamic) {
+        kernel = unify_ws ? new SplitGraphDW() : new SplitGraphD();
+      } else {
+        kernel = new SplitGraphS(unify_ws);
+      }
+      break;
+    }
+    case KernelType::kEager: {
+      kernel = flags & KernelFlag::kUnifyWS ? new SplitEagerW() : new VKernelE();
+      break;
+    }
+    default: {
+      kernel = nullptr;
+      break;
+    }
+  }
+  return kernel;
+}
 }  // namespace
 
 Float16::Float16(float v) : Float16(EncoderFP16(v)) {}
@@ -533,9 +583,6 @@ void Comm::Init(void *hccl_comm) {
   comm_ = new HcclComm(hccl_comm);
 }
 
-#define ASSERT_KTYPE_SPLIT(type) \
-  ASSERT(type == KernelTypeX::kEager_ || type == KernelTypeX::kStaticSplit || type == KernelTypeX::kDynSplit)
-
 Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr}, op_name_{kUnnamedDvmOp}, op_fullname_{kUnnamedDvmOp} {
   g_system.Init();
 }
@@ -545,46 +592,12 @@ Kernel::~Kernel() {
   delete msprof_helper_;
 }
 
-template <KernelType type>
-void Kernel::Reset(uint32_t flags) {
+void Kernel::Reset(KernelType type, uint32_t flags) {
   if (kernel_) {
     delete kernel_;
   }
-  if constexpr (type == KernelType::kVector) {
-    bool dynamic = flags & KernelFlag::kDynamic;
-    if (flags & KernelFlag::kSpeculate) {
-      if (dynamic) {
-        kernel_ = new SpecVector<true>(kDynSpec);
-      } else {
-        kernel_ = new SpecVector<false>(kStaticSpec);
-      }
-    } else {
-      kernel_ = dynamic ? new VKernelD() : new VKernelS();
-    }
-  } else if constexpr (type == KernelType::kCube || type == KernelType::kMix) {
-    kernel_ = flags & KernelFlag::kDynamic ? new DynMixKernel() : new MixKernel();
-  } else if constexpr (type == KernelType::kParallel) {
-    EXCEPTION_IF(flags & KernelFlag::kDynamic , "dynamic shape parallel is not support");
-    kernel_ = new VKernelP();
-  } else if constexpr (type == KernelType::kSplit) {
-    bool unify_ws = flags & KernelFlag::kUnifyWS;
-    if (flags & KernelFlag::kDynamic) {
-      kernel_ = unify_ws ? new SplitGraphDW() : new SplitGraphD();
-    } else {
-      kernel_ = new SplitGraphS(unify_ws);
-    }
-  } else {
-    ASSERT(type == KernelType::kEager);
-    kernel_ = flags & KernelFlag::kUnifyWS ? new SplitEagerW() : new VKernelE();
-  }
+  kernel_ = NewKernel(type, flags);
 }
-
-template void Kernel::Reset<KernelType::kVector>(uint32_t);
-template void Kernel::Reset<KernelType::kCube>(uint32_t);
-template void Kernel::Reset<KernelType::kMix>(uint32_t);
-template void Kernel::Reset<KernelType::kParallel>(uint32_t);
-template void Kernel::Reset<KernelType::kSplit>(uint32_t);
-template void Kernel::Reset<KernelType::kEager>(uint32_t);
 
 NDObject *Kernel::Load(void *addr, ShapeRef *shape, DataType type) {
   NDObject *obj = new NDLoad(addr, shape, type);
@@ -892,7 +905,7 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
     input = Copy(input);
   }
   auto ktype = kernel_->KType();
-  if (ktype == kEager_) {
+  if (ktype == KernelType::kEager) {
     if (auto store = VKernelE::GetStore(input)) {
       store->addr_.gm = addr;
       store->flags_ |= OBJ_FLAG_EAGER;
@@ -911,7 +924,7 @@ NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
 }
 
 void Kernel::SetStoreInplace(NDObject *store) {
-  ASSERT_KTYPE_SPLIT(kernel_->KType());
+  ASSERT(kernel_->IsSplit());
   _SplitKernel::SetStoreInplace(store, 1);
 }
 
@@ -950,7 +963,7 @@ NDObject *Kernel::ReduceScatter(NDObject *input, const Comm *comm) {
 
 NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias) {
   CubeOp *obj = new CubeOp(lhs, rhs, trans_a, trans_b, bias);
-  if (kernel_->KType() == KernelTypeX::kEager_) {
+  if (kernel_->KType() == KernelType::kEager) {
     return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
@@ -960,7 +973,7 @@ NDObject *Kernel::MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_
 NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias,
                                 NDObject *group_list, GmmSplitType group_type, GmmListType group_list_type) {
   GmmOp *obj = new GmmOp(lhs, rhs, trans_a, trans_b, bias, group_list, group_type, group_list_type);
-  if (kernel_->KType() == KernelTypeX::kEager_) {
+  if (kernel_->KType() == KernelType::kEager) {
     return static_cast<VKernelE *>(kernel_)->AppendCube(obj);
   }
   kernel_->Append(obj);
@@ -968,11 +981,20 @@ NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool
 }
 
 void Kernel::ParallelNext() {
-  if (kernel_->KType() == KernelTypeX::kStaticParallel) {
-    static_cast<VKernelP *>(kernel_)->AppendNext();
-  } else {
-    ASSERT(0);
+  ASSERT(kernel_->KType() == KernelType::kParallel);
+  static_cast<VKernelP *>(kernel_)->AppendNext();
+}
+
+void Kernel::SequenceAdd(KernelType type, uint32_t flags) {
+  ASSERT(kernel_->KType() == KernelType::kSequence);
+  if (unlikely(type >= KernelType::kSequence)) {
+    DvmException("invalid sequence add kernel type");
   }
+  if (kernel_->IsDynamic()) {
+    flags |= KernelFlag::kDynamic;
+  }
+  auto kernel = NewKernel(type, flags);
+  static_cast<SequenceKernel *>(kernel_)->AddStage(kernel);
 }
 
 void Kernel::SpecNext() { static_cast<_SpecVector *>(kernel_)->Next(); }
@@ -988,9 +1010,9 @@ size_t Kernel::CodeGen() {
 
 void Kernel::Infer() {
   auto ktype = kernel_->KType();
-  if (ktype == KernelTypeX::kStaticSplit || ktype == KernelTypeX::kDynSplit) {
+  if (ktype == KernelType::kSplit) {
     static_cast<_SplitGraph *>(kernel_)->Infer();
-  } else if (ktype == KernelTypeX::kDynShape) {
+  } else if (ktype == KernelType::kVector && kernel_->IsDynamic()) {
     auto dyn_kernel = static_cast<VKernelD *>(kernel_);
     dyn_kernel->Normalize(false);
   }
@@ -1021,7 +1043,7 @@ int Kernel::Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace,
       }
     }
     msprof_helper_->InitReportNode();
-  } else if (kernel_->KType() == kDynShape) {
+  } else if (kernel_->IsDynamic()) {
     msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
   }
   {
@@ -1039,7 +1061,7 @@ int Kernel::Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace,
 }
 
 int Kernel::Launch(void *stream) {
-  ASSERT_KTYPE_SPLIT(kernel_->KType());
+  ASSERT(kernel_->IsSplit());
   auto kernel = static_cast<_SplitKernel *>(kernel_);
   if (!g_system.enable_profile_) {
     kernel->Launch(stream);
@@ -1103,7 +1125,7 @@ int Kernel::Launch(void *stream) {
 }
 
 void Kernel::CodeGen(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
-  ASSERT_KTYPE_SPLIT(kernel_->KType());
+  ASSERT(kernel_->IsSplit());
   static_cast<_SplitKernel *>(kernel_)->CodeGenR(relocs, reloc_size, ws_alloc);
 }
 

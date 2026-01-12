@@ -20,36 +20,32 @@ from tests.mark_utils import arg_mark
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_stage_vec_vec():
-    t = Tester("stages")
-    t.stage_switch("static");
+def test_seq_vec_vec():
+    t = Tester("seq")
+    t.seq_add("vector")
     ax = np.full([1024, 128], 0.05, np.float32)
     a = t.load(ax)
     b = t.add(a, 0.2)
     c = t.mul(a, b)
-    d = t.stage_store(c)
-    t.stage_switch("static");
-    e = t.stage_load(d)
-    f = t.mul(e, 0.7)
-    t.store_expect(f, (ax + 0.2) * ax * 0.7)
+    t.seq_add("vector")
+    d = t.mul(c, 0.7)
+    t.store_expect(d, (ax + 0.2) * ax * 0.7)
     assert (t.run_check())
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_stage_vec_mix():
-    t = Tester("stages")
-    t.stage_switch("static");
+def test_seq_vec_mix():
+    t = Tester("seq")
+    t.seq_add("vector")
     ax = np.random.normal(0, 1, [1024, 512]).astype(np.float16)
     a = t.load(ax)
     b = t.add(a, 0.02)
     c = t.mul(a, b)
-    d = t.stage_store(c)
-    t.stage_switch("mix");
-    e = t.stage_load(d)
+    t.seq_add("mix")
     fx = np.random.normal(0, 1, [512, 1024]).astype(np.float16)
     f = t.load(fx)
-    g = t.matmul(e, f, False, False)
+    g = t.matmul(c, f, False, False)
     h = t.cast(g, "float32")
     expect = np.matmul(((ax + 0.02) * ax).astype(np.float32), fx.astype(np.float32))
     t.store_expect(h, expect, 1e-3)
@@ -58,93 +54,73 @@ def test_stage_vec_mix():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_stage_mix_vec():
-    t = Tester("stages")
-    t.stage_switch("mix");
+def test_seq_mix_vec():
+    t = Tester("seq")
+    t.seq_add("mix")
     ax = np.random.normal(0, 1, [768, 512]).astype(np.float16)
     bx = np.random.normal(0, 1, [512, 128 * 7]).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)
     c = t.matmul(a, b, False, False)
     d = t.cast(c, "float32")
-    e = t.stage_store(d)
-    t.stage_switch("static");
-    f = t.stage_load(e)
-    g = t.add(f, 0.02)
+    t.seq_add("vector")
+    g = t.add(d, 0.02)
     expect = np.matmul(ax.astype(np.float32), bx.astype(np.float32)) + 0.02
     t.store_expect(g, expect, 1e-3)
     assert (t.run_check())
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_stage_inplace_reuse():
+def test_seq_inplace_reuse():
     ax = np.full([1024], 0.05, np.float32)
-    t = Tester("stages")
-    t.stage_switch("static")
+    t = Tester("seq")
+    t.seq_add("vector")
     a0 = t.load(ax)
     a1 = t.add(a0, 0.1)
-    a2 = t.stage_store(a1)
-    t.stage_switch("static")
-    b0 = t.stage_load(a2)
-    b1 = t.add(b0, 0.1)
-    b2 = t.stage_store(b1)
-    t.stage_switch("static")
-    c0 = t.stage_load(b2)
-    c1 = t.add(c0, 0.1)
+    t.seq_add("vector")
+    b1 = t.add(a1, 0.1)
+    t.seq_add("vector")
+    c1 = t.add(b1, 0.1)
     c2 = t.store_expect(c1, 0.05 + 0.3)
     assert (t.run_check())
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_stage_inplace_stage():
+def test_seq_inplace_stage():
     ax = np.full([1024], 0.05, np.float32)
-    t = Tester("stages")
-    t.stage_switch("static")
+    t = Tester("seq")
+    t.seq_add("vector")
     a0 = t.load(ax)
     a1 = t.cast(a0, "float16")
-    a2 = t.stage_store(a1)
-    t.stage_switch("static")
-    b0 = t.stage_load(a2)
-    b1 = t.cast(b0, "float32")
-    b2 = t.stage_store(b1)
-    t.stage_switch("static")
-    c0 = t.stage_load(b2)
-    c1 = t.cast(c0, "float16")
-    c2 = t.stage_store(c1)
-    t.stage_switch("static")
-    d0 = t.stage_load(c2)
-    d1 = t.add(d0, 0.1)
-    d2 = t.stage_store(d1)
-    t.stage_switch("static")
-    e0 = t.stage_load(d2)
-    e1 = t.add(e0, 0.1)
-    e2 = t.stage_store(e1)
-    t.stage_switch("static")
-    f0 = t.stage_load(e2)
-    f1 = t.cast(f0, "float32")
+    t.seq_add("vector")
+    b1 = t.cast(a1, "float32")
+    t.seq_add("vector")
+    c1 = t.cast(b1, "float16")
+    t.seq_add("vector")
+    d1 = t.add(c1, 0.1)
+    t.seq_add("vector")
+    e1 = t.add(d1, 0.1)
+    t.seq_add("vector")
+    f1 = t.cast(e1, "float32")
     f2 = t.store_expect(f1, 0.05 + 0.2, 1e-3)
     assert (t.run_check())
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_stage_workspace_reuse():
-    t = Tester("stages")
-    t.stage_switch("mix");
+def test_seq_workspace_reuse():
+    t = Tester("seq")
+    t.seq_add("mix")
     ax = np.random.normal(0, 1, [512, 512]).astype(np.float16)
     bx = np.random.normal(0, 1, [512, 512]).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)
     c = t.matmul(a, b, False, False)
     d = t.cast(c, "float32")
-    e = t.stage_store(d)
-    t.stage_switch("static")
-    f0 = t.stage_load(e)
-    f1 = t.cast(f0, "float16")
-    f2 = t.stage_store(f1)
-    t.stage_switch("static")
-    g0 = t.stage_load(f2)
-    g1 = t.cast(g0, "float32")
+    t.seq_add("vector")
+    f1 = t.cast(d, "float16")
+    t.seq_add("vector")
+    g1 = t.cast(f1, "float32")
     expect = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
     g2 = t.store_expect(g1, expect, 1e-2)
     assert (t.run_check())
@@ -152,18 +128,17 @@ def test_stage_workspace_reuse():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_stage_extern_code():
-    t = Tester("stages")
-    t.stage_switch("mix");
+def test_seq_extern_code():
+    t = Tester("seq")
+    t.seq_add("mix")
     ax = np.random.normal(0, 1, [512, 512]).astype(np.float16)
     bx = np.random.normal(0, 1, [512, 512]).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)
     c = t.matmul(a, b, False, False)
     d = t.cast(c, "float32")
-    e = t.stage_store(d)
-    t.stage_switch("static")
-    f = t.stage_load(e)
+    t.seq_add("vector")
+    f = d 
     for i in range(200):
         f = t.add(f, 0.01)
         f = t.sub(f, 0.01)
@@ -173,7 +148,7 @@ def test_stage_extern_code():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_stage_vec_reduce():
+def test_seq_vec_reduce():
     np.random.seed(1)
     a0 = np.random.normal(-1, 1, [1, 2048, 5120]).astype(np.float32)
     a1 = np.random.normal(-1, 1, [5120]).astype(np.float32)
@@ -185,28 +160,51 @@ def test_stage_vec_reduce():
     e6 = a0 * e5
     e7 = e6 * a1
 
-    t = Tester("stages", use_pass_opt=True)
-    t.stage_switch("static")
+    t = Tester("seq", use_pass_opt=True)
+    t.seq_add("vector")
     x0 = t.load(a0, "bfloat16")
     y0 = t.cast(x0, "float32")
     o0 = t.store_expect(y0, a0, 1e-2)
     y1 = t.mul(y0, y0)
     y2 = t.sum(y1, (2,), True)
-    s2 = t.stage_store(y2)
 
-    t.stage_switch("static")
-    l2 = t.stage_load(s2)
-    y3 = t.mul(l2, 0.000195313)
+    t.seq_add("vector")
+    y3 = t.mul(y2, 0.000195313)
     y4 = t.add(y3, 1e-6)
     y5 = t.reciprocal(t.sqrt(y4))
     o5 = t.store_expect(y5, e5, 1e-2)
 
-    t.stage_switch("static")
-    l0 = t.stage_load(o0)
-    l5 = t.stage_load(o5)
+    t.seq_add("vector")
+    l0 = o0
+    l5 = o5
     y6 = t.mul(l0, l5)
     x1 = t.load(a1)
     y7 = t.mul(y6, x1)
     y8 = t.cast(y7, "bfloat16")
     t.store_expect(y8, e7, 1e-2)
     assert (t.run_check())
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_seq_vec_mix_dyn():
+    t = Tester("seq:dyn")
+    t.seq_add("vector")
+    x0 = t.load([-1], "float16")
+    x1 = t.add(x0, 0.02)
+    x2 = t.mul(x1, x0)
+    t.seq_add("mix")
+    y0 = t.load([-1], "float16")
+    y1 = t.matmul(x2, y0, False, False)
+    y2 = t.cast(y1, "float32")
+    t.seq_add("vector")
+    z0 = t.sub(y2, 0.01)
+    out = t.store(z0)
+    iterations = [[[512, 1024], [1024, 512]], [[768, 1024], [1024, 1024]]]
+    for x0_shape, y0_shape in iterations:
+        x0_data = np.random.normal(0, 1, x0_shape).astype(np.float16)
+        y0_data = np.random.normal(0, 1, y0_shape).astype(np.float16)
+        t.input(x0, x0_data)
+        t.input(y0, y0_data)
+        t.run()
+        expect = np.matmul(((x0_data + 0.02) * x0_data).astype(np.float32), y0_data.astype(np.float32)) - 0.01
+        t.check(out, expect, 1e-3)

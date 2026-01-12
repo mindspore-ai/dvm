@@ -90,6 +90,7 @@ enum KernelType {
   kCube,
   kMix,
   kParallel,
+  kSequence,
   kSplit,
   kEager,
   kKernelTypeEnd,
@@ -174,8 +175,7 @@ class Kernel {
   Kernel();
   ~Kernel();
 
-  template <KernelType type>
-  void Reset(uint32_t flags);
+  void Reset(KernelType type, uint32_t flags);
   void SetNameHint(const char *name, const char *fullname) {
     op_name_ = name;
     op_fullname_ = fullname;
@@ -220,6 +220,7 @@ class Kernel {
 
   void ParallelNext();
   void SpecNext();
+  void SequenceAdd(KernelType type, uint32_t flags);
 
   size_t CodeGen();
   int Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace, void *stream);

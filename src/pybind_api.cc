@@ -116,14 +116,40 @@ inline void ResetStoreMemory(const std::vector<KernelPy::StoreInfo> &stores) {
   }
 }
 
-std::unordered_map<std::string, int> kernel_type_map = {{"", KernelType::kVector},
+std::unordered_map<std::string, KernelType> kernel_type_map = {{"", KernelType::kVector},
                                                         {"vector",KernelType::kVector},
                                                         {"cube", KernelType::kCube},
                                                         {"mix", KernelType::kMix},
                                                         {"parallel", KernelType::kParallel},
+                                                        {"seq", KernelType::kSequence},
                                                         {"split", KernelType::kSplit},
-                                                        {"eager", KernelType::kEager},
-                                                        {"stages", PyKernelBuilder::kExtStages}};
+                                                        {"eager", KernelType::kEager}};
+
+std::pair<KernelType, uint32_t> ParseKernelType(const std::string &ker_type) {
+  auto pos = ker_type.find(':', 0);
+  auto type_name = ker_type.substr(0, pos);
+  uint32_t flags = 0;
+  while (pos != std::string::npos) {
+    pos++;
+    auto end = ker_type.find(',', pos);
+    auto flag_name = ker_type.substr(pos, end == std::string::npos ? end : end - pos);
+    if (flag_name == "dyn") {
+      flags |= KernelFlag::kDynamic;
+    } else if (flag_name == "unify_ws") {
+      flags |= KernelFlag::kUnifyWS;
+    } else if (flag_name == "spec") {
+      flags |= KernelFlag::kSpeculate;
+    } else {
+      DvmException("kernel flag error");
+    }
+    pos = end;
+  }
+  auto it = kernel_type_map.find(type_name);
+  if (it == kernel_type_map.end()) {
+    DvmException("kernel type error");
+  }
+  return std::make_pair(it->second, flags);
+}
 
 template <typename T>
 T &FindVectorInfo(std::vector<T> &infos, NDObject *op) {
@@ -156,7 +182,7 @@ class KernelRunner : public WsAllocator {
   virtual void AllocLoad(const py::buffer_info &buf, LoadInfo &load) = 0;
   virtual void AllocStore(StoreInfo &store) = 0;
   virtual void Reset() = 0;
-  virtual int Run(PyKernelBuilder &kernel, void *workspace, bool sync) = 0;
+  virtual int Run(Kernel &kernel, void *workspace, bool sync) = 0;
 };
 
 class DevRunner : public KernelRunner {
@@ -197,8 +223,8 @@ class DevRunner : public KernelRunner {
     return ws;
   }
 
-  int Run(PyKernelBuilder &kernel, void *workspace, bool sync) override {
-    if (kernel.IsSplit()) {
+  int Run(Kernel &kernel, void *workspace, bool sync) override {
+    if (kernel.GetImpl()->IsSplit()) {
       kernel.Launch(nullptr);
     } else {
       ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, nullptr));
@@ -251,15 +277,15 @@ class DryRunner : public KernelRunner {
     }
     host_mem_.clear();
   }
-  int Run(PyKernelBuilder &kernel, void *workspace, bool sync) override {
+  int Run(Kernel &kernel, void *workspace, bool sync) override {
     DryRun(kernel, workspace, core_id_, false);
     return 0;
   }
 
-  void DryRun(PyKernelBuilder &kernel, void *workspace, int core_id, bool is_cube) {
+  void DryRun(Kernel &kernel, void *workspace, int core_id, bool is_cube) {
     int target = kernel.GetImpl()->code_.target_;
     DryRunEntry(core_id, is_cube || target == Code::kTargetCube, target);
-    if (kernel.IsSplit()) {
+    if (kernel.GetImpl()->IsSplit()) {
       kernel.Launch(nullptr);
     } else {
       ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, nullptr));
@@ -300,7 +326,7 @@ class DasRunner : public KernelRunner {
     }
     host_mem_.clear();
   }
-  int Run(PyKernelBuilder &kernel, void *workspace, bool sync) override {
+  int Run(Kernel &kernel, void *workspace, bool sync) override {
     auto &code = kernel.GetImpl()->code_;
     code.RelocBinds(workspace);
     return 0;
@@ -367,81 +393,13 @@ void ShapeRefPy::Update(const py::object &shape) {
   *shape_ref_ = shape_;
 }
 
-void PyKernelBuilder::Reset(int type, uint32_t flags) {
-  if (type == KernelType::kVector) {
-    Kernel::Reset<KernelType::kVector>(flags);
-  } else if (type == KernelType::kCube) {
-    Kernel::Reset<KernelType::kCube>(flags);
-  } else if (type == KernelType::kMix) {
-    Kernel::Reset<KernelType::kMix>(flags);
-  } else if (type == KernelType::kParallel) {
-    Kernel::Reset<KernelType::kParallel>(flags);
-  } else if (type == KernelType::kSplit) {
-    Kernel::Reset<KernelType::kSplit>(flags);
-  } else if (type == KernelType::kEager) {
-    Kernel::Reset<KernelType::kEager>(flags);
-  } else if (type == kExtStages) {
-    kernel_ = new StagesKernel();
-  } else {
-    ASSERT(0);
-  }
-  real_ktype_ = type;
-  flags_ = flags;
-}
-
-void PyKernelBuilder::StageSwitch(int type) {
-  auto ktype = static_cast<KernelTypeX>(type);
-  if (real_ktype_ == kExtStages) {
-    static_cast<StagesKernel *>(kernel_)->builder_.StageSwitch(ktype);
-  } else {
-    ASSERT(0);
-  }
-}
-
-NDObject *PyKernelBuilder::StageLoad(NDObject *stage_store) {
-  auto store = static_cast<NDStore *>(stage_store);
-  if (real_ktype_ == kExtStages) {
-    return static_cast<StagesKernel *>(kernel_)->builder_.StageLoad(store);
-  }
-  return nullptr;
-}
-
-NDObject *PyKernelBuilder::StageStore(NDObject *input) {
-  if (real_ktype_ == kExtStages) {
-    return static_cast<StagesKernel *>(kernel_)->builder_.StageStore(input);
-  }
-  return nullptr;
-}
-
 KernelPy::KernelPy(const std::string &ker_type, const std::string &run_type, int dev_id) {
   uint32_t dev_count = 0;
   ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
   ERROR_CHECK(aclrtSetDevice(dev_id));
-  auto pos = ker_type.find(':', 0);
-  auto type_name = ker_type.substr(0, pos);
-  uint32_t flags = 0;
-  while (pos != std::string::npos) {
-    pos++;
-    auto end = ker_type.find(',', pos);
-    auto flag_name = ker_type.substr(pos, end == std::string::npos ? end : end - pos);
-    if (flag_name == "dyn") {
-      flags |= KernelFlag::kDynamic;
-    } else if (flag_name == "unify_ws") {
-      flags |= KernelFlag::kUnifyWS;
-    } else if (flag_name == "spec") {
-      flags |= KernelFlag::kSpeculate;
-    } else {
-      DvmException("kernel flag error");
-    }
-    pos = end;
-  }
-  auto it = kernel_type_map.find(type_name);
-  if (it == kernel_type_map.end()) {
-    DvmException("kernel type error");
-  }
-  auto type = it->second;
   runner_ = RunnerManager::Instance().Get(run_type, dev_id);
+  auto [type, flags] = ParseKernelType(ker_type);
   kernel_.Reset(type, flags);
 }
 
@@ -741,30 +699,9 @@ py::object KernelPy::MakeFloatScalar() { return py::cast(std::make_shared<NDSymF
 
 void KernelPy::ParallelNext() { kernel_.ParallelNext(); }
 
-void KernelPy::StageSwitch(const std::string &ker_type) {
-  int type = KernelTypeX::kStaticShape;
-  if (ker_type == "mix") {
-    type = KernelTypeX::kStaticMix;
-  } else if (ker_type == "dyn_mix") {
-    type = KernelTypeX::kDynMix;
-  } else if (ker_type == "parallel") {
-    type = KernelTypeX::kStaticParallel;
-  } else {
-    type = KernelTypeX::kStaticShape;
-  }
-  kernel_.StageSwitch(type);
-}
-
-py::object KernelPy::StageLoad(const py::object &store) {
-  auto in_obj = store.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.StageLoad(in_obj);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::StageStore(const py::object &input) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.StageStore(in_obj);
-  return py::cast(std::make_shared<NDObjectPy>(op));
+void KernelPy::SequenceAdd(const std::string &ker_type) {
+  auto [type, flags] = ParseKernelType(ker_type);
+  kernel_.SequenceAdd(type, flags);
 }
 
 void KernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
@@ -776,7 +713,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
     {"PrintPeakLive", pass::PrintPeakLive},       {"ReorderStore", pass::ReorderStore},
     {"ReorderLoad", pass::ReorderLoad},           {"CompactPeakLiveness", pass::CompactPeakLiveness},
     {"EliminateReshape", pass::EliminateReshape}, {"InsertRemovePad", pass::InsertRemovePad}};
-  if (kernel_.IsSplit()) {
+  if (kernel_.GetImpl()->IsSplit()) {
     std::vector<RelocEntry> relocs;
     relocs.reserve(loads_.size() + stores_.size());
     for (auto &info : loads_) {
@@ -836,7 +773,7 @@ void KernelPy::InitComm(int rank_id, int rank_size, const std::string &comm_type
 }
 
 void KernelPy::Run() {
-  if (!kernel_.IsSplit()) {
+  if (!kernel_.GetImpl()->IsSplit()) {
     PrepareIO();
   }
   auto ret = runner_->Run(kernel_, workspace_, true);
@@ -854,7 +791,7 @@ void KernelPy::DryRun(int core_idx, bool cube_core) {
 
 py::object KernelPy::Perf() {
   // warm up
-  if (!kernel_.IsSplit()) {
+  if (!kernel_.GetImpl()->IsSplit()) {
     PrepareIO();
   }
   runner_->Run(kernel_, workspace_, true);
@@ -871,7 +808,7 @@ py::object KernelPy::Perf() {
 
 py::object KernelPy::Msprof(const std::string &path, int64_t test_num) {
   ProfileMgr mgr(path);
-  if (kernel_.IsSplit()) {
+  if (kernel_.GetImpl()->IsSplit()) {
     runner_->Run(kernel_, workspace_, true);
     mgr.ProfStart();
     while (test_num--) {
@@ -912,7 +849,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   auto input = py::array(array);
   py::buffer_info buf = input.request();
   runner_->AllocLoad(buf, info);
-  if (kernel_.IsDynShape()) {
+  if (kernel_.GetImpl()->IsDynamic()) {
     info.shape.resize(buf.ndim);
     for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
       info.shape[i] = buf.shape[i];
@@ -969,7 +906,7 @@ void KernelPy::PrepareIO() {
 
 void KernelPy::Reset() {
   runner_->Reset();
-  if (kernel_.GetImpl()->KType() == kEager_) {
+  if (kernel_.GetImpl()->KType() == kEager) {
     kernel_.Clear();
     loads_.clear();
     stores_.clear();
@@ -1146,9 +1083,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("convert_from_bf16", &KernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("p_next", &KernelPy::ParallelNext, "parallel next")
     .def("spec_next", &KernelPy::SpecNext, "spec next")
-    .def("stage_switch", &KernelPy::StageSwitch, "stage switch")
-    .def("stage_load", &KernelPy::StageLoad, "stage load")
-    .def("stage_store", &KernelPy::StageStore, "stage store")
+    .def("seq_add", &KernelPy::SequenceAdd, "add new sequence Kernel")
     .def("reset", &KernelPy::Reset, "reset eager")
     .def("input", &KernelPy::Input, "get ouput array")
     .def("output", &KernelPy::Output, "get ouput array")

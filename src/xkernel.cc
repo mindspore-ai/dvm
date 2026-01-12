@@ -99,7 +99,7 @@ void MixKernel::Append(NDObject *obj) {
     cube_op_->output_ = static_cast<NDAccess *>(obj);
   } else {
     if (post_fusion_ == nullptr) {
-      if (ktype_ == kDynMix) {
+      if (IsDynamic()) {
         post_fusion_ = new VKernelD();
       } else {
         post_fusion_ = new VKernelS();
@@ -163,14 +163,14 @@ void MixKernel::Release() {
 }
 
 uint64_t MixKernel::UnAlignCodeGen() {
-  stage_kernel_ = new StagesKernel();
+  stage_kernel_ = new StagesKernel(flags_);
   auto &builder = stage_kernel_->builder_;
   int64_t pad_size[2] = {cube_op_->tactics_.lhs_pad_size, cube_op_->tactics_.rhs_pad_size};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
   for (size_t i = 0; i < 2; i++) {
     if (pad_size[i]) {
-      builder.StageSwitch(dvm::KernelTypeX::kStaticShape);
+      builder.StageSwitch(KernelType::kVector);
       pad_inputs[i] = builder.Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
       auto load = builder.Copy(pad_inputs[i]);
       inputs[i] = builder.StagePadStore(load, pad_size[i]);
@@ -225,7 +225,7 @@ uint64_t MixKernel::SplitKCodeGen() {
   auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
   size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
 
-  stage_kernel_ = new StagesKernel();
+  stage_kernel_ = new StagesKernel(flags_);
   auto &builder = stage_kernel_->builder_;
   std::vector<NDAccess *> split_lhs;
   std::vector<NDAccess *> split_rhs;
@@ -290,9 +290,9 @@ uint64_t MixKernel::SplitKCodeGen() {
 }
 
 uint64_t MixKernel::BiasBF16CodeGen() {
-  stage_kernel_ = new StagesKernel();
+  stage_kernel_ = new StagesKernel(flags_);
   auto &builder = stage_kernel_->builder_;
-  builder.StageSwitch(dvm::KernelTypeX::kStaticShape);
+  builder.StageSwitch(KernelType::kVector);
   auto bias_bf16 = builder.Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
   auto bias_fp32 = builder.StageStore(builder.Cast(bias_bf16, kFloat32));
 
@@ -488,11 +488,6 @@ void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
-DynMixKernel::DynMixKernel() : MixKernel() {
-  ktype_ = kDynMix;
-  tuner_ = nullptr;
-}
-
 void DynMixKernel::Record() {
   if (post_fusion_) {
     static_cast<VKernelD *>(post_fusion_)->Recover();
@@ -551,6 +546,12 @@ void StagesKernel::Append(NDObject *obj) {
 #define STAGE_FLAG_REUSE 2
 
 uint64_t StagesKernel::CodeGen() {
+  if (IsDynamic()) {
+    for (auto &s : sloads_) {
+      SetStageStore(s.first, s.second);
+    }
+    code_.Clear();
+  }
   for (auto s : stages_) {
     auto k = s->kernel;
     s->ws_size = k->code_.ReserveWorkspace(k->CodeGen());
@@ -615,7 +616,7 @@ uint64_t StagesKernel::AllocWorkspace() {
       if (io->IsLoad() && io->CheckFlag(OBJ_FLAG_STAGE_IO)) {
         auto store = GetStageStore(io);
         if (!store->CheckFlag(OBJ_FLAG_STAGE_IO) || lives.find(store) != lives.end()) continue;
-        if (stage->kernel->KType() == kStaticShape) {  // TODO: parallel fusion
+        if (stage->kernel->KType() == KernelType::kVector && !stage->kernel->IsDynamic()) {  // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
           auto inplace_out = static_cast<VectorKernel *>(stage->kernel)
                                ->FindInplaceStore(io, [&lives, &inplace_stage](NDAccess *op) -> bool {
@@ -698,16 +699,16 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
-void StagesKernel::_Builder::StageSwitch(KernelTypeX type) {
+void StagesKernel::_Builder::StageSwitch(KernelType type) {
   VKernel *kernel = nullptr;
-  if (type == KernelTypeX::kStaticShape) {
-    kernel = new VKernelS();
-  } else if (type == KernelTypeX::kStaticMix) {
-    kernel = new MixKernel();
-  } else if (type == KernelTypeX::kStaticParallel) {
+  auto is_dyn = kernel_->IsDynamic();
+  if (type == KernelType::kVector) {
+    kernel = is_dyn ? new VKernelD() : new VKernelS();
+  } else if (type == KernelType::kMix) {
+    kernel = is_dyn ? new DynMixKernel() : new MixKernel();
+  } else if (type == KernelType::kParallel) {
+    ASSERT(!is_dyn);
     kernel = new VKernelP();
-  } else if (type == KernelTypeX::kDynMix) {
-    kernel = new DynMixKernel();
   } else {
     ASSERT(0);
   }
@@ -739,21 +740,51 @@ NDObject *StagesKernel::_Builder::StagePadStore(NDObject *input, int64_t pad_siz
   return op;
 }
 
-void DynStagesKernel::Record() {
-  for (auto s : stages_) {
-    for (auto io : s->ios) {
-      if (io->CheckFlag(OBJ_FLAG_STAGE_IO) && io->IsLoad()) {
-        sloads_.emplace_back(io, GetStageStore(io));
+void SequenceKernel::Append(NDObject *obj) {
+  int cur_sid = stages_.size() - 1;
+  SetStore(obj, nullptr);
+  SetStage(obj, cur_sid);
+  if (obj->obj_id_ == ObjectType::kStore) {
+    SetStore(obj->lhs_, obj);
+  }
+  obj->ForInput([this, cur_sid](NDObject *&in) {
+    int sid = GetStage(in);
+    if (sid == cur_sid) {
+      return;
+    }
+    ASSERT(!in->IsLoad());
+    NDAccess *store;
+    if (in->obj_id_ == ObjectType::kStore) {
+      store = static_cast<NDAccess *>(in);
+    } else {
+      store = GetStore(in);
+      if (store == nullptr) {
+        store = new NDStore(in);
+        auto stage = stages_[sid];
+        stage->kernel->Append(store);
+        stage->StageStore(store);
+        SetStore(in, store);
       }
     }
-  }
-}
-
-void DynStagesKernel::Reset() {
-  for (auto &s : sloads_) {
-    SetStageStore(s.first, s.second);
-  }
-  code_.Clear();
+    NDAccess *load = nullptr;
+    auto stage = stages_[cur_sid];
+    for (auto op : stage->ios) {
+      if (op->CheckFlag(OBJ_FLAG_STAGE_IO) && op->IsLoad() && GetStageStore(op) == store) {
+        load = op;
+        break;
+      }
+    }
+    if (load == nullptr) {
+      load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+      stage->kernel->Append(load);
+      stage->StageLoad(load, store);
+      if (IsDynamic()) {
+        StageLoadRecord(load, store);
+      }
+    }
+    in = load;
+  });
+  StagesKernel::Append(obj);
 }
 
 class CubeOptimizer {
@@ -861,7 +892,7 @@ class CubeOptimizer {
 
 class EagerVector : public VectorKernel {
  public:
-  EagerVector() : VectorKernel(KernelTypeX::kEager_) {
+  EagerVector() : VectorKernel(KernelType::kEager, 0) {
     objects_.reserve(64);
     static_ops_.reserve(16);
   }
@@ -1188,7 +1219,7 @@ void SplitContext::Free(void *addr, size_t size) {
 }
 
 static int g_eager_pv_width = -1;
-_SplitKernel::_SplitKernel(KernelTypeX type) : VKernel(type) {
+_SplitKernel::_SplitKernel(KernelType type, uint32_t flags) : VKernel(type, flags) {
   if (g_eager_pv_width == -1) {
     if (const char *width = getenv("DVM_EAGER_PV_WIDTH"); width != nullptr) {
       g_eager_pv_width = std::stoi(width);
@@ -1748,7 +1779,7 @@ void _SplitKernel::RelocBinds() {
   }
 }
 
-VKernelE::VKernelE() : _SplitKernel(KernelTypeX::kEager_) {
+VKernelE::VKernelE() : _SplitKernel(KernelType::kEager, 0) {
   static SplitContext ctx;
   ctx_ = &ctx;
   objects_.reserve(128);
@@ -1758,7 +1789,7 @@ VKernelE::VKernelE() : _SplitKernel(KernelTypeX::kEager_) {
 
 VKernelE::~VKernelE() { Clear(); }
 
-_SplitGraph::_SplitGraph(KernelTypeX type) : _SplitKernel(type) {
+_SplitGraph::_SplitGraph(uint32_t flags) : _SplitKernel(KernelType::kSplit, flags) {
   static SplitContext ctx;
   ctx_ = &ctx;
 }

@@ -26,26 +26,9 @@
 
 namespace dvm {
 
-enum KernelTypeX { // TODO: unify to KernelType and flags
-  kStaticShape,
-  kDynShape,
-  kStaticParallel,
-  kStaticMix,
-  kDynMix,
-  kStaticSpec,
-  kDynSpec,
-  kStaticSplit,
-  kDynSplit,
-  kEager_,
-  kStaticSplitW,
-  kDynSplitW,
-  kEagerSplitW,
-  kKernelTypelEnd,
-};
-
 class VKernel {
  public:
-  explicit VKernel(KernelTypeX ktype) : ktype_(ktype) {}
+  explicit VKernel(KernelType ktype, uint32_t flags) : ktype_(ktype), flags_(flags) {}
   virtual ~VKernel();
 
   virtual void Append(NDObject *obj);
@@ -58,20 +41,23 @@ class VKernel {
     return dump_str_;
   }
   virtual std::string &DisAssemble();
-  KernelTypeX KType() const { return ktype_; }
+  KernelType KType() const { return ktype_; }
+  bool IsSplit() const { return ktype_ == KernelType::kSplit ||  ktype_ == KernelType::kEager; }
+  bool IsDynamic() const { return flags_ & KernelFlag::kDynamic; }
 
   void UpdateIdle(const std::vector<NDObject *> &cleans);
 
   Code code_;
 
  protected:
-  KernelTypeX ktype_;
+  KernelType ktype_;
+  uint32_t flags_;
   std::string dump_str_;
 };
 
 class VectorKernel : public VKernel {
  public:
-  explicit VectorKernel(KernelTypeX ktype) : VKernel(ktype) {
+  explicit VectorKernel(KernelType ktype, uint32_t flags) : VKernel(ktype, flags) {
     MESS(max_type_, 100);
     MESS(min_type_, 200);
     MESS(visit_, reinterpret_cast<VisitCoder *>(100));
@@ -216,7 +202,7 @@ class VectorKernel : public VKernel {
 
 class VKernelS : public VectorKernel {
  public:
-  VKernelS(KernelTypeX ktype = KernelTypeX::kStaticShape) : VectorKernel(ktype) {}
+  VKernelS(uint32_t flags = 0) : VectorKernel(KernelType::kVector, flags) {}
   ~VKernelS() override;
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
@@ -250,7 +236,7 @@ class VKernelS : public VectorKernel {
 
 class VKernelD : public VKernelS {
  public:
-  VKernelD() : VKernelS(KernelTypeX::kDynShape) {}
+  VKernelD(uint32_t flags = KernelFlag::kDynamic) : VKernelS(flags) {}
   bool NormBuild() override;
 
   void Recover() {
@@ -261,6 +247,7 @@ class VKernelD : public VKernelS {
 
 class _SpecVector : public VKernelD {
  public:
+  _SpecVector(uint32_t flags) : VKernelD(flags) {}
   ~_SpecVector() override;
   void Append(NDObject *obj) override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
@@ -277,7 +264,7 @@ class _SpecVector : public VKernelD {
 template <bool dyn_shape>
 class SpecVector : public _SpecVector {
  public:
-  SpecVector(KernelTypeX ktype) : _SpecVector() { ktype_ = ktype; }
+  SpecVector() : _SpecVector(dyn_shape ? KernelFlag::kDynamic : 0) {}
   uint64_t CodeGen() override;
   uint64_t FallCodeGen();
 };
@@ -285,7 +272,7 @@ class SpecVector : public _SpecVector {
 class IsolateWrapVP;
 class VKernelP : public VKernel {
  public:
-  VKernelP() : VKernel(KernelTypeX::kStaticParallel) { children_.push_back(new VKernelS()); }
+  VKernelP() : VKernel(KernelType::kParallel, 0) { children_.push_back(new VKernelS()); }
   ~VKernelP() override;
   void AppendNext() {
     children_.push_back(new VKernelS());

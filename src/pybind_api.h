@@ -71,20 +71,6 @@ class ShapeRefPy {
   std::vector<int64_t> shape_;
 };
 
-class PyKernelBuilder : public Kernel {
- public:
-  static constexpr int kExtStages = kKernelTypelEnd + 1;
-  void Reset(int type, uint32_t flags);
-  void StageSwitch(int type);
-  NDObject *StageLoad(NDObject *stage_store);
-  NDObject *StageStore(NDObject *input);
-  bool IsSplit() const { return real_ktype_ == KernelType::kSplit ||  real_ktype_ == KernelType::kEager; }
-  bool IsDynShape() const { return flags_ & KernelFlag::kDynamic; }
-
-  int real_ktype_{0};
-  uint32_t flags_{0};
-};
-
 class KernelRunner;
 class KernelPy {
  public:
@@ -135,10 +121,7 @@ class KernelPy {
   py::object MakeIntScalar();
   void ParallelNext();
   void SpecNext() { kernel_.SpecNext(); }
-
-  void StageSwitch(const std::string &ker_type);
-  py::object StageLoad(const py::object &store);
-  py::object StageStore(const py::object &input);
+  void SequenceAdd(const std::string &ker_type);
 
   void Reset();
 
@@ -194,7 +177,7 @@ class KernelPy {
   ShapeRef *GetShapeRef(const py::object &shape);
   void PrepareIO();
 
-  PyKernelBuilder kernel_;
+  Kernel kernel_;
   std::vector<std::vector<int64_t>> shape_vec_;
   std::vector<ShapeRef *> shape_;
   std::vector<LoadInfo> loads_;

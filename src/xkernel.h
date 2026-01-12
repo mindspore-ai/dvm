@@ -25,7 +25,7 @@ namespace dvm {
 class StagesKernel;
 class MixKernel : public VKernel {
  public:
-  MixKernel() : VKernel(KernelTypeX::kStaticMix), tuner_(g_system.online_tuner_) {}
+  MixKernel(uint32_t flags = 0) : VKernel(KernelType::kMix, flags), tuner_(g_system.online_tuner_) {}
   ~MixKernel() override;
 
   void Append(NDObject *obj) override;
@@ -53,7 +53,7 @@ class MixKernel : public VKernel {
 
 class DynMixKernel : public MixKernel {
  public:
-  DynMixKernel();
+  DynMixKernel() : MixKernel(KernelFlag::kDynamic) { tuner_ = nullptr; }
   uint64_t CodeGen() override;
 
  protected:
@@ -74,7 +74,7 @@ class StageCodeWrap : public CodeWrap {
 
 class StagesKernel : public VKernel {
  public:
-  StagesKernel() : VKernel(KernelTypeX::kKernelTypelEnd), builder_(this), code_wrap_(this) {}
+  StagesKernel(uint32_t flags = 0) : VKernel(KernelType::kSequence, flags), builder_(this), code_wrap_(this) {}
   ~StagesKernel() override;
 
   VKernel *Current() const { return stages_.back()->kernel; }
@@ -85,14 +85,12 @@ class StagesKernel : public VKernel {
     stages_.push_back(new Stage(k));
   }
   void StageStore(VKernel *k, NDAccess *store) {
-    store->SetFlag(OBJ_FLAG_STAGE_IO);
-    stages_[GetStageIndex(k)]->ios.push_back(store);
+    stages_[GetStageIndex(k)]->StageStore(store);
   }
   void StageLoad(VKernel *k, NDAccess *load, NDAccess *store) {
-    load->SetFlag(OBJ_FLAG_STAGE_IO);
-    SetStageStore(load, store);
-    stages_[GetStageIndex(k)]->ios.push_back(load);
+    stages_[GetStageIndex(k)]->StageLoad(load, store);
   }
+  void StageLoadRecord(NDAccess *load, NDAccess *store) { sloads_.emplace_back(load, store); }
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
@@ -101,7 +99,7 @@ class StagesKernel : public VKernel {
   class _Builder : public KernelBuilder {
    public:
     _Builder(StagesKernel *impl) : KernelBuilder(impl) {}
-    void StageSwitch(KernelTypeX type);
+    void StageSwitch(KernelType type);
     NDObject *StageLoad(NDObject *stage_store);
     NDObject *StageStore(NDObject *input);
     NDObject *StagePadStore(NDObject *input, int64_t pad_size);
@@ -127,18 +125,32 @@ class StagesKernel : public VKernel {
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
     std::vector<NDAccess *> ios;
+
+    void StageStore(NDAccess *store) {
+      store->SetFlag(OBJ_FLAG_STAGE_IO);
+      ios.push_back(store);
+    }
+    void StageLoad(NDAccess *load, NDAccess *store) {
+      load->SetFlag(OBJ_FLAG_STAGE_IO);
+      SetStageStore(load, store);
+      ios.push_back(load);
+    }
   };
   std::vector<Stage *> stages_;
   StageCodeWrap code_wrap_;
   friend StageCodeWrap;
+  std::vector<std::pair<NDAccess *, NDAccess *>> sloads_;
 };
 
-class DynStagesKernel : public StagesKernel {
+class SequenceKernel : public StagesKernel {
  public:
-  void Record();
-  void Reset();
+  SequenceKernel(uint32_t flags) : StagesKernel(flags) {}
+  void Append(NDObject *obj) override;
  protected:
-  std::vector<std::pair<NDAccess *, NDAccess *>> sloads_;
+  static int GetStage(NDObject *obj) { return obj->prop_id_; }
+  static void SetStage(NDObject *obj, int area_id) { obj->prop_id_ = area_id; }
+  static void SetStore(NDObject *obj, NDObject *store) { obj->insn_ = reinterpret_cast<uint64_t *>(store); }
+  static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
 };
 
 class SplitContext {
@@ -180,7 +192,7 @@ class EagerVector;
 class EagerArea;
 class _SplitKernel : public VKernel {
  public:
-  _SplitKernel(KernelTypeX type);
+  _SplitKernel(KernelType type, uint32_t flags);
   ~_SplitKernel() override;
 
   void Append(NDObject *obj) override;
@@ -296,7 +308,7 @@ class VKernelE : public _SplitKernel {
 
 class _SplitGraph : public _SplitKernel {
  public:
-  _SplitGraph(KernelTypeX type);
+  _SplitGraph(uint32_t flags);
   ~_SplitGraph() override;
   void Append(NDObject *obj) override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
@@ -308,7 +320,7 @@ class _SplitGraph : public _SplitKernel {
 
 class SplitGraphD : public _SplitGraph {
  public:
-  SplitGraphD() : _SplitGraph(KernelTypeX::kDynSplit) {}
+  SplitGraphD() : _SplitGraph(KernelFlag::kDynamic) {}
   void Append(NDObject *obj) override;
   void Infer() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
@@ -319,7 +331,7 @@ class SplitGraphD : public _SplitGraph {
 
 class SplitGraphS : public _SplitGraph {
  public:
-  SplitGraphS(bool single_ws) : _SplitGraph(KernelTypeX::kStaticSplit), single_ws_(single_ws) {}
+  SplitGraphS(bool single_ws) : _SplitGraph(0), single_ws_(single_ws) {}
   void Infer() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 

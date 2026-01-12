@@ -1310,7 +1310,7 @@ bool VKernelS::BrokerAffine() {
 
 class SplitVector : public VectorKernel {
  public:
-  SplitVector() : VectorKernel(kStaticShape) {}
+  SplitVector() : VectorKernel(KernelType::kVector, 0) {}
   ~SplitVector() override {
     for (auto op : build_ops_) {
       delete op;
@@ -1341,7 +1341,7 @@ class SplitVector : public VectorKernel {
 uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
   auto set_sstore = [](NDObject *op, NDStore *st) { op->tail_insn_ = reinterpret_cast<uint64_t *>(st); };
   auto get_sstore = [](NDObject *op) { return reinterpret_cast<NDStore *>(op->tail_insn_); };
-  StagesKernel *stage = new StagesKernel();
+  StagesKernel *stage = new StagesKernel(0);
   GraphTracker tracker;
   std::vector<SplitVector *> children;
   children.resize(broker_num_ * 2, nullptr);
@@ -1607,6 +1607,7 @@ class RemapKernel : public T {
     }
     return ws_size;
   }
+  void SetDynamic() { this->flags_ = KernelFlag::kDynamic; }
  protected:
   std::vector<std::pair<NDAccess *, NDAccess *>> remap_;
 };
@@ -1622,7 +1623,10 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
     std::vector<NDObject *> clones_;
   };
   if (fall_kernel_ == nullptr) {
-    auto stage_kernel = new RemapKernel<std::conditional_t<dyn_shape, DynStagesKernel, StagesKernel>>();
+    auto stage_kernel = new RemapKernel<StagesKernel>();
+    if constexpr (dyn_shape) {
+      stage_kernel->SetDynamic();
+    }
     for (int i = 0; i <= last_stage_; ++i) {
       stage_kernel->AddStage(new std::conditional_t<dyn_shape, VKernelD, VKernelS>());
     }
@@ -1661,18 +1665,16 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
           }
           load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
           stage_kernel->StageLoad(out_stage, load, store);
+          if constexpr (dyn_shape) {
+            stage_kernel->StageLoadRecord(load, store);
+          }
         }
         out_stage->Append(load);
         in = load;
       });
       stage_kernel->KernelAt(out_sid)->Append(clone_op);
     }
-    if constexpr (dyn_shape) {
-      stage_kernel->Record();
-    }
     fall_kernel_ = stage_kernel;
-  } else if constexpr (dyn_shape) {
-    static_cast<DynStagesKernel *>(fall_kernel_)->Reset();
   }
   use_fall_ = true;
   auto ws_size = fall_kernel_->CodeGen();

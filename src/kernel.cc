@@ -1653,7 +1653,7 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
         NDAccess *load;
         if (in->IsLoad()) {
           load = static_cast<NDAccess *>(in->Clone(helper));
-          stage_kernel->Remap(load, static_cast<NDAccess *>(in));
+          stage_kernel->Remap(load, static_cast<NDAccess *>(build_ops_[in->index_]));
         } else {
           auto store = GET_SSTORE(in);
           if (store == nullptr) {

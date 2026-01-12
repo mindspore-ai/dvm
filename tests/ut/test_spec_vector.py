@@ -78,6 +78,19 @@ def test_spec_migrate_load_store():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_load_reloc():
+    t = Tester("vector:spec")
+    a = np.random.normal(0.0, 0.3, [10, 6000]).astype(np.float32)
+    x1 = t.load(a)
+    x2 = t.add(x1, 0.02)
+    x3 = t.sum(x2, (0,), True)
+    t.spec_next()
+    x4 = t.mul(x3, x1)
+    t.store_expect(x4, np.sum(a + 0.02, axis=(0,), keepdims=True) * a)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_dyn_spec_fall_reduce():
     t = Tester("vector:spec,dyn")
     x1 = t.load([-1], "float32")

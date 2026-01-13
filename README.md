@@ -8,10 +8,28 @@ DVM(Device Virtual Machine)是当前业界唯一的微秒级实时AI算子编译
 DVM当前支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构。
 
 
+#### 环境配置
+DVM支持在linux下进行编译执行，并依赖如下环境配置：
++ Ascend NPU硬件： 推荐A2/A3;
++ CANN: 推荐8.3版本。其它就近版本理论可支持，未验证；
++ g++：推荐版本7.3.0。 其它就近版本理论可支持，未验证；
++ python: 推荐3.7以上版本。需要包含numpy包。
+
+
 #### 编译说明
-1. source env.sh
-2. make
-3. python test_xxx.py
+1. 配置CANN环境变量:
+  ```
+  export ASCEND_CUSTOM_PATH=/<path_to_cann>
+  source $ASCEND_CUSTOM_PATH/ascend_toolkit/set_env.sh
+  ```
+2. 配置DVM编译变量:
+  ```
+  cd dvm
+  source env.sh
+  ```
+3. 编译DVM:  ```make```
+4. DVM验证执行。如: ```python examples/01_add.py```
+
 
 #### 仿真模拟
 1. source env.sh 910B1

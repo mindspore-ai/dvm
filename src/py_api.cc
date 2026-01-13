@@ -1,5 +1,5 @@
 /**
- * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ * Copyright 2026 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -121,7 +121,7 @@ py::object KernelPy::Select(py::object cond, py::object lhs, py::object rhs) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::BroadcastScalar(py::object scalar, py::object shape, const std::string &dtype) {
+py::object KernelPy::Full(py::object scalar, py::object shape, const std::string &dtype) {
   auto shape_ref = GetShapeRef(shape);
   auto type_id = StringToTypeID(dtype);
   NDObject *op = nullptr;
@@ -295,7 +295,7 @@ void RegKernelApi(const py::module &m) {
     .def("logical_or", &KernelPy::Binary<BinaryOpType::kLogicalOr>, "emit logical_or")
     .def("select", &KernelPy::Select, "emit select op")
     .def("broadcast", &KernelPy::Broadcast, "emit broadcast op", py::arg("input"), py::arg("shape"))
-    .def("full", &KernelPy::BroadcastScalar, "emit broadcast op", py::arg("input"), py::arg("shape"),
+    .def("full", &KernelPy::Full, "emit broadcast op", py::arg("input"), py::arg("shape"),
          py::arg("dtype") = "float32")
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
     .def("sum", &KernelPy::Reduce<ReduceOpType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,

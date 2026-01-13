@@ -14,7 +14,7 @@
 # ============================================================================
 
 import os
-from ._dvm_py import Kernel, ShapeRef, NDObject
+from . import Kernel, NDObject, ShapeRef
 
 class JitKernel(Kernel):
     def __init__(self, ker_type, dynamic):

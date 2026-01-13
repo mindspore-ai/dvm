@@ -14,5 +14,14 @@
 # ============================================================================
 
 """ dvm python """
-from ._dvm_py import Kernel
-from ._dvm_py import Device as device
+from ._dvm_py import Device, Kernel, KernelBase, NDObject, NDSymFloat, NDSymInt, ShapeRef
+
+__all__ = [
+    "Device",
+    "Kernel",
+    "KernelBase",
+    "NDObject",
+    "NDSymFloat",
+    "NDSymInt",
+    "ShapeRef",
+]

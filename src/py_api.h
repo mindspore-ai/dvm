@@ -1,5 +1,5 @@
 /**
- * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ * Copyright 2026 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -84,7 +84,7 @@ class KernelPy {
 
   py::object Cast(py::object input, const std::string &type);
   py::object Select(py::object cond, py::object lhs, py::object rhs);
-  py::object BroadcastScalar(py::object scalar, py::object shape, const std::string &dtype);
+  py::object Full(py::object scalar, py::object shape, const std::string &dtype);
   py::object Reshape(py::object input, py::object shape);
   py::object Copy(py::object input);
   py::object Broadcast(py::object input, py::object shape);

@@ -19,7 +19,7 @@ import subprocess
 import csv
 import inspect
 import numpy as np
-from ._dvm_py import Kernel, ShapeRef
+from . import Kernel, ShapeRef
 
 
 class PerformanceResult:

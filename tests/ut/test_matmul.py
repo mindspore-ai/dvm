@@ -558,7 +558,7 @@ def test_batch_fold_broadcast():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support L0C->UB")
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="c310 support L0C->UB")
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],
@@ -585,7 +585,7 @@ def test_matmul_post_fusion_cc_ub_sync_0(shape_a, shape_b):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support L0C->UB")
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="c310 support L0C->UB")
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],
@@ -613,7 +613,7 @@ def test_matmul_post_fusion_cc_ub_sync_1(shape_a, shape_b):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support L0C->UB")
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="c310 support L0C->UB")
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],

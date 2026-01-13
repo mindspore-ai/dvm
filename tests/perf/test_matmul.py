@@ -19,7 +19,7 @@ from dvm.tester import Tester
 
 B1 = "Ascend910B1"
 B4 = "Ascend910B4"
-soc_name = dvm.device.soc_name()
+soc_name = dvm.Device.soc_name()
 
 def run_perf(op_args):
     t = Tester("mix")

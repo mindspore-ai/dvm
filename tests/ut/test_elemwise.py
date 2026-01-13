@@ -325,7 +325,7 @@ def test_trunc(type, op, func, shape):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support bfloat16 op")
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="c310 support bfloat16 op")
 @pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
                                       (Tester.mul, np.multiply), (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
 def test_binary_bf16(op, func):
@@ -340,7 +340,7 @@ def test_binary_bf16(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.device.arch() != 'AscendC310', reason="c310 support bfloat16 op")
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="c310 support bfloat16 op")
 @pytest.mark.parametrize('op, func', [(Tester.add, np.add), (Tester.sub, np.subtract), (Tester.div, np.divide),
                                       (Tester.mul, np.multiply), (Tester.maximum, np.maximum), (Tester.minimum, np.minimum)])
 def test_binarys_bf16(op, func):

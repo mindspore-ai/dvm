@@ -135,7 +135,7 @@ def test_tiling_align():
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_empty_shape():
     t = Tester()
-    x = t.broadcast(0.2, [], "float32")
+    x = t.full(0.2, [], "float32")
     x = t.mul(x, 0.3)
     t.store_expect(x, 0.06)
     assert (t.run_check())

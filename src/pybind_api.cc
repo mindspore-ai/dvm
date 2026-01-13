@@ -18,6 +18,7 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <algorithm>
+#include <unordered_map>
 #include <memory>
 #include <fstream>
 #include <securec.h>
@@ -32,6 +33,7 @@
 #include "xkernel.h"
 
 namespace dvm {
+using namespace pyapi;
 namespace {
 const size_t TEST_NUM = 10;
 
@@ -70,18 +72,6 @@ inline void BF16ToF32(uint16_t *input, float *output, uint32_t size) {
   }
 }
 
-DataType StringToTypeID(const std::string &type) {
-  static std::unordered_map<std::string, DataType> map;
-  if (map.empty()) {
-    for (int i = 0; i < DataType::kDataTypeEnd; ++i) {
-      map[DTYPE_NAMES[i]] = DataType(i);
-    }
-  }
-  auto it = map.find(type);
-  ASSERT(it != map.end());
-  return it->second;
-}
-
 std::string GetBufferFormat(const DataType type) {
   const std::string formats[kDataTypeEnd] = {
     py::format_descriptor<bool>::format(),     "e",
@@ -90,7 +80,7 @@ std::string GetBufferFormat(const DataType type) {
   return formats[type];
 }
 
-std::vector<int64_t> GetVector(const py::object &shape) {
+std::vector<int64_t> GetVector(py::object shape) {
   py::list shape_list = py::cast<py::list>(shape);
   size_t size = shape_list.size();
   std::vector<int64_t> shape_vec(size);
@@ -100,30 +90,16 @@ std::vector<int64_t> GetVector(const py::object &shape) {
   return shape_vec;
 }
 
-template <typename T>
-std::pair<bool, T> GetScalar(const py::object &obj) {
-  if (py::isinstance<py::int_>(obj)) {
-    return {true, static_cast<T>(py::cast<int64_t>(obj))};
-  } else if (py::isinstance<py::float_>(obj)) {
-    return {true, py::cast<T>(obj)};
-  }
-  return {false, (T)0};
-}
-
-inline void ResetStoreMemory(const std::vector<KernelPy::StoreInfo> &stores) {
+inline void ResetStoreMemory(const std::vector<RtKernelPy::StoreInfo> &stores) {
   for (auto &info : stores) {
     ERROR_CHECK(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
   }
 }
 
-std::unordered_map<std::string, KernelType> kernel_type_map = {{"", KernelType::kVector},
-                                                        {"vector",KernelType::kVector},
-                                                        {"cube", KernelType::kCube},
-                                                        {"mix", KernelType::kMix},
-                                                        {"parallel", KernelType::kParallel},
-                                                        {"seq", KernelType::kSequence},
-                                                        {"split", KernelType::kSplit},
-                                                        {"eager", KernelType::kEager}};
+std::unordered_map<std::string, KernelType> kernel_type_map = {
+  {"", KernelType::kVector},     {"vector", KernelType::kVector},     {"cube", KernelType::kCube},
+  {"mix", KernelType::kMix},     {"parallel", KernelType::kParallel}, {"seq", KernelType::kSequence},
+  {"split", KernelType::kSplit}, {"eager", KernelType::kEager}};
 
 std::pair<KernelType, uint32_t> ParseKernelType(const std::string &ker_type) {
   auto pos = ker_type.find(':', 0);
@@ -175,8 +151,8 @@ MpCtx g_mpc;
 
 class KernelRunner : public WsAllocator {
  public:
-  using LoadInfo = KernelPy::LoadInfo;
-  using StoreInfo = KernelPy::StoreInfo;
+  using LoadInfo = RtKernelPy::LoadInfo;
+  using StoreInfo = RtKernelPy::StoreInfo;
 
   virtual ~KernelRunner() {}
   virtual void AllocLoad(const py::buffer_info &buf, LoadInfo &load) = 0;
@@ -386,14 +362,7 @@ class RunnerManager {
   DasRunner *das_;
 };
 
-std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
-
-void ShapeRefPy::Update(const py::object &shape) {
-  shape_ = GetVector(shape);
-  *shape_ref_ = shape_;
-}
-
-KernelPy::KernelPy(const std::string &ker_type, const std::string &run_type, int dev_id) {
+RtKernelPy::RtKernelPy(const std::string &ker_type, const std::string &run_type, int dev_id) {
   uint32_t dev_count = 0;
   ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
   ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
@@ -403,110 +372,27 @@ KernelPy::KernelPy(const std::string &ker_type, const std::string &run_type, int
   kernel_.Reset(type, flags);
 }
 
-KernelPy::~KernelPy() {
+RtKernelPy::~RtKernelPy() {
   runner_->Reset();
 #ifdef VK_SIM_MODEL
   RunnerManager::Instance().ResetDevRuner();
 #endif
-  for (auto ref : shape_) {
+  for (auto *ref : shape_) {
     delete ref;
   }
 }
 
-ShapeRef *KernelPy::GetShapeRef(const py::object &shape) {
+ShapeRef *RtKernelPy::GetShapeRef(py::object shape) {
   if (py::isinstance<ShapeRefPy>(shape)) {
-    auto shape_ptr = shape.cast<ShapeRefPyPtr>();
+    auto shape_ptr = shape.cast<std::shared_ptr<ShapeRefPy>>();
     return shape_ptr->Get();
   }
   std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(GetVector(shape));
   return shape_.emplace_back(new ShapeRef(shape_vec));
 }
 
-template <UnaryType op_type>
-py::object KernelPy::Unary(const py::object &input) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.Unary<op_type>(in_obj);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::Cast(const py::object &input, const std::string &type) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.Cast(in_obj, StringToTypeID(type));
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::Select(const py::object &cond, const py::object &lhs, const py::object &rhs) {
-  auto input1 = lhs.cast<NDOpPyPtr>()->Get();
-  auto input2 = rhs.cast<NDOpPyPtr>()->Get();
-  auto input0 = cond.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.Select(input0, input1, input2);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-template <ReduceType op_type>
-py::object KernelPy::Reduce(const py::object &input, const py::object &dims, bool keepdims) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto dims_ref = GetShapeRef(dims);
-  auto op = kernel_.Reduce<op_type>(in_obj, dims_ref, keepdims);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-template <BinaryType op_type>
-py::object KernelPy::Binary(const py::object &lhs, const py::object &rhs) {
-  NDObject *op;
-  if (py::isinstance<py::int_>(lhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<int>(), rhs.cast<NDOpPyPtr>()->Get());
-  } else if (py::isinstance<py::float_>(lhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<float>(), rhs.cast<NDOpPyPtr>()->Get());
-  } else if (py::isinstance<py::int_>(rhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), rhs.cast<int>());
-  } else if (py::isinstance<py::float_>(rhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), rhs.cast<float>());
-  } else if (py::isinstance<NDSymInt>(lhs)) {
-    op = kernel_.Binary<op_type>(&(lhs.cast<NDSymIntPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
-  } else if (py::isinstance<NDSymInt>(rhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<NDSymIntPtr>()->data_));
-  } else if (py::isinstance<NDSymFloat>(lhs)) {
-    op = kernel_.Binary<op_type>(&(lhs.cast<NDSymFloatPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
-  } else if (py::isinstance<NDSymFloat>(rhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<NDSymFloatPtr>()->data_));
-  } else {
-    auto input1 = lhs.cast<NDOpPyPtr>()->Get();
-    auto input2 = rhs.cast<NDOpPyPtr>()->Get();
-    op = kernel_.Binary<op_type>(input1, input2);
-  }
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::Broadcast(const py::object &input, const py::object &shape, const std::string &dtype) {
-  auto shape_ref = GetShapeRef(shape);
-  NDObject *op;
-  auto [is_scalar, scalar] = GetScalar<float>(input);
-  if (is_scalar) {
-    auto type_id = StringToTypeID(dtype);
-    op = kernel_.Broadcast(scalar, shape_ref, type_id);
-  } else {
-    auto in_obj = input.cast<NDOpPyPtr>()->Get();
-    op = kernel_.Broadcast(in_obj, shape_ref);
-  }
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::Reshape(const py::object &input, const py::object &shape) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto shape_ref = GetShapeRef(shape);
-  auto op = kernel_.Reshape(in_obj, shape_ref);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::Copy(const py::object &input) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.Copy(in_obj);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::OneHot(const py::object &indices, int depth, int axis, const py::object &on_value,
-                            const py::object &off_value, const std::string &dtype) {
+py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
+                              const std::string &dtype) {
   auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
   auto depth_ref = shape_.emplace_back(new ShapeRef(shape_vec_.emplace_back(1, depth)));
   auto type_id = StringToTypeID(dtype);
@@ -528,7 +414,7 @@ py::object KernelPy::OneHot(const py::object &indices, int depth, int axis, cons
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::Load(const py::object &shape, const std::string &type) {
+py::object RtKernelPy::Load(py::object shape, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
@@ -537,8 +423,7 @@ py::object KernelPy::Load(const py::object &shape, const std::string &type) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::ViewLoad(const py::object &shape, const py::object &stride, int64_t offset,
-                              const std::string &type) {
+py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
@@ -553,8 +438,7 @@ py::object KernelPy::ViewLoad(const py::object &shape, const py::object &stride,
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::SliceLoad(const py::object &shape, const py::object &start, const py::object &size,
-                               const std::string &type) {
+py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
@@ -565,8 +449,8 @@ py::object KernelPy::SliceLoad(const py::object &shape, const py::object &start,
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::StridedSliceLoad(const py::object &shape, const py::object &start, const py::object &end,
-                                      const py::object &step, const std::string &type) {
+py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step,
+                                        const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
@@ -578,7 +462,7 @@ py::object KernelPy::StridedSliceLoad(const py::object &shape, const py::object 
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::MultiLoad(const py::object &shape, const std::string &type) {
+py::object RtKernelPy::MultiLoad(py::object shape, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
@@ -587,7 +471,7 @@ py::object KernelPy::MultiLoad(const py::object &shape, const std::string &type)
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::Store(const py::object &obj) {
+py::object RtKernelPy::Store(py::object obj) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.Store(nullptr, in_obj);
   auto &store = stores_.emplace_back();
@@ -595,7 +479,7 @@ py::object KernelPy::Store(const py::object &obj) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::PadStore(const py::object &obj, int64_t pad_size) {
+py::object RtKernelPy::PadStore(py::object obj, int64_t pad_size) {
   auto in_obj = obj.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.PadStore(nullptr, in_obj, pad_size);
   auto &store = stores_.emplace_back();
@@ -603,18 +487,12 @@ py::object KernelPy::PadStore(const py::object &obj, int64_t pad_size) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-void KernelPy::SetStoreInplace(const py::object &obj) {
+void RtKernelPy::SetStoreInplace(py::object obj) {
   auto store = obj.cast<NDOpPyPtr>()->Get();
   kernel_.SetStoreInplace(store);
 }
 
-py::object KernelPy::ElementAny(const py::object &input) {
-  auto in_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.ElemAny(in_obj);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::AllReduce(const std::string &type, const py::object &input) {
+py::object RtKernelPy::AllReduce(const std::string &type, py::object input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
   ReduceType reduce_type{ReduceType::kReduceTypeEnd};
   if (type == "sum") {
@@ -628,46 +506,25 @@ py::object KernelPy::AllReduce(const std::string &type, const py::object &input)
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::ReduceScatter(const py::object &input) {
+py::object RtKernelPy::ReduceScatter(py::object input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.ReduceScatter(input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::AllGather(const py::object &input) {
+py::object RtKernelPy::AllGather(py::object input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.AllGather(input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::AllGatherV2(const py::object &input) {
+py::object RtKernelPy::AllGatherV2(py::object input) {
   auto input_obj = input.cast<NDOpPyPtr>()->Get();
   auto op = kernel_.AllGatherV2(input_obj, &g_mpc.comm);
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object KernelPy::MatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b,
-                            const py::object &bias) {
-  auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
-  auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
-  auto op =
-    kernel_.MatMul(lhs_obj, rhs_obj, trans_a, trans_b, bias.is_none() ? nullptr : bias.cast<NDOpPyPtr>()->Get());
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::GroupedMatMul(const py::object &lhs, const py::object &rhs, bool trans_a, bool trans_b,
-                                   const py::object &bias, const py::object &group_list, int64_t group_type,
-                                   int64_t group_list_type) {
-  auto lhs_obj = lhs.cast<NDOpPyPtr>()->Get();
-  auto rhs_obj = rhs.cast<NDOpPyPtr>()->Get();
-  NDObject *bias_obj = bias.is_none() ? nullptr : bias.cast<NDOpPyPtr>()->Get();
-  NDObject *group_list_obj = group_list.is_none() ? nullptr : group_list.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.GroupedMatMul(lhs_obj, rhs_obj, trans_a, trans_b, bias_obj, group_list_obj,
-                                  dvm::GmmSplitType(group_type), (GmmListType)group_list_type);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-py::object KernelPy::ConvertToBF16(const py::object &input) {
+py::object RtKernelPy::ConvertToBF16(py::object input) {
   auto array = py::array(input);
   py::buffer_info buf = array.request();
   ASSERT(buf.itemsize == 4);  // input should be array of f32
@@ -680,7 +537,7 @@ py::object KernelPy::ConvertToBF16(const py::object &input) {
   return py::array(new_buf);
 }
 
-py::object KernelPy::ConvertFromBF16(const py::object &input) {
+py::object RtKernelPy::ConvertFromBF16(py::object input) {
   auto array = py::array(input);
   py::buffer_info buf = array.request();
   ASSERT(buf.itemsize == 2);  // input should be array of bf16
@@ -694,21 +551,16 @@ py::object KernelPy::ConvertFromBF16(const py::object &input) {
   return py::array(new_buf);
 }
 
-py::object KernelPy::MakeIntScalar() { return py::cast(std::make_shared<NDSymInt>(-1)); }
-py::object KernelPy::MakeFloatScalar() { return py::cast(std::make_shared<NDSymFloat>(-1.0)); }
-
-void KernelPy::ParallelNext() { kernel_.ParallelNext(); }
-
-void KernelPy::SequenceAdd(const std::string &ker_type) {
+void RtKernelPy::SequenceAdd(const std::string &ker_type) {
   auto [type, flags] = ParseKernelType(ker_type);
   kernel_.SequenceAdd(type, flags);
 }
 
-void KernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
+void RtKernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
   static_cast<VectorKernel *>(kernel_.GetImpl())->SetTile(start, end, num, factor);
 }
 
-void KernelPy::CodeGen(const py::object &pass_names) {
+void RtKernelPy::CodeGen(py::object pass_names) {
   const static std::unordered_map<std::string, pass::Pass> pass_map = {
     {"PrintPeakLive", pass::PrintPeakLive},       {"ReorderStore", pass::ReorderStore},
     {"ReorderLoad", pass::ReorderLoad},           {"CompactPeakLiveness", pass::CompactPeakLiveness},
@@ -748,17 +600,7 @@ void KernelPy::CodeGen(const py::object &pass_names) {
   workspace_ = runner_->Alloc(workspace_size);
 }
 
-py::object KernelPy::DisAssemble() {
-  std::string data = kernel_.GetImpl()->DisAssemble();
-  return py::cast(data);
-}
-
-py::object KernelPy::DumpGraph() {
-  std::string data = kernel_.GetImpl()->DumpGraph();
-  return py::cast(data);
-}
-
-void KernelPy::InitComm(int rank_id, int rank_size, const std::string &comm_type) {
+void RtKernelPy::InitComm(int rank_id, int rank_size, const std::string &comm_type) {
   int type_id;
   if (comm_type == "hccl") {
     type_id = Comm::kHccl;
@@ -772,7 +614,7 @@ void KernelPy::InitComm(int rank_id, int rank_size, const std::string &comm_type
   g_mpc.comm.Init(rank_id, rank_size, type_id);
 }
 
-void KernelPy::Run() {
+void RtKernelPy::Run() {
   if (!kernel_.GetImpl()->IsSplit()) {
     PrepareIO();
   }
@@ -785,11 +627,11 @@ void KernelPy::Run() {
   }
 }
 
-void KernelPy::DryRun(int core_idx, bool cube_core) {
+void RtKernelPy::DryRun(int core_idx, bool cube_core) {
   static_cast<DryRunner *>(runner_)->DryRun(kernel_, workspace_, core_idx, cube_core);
 }
 
-py::object KernelPy::Perf() {
+py::object RtKernelPy::Perf() {
   // warm up
   if (!kernel_.GetImpl()->IsSplit()) {
     PrepareIO();
@@ -803,10 +645,11 @@ py::object KernelPy::Perf() {
     runner_->Run(kernel_, workspace_, false);
     profiler.RecordEnd(nullptr);
   }
-  return py::make_tuple(py::float_(profiler.min_us_), py::float_(profiler.max_us_), py::float_(profiler.total_us_ / float(TEST_NUM)));
+  return py::make_tuple(py::float_(profiler.min_us_), py::float_(profiler.max_us_),
+                        py::float_(profiler.total_us_ / float(TEST_NUM)));
 }
 
-py::object KernelPy::Msprof(const std::string &path, int64_t test_num) {
+py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
   ProfileMgr mgr(path);
   if (kernel_.GetImpl()->IsSplit()) {
     runner_->Run(kernel_, workspace_, true);
@@ -843,7 +686,7 @@ py::object KernelPy::Msprof(const std::string &path, int64_t test_num) {
   return py::none();
 }
 
-void KernelPy::Input(const py::object &load, const py::object &array) {
+void RtKernelPy::Input(py::object load, py::object array) {
   auto op = static_cast<NDAccess *>(load.cast<NDOpPyPtr>()->Get());
   auto &info = FindVectorInfo(loads_, op);
   auto input = py::array(array);
@@ -858,7 +701,7 @@ void KernelPy::Input(const py::object &load, const py::object &array) {
   }
 }
 
-py::object KernelPy::Output(const py::object &store) {
+py::object RtKernelPy::Output(py::object store) {
   auto op = store.cast<NDOpPyPtr>()->Get();
   auto &info = FindVectorInfo(stores_, op);
   ASSERT(info.dev);
@@ -883,13 +726,13 @@ py::object KernelPy::Output(const py::object &store) {
   return py::array(py::dtype(buf), buf.shape, buf.strides, buf.ptr, store);
 }
 
-void KernelPy::ClearStoreMemory(const py::object &store) {
+void RtKernelPy::ClearStoreMemory(py::object store) {
   auto op = store.cast<NDOpPyPtr>()->Get();
   auto &info = FindVectorInfo(stores_, op);
   info.clear_mem = true;
 }
 
-void KernelPy::PrepareIO() {
+void RtKernelPy::PrepareIO() {
   for (auto &info : loads_) {
     static_cast<NDAccess *>(info.op)->addr_.Reloc(info.dev);
   }
@@ -904,7 +747,7 @@ void KernelPy::PrepareIO() {
   }
 }
 
-void KernelPy::Reset() {
+void RtKernelPy::Reset() {
   runner_->Reset();
   if (kernel_.GetImpl()->KType() == kEager) {
     kernel_.Clear();
@@ -918,7 +761,7 @@ void KernelPy::Reset() {
   }
 }
 
-void KernelPy::Fork(int size, const std::string &comm_type) {
+void RtKernelPy::Fork(int size, const std::string &comm_type) {
   ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
   g_mpc.rank_size = size;
   auto shm_size = 1024;
@@ -941,7 +784,7 @@ INIT_COMM:
   g_mpc.comm.Init(rank_id, size);
 }
 
-void KernelPy::Join() {
+void RtKernelPy::Join() {
   // TODO: free g_mpc.comm
   ::shmdt((void *)(g_mpc.bars));
   if (g_mpc.rank_id > 0) {
@@ -953,7 +796,7 @@ void KernelPy::Join() {
   shmctl(g_mpc.shmid, IPC_RMID, nullptr);
 }
 
-void KernelPy::Barrier() {
+void RtKernelPy::Barrier() {
   if (g_mpc.rank_size > 1 && g_mpc.bars) {
     auto cur_cnt = g_mpc.bars[g_mpc.rank_id] + 1;
     g_mpc.bars[g_mpc.rank_id] = cur_cnt;
@@ -965,27 +808,9 @@ void KernelPy::Barrier() {
   }
 }
 
-int KernelPy::RankId() { return g_mpc.rank_id; }
+int RtKernelPy::RankId() { return g_mpc.rank_id; }
 
-int KernelPy::RankSize() { return g_mpc.rank_size; }
-
-void KernelPy::SetDeterm(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetDeterm();
-  } else {
-    conf.UnsetDeterm();
-  }
-}
-
-void KernelPy::SetTuning(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetOnlineTuner().SetLazyTuner();
-  } else {
-    conf.UnsetOnlineTuner().UnsetLazyTuner();
-  }
-}
+int RtKernelPy::RankSize() { return g_mpc.rank_size; }
 
 class DevicePy {
  public:
@@ -1006,105 +831,41 @@ class DevicePy {
 };
 
 PYBIND11_MODULE(_dvm_py, m) {
-  (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
-    .def("shape", &NDObjectPy::GetShape, "get shape")
-    .def("dtype", &NDObjectPy::GetDType, "get dtype");
-
-  (void)py::class_<ShapeRefPy, std::shared_ptr<ShapeRefPy>>(m, "ShapeRef")
-    .def(py::init<>())
-    .def(py::init<const std::vector<int64_t> &>())
-    .def("shape", &ShapeRefPy::GetShape, "get shape")
-    .def("update", &ShapeRefPy::Update, "update shape");
-
-  (void)py::class_<NDSymInt, std::shared_ptr<NDSymInt>>(m, "NDSymInt")
-    .def("update", [](NDSymInt &self, int64_t v) { self.data_ = v; }, py::arg("value"), "Set the  int scalar value");
-  (void)py::class_<NDSymFloat, std::shared_ptr<NDSymFloat>>(m, "NDSymFloat")
-    .def("update", [](NDSymFloat &self, float v) { self.data_ = v; }, py::arg("value"), "Set the float scalar value");
-
-  (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "Kernel")
+  pyapi::RegBaseApi(m);
+  pyapi::RegKernelApi(m);
+  py::class_<RtKernelPy, KernelPy, std::shared_ptr<RtKernelPy>>(m, "Kernel")
     .def(py::init<const std::string &, const std::string &, int>())
-    .def("make_int", &KernelPy::MakeIntScalar, "create int scalar")
-    .def("make_float", &KernelPy::MakeFloatScalar, "create float scalar")
-    .def("load", &KernelPy::Load, "load array")
-    .def("view_load", &KernelPy::ViewLoad, "load array")
-    .def("slice_load", &KernelPy::SliceLoad, "load array")
-    .def("stridedslice_load", &KernelPy::StridedSliceLoad, "load array")
-    .def("multi_load", &KernelPy::MultiLoad, "load array(for reducescatter)")
-    .def("store", &KernelPy::Store, "store array")
-    .def("pad_store", &KernelPy::PadStore, "pad store array")
-    .def("set_store_inplace", &KernelPy::SetStoreInplace, "store inplace")
-    .def("sqrt", &KernelPy::Unary<UnaryType::kSqrt>, "emit sqrt")
-    .def("abs", &KernelPy::Unary<UnaryType::kAbs>, "emit abs")
-    .def("log", &KernelPy::Unary<UnaryType::kLog>, "emit log")
-    .def("exp", &KernelPy::Unary<UnaryType::kExp>, "emit exp")
-    .def("reciprocal", &KernelPy::Unary<UnaryType::kReciprocal>, "emit reciprocal")
-    .def("isfinite", &KernelPy::Unary<UnaryType::kIsFinite>, "emit isfinite")
-    .def("logical_not", &KernelPy::Unary<UnaryType::kLogicalNot>, "emit logical_not")
-    .def("round", &KernelPy::Unary<UnaryType::kRound>, "emit round")
-    .def("floor", &KernelPy::Unary<UnaryType::kFloor>, "emit floor")
-    .def("ceil", &KernelPy::Unary<UnaryType::kCeil>, "emit ceil")
-    .def("trunc", &KernelPy::Unary<UnaryType::kTrunc>, "emit trunc")
-    .def("cast", &KernelPy::Cast, "emit cast op")
-    .def("element_any", &KernelPy::ElementAny, "emit element_any op")
-    .def("equal", &KernelPy::Binary<BinaryType::kEqual>, "emit equal")
-    .def("not_equal", &KernelPy::Binary<BinaryType::kNotEqual>, "emit equal")
-    .def("greater", &KernelPy::Binary<BinaryType::kGreater>, "emit greater")
-    .def("greater_equal", &KernelPy::Binary<BinaryType::kGreaterEqual>, "emit greater_equal")
-    .def("less", &KernelPy::Binary<BinaryType::kLess>, "emit less")
-    .def("less_equal", &KernelPy::Binary<BinaryType::kLessEqual>, "emit less_equal")
-    .def("add", &KernelPy::Binary<BinaryType::kAdd>, "emit add")
-    .def("sub", &KernelPy::Binary<BinaryType::kSub>, "emit sub")
-    .def("mul", &KernelPy::Binary<BinaryType::kMul>, "emit mul")
-    .def("div", &KernelPy::Binary<BinaryType::kDiv>, "emit div")
-    .def("pow", &KernelPy::Binary<BinaryType::kPow>, "emit pow")
-    .def("maximum", &KernelPy::Binary<BinaryType::kMaximum>, "emit maximum")
-    .def("minimum", &KernelPy::Binary<BinaryType::kMinimum>, "emit minimum")
-    .def("logical_and", &KernelPy::Binary<BinaryType::kLogicalAnd>, "emit logical_add")
-    .def("logical_or", &KernelPy::Binary<BinaryType::kLogicalOr>, "emit logical_or")
-    .def("select", &KernelPy::Select, "emit select op")
-    .def("broadcast", &KernelPy::Broadcast, "emit broadcast op", py::arg("input"), py::arg("shape"),
-         py::arg("dtype") = "float32")
-    .def("reshape", &KernelPy::Reshape, "emit reshape op")
-    .def("sum", &KernelPy::Reduce<ReduceType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false, "emit sum")
-    .def("max", &KernelPy::Reduce<ReduceType::kMax>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false, "emit max")
-    .def("min", &KernelPy::Reduce<ReduceType::kMin>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false, "emit min")
-    .def("copy", &KernelPy::Copy, "emit copy op")
-    .def("one_hot", &KernelPy::OneHot, "emit onehot op")
-    .def("allreduce", &KernelPy::AllReduce, "emit allreduce op")
-    .def("allgather", &KernelPy::AllGather, "emit allgather op")
-    .def("allgatherv2", &KernelPy::AllGatherV2, "emit allgatherv2 op")
-    .def("reducescatter", &KernelPy::ReduceScatter, "emit reducescatter op")
-    .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
-         py::arg("trans_b"), py::arg("bias") = py::none())
-    .def("gmm", &KernelPy::GroupedMatMul, "emit grouped_matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
-         py::arg("trans_b"), py::arg("bias"), py::arg("group_list"), py::arg("group_type"),
-         py::arg("group_list_type") = 0)
-    .def("convert_to_bf16", &KernelPy::ConvertToBF16, "convert f32 array to bf16 array")
-    .def("convert_from_bf16", &KernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
-    .def("p_next", &KernelPy::ParallelNext, "parallel next")
-    .def("spec_next", &KernelPy::SpecNext, "spec next")
-    .def("seq_add", &KernelPy::SequenceAdd, "add new sequence Kernel")
-    .def("reset", &KernelPy::Reset, "reset eager")
-    .def("input", &KernelPy::Input, "get ouput array")
-    .def("output", &KernelPy::Output, "get ouput array")
-    .def("clear_store_memory", &KernelPy::ClearStoreMemory, "clear store memory")
-    .def("tile", &KernelPy::Tile, "set tiling", py::arg("start"), py::arg("end"), py::arg("num"), py::arg("factor") = 0)
-    .def("codegen", &KernelPy::CodeGen, "generate code")
-    .def("das", &KernelPy::DisAssemble, "disassemble code")
-    .def("dump", &KernelPy::DumpGraph, "dump graph")
-    .def("perf", &KernelPy::Perf, "perf test")
-    .def("msprof", &KernelPy::Msprof, "perf test")
-    .def("run", &KernelPy::Run, "run kernel")
-    .def("dry_run", &KernelPy::DryRun, "dry run vm")
-    .def_static("init_comm", &KernelPy::InitComm, "init communicatior")
-    .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
-    .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning")
-    .def_static("set_cube_store_type", &KernelPy::SetCubeStoreType, "set sync type")
-    .def_static("fork", &KernelPy::Fork, "fork process", py::arg("size"), py::arg("comm_type") = "")
-    .def_static("join", &KernelPy::Join, "join process")
-    .def_static("barrier", &KernelPy::Barrier, "barrier process")
-    .def_static("rank_id", &KernelPy::RankId, "get current rank id")
-    .def_static("rank_size", &KernelPy::RankSize, "get current rank size");
+    .def("slice_load", &RtKernelPy::SliceLoad, "load array")
+    .def("stridedslice_load", &RtKernelPy::StridedSliceLoad, "load array")
+    .def("multi_load", &RtKernelPy::MultiLoad, "load array(for reducescatter)")
+    .def("pad_store", &RtKernelPy::PadStore, "pad store array")
+    .def("set_store_inplace", &RtKernelPy::SetStoreInplace, "store inplace")
+    .def("one_hot", &RtKernelPy::OneHot, "emit onehot op")
+    .def("allreduce", &RtKernelPy::AllReduce, "emit allreduce op")
+    .def("allgather", &RtKernelPy::AllGather, "emit allgather op")
+    .def("allgatherv2", &RtKernelPy::AllGatherV2, "emit allgatherv2 op")
+    .def("reducescatter", &RtKernelPy::ReduceScatter, "emit reducescatter op")
+    .def("convert_to_bf16", &RtKernelPy::ConvertToBF16, "convert f32 array to bf16 array")
+    .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
+    .def("seq_add", &RtKernelPy::SequenceAdd, "add new sequence Kernel")
+    .def("reset", &RtKernelPy::Reset, "reset eager")
+    .def("input", &RtKernelPy::Input, "get ouput array")
+    .def("output", &RtKernelPy::Output, "get ouput array")
+    .def("clear_store_memory", &RtKernelPy::ClearStoreMemory, "clear store memory")
+    .def("tile", &RtKernelPy::Tile, "set tiling", py::arg("start"), py::arg("end"), py::arg("num"),
+         py::arg("factor") = 0)
+    .def("codegen", &RtKernelPy::CodeGen, "generate code")
+    .def("perf", &RtKernelPy::Perf, "perf test")
+    .def("msprof", &RtKernelPy::Msprof, "perf test")
+    .def("run", &RtKernelPy::Run, "run kernel")
+    .def("dry_run", &RtKernelPy::DryRun, "dry run vm")
+    .def_static("init_comm", &RtKernelPy::InitComm, "init communicatior")
+    .def_static("set_cube_store_type", &RtKernelPy::SetCubeStoreType, "set sync type")
+    .def_static("fork", &RtKernelPy::Fork, "fork process", py::arg("size"), py::arg("comm_type") = "")
+    .def_static("join", &RtKernelPy::Join, "join process")
+    .def_static("barrier", &RtKernelPy::Barrier, "barrier process")
+    .def_static("rank_id", &RtKernelPy::RankId, "get current rank id")
+    .def_static("rank_size", &RtKernelPy::RankSize, "get current rank size");
 
   (void)py::class_<DevicePy, std::shared_ptr<DevicePy>>(m, "Device")
     .def_static("arch", &DevicePy::Arch, "Get system architecture")

@@ -116,7 +116,7 @@ def test_broadcast():
     x = t.load([-1], "float32")
     shape = ShapeRef()
     a = t.broadcast(x, shape)
-    b = t.broadcast(0.2, shape)
+    b = t.full(0.2, shape, "float32")
     c = t.mul(a, b)
     out = t.store(c)
     iterations = [[[1], [10, 100]], [[1, 4, 1], [8, 4, 40]]]

@@ -112,7 +112,7 @@ def test_broadcast_forward():
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_broadcast_s():
     t = Tester()
-    z = t.broadcast(0.3, [3, 10], "float32")
+    z = t.full(0.3, [3, 10], "float32")
     z = t.reshape(z, [3, 1, 10])
     z = t.broadcast(z, [3, 10, 10])
     t.store_expect(z, 0.3000)

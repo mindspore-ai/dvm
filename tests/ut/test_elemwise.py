@@ -158,10 +158,7 @@ def test_scalar(type):
 @pytest.mark.parametrize('type, eps, shape', [(np.float16, 1e-03, [2, 3, 4, 5]), (np.float32, 1e-05, [1, 1, 4, 5])])
 def test_scalar_tensor_div(type, eps, shape):
     t = Tester()
-    if (type == np.float16):
-        x = t.broadcast(2, shape, "float16")
-    else:
-        x = t.broadcast(2, shape)
+    x = t.full(2, shape, type.__name__)
     a = np.random.random(shape).astype(type)
     y = t.load(a)
     z = t.div(x, y)

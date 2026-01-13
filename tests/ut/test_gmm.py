@@ -102,7 +102,7 @@ def test_gmm(m, n, k, group_list, trans):
     x_d = t.load(x)
     w_d = t.load(w)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, trans[0], trans[1], None, group_list_d, 0)
+    res = t.grouped_matmul(x_d, w_d, trans[0], trans[1], None, group_list_d, 0)
     t.store_expect(res, expect)
     assert t.run_check()
 
@@ -129,7 +129,7 @@ def test_gmm_bias(mode, m, n, k, group_list):
     w_d = t.load(w)
     bias_d = t.load(bias)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False, bias_d, group_list_d, 0)
+    res = t.grouped_matmul(x_d, w_d, False, False, bias_d, group_list_d, 0)
     t.store_expect(res, expect)
     assert t.run_check()
 
@@ -152,7 +152,7 @@ def test_gmm_bias_bf16(m, n, k, group_list):
     w_d = t.load(w, "bfloat16")
     bias_d = t.load(bias, "bfloat16")
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False, bias_d, group_list_d, 0)
+    res = t.grouped_matmul(x_d, w_d, False, False, bias_d, group_list_d, 0)
     t.store_expect(res, expect, 3e-3)
     assert t.run_check()
 
@@ -164,7 +164,7 @@ def test_dyn_gmm_type0():
     x = t.load([-1, 256], "float16")
     w = t.load([4, 256, 2048], "float16")
     group_list = t.load([-1], "int64")
-    c = t.gmm(x, w, False, False, None, group_list, 0)
+    c = t.grouped_matmul(x, w, False, False, None, group_list, 0)
     out = t.store(c)
     iterations = [
         [[256, 256], [4, 256, 2048], [10, 100, 200, 256]],
@@ -206,7 +206,7 @@ def test_gmm_type2(m, n, k, group_list, trans):
     x_d = t.load(x)
     w_d = t.load(w)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, trans[0], trans[1], None, group_list_d, 2)
+    res = t.grouped_matmul(x_d, w_d, trans[0], trans[1], None, group_list_d, 2)
     t.store_expect(res, expect)
     assert t.run_check()
 
@@ -241,7 +241,7 @@ def test_gmm_type2_zero(m, n, k, group_list):
     x_d = t.load(x)
     w_d = t.load(w)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2)
+    res = t.grouped_matmul(x_d, w_d, False, False, None, group_list_d, 2)
     t.store_expect(res, expect)
     assert t.run_check()
 
@@ -270,7 +270,7 @@ def test_gmm_type2_postfusion(mode, m, n, k, group_list):
     w_d = t.load(w)
     d_d = t.load(d)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2)
+    res = t.grouped_matmul(x_d, w_d, False, False, None, group_list_d, 2)
     res = t.cast(res, "float32")
     res = t.add(d_d, res)
     t.store_expect(res, expect.astype(np.float16).astype(np.float32) + d, 1e-3)
@@ -285,7 +285,7 @@ def test_dyn_gmm_type2():
     w = t.load([-1, 2048], "float16")
     z = t.load([-1, -1], "float32")
     group_list = t.load([-1], "int64")
-    c = t.gmm(x, w, False, False, None, group_list, 2)
+    c = t.grouped_matmul(x, w, False, False, None, group_list, 2)
     c = t.cast(c, "float32")
     c = t.add(c, z)
     out = t.store(c)
@@ -332,7 +332,7 @@ def test_gmm_group_list_type_2(m, n, k, group_list):
     w_d = t.load(w)
     d_d = t.load(d)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 2,  1)
+    res = t.grouped_matmul(x_d, w_d, False, False, None, group_list_d, 2,  1)
     res = t.cast(res, "float32")
     res = t.add(d_d, res)
     t.store_expect(res, expect.astype(np.float16).astype(np.float32) + d, 1e-3)
@@ -350,6 +350,6 @@ def test_gmm_split_graph():
     x_d = t.load(x)
     w_d = t.load(w)
     group_list_d = t.load(group_list)
-    res = t.gmm(x_d, w_d, False, False, None, group_list_d, 0)
+    res = t.grouped_matmul(x_d, w_d, False, False, None, group_list_d, 0)
     t.store_expect(res, expect)
     assert t.run_check()

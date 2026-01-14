@@ -21,7 +21,7 @@ def test_aiv(mode):
     assert ("Dvm" in info)
 
 
-@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level1', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("mode", ["mix", "eager"])
 def test_aic(mode):
     path_name = "./profile_aic"
@@ -41,7 +41,7 @@ def test_aic(mode):
     assert ("Dvm" in info)
 
 
-@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level1', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("mode", ["mix", "eager"])
 def test_mix_aic(mode):
     path_name = "./profile_mix_aic"

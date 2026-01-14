@@ -650,7 +650,10 @@ void NDLoad::Normalize(std::vector<NDObject *> &run_ops) {
   round_tile_.resize(0);
 }
 
-NDObject *NDLoad::Clone(CloneHelper &h) { return new NDLoad(addr_.gm, shape_ref_, type_id_); }
+NDObject *NDLoad::Clone(CloneHelper &h) {
+  auto shape_ref = h.GetClone(shape_ref_);
+  return new NDLoad(addr_.gm, shape_ref, type_id_);
+}
 
 void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 
@@ -821,7 +824,11 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
   return vViewLoad::Encode(insn_, V_LOAD_VIEW, op);
 }
 
-NDObject *NDViewLoad::Clone(CloneHelper &h) { return new NDViewLoad(addr_.gm, shape_ref_, src_stride_ref_, offset_, type_id_); }
+NDObject *NDViewLoad::Clone(CloneHelper &h) {
+  auto shape_ref = h.GetClone(shape_ref_);
+  auto src_stride_ref = h.GetClone(src_stride_ref_);
+  return new NDViewLoad(addr_.gm, shape_ref, src_stride_ref, offset_, type_id_);
+}
 
 void NDViewLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "ViewLoad";
@@ -874,7 +881,10 @@ uint64_t NDMultiLoad::Emit(VectorKernel &k) {
   return vMultiLoad::Encode(insn_, vAccInsnID::V_MULTI_LOAD, op, nullptr);
 }
 
-NDObject *NDMultiLoad::Clone(CloneHelper &h) { return new NDMultiLoad(static_cast<uint8_t *>(addr_.gm), shape_ref_, type_id_, comm_); }
+NDObject *NDMultiLoad::Clone(CloneHelper &h) {
+  auto shape_ref = h.GetClone(shape_ref_);
+  return new NDMultiLoad(static_cast<uint8_t *>(addr_.gm), shape_ref, type_id_, comm_);
+}
 
 void NDMultiLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "MultiLoad"; }
 
@@ -1167,7 +1177,10 @@ uint64_t ReshapeOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
 
-NDObject *ReshapeOp::Clone(CloneHelper &h) { return new ReshapeOp(h.GetClone(lhs_), dst_shape_ref_); }
+NDObject *ReshapeOp::Clone(CloneHelper &h) {
+  auto dst_shape_ref = h.GetClone(dst_shape_ref_);
+  return new ReshapeOp(h.GetClone(lhs_), dst_shape_ref);
+}
 
 void ReshapeOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Reshape"; }
 
@@ -1762,7 +1775,10 @@ uint64_t BroadcastScalarOp::Emit(VectorKernel &k) {
   return vBroadcastS::Encode(insn_, ITEM_SIZE[type_id_] == sizeof(uint32_t) ? V_BROADCAST_S : V_BROADCAST_S_B16, op);
 }
 
-NDObject *BroadcastScalarOp::Clone(CloneHelper &h) { return new BroadcastScalarOp(scalar_, shape_ref_, type_id_); }
+NDObject *BroadcastScalarOp::Clone(CloneHelper &h) {
+  auto shape_ref = h.GetClone(shape_ref_);
+  return new BroadcastScalarOp(scalar_, shape_ref, type_id_);
+}
 
 void BroadcastScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "BroadcastS";
@@ -2057,7 +2073,8 @@ uint64_t ReduceOp::Emit(VectorKernel &k) {
 
 NDObject *ReduceOp::Clone(CloneHelper &h) {
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_.front()->lhs_;
-  return new ReduceOp(h.GetClone(input), red_op_, dims_ref_, keepdims_);
+  auto dims_ref = h.GetClone(dims_ref_);
+  return new ReduceOp(h.GetClone(input), red_op_, dims_ref, keepdims_);
 }
 
 void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {
@@ -2158,7 +2175,8 @@ uint64_t OneHotOp::Emit(VectorKernel &k) {
 }
 
 NDObject *OneHotOp::Clone(CloneHelper &h) {
-  return new OneHotOp(h.GetClone(lhs_), depth_, axis_, on_value_, off_value_, type_id_);
+  auto depth = h.GetClone(depth_);
+  return new OneHotOp(h.GetClone(lhs_), depth, axis_, on_value_, off_value_, type_id_);
 }
 
 void OneHotOp::Dump(bool verbose, std::ostringstream &oss) {

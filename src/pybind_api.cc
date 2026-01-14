@@ -761,6 +761,68 @@ void RtKernelPy::Reset() {
   }
 }
 
+py::object RtKernelPy::Clone(py::object base, py::object remap) {
+  struct _CloneHelper : public CloneHelper {
+    ShapeRef *GetClone(ShapeRef *shape) override {
+      auto it = shape_map_.find(shape);
+      return it != shape_map_.end()  ? it->second : shape;
+    }
+    NDObject *GetClone(NDObject *op) override {
+      auto it = op_map_.find(op);
+      return it != op_map_.end() ? it->second : nullptr;
+    }
+    void SetClone(NDObject *op, NDObject *clone) override { op_map_[op] = clone; }
+    std::unordered_map<NDObject *, NDObject *> op_map_;
+    std::unordered_map<ShapeRef *, ShapeRef *> shape_map_;
+  };
+  _CloneHelper helper;
+  RtKernelPy *other = base.cast<RtKernelPyPtr>().get();
+  for (auto &load : other->loads_) {
+    auto &info = loads_.emplace_back();
+    info.shape = load.shape;
+    auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+    for (auto ref : other->shape_) {
+      if (ref->data == load.shape.data()) {
+        helper.shape_map_[ref] = shape_ref;
+        break;
+      }
+    }
+  }
+  py::list remap_list = py::cast<py::list>(remap);
+  size_t remap_size = remap_list.size();
+  py::tuple remap_out(remap_size);
+  for (size_t i = 0; i < remap_size; ++i) {
+    if (py::isinstance<ShapeRefPy>(remap_list[i])) {
+      auto base = remap_list[i].cast<std::shared_ptr<ShapeRefPy>>()->Get();
+      auto ref = std::make_shared<ShapeRefPy>();
+      helper.shape_map_[base] = ref->Get();
+      remap_out[i] = py::cast(ref);
+    }
+  }
+  for (auto ref : other->shape_) {
+    if (helper.shape_map_.find(ref) == helper.shape_map_.end()) {
+      auto clone = new ShapeRef(shape_vec_.emplace_back(ref->data, ref->data + ref->size));
+      helper.shape_map_[ref] = clone;
+    }
+  }
+  kernel_.Clone(other->kernel_, helper);
+  for (size_t i = 0; i < other->loads_.size(); ++i) {
+    loads_[i].op = helper.GetClone(other->loads_[i].op);
+  }
+  for (auto &store : other->stores_) {
+    auto &clone = stores_.emplace_back();
+    clone.op = helper.GetClone(store.op);
+  }
+  for (size_t i = 0; i < remap_size; ++i) {
+    if (py::isinstance<NDObjectPy>(remap_list[i])) {
+      auto obj = remap_list[i].cast<NDOpPyPtr>()->Get();
+      obj = helper.GetClone(obj);
+      remap_out[i] = py::cast(std::make_shared<NDObjectPy>(obj));
+    }
+  }
+  return remap_out;
+}
+
 void RtKernelPy::Fork(int size, const std::string &comm_type) {
   ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
   g_mpc.rank_size = size;
@@ -849,6 +911,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("seq_add", &RtKernelPy::SequenceAdd, "add new sequence Kernel")
     .def("reset", &RtKernelPy::Reset, "reset eager")
+    .def("clone", &RtKernelPy::Clone, "clone kernel")
     .def("input", &RtKernelPy::Input, "get ouput array")
     .def("output", &RtKernelPy::Output, "get ouput array")
     .def("clear_store_memory", &RtKernelPy::ClearStoreMemory, "clear store memory")

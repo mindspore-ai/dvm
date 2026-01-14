@@ -56,6 +56,7 @@ class RtKernelPy : public KernelPy {
 
   void Reset();
   ShapeRef *GetShapeRef(py::object shape) override;
+  py::object Clone(py::object base, py::object remap);
 
   void Input(py::object load, py::object array);
   py::object Output(py::object store);
@@ -113,5 +114,6 @@ class RtKernelPy : public KernelPy {
   void *workspace_{nullptr};
   KernelRunner *runner_;
 };
+using RtKernelPyPtr = std::shared_ptr<RtKernelPy>;
 }  // namespace dvm
 #endif  // _DVM_PYBIND_API_H_

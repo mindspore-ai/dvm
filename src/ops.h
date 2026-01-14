@@ -339,11 +339,6 @@ enum CodeGenTmpl {
   kGenStore,
 };
 
-class CloneHelper {
- public:
-  virtual NDObject *GetClone(NDObject *op) = 0;
-};
-
 struct ObjectMeta {
   constexpr ObjectMeta() : flags(), tmpl(), dim_changed(), fold_prop(), align_prop() {}
 
@@ -463,6 +458,12 @@ class NDObject {
 
   template <typename T>
   void ForInput(const T &func);
+
+  NDObject *CloneUpdate(CloneHelper &h) {
+    auto op = Clone(h);
+    h.SetClone(this, op);
+    return op;
+  }
 
   NDSpace nd_;
   NDObject *lhs_;

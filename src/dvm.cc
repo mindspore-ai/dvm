@@ -277,7 +277,10 @@ class BroadcastScalarRefOp : public BroadcastScalarOp {
     scalar_ = EncodeScalar(*scalar_ref_, type_id_);
     return BroadcastScalarOp::Emit(k);
   }
-  NDObject *Clone(CloneHelper &h) override { return new BroadcastScalarRefOp<T>(scalar_ref_, shape_ref_, type_id_); }
+  NDObject *Clone(CloneHelper &h) override {
+    auto shape_ref = h.GetClone(shape_ref_);
+    return new BroadcastScalarRefOp<T>(scalar_ref_, shape_ref, type_id_);
+  }
 
  private:
   T scalar_ref_;
@@ -434,7 +437,12 @@ class NDSliceLoad : public NDViewLoad {
     }
     NDViewLoad::Normalize(run_ops);
   }
-  NDObject *Clone(CloneHelper &h) override { return new NDSliceLoad(addr_.gm, src_ref_, start_ref_, shape_ref_, type_id_); }
+  NDObject *Clone(CloneHelper &h) override {
+    auto src_ref = h.GetClone(src_ref_);
+    auto start_ref = h.GetClone(start_ref_);
+    auto shape_ref = h.GetClone(shape_ref_);
+    return new NDSliceLoad(addr_.gm, src_ref, start_ref, shape_ref, type_id_);
+  }
 
  protected:
   ShapeRef *start_ref_;
@@ -461,7 +469,11 @@ class NDStridedSliceLoad : public NDSliceLoad {
     NDSliceLoad::Normalize(run_ops);
   }
   NDObject *Clone(CloneHelper &h) override {
-    return new NDStridedSliceLoad(addr_.gm, shape_ref_, src_stride_ref_, end_ref_, step_ref_, type_id_);
+    auto shape_ref = h.GetClone(shape_ref_);
+    auto src_stride_ref = h.GetClone(src_stride_ref_);
+    auto end_ref = h.GetClone(end_ref_);
+    auto step_ref = h.GetClone(step_ref_);
+    return new NDStridedSliceLoad(addr_.gm, shape_ref, src_stride_ref, end_ref, step_ref, type_id_);
   }
 
  private:
@@ -597,6 +609,16 @@ void Kernel::Reset(KernelType type, uint32_t flags) {
     delete kernel_;
   }
   kernel_ = NewKernel(type, flags);
+}
+
+void Kernel::Clone(const Kernel &base, CloneHelper &helper) {
+  if (kernel_) {
+    delete kernel_;
+  }
+  auto k = base.GetImpl();
+  kernel_ = NewKernel(k->KType(), k->Flags());
+  ASSERT(kernel_->KType() == k->KType() && kernel_->Flags() == k->Flags());
+  kernel_->Clone(k, helper);
 }
 
 NDObject *Kernel::Load(void *addr, ShapeRef *shape, DataType type) {

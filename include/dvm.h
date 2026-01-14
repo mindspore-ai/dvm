@@ -156,6 +156,12 @@ struct WsAllocator {
   virtual void *Alloc(size_t size) = 0;
 };
 
+struct CloneHelper {
+  virtual ShapeRef *GetClone(ShapeRef *shape) = 0;
+  virtual NDObject *GetClone(NDObject *op) = 0;
+  virtual void SetClone(NDObject *op, NDObject *clone) = 0;
+};
+
 class Comm {
  public:
   enum { kMemory, kHccl, kDummy };
@@ -176,6 +182,7 @@ class Kernel {
   ~Kernel();
 
   void Reset(KernelType type, uint32_t flags);
+  void Clone(const Kernel &base, CloneHelper &helper);
   void SetNameHint(const char *name, const char *fullname) {
     op_name_ = name;
     op_fullname_ = fullname;

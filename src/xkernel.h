@@ -31,6 +31,7 @@ class MixKernel : public VKernel {
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
   void SetTuner(CubeTuner *tuner) { tuner_ = tuner; }
 
  protected:
@@ -90,11 +91,11 @@ class StagesKernel : public VKernel {
   void StageLoad(VKernel *k, NDAccess *load, NDAccess *store) {
     stages_[GetStageIndex(k)]->StageLoad(load, store);
   }
-  void StageLoadRecord(NDAccess *load, NDAccess *store) { sloads_.emplace_back(load, store); }
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
 
   class _Builder : public KernelBuilder {
    public:
@@ -112,8 +113,6 @@ class StagesKernel : public VKernel {
   static int64_t GetWorkspace(NDAccess *op) { return op->addr_.ws; }
   static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->addr_.gm = static_cast<void *>(store); }
   static NDAccess *GetOutputReuse(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
-  static void SetStageStore(NDAccess *op, NDAccess *store) { op->addr_.gm = static_cast<void *>(store); }
-  static NDAccess *GetStageStore(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
   static void SetStageIndex(VKernel *k, int idx) { k->code_.target_ = idx; }
   static int GetStageIndex(VKernel *k) { return k->code_.target_; }
 
@@ -124,22 +123,20 @@ class StagesKernel : public VKernel {
     VKernel *kernel;
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
-    std::vector<NDAccess *> ios;
+    std::vector<std::pair<NDAccess *, NDAccess *>> ios;
 
     void StageStore(NDAccess *store) {
       store->SetFlag(OBJ_FLAG_STAGE_IO);
-      ios.push_back(store);
+      ios.emplace_back(store, nullptr);
     }
     void StageLoad(NDAccess *load, NDAccess *store) {
       load->SetFlag(OBJ_FLAG_STAGE_IO);
-      SetStageStore(load, store);
-      ios.push_back(load);
+      ios.emplace_back(load, store);
     }
   };
   std::vector<Stage *> stages_;
   StageCodeWrap code_wrap_;
   friend StageCodeWrap;
-  std::vector<std::pair<NDAccess *, NDAccess *>> sloads_;
 };
 
 class SequenceKernel : public StagesKernel {
@@ -223,7 +220,6 @@ class _SplitKernel : public VKernel {
     }
   }
 
-  void SetSlotWorkspace();
   void SlotCodeGen(const RelocEntry *relocs, size_t reloc_size);
 
   static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
@@ -320,10 +316,11 @@ class _SplitGraph : public _SplitKernel {
 
 class SplitGraphD : public _SplitGraph {
  public:
-  SplitGraphD() : _SplitGraph(KernelFlag::kDynamic) {}
+  SplitGraphD(uint32_t flags = 0) : _SplitGraph(flags | KernelFlag::kDynamic) {}
   void Append(NDObject *obj) override;
   void Infer() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
 
  protected:
   GraphTracker tracker_;
@@ -331,7 +328,7 @@ class SplitGraphD : public _SplitGraph {
 
 class SplitGraphS : public _SplitGraph {
  public:
-  SplitGraphS(bool single_ws) : _SplitGraph(0), single_ws_(single_ws) {}
+  SplitGraphS(bool single_ws) : _SplitGraph(single_ws ? KernelFlag::kUnifyWS : 0), single_ws_(single_ws) {}
   void Infer() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 
@@ -342,11 +339,13 @@ class SplitGraphS : public _SplitGraph {
 
 class SplitEagerW : public VKernelE {
  public:
+  SplitEagerW() :  VKernelE() { flags_ |= KernelFlag::kUnifyWS; }
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 };
 
 class SplitGraphDW : public SplitGraphD {
  public:
+  SplitGraphDW() : SplitGraphD(KernelFlag::kUnifyWS) {}
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 };
 }  // namespace dvm

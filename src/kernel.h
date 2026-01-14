@@ -34,6 +34,7 @@ class VKernel {
   virtual void Append(NDObject *obj);
   virtual uint64_t CodeGen();
   virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
+  virtual void Clone(VKernel *base, CloneHelper &helper);
   std::string &DumpGraph() {
     std::ostringstream oss;
     Dump(oss, "");
@@ -42,6 +43,7 @@ class VKernel {
   }
   virtual std::string &DisAssemble();
   KernelType KType() const { return ktype_; }
+  uint32_t Flags() const { return flags_; }
   bool IsSplit() const { return ktype_ == KernelType::kSplit ||  ktype_ == KernelType::kEager; }
   bool IsDynamic() const { return flags_ & KernelFlag::kDynamic; }
 
@@ -207,6 +209,7 @@ class VKernelS : public VectorKernel {
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
 
   virtual bool NormBuild();
 
@@ -247,10 +250,11 @@ class VKernelD : public VKernelS {
 
 class _SpecVector : public VKernelD {
  public:
-  _SpecVector(uint32_t flags) : VKernelD(flags) {}
+  _SpecVector(uint32_t flags) : VKernelD(flags | KernelFlag::kSpeculate) {}
   ~_SpecVector() override;
   void Append(NDObject *obj) override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
   void Next() { last_stage_++; }
 
  protected:
@@ -281,6 +285,7 @@ class VKernelP : public VKernel {
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
 
  protected:
   uint64_t CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size);

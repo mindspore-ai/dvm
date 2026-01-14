@@ -488,6 +488,30 @@ void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   oss << indent << "}";
 }
 
+void MixKernel::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<MixKernel *>(base);
+  auto cube = k->cube_op_;
+  cube->lhs_->CloneUpdate(helper);
+  cube->rhs_->CloneUpdate(helper);
+  if (cube->bias_) {
+    cube->bias_->CloneUpdate(helper);
+  }
+  if (cube->obj_id_ == ObjectType::kGmmOp) {
+    static_cast<GmmOp *>(cube)->group_list_->CloneUpdate(helper);
+  }
+  cube_op_ = static_cast<CubeOp *>(cube->CloneUpdate(helper));
+  if (k->post_fusion_) {
+    post_fusion_ = IsDynamic() ? new VKernelD() : new VKernelS();
+    post_fusion_->Clone(k->post_fusion_, helper);
+    sload_ = static_cast<NDAccess *>(helper.GetClone(k->sload_));
+  }
+  for (auto &[load1, load2] : k->reloads_) {
+    auto clone1 = static_cast<NDAccess *>(helper.GetClone(load1));
+    auto clone2 = static_cast<NDAccess *>(helper.GetClone(load2));
+    reloads_.emplace_back(clone1, clone2);
+  }
+}
+
 void DynMixKernel::Record() {
   if (post_fusion_) {
     static_cast<VKernelD *>(post_fusion_)->Recover();
@@ -538,7 +562,7 @@ StagesKernel::~StagesKernel() {
 void StagesKernel::Append(NDObject *obj) {
   stages_.back()->kernel->Append(obj);
   if (!obj->IsSimd()) {
-    stages_.back()->ios.push_back(static_cast<NDAccess *>(obj));
+    stages_.back()->ios.emplace_back(static_cast<NDAccess *>(obj), nullptr);
   }
 }
 
@@ -547,9 +571,6 @@ void StagesKernel::Append(NDObject *obj) {
 
 uint64_t StagesKernel::CodeGen() {
   if (IsDynamic()) {
-    for (auto &s : sloads_) {
-      SetStageStore(s.first, s.second);
-    }
     code_.Clear();
   }
   for (auto s : stages_) {
@@ -560,7 +581,7 @@ uint64_t StagesKernel::CodeGen() {
   for (auto s : stages_) {
     auto &code = s->kernel->code_;
     code_.CombineBind(code, s->ws_offset);
-    for (auto op : s->ios) {
+    for (auto &[op, prod] : s->ios) {
       if (!op->CheckFlag(OBJ_FLAG_STAGE_IO)) continue;
       if (op->IsStore()) {
         if (op->xbuf_ == STAGE_FLAG_REUSE) {
@@ -569,7 +590,7 @@ uint64_t StagesKernel::CodeGen() {
           code_.BindWorkspace(op->addr_, GetWorkspace(op));
         }
       } else {
-        code_.BindOp(op->addr_, GetStageStore(op)->addr_);
+        code_.BindOp(op->addr_, prod->addr_);
       }
     }
   }
@@ -612,9 +633,8 @@ uint64_t StagesKernel::AllocWorkspace() {
   for (auto it = stages_.rbegin(); it != stages_.rend(); ++it) {
     auto stage = *it;
     // stage buffer gen
-    for (auto io : stage->ios) {
-      if (io->IsLoad() && io->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-        auto store = GetStageStore(io);
+    for (auto &[io, store] : stage->ios) {
+      if (store != nullptr) {
         if (!store->CheckFlag(OBJ_FLAG_STAGE_IO) || lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == KernelType::kVector && !stage->kernel->IsDynamic()) {  // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
@@ -662,7 +682,8 @@ uint64_t StagesKernel::AllocWorkspace() {
       groups[index].wss.push_back(stage);
     }
     // stage buffer kill
-    for (auto io : stage->ios) {
+    for (auto &p : stage->ios) {
+      auto io = p.first;
       if (io->IsStore() && io->CheckFlag(OBJ_FLAG_STAGE_IO)) {
         auto live_it = lives.find(io);
         if (live_it->second >= 0) {
@@ -697,6 +718,23 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
     oss << std::endl;
   }
   oss << indent << "}";
+}
+
+void StagesKernel::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<StagesKernel *>(base);
+  _Builder b(this);
+  for (auto stage : k->stages_) {
+    b.StageSwitch(stage->kernel->KType());
+    auto to_stage = stages_.back();
+    to_stage->kernel->Clone(stage->kernel, helper);
+    for (auto &[op, prod] : stage->ios) {
+      auto clone = static_cast<NDAccess *>(helper.GetClone(op));
+      to_stage->ios.emplace_back(clone, prod ? static_cast<NDAccess *>(helper.GetClone(prod)) : nullptr);
+      if (op->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+        clone->flags_ |= OBJ_FLAG_STAGE_IO;
+      }
+    }
+  }
 }
 
 void StagesKernel::_Builder::StageSwitch(KernelType type) {
@@ -768,8 +806,8 @@ void SequenceKernel::Append(NDObject *obj) {
     }
     NDAccess *load = nullptr;
     auto stage = stages_[cur_sid];
-    for (auto op : stage->ios) {
-      if (op->CheckFlag(OBJ_FLAG_STAGE_IO) && op->IsLoad() && GetStageStore(op) == store) {
+    for (auto &[op, prod]: stage->ios) {
+      if (prod == store) {
         load = op;
         break;
       }
@@ -778,9 +816,6 @@ void SequenceKernel::Append(NDObject *obj) {
       load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
       stage->kernel->Append(load);
       stage->StageLoad(load, store);
-      if (IsDynamic()) {
-        StageLoadRecord(load, store);
-      }
     }
     in = load;
   });
@@ -1261,20 +1296,24 @@ NDObject *_SplitKernel::Exchange(NDObject *input, int to_aid) {
 }
 
 NDObject *_SplitKernel::SplitPush(EagerArea *area, NDObject *input) {
+  auto cube_check = [this, &input](EagerArea *c, EagerArea *v) -> bool {
+    if (v->state_ == EagerArea::kSubmitted) { // reduce
+      return false;
+    }
+    if (input == c->dom_) {
+      input = Exchange(input, v->area_id_);
+      SetArea(input, v->area_id_);
+      ctx_->app_.push_back(input);
+    }
+    v->dom_ = c->dom_;
+    pv_black_mask_ |= 1ul << v->area_id_;
+    return true;
+  };
   if (auto idx = GetArea(input); idx >= 0) {
     auto a = areas_[idx].second;
     if (a == area) return input;
     if (a->state_ == EagerArea::kPending) {
-      if (area->FuseCheck(a)) {
-        if (a->dom_->IsCube()) {
-          if (input == a->dom_) {
-            input = Exchange(input, area->area_id_);
-            SetArea(input, area->area_id_);
-            ctx_->app_.push_back(input);
-          }
-          area->dom_ = a->dom_;
-          pv_black_mask_ |= 1ul << area->area_id_;
-        }
+      if (area->FuseCheck(a) && (!a->dom_->IsCube() || cube_check(a, area))) {
         area->fused_.push_back(a);
         areas_[a->area_id_].second = area;
         if (!a->fused_.empty()) {
@@ -1889,6 +1928,14 @@ void SplitGraphD::Infer() {
 void SplitGraphD::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
   _SplitGraph::CodeGenR(relocs, reloc_size, ws_alloc);
   RelocBinds();
+}
+
+void SplitGraphD::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<SplitGraphD *>(base);
+  k->tracker_.Recover();
+  for (auto op : k->build_ops_) {
+    Append(op->CloneUpdate(helper));
+  }
 }
 
 void SplitGraphS::Infer() {

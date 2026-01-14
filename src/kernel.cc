@@ -129,6 +129,8 @@ void VKernel::UpdateIdle(const std::vector<NDObject *> &cleans) {
   }
 }
 
+void VKernel::Clone(VKernel *base, CloneHelper &helper) { DvmException("unsupport clone kernel"); }
+
 class CodeGenHelper {
  public:
   struct EventManager {
@@ -1481,6 +1483,13 @@ bool VKernelS::NormBuild() {
   return true;
 }
 
+void VKernelS::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<VKernelS *>(base);
+  for (auto op : k->build_ops_) {
+    Append(op->CloneUpdate(helper));
+  }
+}
+
 void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
   if (tile_num_ > 0) {
     return VectorKernel::Dump(oss, indent);
@@ -1531,6 +1540,18 @@ void _SpecVector::Append(NDObject *obj) {
       stage_ids_[in->index_] = last_stage_;
     }
   });
+}
+
+void _SpecVector::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<_SpecVector *>(base);
+  for (size_t i = 0; i < k->build_ops_.size(); ++i) {
+    auto op = k->build_ops_[i];
+    if (op->IsSimd() && k->stage_ids_[i] != last_stage_) {
+      ASSERT(k->stage_ids_[i] == last_stage_ + 1);
+      Next();
+    }
+    Append(op->CloneUpdate(helper));
+  }
 }
 
 void _SpecVector::Dump(std::ostringstream &oss, const std::string &indent) {
@@ -1619,7 +1640,9 @@ class RemapKernel : public T {
 template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::FallCodeGen() {
   struct _CloneHelper : public CloneHelper {
+    ShapeRef *GetClone(ShapeRef *shape) override { return shape; }
     NDObject *GetClone(NDObject *op) override { return clones_[op->index_]; }
+    void SetClone(NDObject *op, NDObject *clone) {}
     std::vector<NDObject *> clones_;
   };
   if (fall_kernel_ == nullptr) {
@@ -1665,9 +1688,6 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
           }
           load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
           stage_kernel->StageLoad(out_stage, load, store);
-          if constexpr (dyn_shape) {
-            stage_kernel->StageLoadRecord(load, store);
-          }
         }
         out_stage->Append(load);
         in = load;
@@ -1799,5 +1819,15 @@ void VKernelP::Dump(std::ostringstream &oss, const std::string &indent) {
     oss << std::endl;
   }
   oss << indent << "}";
+}
+
+void VKernelP::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<VKernelP *>(base);
+  for (size_t i = 0; i < k->children_.size(); ++i) {
+    if (i > 0) {
+      AppendNext();
+    }
+    children_[i]->Clone(k->children_[i], helper);
+  }
 }
 }  // namespace dvm

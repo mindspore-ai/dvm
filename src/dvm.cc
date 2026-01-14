@@ -222,6 +222,26 @@ bool isInteger(const T &value) {
   return false;
 }
 
+inline Float16 operator/(const Float16 &a, const Float16 &b) {
+  return Float16(static_cast<float>(a) / static_cast<float>(b));
+}
+inline Float16 operator-(const Float16 &a) {
+  constexpr uint16_t sign_mask = 0x8000;
+  return Float16(a.int_value() ^ sign_mask);
+}
+inline bool operator>(const Float16 &a, const Float16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
+inline bool operator<(const Float16 &a, const Float16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
+
+inline BFloat16 operator/(const BFloat16 &a, const BFloat16 &b) {
+  return BFloat16(static_cast<float>(a) / static_cast<float>(b));
+}
+inline BFloat16 operator-(const BFloat16 &a) {
+  constexpr uint16_t sign_mask = 0x8000;
+  return BFloat16(a.int_value() ^ sign_mask);
+}
+inline bool operator>(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
+inline bool operator<(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
+
 template <typename T>
 NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   int32_t iter_num = std::abs(static_cast<int32_t>(value));
@@ -247,26 +267,6 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   }
   return res;
 }
-
-inline Float16 operator/(const Float16 &a, const Float16 &b) {
-  return Float16(static_cast<float>(a) / static_cast<float>(b));
-}
-inline Float16 operator-(const Float16 &a) {
-  constexpr uint16_t sign_mask = 0x8000;
-  return Float16(a.int_value() ^ sign_mask);
-}
-inline bool operator>(const Float16 &a, const Float16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
-inline bool operator<(const Float16 &a, const Float16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
-
-inline BFloat16 operator/(const BFloat16 &a, const BFloat16 &b) {
-  return BFloat16(static_cast<float>(a) / static_cast<float>(b));
-}
-inline BFloat16 operator-(const BFloat16 &a) {
-  constexpr uint16_t sign_mask = 0x8000;
-  return BFloat16(a.int_value() ^ sign_mask);
-}
-inline bool operator>(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) > static_cast<float>(b); }
-inline bool operator<(const BFloat16 &a, const BFloat16 &b) { return static_cast<float>(a) < static_cast<float>(b); }
 
 template <typename T>
 class BroadcastScalarRefOp : public BroadcastScalarOp {

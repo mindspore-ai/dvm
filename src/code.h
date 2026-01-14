@@ -17,7 +17,7 @@
 #ifndef _DVM_CODE_H_
 #define _DVM_CODE_H_
 #include <sstream>
-#include <securec.h>
+#include <cstring>
 #include "isa.h"
 #include "system.h"
 
@@ -134,7 +134,7 @@ class Code : public CodeWrap {
     uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
     data_size_ += visit->code_size_;
     uint64_t offset = visit_code - reinterpret_cast<uint64_t *>(data_) - 2;
-    memcpy_s(visit_code, visit->code_size_, visit->code_, visit->code_size_);
+    std::memcpy(visit_code, visit->code_, visit->code_size_);
     for (auto &r : visit->rel_relocs_) {
       *r.first |= static_cast<uint64_t>(visit_code - r.first) << V_HEAD_EXT_OFFSET;
     }

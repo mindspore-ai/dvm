@@ -18,7 +18,7 @@
 #include <unordered_map>
 #include <climits>
 #include <memory>
-#include <securec.h>
+#include <cstring>
 #include "kernel.h"
 #include "xkernel.h"
 
@@ -1785,7 +1785,7 @@ uint64_t VKernelP::CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *co
                              uint64_t ws_size) {
   auto &code = kernel->code_;
   code.Alloc(code_size + Code::HeadSize() + RedVisitCoder::BCODE_MAX);
-  memcpy_s(code.data_ + Code::HeadSize(), code_size, code_begin, code_size);
+  std::memcpy(code.data_ + Code::HeadSize(), code_begin, code_size);
   for (auto op : kernel->build_ops_) {
     if (op->IsLoad() || op->IsStore()) {
       auto ac = static_cast<NDAccess *>(op);

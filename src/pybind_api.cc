@@ -18,10 +18,10 @@
 #include <sys/ipc.h>
 #include <sys/shm.h>
 #include <algorithm>
+#include <cstring>
 #include <unordered_map>
 #include <memory>
 #include <fstream>
-#include <securec.h>
 #include "pybind11/numpy.h"
 #include "pybind11/pybind11.h"
 #include "pybind11/stl.h"
@@ -183,7 +183,7 @@ class DevRunner : public KernelRunner {
     const uint64_t reserve_mem = 512;
     ERROR_CHECK(aclrtMalloc(&store.dev, store.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
     if (store.clear_mem) {
-      memset_s(store.host, store.size, 0, store.size);
+      std::memset(store.host, 0, store.size);
       ERROR_CHECK(aclrtMemcpy(store.dev, store.size, store.host, store.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
     host_mem_.push_back(store.host);
@@ -234,7 +234,7 @@ class DryRunner : public KernelRunner {
   void AllocStore(StoreInfo &store) override {
     store.host = std::malloc(store.size);
     if (store.clear_mem) {
-      memset_s(store.host, store.size, 0, store.size);
+      std::memset(store.host, 0, store.size);
     }
     host_mem_.push_back(store.host);
     store.dev = store.host;

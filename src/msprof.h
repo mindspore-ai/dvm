@@ -25,7 +25,6 @@
 #include "profiling/prof_api.h"
 #else
 #include "experiment/msprof/toolchain/prof_api.h"
-#include "experiment/msprof/toolchain/prof_common.h"
 #include "experiment/msprof/toolchain/prof_data_config.h"
 #endif
 

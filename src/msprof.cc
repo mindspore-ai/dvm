@@ -45,7 +45,7 @@ constexpr uint32_t kTensorInfoBytesWithCap = 56U;
 
 namespace dvm {
 const TensorDtypeMs MAP_DTYPE_TO_MSDTYPE[DataType::kDataTypeEnd + 1] = {BOOL_,  FLOAT16_, DT_BF16,         FLOAT32_,
-                                                                 INT32_, INT64_,   NUMBER_TYPE_END_};
+                                                                        INT32_, INT64_,   NUMBER_TYPE_END_};
 
 void InitLaunchApi(const uint64_t name_hash, MsprofApi *api) {
   const auto kernel_type_hash = MSPROF_REPORT_NODE_LAUNCH_TYPE;

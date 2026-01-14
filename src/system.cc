@@ -25,7 +25,6 @@
 #include "profiling/prof_api.h"
 #else
 #include "experiment/msprof/toolchain/prof_api.h"
-#include "experiment/msprof/toolchain/prof_common.h"
 #include "experiment/msprof/toolchain/prof_data_config.h"
 #endif
 
@@ -136,7 +135,7 @@ int32_t ProfCommandHandler(uint32_t type, VOID_PTR data, uint32_t len) {
     g_system.enable_profile_ = false;
   }
   if ((profSwitch & PROF_TASK_TIME_MASK) != 0) {
-  g_system.profiler_level_ = Level0;
+    g_system.profiler_level_ = Level0;
   }
   if ((profSwitch & PROF_TASK_TIME_L1_MASK) != 0) {
     g_system.profiler_level_ = Level1;

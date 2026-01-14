@@ -1,7 +1,13 @@
 VPATH = ./src:./include
 OBJ = ops.o kernel.o xkernel.o code.o dvm.o pass.o msprof.o system.o tuning.o comm.o py_api.o
 
-CFLGAS = --std=c++17 -Werror -Wall -I./include $(PYBIND11_INCLUDES) -I${ASCEND_PATH}/include -fPIC -fvisibility=hidden
+ifneq ($(PRE_ASCEND),)
+ASCEND_INCLUDE_DIR = third_party/cann/include
+else
+ASCEND_INCLUDE_DIR = ${ASCEND_PATH}/include
+endif
+
+CFLGAS = --std=c++17 -Werror -Wall -I./include $(PYBIND11_INCLUDES) -I$(ASCEND_INCLUDE_DIR) -fPIC -fvisibility=hidden
 CFLGAS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
 
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\
@@ -84,21 +90,27 @@ vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	echo "extern const" > vm.cc
 	xxd -i g_vkernel_c220_bin >> vm.cc
 	xxd -i g_vkernel_c310_bin >> vm.cc
-	llvm-objdump -t g_vkernel_c310_bin | grep " F " | python scripts/find_addrs.py src/isa.h c310 >> vm.cc
-	llvm-objdump -t g_vkernel_c220_bin | grep " F " | python scripts/find_addrs.py src/isa.h c220 >> vm.cc
+	objdump -t g_vkernel_c310_bin | grep " F " | python scripts/find_addrs.py src/isa.h c310 >> vm.cc
+	objdump -t g_vkernel_c220_bin | grep " F " | python scripts/find_addrs.py src/isa.h c220 >> vm.cc
 	g++ -c $(CFLGAS) vm.cc -o vm.o
 
+ifneq ($(PRE_ASCEND),)
+g_vkernel_c220_bin: prebuild/g_vkernel_c220_bin
+	cp -f $< $@
+g_vkernel_c310_bin: prebuild/g_vkernel_c310_bin
+	cp -f $< $@
+else
 g_vkernel_c220_bin: vm_aiv_c220.o vm_aic_c220.o
 	ld.lld -Ttext=0 vm_aic_c220.o vm_aiv_c220.o -static -o g_vkernel_c220_bin
+g_vkernel_c310_bin: vm_aiv_c310.o vm_aic_c310.o
+	ld.lld -Ttext=0 vm_aic_c310.o vm_aiv_c310.o -static -o g_vkernel_c310_bin
+endif
 
 vm_aiv_c220.o: vm_aiv.cce isa.h vm_aic_c220.o
 	ccec -c -O2 $(CCE_FLGAS_C220) -D VMAIN_OFFSET=$(VMAIN_OFFSET) --cce-aicore-arch=dav-c220-vec src/vm_aiv.cce -o vm_aiv_c220.o
 
 vm_aic_c220.o: vm_aic.cce isa.h
 	ccec -c -O2 $(CCE_FLGAS_C220) --cce-aicore-arch=dav-c220-cube src/vm_aic.cce -o vm_aic_c220.o
-
-g_vkernel_c310_bin: vm_aiv_c310.o vm_aic_c310.o
-	ld.lld -Ttext=0 vm_aic_c310.o vm_aiv_c310.o -static -o g_vkernel_c310_bin
 
 vm_aiv_c310.o: vm_aiv_c310.cce isa.h vm_aic_c310.o
 	ccec -c -O2 $(CCE_FLGAS_C310) -D VMAIN_OFFSET=$(VMAIN_C310_OFFSET) --cce-aicore-arch=$(C310_ARCH_VEC) src/vm_aiv_c310.cce -o vm_aiv_c310.o
@@ -110,4 +122,4 @@ clean:
 	rm -f *.o *.so *.a *bin vm.cc
 
 help:
-	@echo "Usage: make [dbg=1] [asan=1]"
+	@echo "Usage: make [dbg=1] [asan=1] [PRE_ASCEND=1]"

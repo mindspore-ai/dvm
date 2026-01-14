@@ -17,7 +17,7 @@
 #include "comm.h"
 
 #include <dlfcn.h>
-#include <securec.h>
+#include <cstring>
 #include <stdint.h>
 #include <unistd.h>
 #include <sys/socket.h>
@@ -383,7 +383,7 @@ bool SocketChannel::ClientSendRecv(const uint8_t *send_buf, size_t send_size, ui
 }
 
 bool SocketChannel::ServerRecvSend(const uint8_t *send_buf, size_t send_size, uint8_t *recv_buf) {
-  memcpy_s(recv_buf, send_size, send_buf, send_size);
+  std::memcpy(recv_buf, send_buf, send_size);
 
   for (int i = 1; i < rank_size_; ++i) {
     if (Recv(client_fds_[i], recv_buf + i * send_size, send_size, 0) <= 0) {

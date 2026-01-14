@@ -14,7 +14,7 @@
  * limitations under the License.
  */
 #include <unordered_map>
-#include <securec.h>
+#include <cstring>
 #include "isa.h"
 #include "system.h"
 
@@ -244,7 +244,7 @@ struct FuncRegister {
 void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_t lenBurst, uint16_t srcStride, uint16_t dstStride) {
   if (dst == reinterpret_cast<void *>(PC_BASE)) {
     uint64_t size = nBurst * lenBurst * 32;
-    memcpy_s(g_ubuf_mem + PC_BASE, size, src, size);
+    std::memcpy(g_ubuf_mem + PC_BASE, src, size);
   }
   std::cout << "copy_gm_to_ubuf(" << dst << ", " << src << ", " << sid << ", " << nBurst << ", " << lenBurst << ", "
             << srcStride << ", " << dstStride << ")" << std::endl;
@@ -253,7 +253,7 @@ void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_
 
 rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm) {
   g_bytecode = std::malloc(size);
-  memcpy_s(g_bytecode, size, args, size);
+  std::memcpy(g_bytecode, args, size);
   uint64_t ffts_addr = *(reinterpret_cast<uint64_t*>(g_bytecode));
   uint64_t entry = *(reinterpret_cast<uint64_t*>(g_bytecode) + 1);
   block_num = block;

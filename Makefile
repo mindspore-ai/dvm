@@ -1,13 +1,7 @@
 VPATH = ./src:./include
 OBJ = ops.o kernel.o xkernel.o code.o dvm.o pass.o msprof.o system.o tuning.o comm.o py_api.o
 
-ifneq ($(PRE_ASCEND),)
-ASCEND_INCLUDE_DIR = third_party/cann/include
-else
-ASCEND_INCLUDE_DIR = ${ASCEND_PATH}/include
-endif
-
-CFLGAS = --std=c++17 -Werror -Wall -I./include $(PYBIND11_INCLUDES) -I$(ASCEND_INCLUDE_DIR) -fPIC -fvisibility=hidden
+CFLGAS = --std=c++17 -Werror -Wall -I./include $(PYBIND11_INCLUDES) -I${ASCEND_PATH}/include -fPIC -fvisibility=hidden
 CFLGAS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
 
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\

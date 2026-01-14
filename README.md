@@ -18,23 +18,60 @@ DVM支持在linux下进行编译执行，并依赖如下环境配置：
 
 #### 编译说明
 1. 配置CANN环境变量:
-  ```
-  export ASCEND_CUSTOM_PATH=/<path_to_cann>
-  source $ASCEND_CUSTOM_PATH/ascend_toolkit/set_env.sh
-  ```
+   ```bash
+    export ASCEND_CUSTOM_PATH=/<path_to_cann>
+    source $ASCEND_CUSTOM_PATH/ascend_toolkit/set_env.sh
+   ```
+
+#### 真实上板
 2. 配置DVM编译变量:
-  ```
-  cd dvm
-  source env.sh
-  ```
-3. 编译DVM:  ```make```
+   ```bash
+   cd dvm
+   source env.sh
+   ```
+3. 编译DVM
+   ```bash
+   make -j32
+   ```
 4. DVM验证执行。如: ```python examples/01_add.py```
 
 
 #### 仿真模拟
-1. source env.sh 910B1
-2. make
-3. msprof op simulator --application="python test_xxx" --output=./profiling
+
+2. 配置 DVM 编译变量:
+
+   ```bash
+   cd dvm
+   source env.sh --simulator_name=910B1
+   ```
+
+3. 设置仿真环境
+
+   根据所使用的仿真模式，**手动配置对应的动态库路径**：
+
+   * **ESL Model 模式**
+
+     ```bash
+     export LD_LIBRARY_PATH=/path/to/your/esl_lib:$LD_LIBRARY_PATH
+     ```
+
+   * **常规 Simulator 模式**
+
+     ```bash
+     export LD_LIBRARY_PATH=${ASCEND_PATH}/tools/simulator/${DVM_SOC_NAME}/lib:$LD_LIBRARY_PATH
+     ```
+
+4. 编译 DVM:
+
+   ```bash
+   make -j32
+   ```
+
+5. 使用 `msprof` 进行仿真 Profiling，例如：
+
+   ```bash
+   msprof op simulator --application="python test_xxx.py" --output=./profiling
+   ```
 
 
 #### 贡献

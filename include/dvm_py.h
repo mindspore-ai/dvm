@@ -25,7 +25,6 @@
 namespace py = pybind11;
 
 namespace dvm {
-class RtKernelPy;
 namespace pyapi {
 class NDObjectPy {
  public:
@@ -38,18 +37,18 @@ class NDObjectPy {
   NDObject *obj_;
 };
 
-class ShapeRefPy {
+class IntArrayRefPy {
  public:
-  ShapeRefPy() : shape_ref_(shape_) {}
-  explicit ShapeRefPy(const std::vector<int64_t> &shape) : shape_(shape), shape_ref_(shape_) {}
-  ~ShapeRefPy() = default;
+  IntArrayRefPy() : shape_ref_(shape_) {}
+  explicit IntArrayRefPy(const std::vector<int64_t> &shape) : shape_(shape), shape_ref_(shape_) {}
+  ~IntArrayRefPy() = default;
   void Update(py::object shape);
   py::object GetShape() const;
-  ShapeRef *Get() { return &shape_ref_; }
+  IntArrayRef *Get() { return &shape_ref_; }
 
  private:
   std::vector<int64_t> shape_;
-  ShapeRef shape_ref_;
+  IntArrayRef shape_ref_;
 };
 
 class ScalarRefPy {
@@ -59,17 +58,15 @@ class ScalarRefPy {
   ScalarRef data_;
 };
 
-DType StringToTypeID(const std::string &type);
-
 class KernelPy {
  public:
-  KernelPy();
+  KernelPy() = default;
   virtual ~KernelPy();
 
   virtual py::object Load(py::object shape, const std::string &type) = 0;
   virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) = 0;
   virtual py::object Store(py::object obj) = 0;
-  virtual ShapeRef *GetShapeRef(py::object shape) = 0;
+  virtual IntArrayRef *GetShapeRef(py::object shape) = 0;
 
   template <UnaryOpType op_type>
   py::object Unary(py::object input);
@@ -94,12 +91,11 @@ class KernelPy {
   py::object DumpGraph();
   void ParallelNext();
   void SpecNext();
-  static void SetDeterm(bool enable);
-  static void SetTuning(bool enable);
-  py::object MakeIntArray() { return py::cast(std::make_shared<ShapeRefPy>()); }
+  py::object MakeIntArray() { return py::cast(std::make_shared<IntArrayRefPy>()); }
   py::object MakeScalar() { return py::cast(std::make_shared<ScalarRefPy>()); }
 
  protected:
+  DType StringToTypeID(const std::string &type);
   Kernel kernel_;
 };
 using NDOpPyPtr = std::shared_ptr<NDObjectPy>;

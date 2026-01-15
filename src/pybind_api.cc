@@ -382,19 +382,19 @@ RtKernelPy::~RtKernelPy() {
   }
 }
 
-ShapeRef *RtKernelPy::GetShapeRef(py::object shape) {
-  if (py::isinstance<ShapeRefPy>(shape)) {
-    auto shape_ptr = shape.cast<std::shared_ptr<ShapeRefPy>>();
+IntArrayRef *RtKernelPy::GetShapeRef(py::object shape) {
+  if (py::isinstance<IntArrayRefPy>(shape)) {
+    auto shape_ptr = shape.cast<std::shared_ptr<IntArrayRefPy>>();
     return shape_ptr->Get();
   }
   std::vector<int64_t> &shape_vec = shape_vec_.emplace_back(GetVector(shape));
-  return shape_.emplace_back(new ShapeRef(shape_vec));
+  return shape_.emplace_back(new IntArrayRef(shape_vec));
 }
 
 py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
                               const std::string &dtype) {
   auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
-  auto depth_ref = shape_.emplace_back(new ShapeRef(shape_vec_.emplace_back(1, depth)));
+  auto depth_ref = shape_.emplace_back(new IntArrayRef(shape_vec_.emplace_back(1, depth)));
   auto type_id = StringToTypeID(dtype);
   NDObject *op;
   if (type_id == kInt32) {
@@ -417,7 +417,7 @@ py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::objec
 py::object RtKernelPy::Load(py::object shape, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
-  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto op = kernel_.Load(nullptr, shape_ref, StringToTypeID(type));
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
@@ -426,7 +426,7 @@ py::object RtKernelPy::Load(py::object shape, const std::string &type) {
 py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
-  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto stride_ref = GetShapeRef(stride);
   const int64_t *offset_ptr = nullptr;
   if (offset != 0) {
@@ -441,7 +441,7 @@ py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t off
 py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
-  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto start_ref = GetShapeRef(start);
   auto size_ref = GetShapeRef(size);
   auto op = kernel_.SliceLoad(nullptr, shape_ref, start_ref, size_ref, StringToTypeID(type));
@@ -453,7 +453,7 @@ py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::
                                         const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
-  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto start_ref = GetShapeRef(start);
   auto end_ref = GetShapeRef(end);
   auto step_ref = GetShapeRef(step);
@@ -465,7 +465,7 @@ py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::
 py::object RtKernelPy::MultiLoad(py::object shape, const std::string &type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
-  auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto op = kernel_.MultiLoad(nullptr, shape_ref, StringToTypeID(type), &g_mpc.comm);
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
@@ -700,8 +700,8 @@ void RtKernelPy::Input(py::object obj, py::object val) {
       }
       *(op->shape_ref_) = info.shape;
     }
-  } else if (py::isinstance<ShapeRefPy>(obj)) {
-    auto shape = obj.cast<std::shared_ptr<ShapeRefPy>>();
+  } else if (py::isinstance<IntArrayRefPy>(obj)) {
+    auto shape = obj.cast<std::shared_ptr<IntArrayRefPy>>();
     shape->Update(val);
   } else {
     ASSERT(py::isinstance<ScalarRefPy>(obj));
@@ -772,7 +772,7 @@ void RtKernelPy::Reset() {
 
 py::object RtKernelPy::Clone(py::object base, py::object remap) {
   struct _CloneHelper : public CloneHelper {
-    ShapeRef *GetClone(ShapeRef *shape) override {
+    IntArrayRef *GetClone(IntArrayRef *shape) override {
       auto it = shape_map_.find(shape);
       return it != shape_map_.end()  ? it->second : shape;
     }
@@ -782,14 +782,14 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
     }
     void SetClone(NDObject *op, NDObject *clone) override { op_map_[op] = clone; }
     std::unordered_map<NDObject *, NDObject *> op_map_;
-    std::unordered_map<ShapeRef *, ShapeRef *> shape_map_;
+    std::unordered_map<IntArrayRef *, IntArrayRef *> shape_map_;
   };
   _CloneHelper helper;
   RtKernelPy *other = base.cast<RtKernelPyPtr>().get();
   for (auto &load : other->loads_) {
     auto &info = loads_.emplace_back();
     info.shape = load.shape;
-    auto shape_ref = shape_.emplace_back(new ShapeRef(info.shape));
+    auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
     for (auto ref : other->shape_) {
       if (ref->data == load.shape.data()) {
         helper.shape_map_[ref] = shape_ref;
@@ -801,16 +801,16 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
   size_t remap_size = remap_list.size();
   py::tuple remap_out(remap_size);
   for (size_t i = 0; i < remap_size; ++i) {
-    if (py::isinstance<ShapeRefPy>(remap_list[i])) {
-      auto base = remap_list[i].cast<std::shared_ptr<ShapeRefPy>>()->Get();
-      auto ref = std::make_shared<ShapeRefPy>();
+    if (py::isinstance<IntArrayRefPy>(remap_list[i])) {
+      auto base = remap_list[i].cast<std::shared_ptr<IntArrayRefPy>>()->Get();
+      auto ref = std::make_shared<IntArrayRefPy>();
       helper.shape_map_[base] = ref->Get();
       remap_out[i] = py::cast(ref);
     }
   }
   for (auto ref : other->shape_) {
     if (helper.shape_map_.find(ref) == helper.shape_map_.end()) {
-      auto clone = new ShapeRef(shape_vec_.emplace_back(ref->data, ref->data + ref->size));
+      auto clone = new IntArrayRef(shape_vec_.emplace_back(ref->data, ref->data + ref->size));
       helper.shape_map_[ref] = clone;
     }
   }
@@ -830,6 +830,24 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
     }
   }
   return remap_out;
+}
+
+void RtKernelPy::SetDeterm(bool enable) {
+  auto &conf = Config::Instance();
+  if (enable) {
+    conf.SetDeterm();
+  } else {
+    conf.UnsetDeterm();
+  }
+}
+
+void RtKernelPy::SetTuning(bool enable) {
+  auto &conf = Config::Instance();
+  if (enable) {
+    conf.SetOnlineTuner().SetLazyTuner();
+  } else {
+    conf.UnsetOnlineTuner().UnsetLazyTuner();
+  }
 }
 
 void RtKernelPy::Fork(int size, const std::string &comm_type) {
@@ -933,6 +951,8 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("dry_run", &RtKernelPy::DryRun, "dry run vm")
     .def_static("init_comm", &RtKernelPy::InitComm, "init communicatior")
     .def_static("set_cube_store_type", &RtKernelPy::SetCubeStoreType, "set sync type")
+    .def_static("set_determ", &RtKernelPy::SetDeterm, "set deterministic")
+    .def_static("set_online_tuning", &RtKernelPy::SetTuning, "set online tuning")
     .def_static("fork", &RtKernelPy::Fork, "fork process", py::arg("size"), py::arg("comm_type") = "")
     .def_static("join", &RtKernelPy::Join, "join process")
     .def_static("barrier", &RtKernelPy::Barrier, "barrier process")

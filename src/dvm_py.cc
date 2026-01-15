@@ -16,25 +16,11 @@
 
 #include <unordered_map>
 #include "pybind11/stl.h"
-#include "py_api.h"
+#include "dvm_py.h"
 #include "ops.h"
 
 namespace dvm {
 namespace pyapi {
-
-DType StringToTypeID(const std::string &type) {
-  static const std::unordered_map<std::string, DType> map = {
-    {"bool", kBool},       {"float16", kFloat16}, {"bfloat16", kBFloat16},
-    {"float32", kFloat32}, {"int32", kInt32},     {"int64", kInt64},
-  };
-  auto it = map.find(type);
-  if (it == map.end()) {
-    std::string msg =
-      "Unsupported dtype: " + type + ". Supported dtypes: bool, float16, bfloat16, float32, int32, int64.";
-    DvmException(msg.c_str());
-  }
-  return it->second;
-}
 
 py::object NDObjectPy::GetShape() const {
   const size_t size = obj_->shape_ref_->size;
@@ -47,12 +33,12 @@ py::object NDObjectPy::GetShape() const {
 
 std::string NDObjectPy::GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
 
-void ShapeRefPy::Update(py::object shape) {
+void IntArrayRefPy::Update(py::object shape) {
   shape_ = py::cast<std::vector<int64_t>>(shape);
   shape_ref_ = shape_;
 }
 
-py::object ShapeRefPy::GetShape() const {
+py::object IntArrayRefPy::GetShape() const {
   const size_t size = shape_.size();
   py::tuple out(size);
   for (size_t i = 0; i < size; ++i) {
@@ -72,9 +58,21 @@ void ScalarRefPy::Update(py::object val) {
   }
 }
 
-KernelPy::KernelPy() = default;
-
 KernelPy::~KernelPy() {}
+
+DType KernelPy::StringToTypeID(const std::string &type) {
+  static const std::unordered_map<std::string, DType> map = {
+    {"bool", kBool},       {"float16", kFloat16}, {"bfloat16", kBFloat16},
+    {"float32", kFloat32}, {"int32", kInt32},     {"int64", kInt64},
+  };
+  auto it = map.find(type);
+  if (it == map.end()) {
+    std::string msg =
+      "Unsupported dtype: " + type + ". Supported dtypes: bool, float16, bfloat16, float32, int32, int64.";
+    DvmException(msg.c_str());
+  }
+  return it->second;
+}
 
 template <UnaryOpType op_type>
 py::object KernelPy::Unary(py::object input) {
@@ -197,24 +195,6 @@ void KernelPy::ParallelNext() { kernel_.ParallelNext(); }
 
 void KernelPy::SpecNext() { kernel_.SpecNext(); }
 
-void KernelPy::SetDeterm(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetDeterm();
-  } else {
-    conf.UnsetDeterm();
-  }
-}
-
-void KernelPy::SetTuning(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetOnlineTuner().SetLazyTuner();
-  } else {
-    conf.UnsetOnlineTuner().UnsetLazyTuner();
-  }
-}
-
 template py::object KernelPy::Unary<UnaryOpType::kSqrt>(py::object);
 template py::object KernelPy::Unary<UnaryOpType::kAbs>(py::object);
 template py::object KernelPy::Unary<UnaryOpType::kLog>(py::object);
@@ -252,11 +232,11 @@ void RegBaseApi(const py::module &m) {
     .def("shape", &NDObjectPy::GetShape, "get shape")
     .def("dtype", &NDObjectPy::GetDType, "get dtype");
 
-  (void)py::class_<ShapeRefPy, std::shared_ptr<ShapeRefPy>>(m, "ShapeRef")
+  (void)py::class_<IntArrayRefPy, std::shared_ptr<IntArrayRefPy>>(m, "IntArrayRef")
     .def(py::init<>())
     .def(py::init<const std::vector<int64_t> &>())
-    .def("shape", &ShapeRefPy::GetShape, "get shape")
-    .def("update", &ShapeRefPy::Update, "update shape");
+    .def("shape", &IntArrayRefPy::GetShape, "get shape")
+    .def("update", &IntArrayRefPy::Update, "update shape");
 
   (void)py::class_<ScalarRefPy, std::shared_ptr<ScalarRefPy>>(m, "ScalarRef")
     .def("update", &ScalarRefPy::Update, "update value");
@@ -317,9 +297,7 @@ void RegKernelApi(const py::module &m) {
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("p_next", &KernelPy::ParallelNext, "parallel next")
-    .def("spec_next", &KernelPy::SpecNext, "spec next")
-    .def_static("set_determ", &KernelPy::SetDeterm, "set deterministic")
-    .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning");
+    .def("spec_next", &KernelPy::SpecNext, "spec next");
 }
 }  // namespace pyapi
 }  // namespace dvm

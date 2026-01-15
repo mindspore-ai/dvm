@@ -15,7 +15,8 @@
 import sys
 import random
 import numpy as np
-from dvm.tester import Tester, ShapeRef
+from dvm.tester import Tester
+from dvm import IntArrayRef 
 
 class Suite:
     def __init__(self, case_list):
@@ -65,7 +66,7 @@ class BroadcastSuite(Suite):
 class ReduceSuite(Suite):
     def __init__(self):
         self.input_x = None
-        self.red_dims = ShapeRef()
+        self.red_dims = IntArrayRef()
         case_list = [
             [[10, 4000], [0]],
             [[10, 4000], [1]],

@@ -107,18 +107,6 @@ class VKernel;
 class MsprofHelper;
 class Communicator;
 
-struct ShapeRef {
-  ShapeRef() {}
-  explicit ShapeRef(const std::vector<int64_t> &other) : data(other.data()), size(other.size()) {}
-  ShapeRef &operator=(const std::vector<int64_t> &other) {
-    data = other.data();
-    size = other.size();
-    return *this;
-  }
-  const int64_t *data;
-  size_t size;
-};
-
 class Float16 {
  public:
   explicit Float16(uint16_t v) : value_(v) {}
@@ -143,6 +131,18 @@ class BFloat16 {
 
  private:
   uint16_t value_;
+};
+
+struct IntArrayRef {
+  IntArrayRef() {}
+  explicit IntArrayRef(const std::vector<int64_t> &other) : data(other.data()), size(other.size()) {}
+  IntArrayRef &operator=(const std::vector<int64_t> &other) {
+    data = other.data();
+    size = other.size();
+    return *this;
+  }
+  const int64_t *data;
+  size_t size;
 };
 
 struct ScalarRef {
@@ -193,7 +193,7 @@ struct WsAllocator {
 };
 
 struct CloneHelper {
-  virtual ShapeRef *GetClone(ShapeRef *shape) = 0;
+  virtual IntArrayRef *GetClone(IntArrayRef *shape) = 0;
   virtual NDObject *GetClone(NDObject *op) = 0;
   virtual void SetClone(NDObject *op, NDObject *clone) = 0;
 };
@@ -224,11 +224,11 @@ class Kernel {
     op_fullname_ = fullname;
   }
 
-  NDObject *Load(void *addr, ShapeRef *shape, DataType type);
-  NDObject *Load(void *addr, ShapeRef *shape, ShapeRef *stride, const int64_t *offset, DataType type);
-  NDObject *SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DataType type);
-  NDObject *StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step, DataType type);
-  NDObject *MultiLoad(void *addr, ShapeRef *shape, DataType type, const Comm *comm);
+  NDObject *Load(void *addr, IntArrayRef *shape, DataType type);
+  NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type);
+  NDObject *SliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *size, DataType type);
+  NDObject *StridedSliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *end, IntArrayRef *step, DataType type);
+  NDObject *MultiLoad(void *addr, IntArrayRef *shape, DataType type, const Comm *comm);
   NDObject *Store(void *addr, NDObject *input);
   NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);
   void SetStoreInplace(NDObject *store);
@@ -238,16 +238,16 @@ class Kernel {
   template <BinaryType op_type, typename L, typename R>
   NDObject *Binary(L lhs, R rhs);
   template <ReduceType op_type>
-  NDObject *Reduce(NDObject *input, ShapeRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
+  NDObject *Reduce(NDObject *input, IntArrayRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
   NDObject *Select(NDObject *cond, NDObject *lhs, NDObject *rhs);
   NDObject *Cast(NDObject *input, DataType type);
-  NDObject *Broadcast(NDObject *input, ShapeRef *shape);
+  NDObject *Broadcast(NDObject *input, IntArrayRef *shape);
   template <typename T>
-  NDObject *Broadcast(T val, ShapeRef *shape, DataType type);
-  NDObject *Reshape(NDObject *input, ShapeRef *shape);
+  NDObject *Broadcast(T val, IntArrayRef *shape, DataType type);
+  NDObject *Reshape(NDObject *input, IntArrayRef *shape);
   NDObject *Copy(NDObject *input);
   template <typename T>
-  NDObject *OneHot(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value);
+  NDObject *OneHot(NDObject *indices, IntArrayRef *depth, int axis, T on_value, T off_value);
   NDObject *ElemAny(NDObject *input);
 
   NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
@@ -273,7 +273,7 @@ class Kernel {
   int Launch(void *stream);
   void Clear();
 
-  ShapeRef *GetShape(NDObject *op) const;
+  IntArrayRef *GetShape(NDObject *op) const;
   DataType GetDType(NDObject *op) const;
 
   const char *Dump() const;
@@ -282,7 +282,7 @@ class Kernel {
   VKernel *GetImpl() const { return kernel_; }
 
  protected:
-  NDObject *_Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims);
+  NDObject *_Reduce(int op_type, NDObject *input, IntArrayRef *dims, bool keepdims);
   NDObject *_AllReduce(int op_type, NDObject *input, const Comm *comm);
 
   VKernel *kernel_;
@@ -357,7 +357,7 @@ class Kernel {
         return nullptr;
     }
   }
-  NDObject *Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
+  NDObject *Reduce(int op_type, NDObject *input, IntArrayRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
   NDObject *AllReduce(int op_type, NDObject *input, const Comm *comm) { return _AllReduce(op_type, input, comm); }
 };
 
@@ -381,5 +381,6 @@ using BinaryOpType = BinaryType;
 using ReduceOpType = ReduceType;
 using GroupType = GmmSplitType;
 using GroupListType = GmmListType;
+using ShapeRef = IntArrayRef;
 }  // namespace dvm
 #endif  // _DVM_H_

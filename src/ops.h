@@ -99,7 +99,7 @@ struct ShardParam {
   uint64_t stride[PARTIAL_SIZE];
 };
 
-std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape);
+std::ostream &operator<<(std::ostream &oss, const IntArrayRef &shape);
 std::ostream &operator<<(std::ostream &oss, const Float16 &scalar);
 std::ostream &operator<<(std::ostream &oss, const BFloat16 &scalar);
 
@@ -197,12 +197,12 @@ class DimArray {
 std::ostream &operator<<(std::ostream &oss, const DimArray &nd);
 
 template <size_t N>
-struct ShapeRefData : public ShapeRef {
+struct ShapeRefData : public IntArrayRef {
   ShapeRefData() {
     data = shape;
     size = 0;
   }
-  ShapeRefData &operator=(const ShapeRef &other) {
+  ShapeRefData &operator=(const IntArrayRef &other) {
     size = other.size;
     _DimCopy(shape, other.data, size);
     return *this;
@@ -469,7 +469,7 @@ class NDObject {
   NDObject *lhs_;
   NDObject *rhs_;
   uint64_t xbuf_;
-  ShapeRef *shape_ref_;
+  IntArrayRef *shape_ref_;
   ObjectType obj_id_;
   DataType type_id_;
   int prop_id_;
@@ -511,7 +511,7 @@ class NDLoadDummy : public NDAccess {
 
 class NDLoad : public NDAccess {
  public:
-  NDLoad(void *src, ShapeRef *shape_ref, DataType type_id = kFloat32)
+  NDLoad(void *src, IntArrayRef *shape_ref, DataType type_id = kFloat32)
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
@@ -533,7 +533,7 @@ class NDLoad : public NDAccess {
 
 class NDViewLoad : public NDAccess {
  public:
-  NDViewLoad(void *src, ShapeRef *shape, ShapeRef *stride, const int64_t *offset, DataType dtype)
+  NDViewLoad(void *src, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType dtype)
       : NDAccess(src, nullptr, dtype, ObjectType::kViewLoad), src_stride_ref_(stride), offset_(offset) {
     shape_ref_ = shape;
     nd_.data = &ndd_;
@@ -549,7 +549,7 @@ class NDViewLoad : public NDAccess {
   static void DimChanged(NDObject *op);
 
  protected:
-  ShapeRef *src_stride_ref_;
+  IntArrayRef *src_stride_ref_;
   const int64_t *offset_;
   DimArray src_stride_;
   DimArray tile_;
@@ -561,7 +561,7 @@ class NDViewLoad : public NDAccess {
 // split input to `multi_size` parts, everytime load a piece from all parts
 class NDMultiLoad : public NDLoad {
  public:
-  NDMultiLoad(uint8_t *src, ShapeRef *shape_ref, DataType type_id, const Communicator *comm)
+  NDMultiLoad(uint8_t *src, IntArrayRef *shape_ref, DataType type_id, const Communicator *comm)
       : NDLoad(src, shape_ref, type_id), comm_(comm) {
     obj_id_ = ObjectType::kMultiLoad;
   }
@@ -682,7 +682,7 @@ class ReshapeOp : public CopyOp {
     int in_size{0};
   };
 
-  ReshapeOp(NDObject *input, ShapeRef *shape_ref) : CopyOp(input) {
+  ReshapeOp(NDObject *input, IntArrayRef *shape_ref) : CopyOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
     nd_.data = &ndd_;
@@ -696,7 +696,7 @@ class ReshapeOp : public CopyOp {
   bool VisitChangeRange(ChangeRange &range);
 
  protected:
-  ShapeRef *dst_shape_ref_;
+  IntArrayRef *dst_shape_ref_;
   ShapeWithRef shape_;
   NDSpaceData ndd_;
 };
@@ -748,7 +748,7 @@ class ElementAnyOp : public NDObject {
 
  private:
   int64_t shape_{1};
-  ShapeRef shape_ref_data_;
+  IntArrayRef shape_ref_data_;
   int tail_dim_;
   int tail_size_;
   NDSpaceData ndd_;
@@ -918,7 +918,7 @@ class _BroadcastOp : public NDObject {
 // expect shape is align: equal rank
 class BroadcastOp : public _BroadcastOp {
  public:
-  BroadcastOp(NDObject *input, ShapeRef *shape_ref) : _BroadcastOp(input) {
+  BroadcastOp(NDObject *input, IntArrayRef *shape_ref) : _BroadcastOp(input) {
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
   }
@@ -928,13 +928,13 @@ class BroadcastOp : public _BroadcastOp {
 
  private:
   std::vector<NDObject *> stuff_ops_;
-  ShapeRef *dst_shape_ref_;
+  IntArrayRef *dst_shape_ref_;
   ShapeWithRef shape_;
 };
 
 class BroadcastScalarOp : public NDObject {
  public:
-  BroadcastScalarOp(scode_t scalar, ShapeRef *shape_ref, DataType type_id)
+  BroadcastScalarOp(scode_t scalar, IntArrayRef *shape_ref, DataType type_id)
       : NDObject(nullptr, nullptr, type_id, ObjectType::kBroadcastS), scalar_(scalar) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
@@ -991,7 +991,7 @@ class _ReduceOp : public FlexOp {
 class AtomicCleanWrap;
 class ReduceOp : public _ReduceOp {
  public:
-  ReduceOp(NDObject *input, int red_op, ShapeRef *dims_ref, bool keepdims)
+  ReduceOp(NDObject *input, int red_op, IntArrayRef *dims_ref, bool keepdims)
       : _ReduceOp(input, red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
@@ -1020,7 +1020,7 @@ class ReduceOp : public _ReduceOp {
   std::vector<_ReduceOp *> stuff_ops_;
   ShapeWithRef shape_;
   bool keepdims_;
-  ShapeRef *dims_ref_;
+  IntArrayRef *dims_ref_;
   DimArray round_tile_;
 
   RelocAddr ws_reloc_;
@@ -1028,7 +1028,7 @@ class ReduceOp : public _ReduceOp {
 
 class OneHotOp : public NDObject {
  public:
-  OneHotOp(NDObject *indices, ShapeRef *depth, int axis, scode_t on_value, scode_t off_value, DataType type_id)
+  OneHotOp(NDObject *indices, IntArrayRef *depth, int axis, scode_t on_value, scode_t off_value, DataType type_id)
       : NDObject(indices, nullptr, type_id, kOneHot),
         on_value_(on_value),
         off_value_(off_value),
@@ -1059,7 +1059,7 @@ class OneHotOp : public NDObject {
   int depth_dim_;
   int tile_dim_;
   int64_t depth_tile_;
-  ShapeRef *depth_;
+  IntArrayRef *depth_;
   NDSpaceData ndd_;
   ShapeWithRef shape_;
 };

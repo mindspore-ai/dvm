@@ -300,7 +300,7 @@ scode_t EncodeScalarRef(const ScalarRef *ref, DataType type_id) {
 
 class BroadcastScalarRefOp : public BroadcastScalarOp {
  public:
-  BroadcastScalarRefOp(const ScalarRef *scalar, ShapeRef *shape_ref, DataType type_id)
+  BroadcastScalarRefOp(const ScalarRef *scalar, IntArrayRef *shape_ref, DataType type_id)
       : BroadcastScalarOp(0, shape_ref, type_id), scalar_ref_(scalar) {}
   uint64_t Emit(VectorKernel &k) {
     scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
@@ -441,7 +441,7 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
 
 class NDSliceLoad : public NDViewLoad {
  public:
-  NDSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *size_ref, DataType type_id)
+  NDSliceLoad(void *src, IntArrayRef *src_ref, IntArrayRef *start_ref, IntArrayRef *size_ref, DataType type_id)
       : NDViewLoad(src, size_ref, &stride_data_, &offset_data_, type_id), start_ref_(start_ref), src_ref_(src_ref) {
     MESS(offset_data_, 10);
   }
@@ -472,15 +472,15 @@ class NDSliceLoad : public NDViewLoad {
   }
 
  protected:
-  ShapeRef *start_ref_;
-  ShapeRef *src_ref_;
+  IntArrayRef *start_ref_;
+  IntArrayRef *src_ref_;
   ShapeWithRef stride_data_;
   int64_t offset_data_;
 };
 
 class NDStridedSliceLoad : public NDSliceLoad {
  public:
-  NDStridedSliceLoad(void *src, ShapeRef *src_ref, ShapeRef *start_ref, ShapeRef *end_ref, ShapeRef *step_ref,
+  NDStridedSliceLoad(void *src, IntArrayRef *src_ref, IntArrayRef *start_ref, IntArrayRef *end_ref, IntArrayRef *step_ref,
                      DataType type_id = kFloat32)
       : NDSliceLoad(src, src_ref, start_ref, &shape_, type_id), end_ref_(end_ref), step_ref_(step_ref) {}
   void Normalize(std::vector<NDObject *> &run_ops) {
@@ -505,8 +505,8 @@ class NDStridedSliceLoad : public NDSliceLoad {
 
  private:
   ShapeWithRef shape_;
-  ShapeRef *end_ref_;
-  ShapeRef *step_ref_;
+  IntArrayRef *end_ref_;
+  IntArrayRef *step_ref_;
 };
 
 class ReshapeRankOp : public ReshapeOp {
@@ -648,13 +648,13 @@ void Kernel::Clone(const Kernel &base, CloneHelper &helper) {
   kernel_->Clone(k, helper);
 }
 
-NDObject *Kernel::Load(void *addr, ShapeRef *shape, DataType type) {
+NDObject *Kernel::Load(void *addr, IntArrayRef *shape, DataType type) {
   NDObject *obj = new NDLoad(addr, shape, type);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::Load(void *addr, ShapeRef *shape, ShapeRef *stride, const int64_t *offset, DataType type) {
+NDObject *Kernel::Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type) {
   NDObject *obj;
   if (stride) {
     obj = new NDViewLoad(addr, shape, stride, offset, type);
@@ -665,20 +665,20 @@ NDObject *Kernel::Load(void *addr, ShapeRef *shape, ShapeRef *stride, const int6
   return obj;
 }
 
-NDObject *Kernel::SliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *size, DataType type) {
+NDObject *Kernel::SliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *size, DataType type) {
   auto obj = new NDSliceLoad(addr, shape, start, size, type);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::StridedSliceLoad(void *addr, ShapeRef *shape, ShapeRef *start, ShapeRef *end, ShapeRef *step,
+NDObject *Kernel::StridedSliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *end, IntArrayRef *step,
                                    DataType type) {
   auto obj = new NDStridedSliceLoad(addr, shape, start, end, step, type);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::MultiLoad(void *addr, ShapeRef *shape, DataType type, const Comm *comm) {
+NDObject *Kernel::MultiLoad(void *addr, IntArrayRef *shape, DataType type, const Comm *comm) {
   NDObject *obj = new NDMultiLoad(static_cast<uint8_t *>(addr), shape, type, comm->GetImpl());
   kernel_->Append(obj);
   return obj;
@@ -879,7 +879,7 @@ NDObject *Kernel::ElemAny(NDObject *input) {
 }
 
 template <typename T>
-NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DataType type) {
+NDObject *Kernel::Broadcast(T val, IntArrayRef *shape, DataType type) {
   NDObject *obj;
   if constexpr (std::is_same<T, ScalarRef *>::value) {
     obj = new BroadcastScalarRefOp(val, shape, type);
@@ -890,13 +890,13 @@ NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DataType type) {
   return obj;
 }
 
-template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<Float16>(Float16 val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<ScalarRef *>(ScalarRef *val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<float>(float val, IntArrayRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<int32_t>(int32_t val, IntArrayRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<Float16>(Float16 val, IntArrayRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, IntArrayRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<ScalarRef *>(ScalarRef *val, IntArrayRef *shape, DataType type);
 
-NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
+NDObject *Kernel::Broadcast(NDObject *input, IntArrayRef *shape) {
   if (input->type_id_ == DataType::kBool) {
     auto cast1 = Cast(input, DataType::kFloat16);
     auto obj = Broadcast(cast1, shape);
@@ -909,7 +909,7 @@ NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
 }
 
 template <typename T>
-NDObject *Kernel::OneHot(NDObject *indices, ShapeRef *depth, int axis, T on_value, T off_value) {
+NDObject *Kernel::OneHot(NDObject *indices, IntArrayRef *depth, int axis, T on_value, T off_value) {
   auto on_code = EncodeScalar(on_value);
   auto off_code = EncodeScalar(off_value);
   auto obj = new OneHotOp(indices, depth, axis, on_code, off_code, TypeTrait<T>::ID);
@@ -917,18 +917,18 @@ NDObject *Kernel::OneHot(NDObject *indices, ShapeRef *depth, int axis, T on_valu
   return obj;
 }
 
-template NDObject *Kernel::OneHot<float>(NDObject *, ShapeRef *, int, float, float);
-template NDObject *Kernel::OneHot<int32_t>(NDObject *, ShapeRef *, int, int32_t, int32_t);
-template NDObject *Kernel::OneHot<Float16>(NDObject *, ShapeRef *, int, Float16, Float16);
-template NDObject *Kernel::OneHot<BFloat16>(NDObject *, ShapeRef *, int, BFloat16, BFloat16);
+template NDObject *Kernel::OneHot<float>(NDObject *, IntArrayRef *, int, float, float);
+template NDObject *Kernel::OneHot<int32_t>(NDObject *, IntArrayRef *, int, int32_t, int32_t);
+template NDObject *Kernel::OneHot<Float16>(NDObject *, IntArrayRef *, int, Float16, Float16);
+template NDObject *Kernel::OneHot<BFloat16>(NDObject *, IntArrayRef *, int, BFloat16, BFloat16);
 
-NDObject *Kernel::Reshape(NDObject *input, ShapeRef *shape) {
+NDObject *Kernel::Reshape(NDObject *input, IntArrayRef *shape) {
   auto obj = new ReshapeOp(input, shape);
   kernel_->Append(obj);
   return obj;
 }
 
-NDObject *Kernel::_Reduce(int op_type, NDObject *input, ShapeRef *dims, bool keepdims) {
+NDObject *Kernel::_Reduce(int op_type, NDObject *input, IntArrayRef *dims, bool keepdims) {
   if (input->type_id_ != DataType::kFloat32 && op_type == kSum) {
     return nullptr;
   }
@@ -1036,7 +1036,7 @@ void Kernel::SequenceAdd(KernelType type, uint32_t flags) {
 
 void Kernel::SpecNext() { static_cast<_SpecVector *>(kernel_)->Next(); }
 
-ShapeRef *Kernel::GetShape(NDObject *op) const { return op->shape_ref_; }
+IntArrayRef *Kernel::GetShape(NDObject *op) const { return op->shape_ref_; }
 
 DataType Kernel::GetDType(NDObject *op) const { return op->type_id_; }
 

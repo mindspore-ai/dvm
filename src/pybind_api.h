@@ -19,7 +19,7 @@
 #include <vector>
 #include "pybind11/pybind11.h"
 #include "code.h"
-#include "py_api.h"
+#include "dvm_py.h"
 
 namespace py = pybind11;
 using namespace dvm::pyapi;
@@ -55,7 +55,7 @@ class RtKernelPy : public KernelPy {
   void SequenceAdd(const std::string &ker_type);
 
   void Reset();
-  ShapeRef *GetShapeRef(py::object shape) override;
+  IntArrayRef *GetShapeRef(py::object shape) override;
   py::object Clone(py::object base, py::object remap);
 
   void Input(py::object obj, py::object val);
@@ -69,6 +69,8 @@ class RtKernelPy : public KernelPy {
   py::object Perf();
   py::object Msprof(const std::string &path, int64_t test_num);
 
+  static void SetDeterm(bool enable);
+  static void SetTuning(bool enable);
   static void SetCubeStoreType(int type) { g_system.SetCubeStoreType((CubeStoreType)type); }
 
   static void InitComm(int rank_id, int rank_size, const std::string &comm_type);
@@ -105,7 +107,7 @@ class RtKernelPy : public KernelPy {
  protected:
   void PrepareIO();
   std::vector<std::vector<int64_t>> shape_vec_;
-  std::vector<ShapeRef *> shape_;
+  std::vector<IntArrayRef *> shape_;
   std::vector<LoadInfo> loads_;
   std::vector<StoreInfo> stores_;
   std::vector<std::vector<float>> f32s_;      // store f32 converted from bf16

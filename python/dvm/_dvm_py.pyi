@@ -22,7 +22,7 @@ class NDObject:
     def dtype(self) -> str: ...
 
 
-class ShapeRef:
+class IntArrayRef:
     def __init__(self) -> None: ...
     def __init__(self, shape: Sequence[int]) -> None: ...
     def shape(self) -> Tuple[int, ...]: ...
@@ -33,7 +33,7 @@ class ScalarRef:
     def update(self, value: Union[int, float]) -> None: ...
 
 
-ShapeLike = Union[Sequence[int], ShapeRef]
+ShapeLike = Union[Sequence[int], IntArrayRef]
 BinaryInput = Union[NDObject, int, float, NDSymInt, NDSymFloat]
 ScalarInput = Union[int, float, NDSymInt, NDSymFloat]
 

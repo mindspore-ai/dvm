@@ -67,7 +67,7 @@ fi
 if [ -n "${ASCEND_TOOLKIT_HOME}" ]; then
   export ASCEND_PATH="${ASCEND_TOOLKIT_HOME}"
 elif [ -n "${ASCEND_PATH_ARG}" ]; then
-    export ASCEND_PATH="${ASCEND_PATH_ARG}"
+  export ASCEND_PATH="${ASCEND_PATH_ARG}"
 fi
 
 export PYTHONPATH="${CUR_SCRIPT_PATH}:${CUR_SCRIPT_PATH}/python:${PYTHONPATH}"

@@ -331,7 +331,7 @@ void BroadReduceAlignProp(const DimArray &dim_in, const DimArray &dim_out, PropR
 }
 }  // namespace
 
-std::ostream &operator<<(std::ostream &oss, const ShapeRef &shape) {
+std::ostream &operator<<(std::ostream &oss, const IntArrayRef &shape) {
   oss << "[";
   for (size_t i = 0; i < shape.size; i++) {
     if (i) {
@@ -489,7 +489,7 @@ class AtomicCleanWrap : public CodeWrap {
  private:
   VKernelD kernel_;
   NDStore *store_;
-  ShapeRef clear_shape_;
+  IntArrayRef clear_shape_;
   int64_t clear_shape_data_;
 };
 
@@ -2812,7 +2812,7 @@ ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm)
 ReduceScatterOp::~ReduceScatterOp() {}
 
 void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
-  const ShapeRef *input_shape_ref = lhs_->shape_ref_;
+  const IntArrayRef *input_shape_ref = lhs_->shape_ref_;
   size_t start_idx = input_shape_ref->data[0] != comm_->GetRankSize() ? 1 : 0;
   if (multi_load_) {
     start_idx = 0;

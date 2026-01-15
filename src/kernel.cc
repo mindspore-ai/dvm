@@ -1640,7 +1640,7 @@ class RemapKernel : public T {
 template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::FallCodeGen() {
   struct _CloneHelper : public CloneHelper {
-    ShapeRef *GetClone(ShapeRef *shape) override { return shape; }
+    IntArrayRef *GetClone(IntArrayRef *shape) override { return shape; }
     NDObject *GetClone(NDObject *op) override { return clones_[op->index_]; }
     void SetClone(NDObject *op, NDObject *clone) {}
     std::vector<NDObject *> clones_;

@@ -14,14 +14,13 @@
 # ============================================================================
 
 """ dvm python """
-from ._dvm_py import Device, Kernel, KernelBase, NDObject, ShapeRef, ScalarRef
+from ._dvm_py import Device, Kernel, KernelBase, NDObject, IntArrayRef, ScalarRef
 
 __all__ = [
     "Device",
     "Kernel",
     "KernelBase",
     "NDObject",
-    "NDSymFloat",
-    "NDSymInt",
-    "ShapeRef",
+    "IntArrayRef",
+    "ScalarRef",
 ]

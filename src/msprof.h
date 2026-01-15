@@ -129,7 +129,7 @@ struct NodeInfo {
   uint64_t input_size{0};
   uint64_t output_size{0};
   uint32_t block_dim;
-  std::vector<ShapeRef *> shapes;
+  std::vector<IntArrayRef *> shapes;
   std::vector<TensorDtypeMs> data_types;
 
   void AppendInput(NDObject *op) {

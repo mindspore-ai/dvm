@@ -22,12 +22,10 @@
 #include "pybind11/pybind11.h"
 #include "dvm.h"
 
-namespace py = pybind11;
-
 namespace dvm {
+namespace py = pybind11;
 extern const char *DTYPE_NAMES[];
 void DvmException(const char *error_str);
-namespace pyapi {
 class NDObjectPy {
  public:
   explicit NDObjectPy(NDObject *obj) : obj_(obj) {}
@@ -193,7 +191,7 @@ class KernelPy {
   Kernel kernel_;
 };
 
-static inline void RegBaseApi(const py::module &m) {
+static inline void RegDvmPy(const py::module &m) {
   (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
     .def("shape", &NDObjectPy::GetShape, "get shape")
     .def("dtype", &NDObjectPy::GetDType, "get dtype");
@@ -206,9 +204,7 @@ static inline void RegBaseApi(const py::module &m) {
 
   (void)py::class_<ScalarRefPy, std::shared_ptr<ScalarRefPy>>(m, "ScalarRef")
     .def("update", &ScalarRefPy::Update, "update value");
-}
 
-static inline void RegKernelApi(const py::module &m) {
   (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "KernelBase")
     .def("load", &KernelPy::Load, "load array")
     .def("view_load", &KernelPy::ViewLoad, "load array")
@@ -264,6 +260,5 @@ static inline void RegKernelApi(const py::module &m) {
     .def("p_next", &KernelPy::ParallelNext, "parallel next")
     .def("spec_next", &KernelPy::SpecNext, "spec next");
 }
-}  // namespace pyapi
 }  // namespace dvm
 #endif  // _DVM_PY_API_H_

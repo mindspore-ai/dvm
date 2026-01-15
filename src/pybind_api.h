@@ -21,9 +21,6 @@
 #include "code.h"
 #include "dvm_py.h"
 
-namespace py = pybind11;
-using namespace dvm::pyapi;
-
 namespace dvm {
 class KernelRunner;
 class RtKernelPy : public KernelPy {
@@ -32,7 +29,6 @@ class RtKernelPy : public KernelPy {
 
   RtKernelPy(const std::string &ker_type, const std::string &run_type, int dev_id);
   ~RtKernelPy();
-  static void SetDevice(int dev_id);
 
   py::object Load(py::object shape, const std::string &type) override;
   py::object ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) override;

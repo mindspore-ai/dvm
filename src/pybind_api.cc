@@ -33,7 +33,6 @@
 #include "xkernel.h"
 
 namespace dvm {
-using namespace pyapi;
 namespace {
 const size_t TEST_NUM = 10;
 
@@ -929,8 +928,7 @@ class DevicePy {
 };
 
 PYBIND11_MODULE(_dvm_py, m) {
-  pyapi::RegBaseApi(m);
-  pyapi::RegKernelApi(m);
+  RegDvmPy(m);
   py::class_<RtKernelPy, KernelPy, std::shared_ptr<RtKernelPy>>(m, "Kernel")
     .def(py::init<const std::string &, const std::string &, int>())
     .def("slice_load", &RtKernelPy::SliceLoad, "load array")

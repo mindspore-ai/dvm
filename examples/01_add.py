@@ -14,9 +14,9 @@
 # ============================================================================
 
 import numpy as np
-from dvm import jit
+import dvm
 
-@jit.kernel
+@dvm.kernel
 def my_add(k, x, y):
     a = k.load(x, "float32")
     b = k.load(y, "float32")

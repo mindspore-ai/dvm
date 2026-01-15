@@ -14,7 +14,7 @@
 # ============================================================================
 
 import numpy as np
-from dvm import jit
+import dvm
 
 def np_bn(X, gamma, beta):
     mean = np.mean(X, axis=0)
@@ -23,7 +23,7 @@ def np_bn(X, gamma, beta):
     out = gamma * X_norm + beta
     return out
 
-@jit.kernel
+@dvm.kernel
 def bn_kernel(k, x, gamma, beta, rec_batch):
     x = k.load(x, "float32")
     mean_sum = k.sum(x, (0,), False)

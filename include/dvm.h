@@ -194,6 +194,7 @@ struct WsAllocator {
 
 struct CloneHelper {
   virtual IntArrayRef *GetClone(IntArrayRef *shape) = 0;
+  virtual ScalarRef *GetClone(ScalarRef *scalar) = 0;
   virtual NDObject *GetClone(NDObject *op) = 0;
   virtual void SetClone(NDObject *op, NDObject *clone) = 0;
 };
@@ -261,8 +262,8 @@ class Kernel {
   NDObject *AllGatherV2(NDObject *input, const Comm *comm);
   NDObject *ReduceScatter(NDObject *input, const Comm *comm);
 
-  void ParallelNext();
   void SpecNext();
+  void ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit = 0);
   void SequenceAdd(KernelType type, uint32_t flags);
 
   size_t CodeGen();
@@ -359,6 +360,7 @@ class Kernel {
   }
   NDObject *Reduce(int op_type, NDObject *input, IntArrayRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
   NDObject *AllReduce(int op_type, NDObject *input, const Comm *comm) { return _AllReduce(op_type, input, comm); }
+  void ParallelNext() { return ParallelAdd(KernelType::kVector, 0); }
 };
 
 class Config {

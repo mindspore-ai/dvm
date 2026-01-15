@@ -1641,6 +1641,7 @@ template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::FallCodeGen() {
   struct _CloneHelper : public CloneHelper {
     IntArrayRef *GetClone(IntArrayRef *shape) override { return shape; }
+    ScalarRef *GetClone(ScalarRef *scalar) override { return scalar; }
     NDObject *GetClone(NDObject *op) override { return clones_[op->index_]; }
     void SetClone(NDObject *op, NDObject *clone) {}
     std::vector<NDObject *> clones_;
@@ -1736,7 +1737,12 @@ VKernelP::~VKernelP() {
   }
 }
 
-void VKernelP::Append(NDObject *obj) { children_.back()->Append(obj); }
+void VKernelP::Append(NDObject *obj) {
+  if (children_.empty()) {
+    children_.push_back(new VKernelS());
+  }
+  children_.back()->Append(obj);
+}
 
 uint64_t VKernelP::CodeGen() {
   auto WorkLoad = [](VKernelS *k) -> uint64_t { return k->tile_size_ * k->objects_.size(); };

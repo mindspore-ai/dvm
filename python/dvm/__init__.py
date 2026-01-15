@@ -15,6 +15,7 @@
 
 """ dvm python """
 from ._dvm_py import Device, Kernel, KernelBase, NDObject, IntArrayRef, ScalarRef
+from .jit import kernel
 
 __all__ = [
     "Device",

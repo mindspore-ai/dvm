@@ -5,7 +5,7 @@
 #### 项目介绍
 DVM(Device Virtual Machine)是当前业界唯一的微秒级实时AI算子编译和执行框架，可以实现对深度神经网络中的手写或融合算子在运行时根据具体Shape做实时算子编译和执行。通过实时编译技术，使得DVM可以原生支持动态Shape、动态图等动态网络场景的高性能图算融合和算子执行。除此之外，DVM也可以用于静态Shape图算融合、自定义手写算子等其它传统算子执行优化场景。
 
-DVM当前支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构。
+DVM当前支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构。在使用场景方面，DVM已应用于[MindSpore](https://www.mindspore.cn)、[torch_npu](https://www.gitcode.com/Ascend/pytorch)等多个下游AI框架，用于解决图模式甚至Eager模式的自动图算融合优化问题。对于大部分网络场景，都可获得较为显著的整网融合性能收益。
 
 
 #### 环境配置
@@ -16,62 +16,24 @@ DVM支持在linux下进行编译执行，并依赖如下环境配置：
 + python: 推荐3.7以上版本。需要包含numpy包。
 
 
-#### 编译说明
+#### 编译执行
 1. 配置CANN环境变量:
    ```bash
     export ASCEND_CUSTOM_PATH=/<path_to_cann>
     source $ASCEND_CUSTOM_PATH/ascend_toolkit/set_env.sh
    ```
-
-#### 真实上板
 2. 配置DVM编译变量:
    ```bash
    cd dvm
    source env.sh
    ```
-3. 编译DVM
+3. DVM编译, 生成DVM库(libdvm.a)以及pybind接口库(_dvm_py.so)：
    ```bash
    make -j32
    ```
-4. DVM验证执行。如: ```python examples/01_add.py```
-
-
-#### 仿真模拟
-
-2. 配置 DVM 编译变量:
-
-   ```bash
-   cd dvm
-   source env.sh --simulator_name=910B1
-   ```
-
-3. 设置仿真环境
-
-   根据所使用的仿真模式，**手动配置对应的动态库路径**：
-
-   * **ESL Model 模式**
-
-     ```bash
-     export LD_LIBRARY_PATH=/path/to/your/esl_lib:$LD_LIBRARY_PATH
-     ```
-
-   * **常规 Simulator 模式**
-
-     ```bash
-     export LD_LIBRARY_PATH=${ASCEND_PATH}/tools/simulator/${DVM_SOC_NAME}/lib:$LD_LIBRARY_PATH
-     ```
-
-4. 编译 DVM:
-
-   ```bash
-   make -j32
-   ```
-
-5. 使用 `msprof` 进行仿真 Profiling，例如：
-
-   ```bash
-   msprof op simulator --application="python test_xxx.py" --output=./profiling
-   ```
+4. DVM验证执行。包括基于DVM相关接口定义算子计算逻辑以及执行算子。 DVM当前支持两种使用方式：
+   + 使用python接口: 如 ```python examples/01_add.py```。 这种方式当前主要用于DVM功能验证，在实际网络场景使用较少；
+   + 使用C++接口: 需要用户程序包含libdvm.a, 并基于DVM的C++接口进行算子定义和执行。具体示例可参考: ```examples/cc```
 
 
 #### 贡献

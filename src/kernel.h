@@ -276,7 +276,7 @@ class SpecVector : public _SpecVector {
 class IsolateWrapVP;
 class VKernelP : public VKernel {
  public:
-  VKernelP() : VKernel(KernelType::kParallel, 0) { children_.push_back(new VKernelS()); }
+  VKernelP() : VKernel(KernelType::kParallel, 0) {}
   ~VKernelP() override;
   void AppendNext() {
     children_.push_back(new VKernelS());

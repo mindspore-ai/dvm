@@ -773,8 +773,12 @@ void RtKernelPy::Reset() {
 py::object RtKernelPy::Clone(py::object base, py::object remap) {
   struct _CloneHelper : public CloneHelper {
     IntArrayRef *GetClone(IntArrayRef *shape) override {
-      auto it = shape_map_.find(shape);
-      return it != shape_map_.end()  ? it->second : shape;
+      auto it = ref_map_.find(shape);
+      return it != ref_map_.end()  ? static_cast<IntArrayRef *>(it->second) : shape;
+    }
+    ScalarRef *GetClone(ScalarRef *scalar) override {
+      auto it = ref_map_.find(scalar);
+      return it != ref_map_.end()  ? static_cast<ScalarRef *>(it->second) : scalar;
     }
     NDObject *GetClone(NDObject *op) override {
       auto it = op_map_.find(op);
@@ -782,7 +786,7 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
     }
     void SetClone(NDObject *op, NDObject *clone) override { op_map_[op] = clone; }
     std::unordered_map<NDObject *, NDObject *> op_map_;
-    std::unordered_map<IntArrayRef *, IntArrayRef *> shape_map_;
+    std::unordered_map<void *, void *> ref_map_;
   };
   _CloneHelper helper;
   RtKernelPy *other = base.cast<RtKernelPyPtr>().get();
@@ -792,7 +796,7 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
     auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
     for (auto ref : other->shape_) {
       if (ref->data == load.shape.data()) {
-        helper.shape_map_[ref] = shape_ref;
+        helper.ref_map_[ref] = shape_ref;
         break;
       }
     }
@@ -804,14 +808,19 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
     if (py::isinstance<IntArrayRefPy>(remap_list[i])) {
       auto base = remap_list[i].cast<std::shared_ptr<IntArrayRefPy>>()->Get();
       auto ref = std::make_shared<IntArrayRefPy>();
-      helper.shape_map_[base] = ref->Get();
+      helper.ref_map_[base] = ref->Get();
+      remap_out[i] = py::cast(ref);
+    } else if (py::isinstance<ScalarRefPy>(remap_list[i])) {
+      auto base = remap_list[i].cast<std::shared_ptr<ScalarRefPy>>();
+      auto ref = std::make_shared<ScalarRefPy>();
+      helper.ref_map_[&base->data_] = &ref->data_;
       remap_out[i] = py::cast(ref);
     }
   }
   for (auto ref : other->shape_) {
-    if (helper.shape_map_.find(ref) == helper.shape_map_.end()) {
+    if (helper.ref_map_.find(ref) == helper.ref_map_.end()) {
       auto clone = new IntArrayRef(shape_vec_.emplace_back(ref->data, ref->data + ref->size));
-      helper.shape_map_[ref] = clone;
+      helper.ref_map_[ref] = clone;
     }
   }
   kernel_.Clone(other->kernel_, helper);

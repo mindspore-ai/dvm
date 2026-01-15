@@ -300,7 +300,7 @@ scode_t EncodeScalarRef(const ScalarRef *ref, DataType type_id) {
 
 class BroadcastScalarRefOp : public BroadcastScalarOp {
  public:
-  BroadcastScalarRefOp(const ScalarRef *scalar, IntArrayRef *shape_ref, DataType type_id)
+  BroadcastScalarRefOp(ScalarRef *scalar, IntArrayRef *shape_ref, DataType type_id)
       : BroadcastScalarOp(0, shape_ref, type_id), scalar_ref_(scalar) {}
   uint64_t Emit(VectorKernel &k) {
     scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
@@ -308,41 +308,41 @@ class BroadcastScalarRefOp : public BroadcastScalarOp {
   }
   NDObject *Clone(CloneHelper &h) override {
     auto shape_ref = h.GetClone(shape_ref_);
-    return new BroadcastScalarRefOp(scalar_ref_, shape_ref, type_id_);
+    return new BroadcastScalarRefOp(h.GetClone(scalar_ref_), shape_ref, type_id_);
   }
 
  private:
-  const ScalarRef *scalar_ref_;
+  ScalarRef *scalar_ref_;
 };
 
 class CompareScalarRefOp : public CompareScalarOp {
  public:
-  CompareScalarRefOp(int op_type, NDObject *input, const ScalarRef *scalar)
+  CompareScalarRefOp(int op_type, NDObject *input, ScalarRef *scalar)
       : CompareScalarOp(op_type, input, 0), scalar_ref_(scalar) {}
 
   uint64_t Emit(VectorKernel &k) override {
     scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
     return CompareScalarOp::Emit(k);
   }
-  NDObject *Clone(CloneHelper &h) override { return new CompareScalarRefOp(cmp_op_, h.GetClone(lhs_), scalar_ref_); }
+  NDObject *Clone(CloneHelper &h) override { return new CompareScalarRefOp(cmp_op_, h.GetClone(lhs_), h.GetClone(scalar_ref_)); }
 
  private:
-  const ScalarRef *scalar_ref_;
+  ScalarRef *scalar_ref_;
 };
 
 class BinaryScalarRefOp : public BinaryScalarOp {
  public:
-  BinaryScalarRefOp(int op_type, NDObject *input, const ScalarRef *scalar)
+  BinaryScalarRefOp(int op_type, NDObject *input, ScalarRef *scalar)
       : BinaryScalarOp(op_type, input, 0), scalar_ref_(scalar) {}
 
   uint64_t Emit(VectorKernel &k) override {
     scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
     return BinaryScalarOp::Emit(k);
   }
-  NDObject *Clone(CloneHelper &h) override { return new BinaryScalarRefOp(op_type_, h.GetClone(lhs_), scalar_ref_); }
+  NDObject *Clone(CloneHelper &h) override { return new BinaryScalarRefOp(op_type_, h.GetClone(lhs_), h.GetClone(scalar_ref_)); }
 
  private:
-  const ScalarRef *scalar_ref_;
+  ScalarRef *scalar_ref_;
 };
 
 template <BinaryType op_type>
@@ -1017,8 +1017,8 @@ NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool
   return obj;
 }
 
-void Kernel::ParallelNext() {
-  ASSERT(kernel_->KType() == KernelType::kParallel);
+void Kernel::ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit) {
+  ASSERT(kernel_->KType() == KernelType::kParallel && type == KernelType::kVector);
   static_cast<VKernelP *>(kernel_)->AppendNext();
 }
 

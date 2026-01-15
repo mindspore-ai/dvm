@@ -52,14 +52,12 @@ class ShapeRefPy {
   ShapeRef shape_ref_;
 };
 
-template <typename T>
-struct NDSym {
-  explicit NDSym(T data) : data_(data) {}
-  T data_;
+class ScalarRefPy {
+ public:
+  ScalarRefPy() = default;
+  void Update(py::object val);
+  ScalarRef data_;
 };
-
-using NDSymInt = NDSym<int64_t>;
-using NDSymFloat = NDSym<float>;
 
 DType StringToTypeID(const std::string &type);
 
@@ -98,15 +96,14 @@ class KernelPy {
   void SpecNext();
   static void SetDeterm(bool enable);
   static void SetTuning(bool enable);
-  py::object MakeIntScalar() { return py::cast(std::make_shared<NDSymInt>(-1)); }
-  py::object MakeFloatScalar() { return py::cast(std::make_shared<NDSymFloat>(-1.0)); }
+  py::object MakeIntArray() { return py::cast(std::make_shared<ShapeRefPy>()); }
+  py::object MakeScalar() { return py::cast(std::make_shared<ScalarRefPy>()); }
 
  protected:
   Kernel kernel_;
 };
 using NDOpPyPtr = std::shared_ptr<NDObjectPy>;
-using NDSymIntPtr = std::shared_ptr<NDSymInt>;
-using NDSymFloatPtr = std::shared_ptr<NDSymFloat>;
+using ScalarRefPyPtr = std::shared_ptr<ScalarRefPy>;
 
 void RegBaseApi(const py::module &m);
 void RegKernelApi(const py::module &m);

@@ -358,7 +358,7 @@ def test_binarys_bf16(op, func):
 def test_binary_scalar_ref(op, func):
     t = Tester('vector:dyn')
     x = t.load([-1], "float32")
-    s = t.make_int()
+    s = t.scalar()
     a = op(t, x, s)
     out = t.store(a)
     d1 =  np.random.normal(-10, 10, [1024]).astype(np.float32)
@@ -375,7 +375,7 @@ def test_binary_scalar_ref(op, func):
 def test_binary_float_scalar_ref(op, func):
     t = Tester('vector:dyn')
     x = t.load([-1], "float32")
-    s = t.make_float()
+    s = t.scalar()
     a = op(t, x, s)
     out = t.store(a)
     d1 =  np.random.normal(-10, 10, [1024]).astype(np.float32)

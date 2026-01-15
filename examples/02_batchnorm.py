@@ -27,7 +27,7 @@ def np_bn(X, gamma, beta):
 def bn_kernel(k, x, gamma, beta, rec_batch):
     x = k.load(x, "float32")
     mean_sum = k.sum(x, (0,), False)
-    rec_batch = k.scalar(rec_batch, "float32")
+    rec_batch = k.scalar(rec_batch)
     mean = k.mul(mean_sum, rec_batch)
 
     x_sub = k.sub(x, mean)

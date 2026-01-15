@@ -61,6 +61,17 @@ py::object ShapeRefPy::GetShape() const {
   return out;
 }
 
+
+void ScalarRefPy::Update(py::object val) {
+  if (py::isinstance<py::int_>(val)) {
+    data_ = val.cast<int>();
+  } else if (py::isinstance<py::float_>(val)) {
+    data_ = val.cast<float>();
+  } else {
+    DvmException("unsuppot type");
+  }
+}
+
 KernelPy::KernelPy() = default;
 
 KernelPy::~KernelPy() {}
@@ -91,14 +102,10 @@ py::object KernelPy::Binary(py::object lhs, py::object rhs) {
     op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), rhs.cast<int>());
   } else if (py::isinstance<py::float_>(rhs)) {
     op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), rhs.cast<float>());
-  } else if (py::isinstance<NDSymInt>(lhs)) {
-    op = kernel_.Binary<op_type>(&(lhs.cast<NDSymIntPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
-  } else if (py::isinstance<NDSymInt>(rhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<NDSymIntPtr>()->data_));
-  } else if (py::isinstance<NDSymFloat>(lhs)) {
-    op = kernel_.Binary<op_type>(&(lhs.cast<NDSymFloatPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
-  } else if (py::isinstance<NDSymFloat>(rhs)) {
-    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<NDSymFloatPtr>()->data_));
+  } else if (py::isinstance<ScalarRefPy>(lhs)) {
+    op = kernel_.Binary<op_type>(&(lhs.cast<ScalarRefPyPtr>()->data_), rhs.cast<NDOpPyPtr>()->Get());
+  } else if (py::isinstance<ScalarRefPy>(rhs)) {
+    op = kernel_.Binary<op_type>(lhs.cast<NDOpPyPtr>()->Get(), &(rhs.cast<ScalarRefPyPtr>()->data_));
   } else {
     auto input1 = lhs.cast<NDOpPyPtr>()->Get();
     auto input2 = rhs.cast<NDOpPyPtr>()->Get();
@@ -129,10 +136,8 @@ py::object KernelPy::Full(py::object scalar, py::object shape, const std::string
     op = kernel_.Broadcast(scalar.cast<int>(), shape_ref, type_id);
   } else if (py::isinstance<py::float_>(scalar)) {
     op = kernel_.Broadcast(scalar.cast<float>(), shape_ref, type_id);
-  } else if (py::isinstance<NDSymInt>(scalar)) {
-    op = kernel_.Broadcast(&(scalar.cast<NDSymIntPtr>()->data_), shape_ref, type_id);
-  } else if (py::isinstance<NDSymFloat>(scalar)) {
-    op = kernel_.Broadcast(&(scalar.cast<NDSymFloatPtr>()->data_), shape_ref, type_id);
+  } else if (py::isinstance<ScalarRefPy>(scalar)) {
+    op = kernel_.Broadcast(&(scalar.cast<ScalarRefPyPtr>()->data_), shape_ref, type_id);
   } else {
     DvmException("Unsupported scalar type for full: expected int, float, NDSymInt, or NDSymFloat.");
   }
@@ -253,18 +258,17 @@ void RegBaseApi(const py::module &m) {
     .def("shape", &ShapeRefPy::GetShape, "get shape")
     .def("update", &ShapeRefPy::Update, "update shape");
 
-  (void)py::class_<NDSymInt, std::shared_ptr<NDSymInt>>(m, "NDSymInt")
-    .def("update", [](NDSymInt &self, int64_t v) { self.data_ = v; }, py::arg("value"), "Set the int scalar value");
-  (void)py::class_<NDSymFloat, std::shared_ptr<NDSymFloat>>(m, "NDSymFloat")
-    .def("update", [](NDSymFloat &self, float v) { self.data_ = v; }, py::arg("value"), "Set the float scalar value");
+  (void)py::class_<ScalarRefPy, std::shared_ptr<ScalarRefPy>>(m, "ScalarRef")
+    .def("update", &ScalarRefPy::Update, "update value");
 }
+
 void RegKernelApi(const py::module &m) {
   (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "KernelBase")
     .def("load", &KernelPy::Load, "load array")
     .def("view_load", &KernelPy::ViewLoad, "load array")
     .def("store", &KernelPy::Store, "store array")
-    .def("make_int", &KernelPy::MakeIntScalar, "create int scalar")
-    .def("make_float", &KernelPy::MakeFloatScalar, "create float scalar")
+    .def("scalar", &KernelPy::MakeScalar, "create scalar")
+    .def("int_array", &KernelPy::MakeIntArray, "create int array")
     .def("sqrt", &KernelPy::Unary<UnaryOpType::kSqrt>, "emit sqrt")
     .def("abs", &KernelPy::Unary<UnaryOpType::kAbs>, "emit abs")
     .def("log", &KernelPy::Unary<UnaryOpType::kLog>, "emit log")

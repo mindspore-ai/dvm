@@ -15,7 +15,7 @@
 
 import pytest
 import numpy as np
-from dvm.tester import Tester, ShapeRef
+from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -41,7 +41,7 @@ def test_clone_vector_dyn():
     t = Tester("vector:dyn")
     ax = t.load([], "float32")
     x = t.add(ax, 0.01)
-    dims = ShapeRef()
+    dims = t.int_array()
     x = t.sum(x, dims, True)
     out = t.store(x)
     a = np.random.normal(0, 1, [10, 512]).astype(np.float32)
@@ -110,7 +110,7 @@ def test_clone_split_dyn():
     x = t.mul(a, 0.8)
     x = t.matmul(x, b, False, False)
     x = t.cast(x, "float32")
-    dims = ShapeRef()
+    dims = t.int_array()
     x = t.sum(x, dims, True)
     x = t.mul(x, 0.5)
     out = t.store(x)

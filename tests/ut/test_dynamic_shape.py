@@ -15,7 +15,7 @@
 
 import pytest
 import numpy as np
-from dvm.tester import Tester, ShapeRef
+from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
 
@@ -24,7 +24,7 @@ def test_reshape():
     t = Tester('vector:dyn')
     x = t.load([-1], "float32")
     y = t.load([-1], "float32")
-    ref = ShapeRef()
+    ref = t.int_array()
     a = t.reshape(x, ref)
     z = t.add(a, y)
     out = t.store(z)
@@ -67,7 +67,7 @@ def test_implicit_broadcast():
 def test_reduce():
     t = Tester('vector:dyn')
     x = t.load([-1], "float32")
-    dims = ShapeRef()
+    dims = t.int_array()
     a = t.sum(x, dims, True)
     out = t.store(a)
     iterations = [[[10, 64], [1]], [[12, 128], [0, 1]], [[3, 12, 20, 100], [1, 3]]]
@@ -114,7 +114,7 @@ def test_reduce_stuff():
 def test_broadcast():
     t = Tester('vector:dyn')
     x = t.load([-1], "float32")
-    shape = ShapeRef()
+    shape = t.int_array()
     a = t.broadcast(x, shape)
     b = t.full(0.2, shape, "float32")
     c = t.mul(a, b)

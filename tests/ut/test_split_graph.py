@@ -15,7 +15,7 @@
 
 import pytest
 import numpy as np
-from dvm.tester import Tester, ShapeRef
+from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
 
@@ -67,7 +67,7 @@ def test_split_dyn_vec(mode):
     y = t.load([-1], "float16")
     z = t.add(x, y)
     z = t.cast(z, "float32")
-    ref = ShapeRef()
+    ref = t.int_array()
     z = t.sum(z, ref, True)
     z = t.cast(z, "float16") 
     z = t.mul(z, 1.5)

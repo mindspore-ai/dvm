@@ -145,6 +145,42 @@ class BFloat16 {
   uint16_t value_;
 };
 
+struct ScalarRef {
+  ScalarRef() = default;
+  ScalarRef &operator=(float val) {
+    type = kFloat32;
+    f32 = val;
+    return *this;
+  }
+  ScalarRef &operator=(int32_t val) {
+    type = kInt32;
+    i32 = val;
+    return *this;
+  }
+  ScalarRef &operator=(Float16 val) {
+    type = kFloat16;
+    f16 = val.int_value();
+    return *this;
+  }
+  ScalarRef &operator=(BFloat16 val) {
+    type = kBFloat16;
+    f16 = val.int_value();
+    return *this;
+  }
+  ScalarRef &operator=(int64_t val) {
+    type = kInt64;
+    i64 = val;
+    return *this;
+  }
+  DataType type;
+  union {
+    float f32;
+    int32_t i32;
+    uint16_t f16;
+    int64_t i64;
+  };
+};
+
 struct RelocEntry {
   RelocEntry() {}
   RelocEntry(NDObject *p, void *a) : io(p), addr(a) {}

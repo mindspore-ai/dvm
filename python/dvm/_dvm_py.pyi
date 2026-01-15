@@ -29,12 +29,8 @@ class ShapeRef:
     def update(self, shape: Sequence[int]) -> None: ...
 
 
-class NDSymInt:
-    def update(self, value: int) -> None: ...
-
-
-class NDSymFloat:
-    def update(self, value: float) -> None: ...
+class ScalarRef:
+    def update(self, value: Union[int, float]) -> None: ...
 
 
 ShapeLike = Union[Sequence[int], ShapeRef]

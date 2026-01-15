@@ -19,7 +19,7 @@ import subprocess
 import csv
 import inspect
 import numpy as np
-from . import Kernel, ShapeRef
+from . import Kernel
 
 
 class PerformanceResult:

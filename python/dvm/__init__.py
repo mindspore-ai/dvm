@@ -14,7 +14,7 @@
 # ============================================================================
 
 """ dvm python """
-from ._dvm_py import Device, Kernel, KernelBase, NDObject, NDSymFloat, NDSymInt, ShapeRef
+from ._dvm_py import Device, Kernel, KernelBase, NDObject, ShapeRef, ScalarRef
 
 __all__ = [
     "Device",

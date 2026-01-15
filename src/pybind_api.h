@@ -58,7 +58,7 @@ class RtKernelPy : public KernelPy {
   ShapeRef *GetShapeRef(py::object shape) override;
   py::object Clone(py::object base, py::object remap);
 
-  void Input(py::object load, py::object array);
+  void Input(py::object obj, py::object val);
   py::object Output(py::object store);
   void ClearStoreMemory(py::object store);
   void Tile(int start, int end, int64_t num, int64_t factor);

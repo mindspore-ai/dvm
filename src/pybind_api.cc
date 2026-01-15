@@ -686,18 +686,27 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
   return py::none();
 }
 
-void RtKernelPy::Input(py::object load, py::object array) {
-  auto op = static_cast<NDAccess *>(load.cast<NDOpPyPtr>()->Get());
-  auto &info = FindVectorInfo(loads_, op);
-  auto input = py::array(array);
-  py::buffer_info buf = input.request();
-  runner_->AllocLoad(buf, info);
-  if (kernel_.GetImpl()->IsDynamic()) {
-    info.shape.resize(buf.ndim);
-    for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
-      info.shape[i] = buf.shape[i];
+void RtKernelPy::Input(py::object obj, py::object val) {
+  if (py::isinstance<NDObjectPy>(obj)) {
+    auto op = static_cast<NDAccess *>(obj.cast<NDOpPyPtr>()->Get());
+    auto &info = FindVectorInfo(loads_, op);
+    auto input = py::array(val);
+    py::buffer_info buf = input.request();
+    runner_->AllocLoad(buf, info);
+    if (kernel_.GetImpl()->IsDynamic()) {
+      info.shape.resize(buf.ndim);
+      for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
+        info.shape[i] = buf.shape[i];
+      }
+      *(op->shape_ref_) = info.shape;
     }
-    *(op->shape_ref_) = info.shape;
+  } else if (py::isinstance<ShapeRefPy>(obj)) {
+    auto shape = obj.cast<std::shared_ptr<ShapeRefPy>>();
+    shape->Update(val);
+  } else {
+    ASSERT(py::isinstance<ScalarRefPy>(obj));
+    auto scalar = obj.cast<std::shared_ptr<ScalarRefPy>>();
+    scalar->Update(val);
   }
 }
 

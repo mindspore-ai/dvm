@@ -15,7 +15,7 @@
 
 import pytest
 import numpy as np
-from dvm.tester import Tester, ShapeRef
+from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
 
@@ -95,7 +95,7 @@ def test_dyn_spec_fall_reduce():
     t = Tester("vector:spec,dyn")
     x1 = t.load([-1], "float32")
     x2 = t.add(x1, 0.02)
-    dims = ShapeRef()
+    dims = t.int_array()
     x3 = t.sum(x2, dims, True)
     t.spec_next()
     x4 = t.mul(x3, x2)

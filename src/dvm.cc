@@ -268,54 +268,81 @@ NDObject *PowS(Kernel *kernel, NDObject *obj, const T &value) {
   return res;
 }
 
-template <typename T>
+scode_t EncodeScalarRef(const ScalarRef *ref, DataType type_id) {
+  scode_t code;
+  switch (ref->type) {
+    case kFloat16:
+    case kBFloat16: {
+      ASSERT(type_id == ref->type);
+      code = ref->f16;
+      break;
+    }
+    case kFloat32: {
+      code = EncodeScalar(ref->f32, type_id);
+      break;
+    }
+    case kInt32: {
+      code = EncodeScalar(ref->i32, type_id);
+      break;
+    }
+    case kInt64: {
+      code = EncodeScalar(ref->i64, type_id);
+      break;
+    }
+    default: {
+      DvmException("unsupport scalar ref type");
+      code = 0;
+      break;
+    }
+  };
+  return code;
+}
+
 class BroadcastScalarRefOp : public BroadcastScalarOp {
  public:
-  BroadcastScalarRefOp(T scalar, ShapeRef *shape_ref, DataType type_id)
+  BroadcastScalarRefOp(const ScalarRef *scalar, ShapeRef *shape_ref, DataType type_id)
       : BroadcastScalarOp(0, shape_ref, type_id), scalar_ref_(scalar) {}
   uint64_t Emit(VectorKernel &k) {
-    scalar_ = EncodeScalar(*scalar_ref_, type_id_);
+    scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
     return BroadcastScalarOp::Emit(k);
   }
   NDObject *Clone(CloneHelper &h) override {
     auto shape_ref = h.GetClone(shape_ref_);
-    return new BroadcastScalarRefOp<T>(scalar_ref_, shape_ref, type_id_);
+    return new BroadcastScalarRefOp(scalar_ref_, shape_ref, type_id_);
   }
 
  private:
-  T scalar_ref_;
+  const ScalarRef *scalar_ref_;
 };
 
-template <typename T>
 class CompareScalarRefOp : public CompareScalarOp {
  public:
-  CompareScalarRefOp(int op_type, NDObject *input, T scalar_ref)
-      : CompareScalarOp(op_type, input, 0), scalar_ref_(scalar_ref) {}
+  CompareScalarRefOp(int op_type, NDObject *input, const ScalarRef *scalar)
+      : CompareScalarOp(op_type, input, 0), scalar_ref_(scalar) {}
 
   uint64_t Emit(VectorKernel &k) override {
-    scalar_ = EncodeScalar(*scalar_ref_, type_id_);
+    scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
     return CompareScalarOp::Emit(k);
   }
-  NDObject *Clone(CloneHelper &h) override { return new CompareScalarRefOp<T>(cmp_op_, h.GetClone(lhs_), scalar_ref_); }
+  NDObject *Clone(CloneHelper &h) override { return new CompareScalarRefOp(cmp_op_, h.GetClone(lhs_), scalar_ref_); }
 
  private:
-  T scalar_ref_;
+  const ScalarRef *scalar_ref_;
 };
 
-template <typename T>
 class BinaryScalarRefOp : public BinaryScalarOp {
  public:
-  BinaryScalarRefOp(int op_type, NDObject *input, T scalar_ref)
-      : BinaryScalarOp(op_type, input, 0), scalar_ref_(scalar_ref) {}
+  BinaryScalarRefOp(int op_type, NDObject *input, const ScalarRef *scalar)
+      : BinaryScalarOp(op_type, input, 0), scalar_ref_(scalar) {}
 
   uint64_t Emit(VectorKernel &k) override {
-    scalar_ = EncodeScalar(*scalar_ref_, type_id_);
+    scalar_ = EncodeScalarRef(scalar_ref_, type_id_);
     return BinaryScalarOp::Emit(k);
   }
-  NDObject *Clone(CloneHelper &h) override { return new BinaryScalarRefOp<T>(op_type_, h.GetClone(lhs_), scalar_ref_); }
+  NDObject *Clone(CloneHelper &h) override { return new BinaryScalarRefOp(op_type_, h.GetClone(lhs_), scalar_ref_); }
 
  private:
-  T scalar_ref_;
+  const ScalarRef *scalar_ref_;
 };
 
 template <BinaryType op_type>
@@ -341,8 +368,8 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
   if constexpr (op_type == BinaryType::kAdd || op_type == BinaryType::kMul || op_type == BinaryType::kMinimum ||
                 op_type == BinaryType::kMinimum) {
     NDObject *obj;
-    if constexpr (std::is_pointer<T>::value) {
-      obj = new BinaryScalarRefOp<T>(binary_map[op_type], input, val);
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      obj = new BinaryScalarRefOp(binary_map[op_type], input, val);
     } else {
       obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
     }
@@ -354,8 +381,8 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
       return kernel->Cast(result, input->type_id_);
     }
     NDObject *obj;
-    if constexpr (std::is_pointer<T>::value) {
-      obj = new BinaryScalarRefOp<T>(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      obj = new BinaryScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
     } else {
       obj = new BinaryScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
                                EncodeScalar(val, input->type_id_));
@@ -368,8 +395,8 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
     auto type_id = input->type_id_;
     if (type_id != kInt32 || g_system.Arch() == kAiCore_C310) {
       NDObject *obj;
-      if constexpr (std::is_pointer<T>::value) {
-        obj = new CompareScalarRefOp<T>(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+      if constexpr (std::is_same<T, ScalarRef *>::value) {
+        obj = new CompareScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
       } else {
         obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
                                   EncodeScalar(val, type_id));
@@ -781,16 +808,8 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
   template NDObject *Kernel::Binary<op>(int32_t, NDObject *);    \
   template NDObject *Kernel::Binary<op>(Float16, NDObject *);    \
   template NDObject *Kernel::Binary<op>(BFloat16, NDObject *);   \
-  template NDObject *Kernel::Binary<op>(NDObject *, float *);    \
-  template NDObject *Kernel::Binary<op>(NDObject *, int32_t *);  \
-  template NDObject *Kernel::Binary<op>(NDObject *, int64_t *);  \
-  template NDObject *Kernel::Binary<op>(NDObject *, Float16 *);  \
-  template NDObject *Kernel::Binary<op>(NDObject *, BFloat16 *); \
-  template NDObject *Kernel::Binary<op>(float *, NDObject *);    \
-  template NDObject *Kernel::Binary<op>(int32_t *, NDObject *);  \
-  template NDObject *Kernel::Binary<op>(int64_t *, NDObject *);  \
-  template NDObject *Kernel::Binary<op>(Float16 *, NDObject *);  \
-  template NDObject *Kernel::Binary<op>(BFloat16 *, NDObject *)
+  template NDObject *Kernel::Binary<op>(NDObject *, ScalarRef *);\
+  template NDObject *Kernel::Binary<op>(ScalarRef *, NDObject *)
 
 DEF_BINARY(BinaryType::kEqual);
 DEF_BINARY(BinaryType::kNotEqual);
@@ -862,8 +881,8 @@ NDObject *Kernel::ElemAny(NDObject *input) {
 template <typename T>
 NDObject *Kernel::Broadcast(T val, ShapeRef *shape, DataType type) {
   NDObject *obj;
-  if constexpr (std::is_pointer<T>::value) {
-    obj = new BroadcastScalarRefOp<T>(val, shape, type);
+  if constexpr (std::is_same<T, ScalarRef *>::value) {
+    obj = new BroadcastScalarRefOp(val, shape, type);
   } else {
     obj = new BroadcastScalarOp(EncodeScalar(val, type), shape, type);
   }
@@ -875,11 +894,7 @@ template NDObject *Kernel::Broadcast<float>(float val, ShapeRef *shape, DataType
 template NDObject *Kernel::Broadcast<int32_t>(int32_t val, ShapeRef *shape, DataType type);
 template NDObject *Kernel::Broadcast<Float16>(Float16 val, ShapeRef *shape, DataType type);
 template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<float *>(float *val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<int32_t *>(int32_t *val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<int64_t *>(int64_t *val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<Float16 *>(Float16 *val, ShapeRef *shape, DataType type);
-template NDObject *Kernel::Broadcast<BFloat16 *>(BFloat16 *val, ShapeRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<ScalarRef *>(ScalarRef *val, ShapeRef *shape, DataType type);
 
 NDObject *Kernel::Broadcast(NDObject *input, ShapeRef *shape) {
   if (input->type_id_ == DataType::kBool) {

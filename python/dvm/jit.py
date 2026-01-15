@@ -14,7 +14,7 @@
 # ============================================================================
 
 import os
-from . import Kernel, NDObject, ShapeRef
+from . import Kernel
 
 class JitKernel(Kernel):
     def __init__(self, ker_type, dynamic):
@@ -37,25 +37,17 @@ class JitKernel(Kernel):
         op = Kernel.load(self, shape, dtype)
         self.inputs[index] = op
         return op
-    def scalar(self, index, dtype):
-        if dtype == "float32":
-            s = self.make_float()
-        elif dtype == "int32":
-            s = self.make_int()
-        else:
-            raise ValueError("invalid dtype")
-        self.inputs[index] = s
-        return s
-    def dims(self, index):
-        ref = ShapeRef()
+    def scalar(self, index):
+        scalar = Kernel.scalar(self)
+        self.inputs[index] = scalar
+        return scalar
+    def int_array(self, index):
+        ref = Kernel.int_array(self)
         self.inputs[index] = ref
         return ref
     def __call__(self, *args):
         for inp, arg in zip(self.inputs, args):
-            if isinstance(inp, NDObject):
-                Kernel.input(self, inp, arg)
-            else:
-                inp.update(arg)
+            Kernel.input(self, inp, arg)
         if self.dynamic:
             self.codegen(None)
         self.run()

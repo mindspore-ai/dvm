@@ -1,5 +1,5 @@
 VPATH = ./src:./include
-OBJ = ops.o kernel.o xkernel.o code.o dvm.o pass.o msprof.o system.o tuning.o comm.o dvm_py.o
+OBJ = ops.o kernel.o xkernel.o code.o dvm.o pass.o msprof.o system.o tuning.o comm.o
 
 CFLGAS = --std=c++17 -Werror -Wall -I./include $(PYBIND11_INCLUDES) -I${ASCEND_PATH}/include -fPIC -fvisibility=hidden
 CFLGAS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
@@ -71,7 +71,7 @@ _dvm_py.so: pybind_api.o dry_run.o libdvm.a
 libdvm.a: $(OBJ) vm.o
 	ar crv $@ $^
 
-pybind_api.o: pybind_api.cc pybind_api.h $(HEADERS)
+pybind_api.o: pybind_api.cc pybind_api.h dvm_py.h $(HEADERS)
 	g++ -c $(CFLGAS) $< -o $@
 
 dry_run.o: dry_run.cc isa.h vm_aiv.cce vm_aic.cce

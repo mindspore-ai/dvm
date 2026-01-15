@@ -39,8 +39,8 @@ int main() {
   float *host_y = new float[DATA_SIZE];
   float *host_out = new float[DATA_SIZE];
   for (size_t i = 0;  i < DATA_SIZE; ++i) {
-    host_x[i] = 1.0f;
-    host_y[i] = 2.0f;
+    host_x[i] = 2.0f;
+    host_y[i] = 3.0f;
   }
   constexpr size_t MEM_SIZE = DATA_SIZE * sizeof(float);
   constexpr aclrtStream stream = nullptr;  // use default stream
@@ -58,8 +58,9 @@ int main() {
   kernel.Reset(dvm::kVector, 0);
   auto x = kernel.Load(dev_x, &shape_ref, dvm::kFloat32);
   auto y = kernel.Load(dev_y, &shape_ref, dvm::kFloat32);
-  auto z = kernel.Binary(dvm::kAdd, x,  y);
-  auto out = kernel.Store(dev_out, z);
+  auto z = kernel.Binary<dvm::kMul>(x,  y);
+  auto r = kernel.Binary<dvm::kAdd>(z,  0.5f);
+  auto out = kernel.Store(dev_out, r);
 
   // codegen and run the kernel
   kernel.CodeGen();
@@ -73,7 +74,7 @@ int main() {
   ACL_CHECK(aclrtMemcpyAsync(host_out, MEM_SIZE, dev_out, MEM_SIZE, ACL_MEMCPY_DEVICE_TO_HOST, stream));
   ACL_CHECK(aclrtSynchronizeStream(stream));
   constexpr float epsilon = 1e-5f;
-  constexpr float expect = 3.0f;
+  constexpr float expect = 6.5f;
   for (size_t i = 0; i < DATA_SIZE; ++i) {
     if (std::abs(host_out[i] - expect) > 1e-5f) {
       std::cerr << "data check failed" << std::endl;

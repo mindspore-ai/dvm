@@ -25,12 +25,21 @@
 namespace py = pybind11;
 
 namespace dvm {
+extern const char *DTYPE_NAMES[];
+void DvmException(const char *error_str);
 namespace pyapi {
 class NDObjectPy {
  public:
   explicit NDObjectPy(NDObject *obj) : obj_(obj) {}
-  py::object GetShape() const;
-  std::string GetDType() const;
+  py::object GetShape() const {
+    const size_t size = obj_->shape_ref_->size;
+    py::tuple out(size);
+    for (size_t i = 0; i < size; ++i) {
+      out[i] = py::cast(obj_->shape_ref_->data[i]);
+    }
+    return out;
+  }
+  std::string GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
   NDObject *Get() const { return obj_; }
 
  private:
@@ -42,8 +51,18 @@ class IntArrayRefPy {
   IntArrayRefPy() : shape_ref_(shape_) {}
   explicit IntArrayRefPy(const std::vector<int64_t> &shape) : shape_(shape), shape_ref_(shape_) {}
   ~IntArrayRefPy() = default;
-  void Update(py::object shape);
-  py::object GetShape() const;
+  void Update(py::object shape) {
+    shape_ = py::cast<std::vector<int64_t>>(shape);
+    shape_ref_ = shape_;
+  }
+  py::object GetShape() const {
+    const size_t size = shape_.size();
+    py::tuple out(size);
+    for (size_t i = 0; i < size; ++i) {
+      out[i] = py::cast(shape_[i]);
+    }
+    return out;
+  }
   IntArrayRef *Get() { return &shape_ref_; }
 
  private:
@@ -54,14 +73,25 @@ class IntArrayRefPy {
 class ScalarRefPy {
  public:
   ScalarRefPy() = default;
-  void Update(py::object val);
+  void Update(py::object val) {
+    if (py::isinstance<py::int_>(val)) {
+      data_ = val.cast<int>();
+    } else if (py::isinstance<py::float_>(val)) {
+      data_ = val.cast<float>();
+    } else {
+      DvmException("unsupport type");
+    }
+  }
   ScalarRef data_;
 };
+
+using NDOpPyPtr = std::shared_ptr<NDObjectPy>;
+using ScalarRefPyPtr = std::shared_ptr<ScalarRefPy>;
 
 class KernelPy {
  public:
   KernelPy() = default;
-  virtual ~KernelPy();
+  virtual ~KernelPy() {}
 
   virtual py::object Load(py::object shape, const std::string &type) = 0;
   virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) = 0;
@@ -69,40 +99,171 @@ class KernelPy {
   virtual IntArrayRef *GetShapeRef(py::object shape) = 0;
 
   template <UnaryOpType op_type>
-  py::object Unary(py::object input);
+  py::object Unary(py::object input) {
+    return ObjToPy(kernel_.Unary<op_type>(PyToObj(input)));
+  }
 
   template <BinaryOpType op_type>
-  py::object Binary(py::object lhs, py::object rhs);
+  py::object Binary(py::object lhs, py::object rhs) {
+    NDObject *op;
+    if (py::isinstance<py::int_>(lhs)) {
+      op = kernel_.Binary<op_type>(lhs.cast<int>(), PyToObj(rhs));
+    } else if (py::isinstance<py::float_>(lhs)) {
+      op = kernel_.Binary<op_type>(lhs.cast<float>(), PyToObj(rhs));
+    } else if (py::isinstance<py::int_>(rhs)) {
+      op = kernel_.Binary<op_type>(PyToObj(lhs), rhs.cast<int>());
+    } else if (py::isinstance<py::float_>(rhs)) {
+      op = kernel_.Binary<op_type>(PyToObj(lhs), rhs.cast<float>());
+    } else if (py::isinstance<ScalarRefPy>(lhs)) {
+      op = kernel_.Binary<op_type>(PyToScalar(lhs), PyToObj(rhs));
+    } else if (py::isinstance<ScalarRefPy>(rhs)) {
+      op = kernel_.Binary<op_type>(PyToObj(lhs), PyToScalar(rhs));
+    } else {
+      op = kernel_.Binary<op_type>(PyToObj(lhs), PyToObj(rhs));
+    }
+    return ObjToPy(op);
+  }
 
   template <ReduceOpType op_type>
-  py::object Reduce(py::object input, py::object dims, bool keepdims);
+  py::object Reduce(py::object input, py::object dims, bool keepdims) {
+    return ObjToPy(kernel_.Reduce<op_type>(PyToObj(input), GetShapeRef(dims), keepdims));
+  }
 
-  py::object Cast(py::object input, const std::string &type);
-  py::object Select(py::object cond, py::object lhs, py::object rhs);
-  py::object Full(py::object scalar, py::object shape, const std::string &dtype);
-  py::object Reshape(py::object input, py::object shape);
-  py::object Copy(py::object input);
-  py::object Broadcast(py::object input, py::object shape);
-  py::object ElementAny(py::object input);
-  py::object MatMul(py::object lhs, py::object rhs, bool trans_a, bool trans_b, py::object bias);
+  py::object Cast(py::object input, const std::string &type) {
+    return ObjToPy(kernel_.Cast(PyToObj(input), StringToTypeID(type)));
+  }
+  py::object Select(py::object cond, py::object lhs, py::object rhs) {
+    return ObjToPy(kernel_.Select(PyToObj(cond), PyToObj(lhs), PyToObj(rhs)));
+  }
+  py::object Full(py::object scalar, py::object shape, const std::string &dtype) {
+    auto shape_ref = GetShapeRef(shape);
+    auto type_id = StringToTypeID(dtype);
+    NDObject *op = nullptr;
+    if (py::isinstance<py::int_>(scalar)) {
+      op = kernel_.Broadcast(scalar.cast<int>(), shape_ref, type_id);
+    } else if (py::isinstance<py::float_>(scalar)) {
+      op = kernel_.Broadcast(scalar.cast<float>(), shape_ref, type_id);
+    } else if (py::isinstance<ScalarRefPy>(scalar)) {
+      op = kernel_.Broadcast(PyToScalar(scalar), shape_ref, type_id);
+    } else {
+      DvmException("Unsupported scalar type for full: expected int, float, NDSymInt, or NDSymFloat.");
+    }
+    return ObjToPy(op);
+  }
+  py::object Reshape(py::object input, py::object shape) {
+    return ObjToPy(kernel_.Reshape(PyToObj(input), GetShapeRef(shape)));
+  }
+  py::object Copy(py::object input) { return ObjToPy(kernel_.Copy(PyToObj(input))); }
+  py::object Broadcast(py::object input, py::object shape) {
+    return ObjToPy(kernel_.Broadcast(PyToObj(input), GetShapeRef(shape)));
+  }
+  py::object ElementAny(py::object input) { return ObjToPy(kernel_.ElemAny(PyToObj(input))); }
+  py::object MatMul(py::object lhs, py::object rhs, bool trans_a, bool trans_b, py::object bias) {
+    auto op = kernel_.MatMul(PyToObj(lhs), PyToObj(rhs), trans_a, trans_b, bias.is_none() ? nullptr : PyToObj(bias));
+    return ObjToPy(op);
+  }
   py::object GroupedMatMul(py::object lhs, py::object rhs, bool trans_a, bool trans_b, py::object bias,
-                           py::object group_list, int64_t group_type, int64_t group_list_type);
-  py::object DisAssemble();
-  py::object DumpGraph();
-  void ParallelNext();
-  void SpecNext();
+                           py::object group_list, int64_t group_type, int64_t group_list_type) {
+    NDObject *bias_obj = bias.is_none() ? nullptr : PyToObj(bias);
+    NDObject *group_list_obj = group_list.is_none() ? nullptr : PyToObj(group_list);
+    auto op = kernel_.GroupedMatMul(PyToObj(lhs), PyToObj(rhs), trans_a, trans_b, bias_obj, group_list_obj,
+                                    GroupType(group_type), GroupListType(group_list_type));
+    return ObjToPy(op);
+  }
+  py::object DisAssemble() { return py::cast(kernel_.Das()); }
+  py::object DumpGraph() { return py::cast(kernel_.Dump()); }
+  void ParallelNext() { kernel_.ParallelNext(); }
+  void SpecNext() { kernel_.SpecNext(); }
   py::object MakeIntArray() { return py::cast(std::make_shared<IntArrayRefPy>()); }
   py::object MakeScalar() { return py::cast(std::make_shared<ScalarRefPy>()); }
 
  protected:
-  DType StringToTypeID(const std::string &type);
+  NDObject *PyToObj(py::object obj) { return obj.cast<NDOpPyPtr>()->Get(); }
+  py::object ObjToPy(NDObject *obj) { return py::cast(std::make_shared<NDObjectPy>(obj)); }
+  ScalarRef *PyToScalar(py::object scalar) { return &(scalar.cast<ScalarRefPyPtr>()->data_); }
+  DataType StringToTypeID(const std::string &type) {
+    for (uint32_t type_id = 0; type_id < DataType::kDataTypeEnd; ++type_id) {
+      if (type == DTYPE_NAMES[type_id]) {
+        return static_cast<DataType>(type_id);
+      }
+    }
+    DvmException("StringToTypeID meet unknown type");
+    return DataType::kDataTypeEnd;
+  }
   Kernel kernel_;
 };
-using NDOpPyPtr = std::shared_ptr<NDObjectPy>;
-using ScalarRefPyPtr = std::shared_ptr<ScalarRefPy>;
 
-void RegBaseApi(const py::module &m);
-void RegKernelApi(const py::module &m);
+static inline void RegBaseApi(const py::module &m) {
+  (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
+    .def("shape", &NDObjectPy::GetShape, "get shape")
+    .def("dtype", &NDObjectPy::GetDType, "get dtype");
+
+  (void)py::class_<IntArrayRefPy, std::shared_ptr<IntArrayRefPy>>(m, "IntArrayRef")
+    .def(py::init<>())
+    .def(py::init<const std::vector<int64_t> &>())
+    .def("shape", &IntArrayRefPy::GetShape, "get shape")
+    .def("update", &IntArrayRefPy::Update, "update shape");
+
+  (void)py::class_<ScalarRefPy, std::shared_ptr<ScalarRefPy>>(m, "ScalarRef")
+    .def("update", &ScalarRefPy::Update, "update value");
+}
+
+static inline void RegKernelApi(const py::module &m) {
+  (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "KernelBase")
+    .def("load", &KernelPy::Load, "load array")
+    .def("view_load", &KernelPy::ViewLoad, "load array")
+    .def("store", &KernelPy::Store, "store array")
+    .def("scalar", &KernelPy::MakeScalar, "create scalar")
+    .def("int_array", &KernelPy::MakeIntArray, "create int array")
+    .def("sqrt", &KernelPy::Unary<UnaryOpType::kSqrt>, "emit sqrt")
+    .def("abs", &KernelPy::Unary<UnaryOpType::kAbs>, "emit abs")
+    .def("log", &KernelPy::Unary<UnaryOpType::kLog>, "emit log")
+    .def("exp", &KernelPy::Unary<UnaryOpType::kExp>, "emit exp")
+    .def("reciprocal", &KernelPy::Unary<UnaryOpType::kReciprocal>, "emit reciprocal")
+    .def("isfinite", &KernelPy::Unary<UnaryOpType::kIsFinite>, "emit isfinite")
+    .def("logical_not", &KernelPy::Unary<UnaryOpType::kLogicalNot>, "emit logical_not")
+    .def("round", &KernelPy::Unary<UnaryOpType::kRound>, "emit round")
+    .def("floor", &KernelPy::Unary<UnaryOpType::kFloor>, "emit floor")
+    .def("ceil", &KernelPy::Unary<UnaryOpType::kCeil>, "emit ceil")
+    .def("trunc", &KernelPy::Unary<UnaryOpType::kTrunc>, "emit trunc")
+    .def("cast", &KernelPy::Cast, "emit cast op")
+    .def("element_any", &KernelPy::ElementAny, "emit element_any op")
+    .def("equal", &KernelPy::Binary<BinaryOpType::kEqual>, "emit equal")
+    .def("not_equal", &KernelPy::Binary<BinaryOpType::kNotEqual>, "emit equal")
+    .def("greater", &KernelPy::Binary<BinaryOpType::kGreater>, "emit greater")
+    .def("greater_equal", &KernelPy::Binary<BinaryOpType::kGreaterEqual>, "emit greater_equal")
+    .def("less", &KernelPy::Binary<BinaryOpType::kLess>, "emit less")
+    .def("less_equal", &KernelPy::Binary<BinaryOpType::kLessEqual>, "emit less_equal")
+    .def("add", &KernelPy::Binary<BinaryOpType::kAdd>, "emit add")
+    .def("sub", &KernelPy::Binary<BinaryOpType::kSub>, "emit sub")
+    .def("mul", &KernelPy::Binary<BinaryOpType::kMul>, "emit mul")
+    .def("div", &KernelPy::Binary<BinaryOpType::kDiv>, "emit div")
+    .def("pow", &KernelPy::Binary<BinaryOpType::kPow>, "emit pow")
+    .def("maximum", &KernelPy::Binary<BinaryOpType::kMaximum>, "emit maximum")
+    .def("minimum", &KernelPy::Binary<BinaryOpType::kMinimum>, "emit minimum")
+    .def("logical_and", &KernelPy::Binary<BinaryOpType::kLogicalAnd>, "emit logical_add")
+    .def("logical_or", &KernelPy::Binary<BinaryOpType::kLogicalOr>, "emit logical_or")
+    .def("select", &KernelPy::Select, "emit select op")
+    .def("broadcast", &KernelPy::Broadcast, "emit broadcast op", py::arg("input"), py::arg("shape"))
+    .def("full", &KernelPy::Full, "emit broadcast op", py::arg("input"), py::arg("shape"), py::arg("dtype") = "float32")
+    .def("reshape", &KernelPy::Reshape, "emit reshape op")
+    .def("sum", &KernelPy::Reduce<ReduceOpType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
+         "emit sum")
+    .def("max", &KernelPy::Reduce<ReduceOpType::kMax>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
+         "emit max")
+    .def("min", &KernelPy::Reduce<ReduceOpType::kMin>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
+         "emit min")
+    .def("copy", &KernelPy::Copy, "emit copy op")
+    .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
+         py::arg("trans_b"), py::arg("bias") = py::none())
+    .def("grouped_matmul", &KernelPy::GroupedMatMul, "emit grouped_matmul op", py::arg("lhs"), py::arg("rhs"),
+         py::arg("trans_a"), py::arg("trans_b"), py::arg("bias"), py::arg("group_list"), py::arg("group_type"),
+         py::arg("group_list_type") = 0)
+    .def("das", &KernelPy::DisAssemble, "disassemble code")
+    .def("dump", &KernelPy::DumpGraph, "dump graph")
+    .def("p_next", &KernelPy::ParallelNext, "parallel next")
+    .def("spec_next", &KernelPy::SpecNext, "spec next");
+}
 }  // namespace pyapi
 }  // namespace dvm
 #endif  // _DVM_PY_API_H_

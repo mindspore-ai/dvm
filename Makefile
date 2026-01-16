@@ -84,8 +84,8 @@ vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	echo "extern const" > vm.cc
 	xxd -i g_vkernel_c220_bin >> vm.cc
 	xxd -i g_vkernel_c310_bin >> vm.cc
-	objdump -t g_vkernel_c310_bin | grep " F " | python scripts/find_addrs.py src/isa.h c310 >> vm.cc
-	objdump -t g_vkernel_c220_bin | grep " F " | python scripts/find_addrs.py src/isa.h c220 >> vm.cc
+	objdump -t g_vkernel_c310_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c310 >> vm.cc
+	objdump -t g_vkernel_c220_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c220 >> vm.cc
 	g++ -c $(CFLGAS) vm.cc -o vm.o
 
 ifneq ($(PRE_ASCEND),)

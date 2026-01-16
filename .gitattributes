@@ -1,2 +1,0 @@
-prebuild/g_vkernel_c220_bin filter=lfs diff=lfs merge=lfs -text
-prebuild/g_vkernel_c310_bin filter=lfs diff=lfs merge=lfs -text

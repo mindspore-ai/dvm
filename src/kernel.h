@@ -25,13 +25,16 @@
 #include "pass.h"
 
 namespace dvm {
-
+class MsprofHelper;
 class VKernel {
  public:
-  explicit VKernel(KernelType ktype, uint32_t flags) : ktype_(ktype), flags_(flags) {}
+  VKernel(KernelType ktype, uint32_t flags) : ktype_(ktype), flags_(flags) {}
   virtual ~VKernel();
 
   virtual void Append(NDObject *obj);
+  virtual void Normalize();
+  virtual void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc);
+  virtual int Launch(void *stream);
   virtual uint64_t CodeGen();
   virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
   virtual void Clone(VKernel *base, CloneHelper &helper);
@@ -48,12 +51,24 @@ class VKernel {
   bool IsDynamic() const { return flags_ & KernelFlag::kDynamic; }
 
   void UpdateIdle(const std::vector<NDObject *> &cleans);
+  void UpdatePreWS(void *mem) { pre_ws_mem_ = mem; }
+  void SetNameHint(const char *name, const char *fullname) {
+    op_name_ = name;
+    op_fullname_ = fullname;
+  }
 
   Code code_;
 
  protected:
   KernelType ktype_;
   uint32_t flags_;
+  union {
+    size_t pre_ws_size_{0};
+    void *pre_ws_mem_;
+  };
+  MsprofHelper *msprof_{nullptr};
+  const char *op_name_{nullptr};
+  const char *op_fullname_{nullptr};
   std::string dump_str_;
 };
 

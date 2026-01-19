@@ -21,6 +21,7 @@
 #include <cstring>
 #include "kernel.h"
 #include "xkernel.h"
+#include "msprof.h"
 
 namespace dvm {
 class IdleCleanWrap : public CodeWrap {
@@ -107,6 +108,7 @@ class IdleCodeWrap : public CodeWrap {
 };
 
 static std::unique_ptr<IdleCodeWrap> g_idle_wrap;
+static std::mutex g_rt_kernel_launch_mutex;
 
 VKernel::~VKernel() {
   if (g_idle_wrap) {
@@ -114,6 +116,7 @@ VKernel::~VKernel() {
       delete wrap;
     }
   }
+  delete msprof_;
 }
 
 void VKernel::UpdateIdle(const std::vector<NDObject *> &cleans) {
@@ -126,6 +129,57 @@ void VKernel::UpdateIdle(const std::vector<NDObject *> &cleans) {
     auto wrap = g_idle_wrap->Get(this);
     wrap->CodeGen(cleans);
     code_.InsertWrap(wrap);
+  }
+}
+
+void VKernel::Normalize() { pre_ws_size_ = CodeGen(); }
+
+void VKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  auto reloc = relocs;
+  for (size_t i = 0; i < reloc_size; ++i, ++reloc) {
+    static_cast<NDAccess *>(reloc->io)->addr_.Reloc(reloc->addr);
+  }
+  if (g_system.enable_profile_) {
+    if (msprof_ == nullptr) {
+      msprof_ = new MsprofHelper();
+      auto &info = msprof_->info_;
+      info.op_name = op_name_ ? op_name_ : "UnnamedDvmOp";
+      info.op_fullname = op_fullname_ ? op_fullname_ : "UnnamedDvmOp";
+      info.block_dim =code_.block_dim_;
+      for (size_t i = 0; i < reloc_size; ++i) {
+        auto op = relocs[i].io;
+        if (op->IsLoad()) {
+          info.AppendInput(op);
+        } else {
+          info.AppendOutput(op);
+        }
+      }
+      msprof_->InitReportNode();
+    } else if (IsDynamic()) {
+      msprof_->UpdateReportNode(code_.block_dim_);
+    }
+  }
+  if (ws_alloc) {
+    pre_ws_mem_ = ws_alloc->Alloc(pre_ws_size_);
+  }
+}
+
+int VKernel::Launch(void *stream) {
+  code_.RelocBinds(pre_ws_mem_);
+  if (likely(!g_system.enable_profile_ || msprof_ == nullptr)) {
+    return code_.Launch(pre_ws_mem_, stream);
+  }
+  {
+    std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
+    ScopedValueGuard<LaunchFunc> guard(g_system.rt_kernel_launch_, [real_rt_launch = g_system.rt_kernel_launch_, this](
+                                                                     const void *stub, auto &&...rest_args) {
+      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&g_system);
+      msprof_->Update(target);
+      auto ret = real_rt_launch(stub, std::forward<decltype(rest_args)>(rest_args)...);
+      msprof_->ReportTask();
+      return ret;
+    });
+    return code_.Launch(pre_ws_mem_, stream);
   }
 }
 

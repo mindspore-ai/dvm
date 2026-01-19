@@ -570,7 +570,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
     for (auto &info : loads_) {
       relocs.emplace_back(info.op, info.dev);
     }
-    kernel_.Infer();
+    kernel_.Normalize();
     for (auto &info : stores_) {
       auto op = info.op;
       info.size = ITEM_SIZE[op->type_id_];

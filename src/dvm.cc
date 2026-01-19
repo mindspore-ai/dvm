@@ -20,11 +20,9 @@
 #include "dvm.h"
 #include "kernel.h"
 #include "xkernel.h"
-#include "msprof.h"
 #include "comm.h"
 
 namespace dvm {
-std::mutex g_rt_kernel_launch_mutex;
 namespace {
 static const BinarySOpType binary_map[kBinaryTypeEnd] = {
   kEquals, kNotEquals, kGreaters,     kGreaterEquals, kLesss,    kLessEquals,   kAdds,         kBinarySOpEnd,
@@ -35,7 +33,6 @@ static const BinarySOpType lhs_val_binary_map[kBinaryTypeEnd] = {
   kEquals, kNotEquals, kLesss,        kLessEquals, kGreaters, kGreaterEquals, kAdds,         kBinarySOpEnd,
   kMuls,   ksDiv,      kBinarySOpEnd, kMaximums,   kMinimums, kBinarySOpEnd,  kBinarySOpEnd,
 };
-static constexpr const char* kUnnamedDvmOp = "UnnamedDvmOp";
 template <typename T>
 struct TypeTrait {
   static constexpr DataType ID = kDataTypeEnd;
@@ -622,14 +619,11 @@ void Comm::Init(void *hccl_comm) {
   comm_ = new HcclComm(hccl_comm);
 }
 
-Kernel::Kernel() : kernel_{nullptr}, msprof_helper_{nullptr}, op_name_{kUnnamedDvmOp}, op_fullname_{kUnnamedDvmOp} {
-  g_system.Init();
-}
+Kernel::Kernel() : kernel_{nullptr} { g_system.Init(); }
 
-Kernel::~Kernel() {
-  delete kernel_;
-  delete msprof_helper_;
-}
+Kernel::~Kernel() { delete kernel_; }
+
+void Kernel::SetNameHint(const char *name, const char *fullname) { kernel_->SetNameHint(name, fullname); }
 
 void Kernel::Reset(KernelType type, uint32_t flags) {
   if (kernel_) {
@@ -1040,135 +1034,29 @@ IntArrayRef *Kernel::GetShape(NDObject *op) const { return op->shape_ref_; }
 
 DataType Kernel::GetDType(NDObject *op) const { return op->type_id_; }
 
-size_t Kernel::CodeGen() {
+size_t Kernel::PreCodeGen() {
   uint64_t ws_size = kernel_->CodeGen();
   return kernel_->code_.ReserveWorkspace(ws_size);
 }
 
-void Kernel::Infer() {
-  auto ktype = kernel_->KType();
-  if (ktype == KernelType::kSplit) {
-    static_cast<_SplitGraph *>(kernel_)->Infer();
-  } else if (ktype == KernelType::kVector && kernel_->IsDynamic()) {
-    auto dyn_kernel = static_cast<VKernelD *>(kernel_);
-    dyn_kernel->Normalize(false);
-  }
-}
+void Kernel::Normalize() { kernel_->Normalize(); }
 
 int Kernel::Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace, void *stream) {
-  auto reloc = relocs;
-  for (size_t i = 0; i < reloc_size; ++i, ++reloc) {
-    static_cast<NDAccess *>(reloc->io)->addr_.Reloc(reloc->addr);
-  }
-  auto &code = kernel_->code_;
-  code.RelocBinds(workspace);
-  if (!g_system.enable_profile_) {
-    return code.Launch(workspace, stream);
-  }
-  if (msprof_helper_ == nullptr) {
-    msprof_helper_ = new MsprofHelper();
-    auto &info = msprof_helper_->info_;
-    info.op_name = op_name_;
-    info.op_fullname = op_fullname_;
-    info.block_dim = kernel_->code_.block_dim_;
-    for (size_t i = 0; i < reloc_size; ++i) {
-      auto op = relocs[i].io;
-      if (op->IsLoad()) {
-        info.AppendInput(op);
-      } else {
-        info.AppendOutput(op);
-      }
-    }
-    msprof_helper_->InitReportNode();
-  } else if (kernel_->IsDynamic()) {
-    msprof_helper_->UpdateReportNode(kernel_->code_.block_dim_);
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
-    ScopedValueGuard<LaunchFunc> guard(g_system.rt_kernel_launch_, [real_rt_launch = g_system.rt_kernel_launch_, this](
-                                                                     const void *stub, auto &&...rest_args) {
-      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&g_system);
-      msprof_helper_->Update(target);
-      auto ret = real_rt_launch(stub, std::forward<decltype(rest_args)>(rest_args)...);
-      msprof_helper_->ReportTask();
-      return ret;
-    });
-    return code.Launch(workspace, stream);
-  }
+  kernel_->UpdatePreWS(workspace);
+  kernel_->CodeGenR(relocs, reloc_size, nullptr);
+  return kernel_->Launch(stream);
 }
 
-int Kernel::Launch(void *stream) {
-  ASSERT(kernel_->IsSplit());
-  auto kernel = static_cast<_SplitKernel *>(kernel_);
-  if (!g_system.enable_profile_) {
-    kernel->Launch(stream);
-  } else {
-    int kernel_begin, kernel_end;
-    const auto &kernels = kernel->GetKernels(kernel_begin, kernel_end);
-    for (int i = kernel_begin; i < kernel_end; ++i) {
-      MsprofHelper msprof_helper;
-      auto &info = msprof_helper.info_;
-      auto vector_kernel = reinterpret_cast<VectorKernel *>(kernels[i]);
-      info.block_dim = vector_kernel->code_.block_dim_;
-      auto target = vector_kernel->code_.target_;
-      std::ostringstream oss;
-      oss << "Dvm";
-      std::vector<NDObject *> inputs;
-      std::vector<NDObject *> outputs;
-      if (target > Code::kTargetVec) {
-        auto cube_op = _SplitKernel::GetCubeOp(kernels[i]);
-        if (cube_op) {
-          cube_op->Dump(false, oss);
-          inputs.emplace_back(cube_op->lhs_);
-          inputs.emplace_back(cube_op->rhs_);
-          if (cube_op->bias_) {
-            inputs.emplace_back(cube_op->bias_);
-          }
-          if (cube_op->output_->IsStore()) {
-            outputs.emplace_back(cube_op->output_);
-          }
-        }
-      }
-      for (auto op : vector_kernel->objects_) {
-        if (op->IsLoad()) {
-          inputs.emplace_back(op);
-        } else if (op->IsStore()) {
-          outputs.emplace_back(op);
-        }
-        if (op->GetObjectType() != kStore && op->GetObjectType() != kLoad) {
-          op->Dump(false, oss);
-        }
-      }
-      for (auto op : inputs) {
-        if (op->flags_ & OBJ_FLAG_EAGER) {
-          info.AppendInput(op);
-        }
-      }
-      for (auto op : outputs) {
-        if (op->flags_ & OBJ_FLAG_EAGER) {
-          info.AppendOutput(op);
-        }
-      }
-      auto prof_name = oss.str();
-      info.op_name = prof_name.c_str();
-      info.op_fullname = info.op_name;
-      msprof_helper.InitReportNode();
-      msprof_helper.Update(target);
-      kernel->Launch(i, stream);
-      msprof_helper.ReportTask();
-    }
-  }
-  return 0;
-}
+int Kernel::Launch(void *stream) { return kernel_->Launch(stream); }
 
 void Kernel::CodeGen(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
-  ASSERT(kernel_->IsSplit());
-  static_cast<_SplitKernel *>(kernel_)->CodeGenR(relocs, reloc_size, ws_alloc);
+  kernel_->CodeGenR(relocs, reloc_size, ws_alloc);
 }
 
 void Kernel::Clear() {
-  auto kernel = static_cast<VKernelE *>(kernel_);
-  kernel->Clear();
+  if (kernel_->KType() == KernelType::kEager) {
+    static_cast<VKernelE *>(kernel_)->Clear();
+  }
 }
 
 const char *Kernel::Dump() const {

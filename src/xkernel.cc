@@ -19,6 +19,7 @@
 #include "xkernel.h"
 #include "comm.h"
 #include "tuning.h"
+#include "msprof.h"
 
 namespace dvm {
 namespace {
@@ -1729,11 +1730,76 @@ std::string &_SplitKernel::DisAssemble() {
   return dump_str_;
 }
 
-void _SplitKernel::TunerLaunch(EagerVector *kernel, void *stream) {
-  auto tuner = static_cast<LazyCubeTuner *>(g_system.lazy_tuner_);
-  tuner->Launch(kernel->mm_, kernel->code_, stream);
+int _SplitKernel::Launch(void *stream) {
+  auto child_launch = [this, stream](EagerVector *kernel) {
+    auto &code = kernel->code_;
+    if (code.target_ == Code::kTargetCube && g_system.lazy_tuner_) {
+      auto tuner = static_cast<LazyCubeTuner *>(g_system.lazy_tuner_);
+      tuner->Launch(kernel->mm_, code, stream);
+    } else {
+      code.Launch(extern_code_, stream);
+    }
+  };
+  if (likely(!g_system.enable_profile_)) {
+    for (int i = kernel_begin_; i < kernel_used_; ++i) {
+      child_launch(kernels_[i]);
+    }
+    return 0;
+  }
+  for (int i = kernel_begin_; i < kernel_used_; ++i) {
+    MsprofHelper msprof_helper;
+    auto &info = msprof_helper.info_;
+    auto vector_kernel = kernels_[i];
+    info.block_dim = vector_kernel->code_.block_dim_;
+    auto target = vector_kernel->code_.target_;
+    std::ostringstream oss;
+    oss << "Dvm";
+    std::vector<NDObject *> inputs;
+    std::vector<NDObject *> outputs;
+    if (target > Code::kTargetVec) {
+      auto cube_op = GetCubeOp(kernels_[i]);
+      if (cube_op) {
+        cube_op->Dump(false, oss);
+        inputs.emplace_back(cube_op->lhs_);
+        inputs.emplace_back(cube_op->rhs_);
+        if (cube_op->bias_) {
+          inputs.emplace_back(cube_op->bias_);
+        }
+        if (cube_op->output_->IsStore()) {
+          outputs.emplace_back(cube_op->output_);
+        }
+      }
+    }
+    for (auto op : vector_kernel->objects_) {
+      if (op->IsLoad()) {
+        inputs.emplace_back(op);
+      } else if (op->IsStore()) {
+        outputs.emplace_back(op);
+      }
+      if (op->GetObjectType() != kStore && op->GetObjectType() != kLoad) {
+        op->Dump(false, oss);
+      }
+    }
+    for (auto op : inputs) {
+      if (op->flags_ & OBJ_FLAG_EAGER) {
+        info.AppendInput(op);
+      }
+    }
+    for (auto op : outputs) {
+      if (op->flags_ & OBJ_FLAG_EAGER) {
+        info.AppendOutput(op);
+      }
+    }
+    auto prof_name = oss.str();
+    info.op_name = prof_name.c_str();
+    info.op_fullname = info.op_name;
+    msprof_helper.InitReportNode();
+    msprof_helper.Update(target);
+    child_launch(vector_kernel);
+    msprof_helper.ReportTask();
+  }
+  return 0;
 }
-
 
 class SlotWsAllocator : public WsAllocator {
  public:
@@ -1828,6 +1894,8 @@ VKernelE::VKernelE() : _SplitKernel(KernelType::kEager, 0) {
 
 VKernelE::~VKernelE() { Clear(); }
 
+void VKernelE::Normalize() {}
+
 _SplitGraph::_SplitGraph(uint32_t flags) : _SplitKernel(KernelType::kSplit, flags) {
   static SplitContext ctx;
   ctx_ = &ctx;
@@ -1855,7 +1923,7 @@ void _SplitGraph::Append(NDObject *obj) {
   }
 }
 
-void _SplitGraph::Infer() {
+void _SplitGraph::Normalize() {
   for (auto op : build_ops_) {
     if (op->IsCube()) {
       auto mm = static_cast<CubeOp *>(op);
@@ -1913,7 +1981,7 @@ void SplitGraphD::Append(NDObject *op) {
   _SplitGraph::Append(op);
 }
 
-void SplitGraphD::Infer() {
+void SplitGraphD::Normalize() {
   Reset();
   tracker_.Recover();
   for (auto op : objects_) {
@@ -1922,7 +1990,7 @@ void SplitGraphD::Infer() {
       NDObject::mem_pool_.Put(op);
     }
   }
-  _SplitGraph::Infer();
+  _SplitGraph::Normalize();
 }
 
 void SplitGraphD::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
@@ -1938,7 +2006,7 @@ void SplitGraphD::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
-void SplitGraphS::Infer() {
+void SplitGraphS::Normalize() {
   if (!objects_.empty()) {
     return;
   }
@@ -1949,7 +2017,7 @@ void SplitGraphS::Infer() {
       ios.insert(op);
     }
   }
-  _SplitGraph::Infer();
+  _SplitGraph::Normalize();
   SlotCodeGen(nullptr, 0);
   slot_ws_ = std::move(ctx_->slot_ws_);
   size_t slot_size = slot_ws_.size();

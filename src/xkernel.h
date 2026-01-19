@@ -196,30 +196,9 @@ class _SplitKernel : public VKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   std::string &DisAssemble() override;
   virtual void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc);
+  int Launch(void *stream) override;
 
   NDObject *AppendCube(CubeOp *mm);
-
-  const std::vector<EagerVector *> &GetKernels(int &begin, int &end) {
-    begin = kernel_begin_;
-    end = kernel_used_;
-    return kernels_;
-  }
-
-  void Launch(int kernel_idx, void *stream) {
-    auto &code = reinterpret_cast<VKernel *>(kernels_[kernel_idx])->code_;
-    if (code.target_ == Code::kTargetCube && g_system.lazy_tuner_) {
-      TunerLaunch(kernels_[kernel_idx], stream);
-    } else {
-      code.Launch(extern_code_, stream);
-    }
-  }
-
-  void Launch(void *stream) {
-    for (int i = kernel_begin_; i < kernel_used_; ++i) {
-      Launch(i, stream);
-    }
-  }
-
   void SlotCodeGen(const RelocEntry *relocs, size_t reloc_size);
 
   static NDAccess *GetStore(NDObject *obj) { return reinterpret_cast<NDAccess *>(obj->insn_); }
@@ -270,7 +249,6 @@ class _SplitKernel : public VKernel {
   NDObject *Exchange(NDObject *input, int to_aid);
   void BuildKernel(EagerVector *kernel, const EagerArea *area, WsAllocator *alloc);
   void RelocBinds();
-  void TunerLaunch(EagerVector *kernel, void *stream);
 
   std::vector<std::pair<EagerArea *, EagerArea *>> areas_;
   std::vector<EagerVector *> kernels_;
@@ -292,7 +270,7 @@ class VKernelE : public _SplitKernel {
  public:
   VKernelE();
   ~VKernelE() override;
-
+  void Normalize() override;
   void Clear() {
     for (auto op : objects_) {
       op->~NDObject();
@@ -308,7 +286,7 @@ class _SplitGraph : public _SplitKernel {
   ~_SplitGraph() override;
   void Append(NDObject *obj) override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
-  virtual void Infer();
+  void Normalize() override;
 
  protected:
   std::vector<NDObject *> build_ops_;
@@ -318,7 +296,7 @@ class SplitGraphD : public _SplitGraph {
  public:
   SplitGraphD(uint32_t flags = 0) : _SplitGraph(flags | KernelFlag::kDynamic) {}
   void Append(NDObject *obj) override;
-  void Infer() override;
+  void Normalize() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 
@@ -329,7 +307,7 @@ class SplitGraphD : public _SplitGraph {
 class SplitGraphS : public _SplitGraph {
  public:
   SplitGraphS(bool single_ws) : _SplitGraph(single_ws ? KernelFlag::kUnifyWS : 0), single_ws_(single_ws) {}
-  void Infer() override;
+  void Normalize() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 
  protected:

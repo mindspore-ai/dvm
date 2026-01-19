@@ -1,5 +1,5 @@
 /**
- * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ * Copyright 2024-2026 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -85,17 +85,19 @@ enum GmmListType {
   kEnd,
 };
 
+/** kernel type for reset. */
 enum KernelType {
-  kVector = 0,
-  kCube,
-  kMix,
-  kParallel,
-  kSequence,
-  kSplit,
-  kEager,
-  kKernelTypeEnd,
+  kVector = 0,    /**< kernel with only vector operations */
+  kCube,          /**< kernel with only cube operations */
+  kMix,           /**< kernel with one cube operation and some post-fusioned vector operations */
+  kParallel,      /**< kernel with multi sub-kernels parallel processed on diffrent cores */
+  kSequence,      /**< kernel with multi sub-kernels sequence processed */
+  kSplit,         /**< kernel with auto sub-kernel split */
+  kEager,         /**< kernel with eager constructing operations  */
+  kKernelTypeEnd, /**< kernel end */
 };
 
+/** kernel flags for reset. */
 enum KernelFlag {
   kDynamic = 0x1,
   kUnifyWS = 0x2,
@@ -104,7 +106,6 @@ enum KernelFlag {
 
 class NDObject;
 class VKernel;
-class MsprofHelper;
 class Communicator;
 
 class Float16 {
@@ -213,73 +214,310 @@ class Comm {
   Communicator *comm_{nullptr};
 };
 
+/**
+ * @brief The main Kernel class.
+ */
 class Kernel {
  public:
   Kernel();
   ~Kernel();
 
+  /**
+   * @brief Set this kernel to a specific kernel type.
+   * @param type target kernel type.
+   * @param flags flag options combined of KernelFlag::XX.
+   */
   void Reset(KernelType type, uint32_t flags);
-  void Clone(const Kernel &base, CloneHelper &helper);
-  void SetNameHint(const char *name, const char *fullname) {
-    op_name_ = name;
-    op_fullname_ = fullname;
-  }
 
+  /**
+   * @brief Clone kernel represent from a base kernel.
+   * @param base the base kernel to clone. MUST BE CONSTRUCTED!
+   * @param helper clone callback helper. used to manage object correspondence.
+   */
+  void Clone(const Kernel &base, CloneHelper &helper);
+
+  /**
+   * @brief Set name hint for this kernel. used for msprof, dump etc.
+   * @param name short category name. like: "AddSum"
+   * @param fullname full name. same as name or with more special info, like: "attention/AddSum"
+   */
+  void SetNameHint(const char *name, const char *fullname);
+
+  /**
+   * @brief Emit a continuous load operation from input tensor.
+   * @param addr memory address of input tensor. also can be relocated at codegen stage.
+   * @param shape shape reference of input tensor.
+   * @param dtype data type of input tensor.
+   * @return the result load operation.
+   */
   NDObject *Load(void *addr, IntArrayRef *shape, DataType type);
+
+  /**
+   * @brief Emit a incontinuous load operation from input tensor.
+   * @param addr memory address of input tensor. also can be relocated at codegen stage.
+   * @param shape shape reference of input tensor.
+   * @param stride stride reference of input tensor.
+   * @param size size reference of input tensor.
+   * @param dtype data type of input tensor.
+   * @return the result load operation.
+   */
   NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type);
+
+  /**
+   * @brief [DEPRECATED] Emit a slice load operation from input tensor. please use incontinuous load.
+   */
   NDObject *SliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *size, DataType type);
+
+  /**
+   * @brief [DEPRECATED] Emit a strided slice load operation from input tensor. please use incontinuous load.
+   */
   NDObject *StridedSliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *end, IntArrayRef *step, DataType type);
+
+  /**
+   * @brief [PRIVITE]
+   */
   NDObject *MultiLoad(void *addr, IntArrayRef *shape, DataType type, const Comm *comm);
+
+  /**
+   * @brief Emit a store operation to output tensor.
+   * @param addr memory address of output tensor. also can be relocated at codegen stage.
+   * @param input source operation to store.
+   * @return the result store operation.
+   */
   NDObject *Store(void *addr, NDObject *input);
+
+  /**
+   * @brief [PRIVITE]
+   */
   NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);
+
+  /**
+   * @brief mark a store operation is an inplace store. used to prevent memory reuse for workspace.
+   * @param store store operation.
+   */
   void SetStoreInplace(NDObject *store);
 
+  /**
+   * @brief Emit a unary operation.
+   * @param op_type unary operation type.
+   * @param input operation input.
+   * @return the result operation.
+   */
   template <UnaryType op_type>
   NDObject *Unary(NDObject *input);
+
+  /**
+   * @brief Emit a binary operation.
+   * @param op_type binary operation type.
+   * @param lhs left head side input. supported data types: NDObject *, float, int32_t, Float16, BFloat16, ScalarRef *.
+   * @param rhs right head side input. supported data types: NDObject *, float, int32_t, Float16, BFloat16, ScalarRef *.
+   * @return the result operation.
+   */
   template <BinaryType op_type, typename L, typename R>
   NDObject *Binary(L lhs, R rhs);
+
+  /**
+   * @brief Emit a reduce operation.
+   * @param op_type reduce operation type.
+   * @param input input operation to reduce.
+   * @param dims reduce dims reference.
+   * @param keepdims keep reduce dim in output shape.
+   * @return the result operation.
+   */
   template <ReduceType op_type>
   NDObject *Reduce(NDObject *input, IntArrayRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
+
+  /**
+   * @brief Emit a select operation.
+   * @param cond condition operation.
+   * @param lhs left head side input.
+   * @param rhs right head side input.
+   * @return the result operation.
+   */
   NDObject *Select(NDObject *cond, NDObject *lhs, NDObject *rhs);
+
+  /**
+   * @brief Emit a cast operation.
+   * @param input input operation to cast.
+   * @param dtype target data type.
+   * @return the result operation.
+   */
   NDObject *Cast(NDObject *input, DataType type);
+
+  /**
+   * @brief Emit a broadcast operation.
+   * @param input input operation.
+   * @param shape target shape reference.
+   * @return the result operation.
+   */
   NDObject *Broadcast(NDObject *input, IntArrayRef *shape);
+
+  /**
+   * @brief Emit a scalar broadcast operation.
+   * @param val broadcast value. support data type: float, int32_t, Float16, BFloat16, ScalarRef *.
+   * @param shape broadcast shape reference.
+   * @param dtype broadcast data type.
+   * @return the result operation.
+   */
   template <typename T>
   NDObject *Broadcast(T val, IntArrayRef *shape, DataType type);
+
+  /**
+   * @brief Emit a reshape operation. partially supported of kVector and kMix kernel type.
+   * @param input input operation.
+   * @param shape target shape reference.
+   * @return the result operation.
+   */
   NDObject *Reshape(NDObject *input, IntArrayRef *shape);
+
+  /**
+   * @brief Emit a copy operation.
+   * @param input input operation.
+   * @return the result operation.
+   */
   NDObject *Copy(NDObject *input);
+
+  /**
+   * @brief Emit a OneHot operation.
+   * @param indices input indices operation.
+   * @param depth depth reference. the size should keep to 1.
+   * @param axis position to insert the value.
+   * @param on_value value to fill in output when indices on. supported data type: float, int32_t, Float16, BFloat16.
+   * @param on_value value to fill in output when indices off. supported data type: float, int32_t, Float16, BFloat16.
+   * @return the result operation.
+   */
   template <typename T>
   NDObject *OneHot(NDObject *indices, IntArrayRef *depth, int axis, T on_value, T off_value);
+
+  /**
+   * @brief [PRIVITE]
+   */
   NDObject *ElemAny(NDObject *input);
 
+  /**
+   * @brief Emit a cube matmul operation. support kFloat16 and kBFloat16.
+   * @param lhs left input.
+   * @param rhs right input.
+   * @param trans_a transpose left input.
+   * @param trans_b transpose right input.
+   * @param bias bias input.
+   * @return the result operation.
+   */
   NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);
+
+  /**
+   * @brief Emit a cube grouped matmul operation. support kFloat16 and kBFloat16.
+   * @param lhs left input.
+   * @param rhs right input.
+   * @param trans_a transpose left input.
+   * @param trans_b transpose right input.
+   * @param bias bias input.
+   * @param group_list group list input.
+   * @param group_type group split type.
+   * @param group_list_type group list type.
+   * @return the result operation.
+   */
   NDObject *GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias,
                           NDObject *group_list, GmmSplitType group_type, GmmListType group_list_type);
 
-  // collective communication
+  /**
+   * @brief [PRIVITE] collective communication
+   */
   template <ReduceType op_type>
   NDObject *AllReduce(NDObject *input, const Comm *comm) { return _AllReduce(op_type, input, comm); }
   NDObject *AllGather(NDObject *input, const Comm *comm);
   NDObject *AllGatherV2(NDObject *input, const Comm *comm);
   NDObject *ReduceScatter(NDObject *input, const Comm *comm);
 
+  /**
+   * @brief switch to next speculate stage. support with kVector  with kSpeculate flag.
+   */
   void SpecNext();
+
+  /**
+   * @brief add a new parallel sub kenrel. support with kParallel kernel type.
+   * @param type sub kernel type. current only support kVector type.
+   * @param flags sub kernel flags.
+   * @param thread_limit RESERVED. sub kernel maximum thread limit.
+   */
   void ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit = 0);
+
+  /**
+   * @brief add a new sequence sub kenrel. support with kSequence kernel type.
+   * @param type sub kernel type. supported types: kVector, kCube, kMix.
+   * @param flags sub kernel flags.
+   */
   void SequenceAdd(KernelType type, uint32_t flags);
 
-  size_t CodeGen();
-  int Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace, void *stream);
+  /**
+   * @brief normalize and re-infer compute shapes of each operations. should called before codegen if any input shape changed.
+   */
+  void Normalize();
 
-  void Infer();
+  /**
+   * @brief generate code for current compute shapes. MUST called after Normalize.
+   * @param relocs relocated entries for global tensor load/store operations with memory address changed.
+   * @param reloc_size relocated entries size.
+   * @param ws_alloc workspace allocator callback. use kUnifyWS kernel flags if has single workspace limit.
+   */
   void CodeGen(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc);
+
+  /**
+   * @brief launch kernel to device to run. MUST called after CodeGen.
+   * @param stream running stream.
+   * @return 0 if success.
+   */
   int Launch(void *stream);
+
+  /**
+   * @brief Clear kernel context. ONLY for kEager.
+   */
   void Clear();
 
+  /**
+   * @brief Early codegen before workspace and input/output memory determined. kEager and kSplit is not supported!
+   * @return workspace size.
+   */
+  size_t PreCodeGen();
+
+  /**
+   * @brief Launch for early codegen.
+   * @param relocs relocated entries for global tensor load/store operations with memory address changed.
+   * @param reloc_size relocated entries size.
+   * @param workspace workspace memory address. should be allocated by return size of PreCodeGen.
+   * @return 0 if success.
+   */
+  int Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace, void *stream);
+
+  /**
+   * @brief Get operation shape. MUST called after Normalize or PreCodeGen.
+   * @param op operation to get.
+   * @return shape reference.
+   */
   IntArrayRef *GetShape(NDObject *op) const;
+
+  /**
+   * @brief Get operation dtype.
+   * @param op operation to get.
+   * @return result dtype.
+   */
   DataType GetDType(NDObject *op) const;
 
+  /**
+   * @brief Dump operation represent of this kernel.
+   * @return result represent string. managed by DVM, DONOT delete.
+   */
   const char *Dump() const;
+
+  /**
+   * @brief Dump disassemblng string of this kernel. MUST called after CodeGen or PreCodeGen.
+   * @return result disassemblng string. managed by DVM, DONOT delete.
+   */
   const char *Das() const;
 
+  /**
+   * @brief Get implement kernel.
+   */
   VKernel *GetImpl() const { return kernel_; }
 
  protected:
@@ -287,11 +525,8 @@ class Kernel {
   NDObject *_AllReduce(int op_type, NDObject *input, const Comm *comm);
 
   VKernel *kernel_;
-  MsprofHelper *msprof_helper_;
-  const char *op_name_;
-  const char *op_fullname_;
 
-  /* DEPRECATED */
+  /* DEPRECATED: for backward compatibility */
  public:
   NDObject *Unary(int op_type, NDObject *input) {
     switch (op_type) {
@@ -361,8 +596,13 @@ class Kernel {
   NDObject *Reduce(int op_type, NDObject *input, IntArrayRef *dims, bool keepdims) { return _Reduce(op_type, input, dims, keepdims); }
   NDObject *AllReduce(int op_type, NDObject *input, const Comm *comm) { return _AllReduce(op_type, input, comm); }
   void ParallelNext() { return ParallelAdd(KernelType::kVector, 0); }
+  void Infer() { Normalize(); }
+  size_t CodeGen() { return PreCodeGen(); }
 };
 
+/**
+ * @brief DVM Global configure API.
+ */
 class Config {
  public:
   Config() = default;
@@ -376,7 +616,7 @@ class Config {
   virtual Config &UnsetLazyTuner() = 0;
 };
 
-/* DEPRECATED */
+/* DEPRECATED: for backward compatibility */
 using DType = DataType;
 using UnaryOpType = UnaryType;
 using BinaryOpType = BinaryType;

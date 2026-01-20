@@ -712,8 +712,6 @@ class UnaryOp : public NDObject {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static int QueryId(const std::string &op_name);
-
  protected:
   int op_type_;
 };
@@ -837,8 +835,6 @@ class BinaryOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
-
-  static int QueryId(const std::string &op_name);
 
  protected:
   int op_type_;

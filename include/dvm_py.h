@@ -91,8 +91,8 @@ class KernelPy {
   KernelPy() = default;
   virtual ~KernelPy() {}
 
-  virtual py::object Load(py::object shape, const std::string &type) = 0;
-  virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) = 0;
+  virtual py::object Load(py::object shape, DataType type) = 0;
+  virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataType type) = 0;
   virtual py::object Store(py::object obj) = 0;
   virtual IntArrayRef *GetShapeRef(py::object shape) = 0;
 
@@ -127,22 +127,21 @@ class KernelPy {
     return ObjToPy(kernel_.Reduce<op_type>(PyToObj(input), GetShapeRef(dims), keepdims));
   }
 
-  py::object Cast(py::object input, const std::string &type) {
-    return ObjToPy(kernel_.Cast(PyToObj(input), StringToTypeID(type)));
+  py::object Cast(py::object input, DataType type) {
+    return ObjToPy(kernel_.Cast(PyToObj(input), type));
   }
   py::object Select(py::object cond, py::object lhs, py::object rhs) {
     return ObjToPy(kernel_.Select(PyToObj(cond), PyToObj(lhs), PyToObj(rhs)));
   }
-  py::object Full(py::object scalar, py::object shape, const std::string &dtype) {
+  py::object Full(py::object scalar, py::object shape, DataType dtype) {
     auto shape_ref = GetShapeRef(shape);
-    auto type_id = StringToTypeID(dtype);
     NDObject *op = nullptr;
     if (py::isinstance<py::int_>(scalar)) {
-      op = kernel_.Broadcast(scalar.cast<int>(), shape_ref, type_id);
+      op = kernel_.Broadcast(scalar.cast<int>(), shape_ref, dtype);
     } else if (py::isinstance<py::float_>(scalar)) {
-      op = kernel_.Broadcast(scalar.cast<float>(), shape_ref, type_id);
+      op = kernel_.Broadcast(scalar.cast<float>(), shape_ref, dtype);
     } else if (py::isinstance<ScalarRefPy>(scalar)) {
-      op = kernel_.Broadcast(PyToScalar(scalar), shape_ref, type_id);
+      op = kernel_.Broadcast(PyToScalar(scalar), shape_ref, dtype);
     } else {
       DvmException("Unsupported scalar type for full: expected int, float, NDSymInt, or NDSymFloat.");
     }
@@ -179,15 +178,6 @@ class KernelPy {
   NDObject *PyToObj(py::object obj) { return obj.cast<NDOpPyPtr>()->Get(); }
   py::object ObjToPy(NDObject *obj) { return py::cast(std::make_shared<NDObjectPy>(obj)); }
   ScalarRef *PyToScalar(py::object scalar) { return &(scalar.cast<ScalarRefPyPtr>()->data_); }
-  DataType StringToTypeID(const std::string &type) {
-    for (uint32_t type_id = 0; type_id < DataType::kDataTypeEnd; ++type_id) {
-      if (type == DTYPE_NAMES[type_id]) {
-        return static_cast<DataType>(type_id);
-      }
-    }
-    DvmException("StringToTypeID meet unknown type");
-    return DataType::kDataTypeEnd;
-  }
   Kernel kernel_;
 };
 
@@ -195,6 +185,20 @@ static inline void RegDvmPy(const py::module &m) {
   (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
     .def("shape", &NDObjectPy::GetShape, "get shape")
     .def("dtype", &NDObjectPy::GetDType, "get dtype");
+
+  auto dtype = py::enum_<DataType>(m, "DataType")
+    .value("bool", kBool)
+    .value("float16", kFloat16)
+    .value("bfloat16", kBFloat16)
+    .value("float32", kFloat32)
+    .value("int32", kInt32)
+    .value("int64", kInt64);
+  m.attr("bool") = dtype.attr("bool");
+  m.attr("float16") = dtype.attr("float16");
+  m.attr("bfloat16") = dtype.attr("bfloat16");
+  m.attr("float32") = dtype.attr("float32");
+  m.attr("int32") = dtype.attr("int32");
+  m.attr("int64") = dtype.attr("int64");
 
   (void)py::class_<IntArrayRefPy, std::shared_ptr<IntArrayRefPy>>(m, "IntArrayRef")
     .def(py::init<>())
@@ -240,8 +244,8 @@ static inline void RegDvmPy(const py::module &m) {
     .def("logical_and", &KernelPy::Binary<BinaryOpType::kLogicalAnd>, "emit logical_add")
     .def("logical_or", &KernelPy::Binary<BinaryOpType::kLogicalOr>, "emit logical_or")
     .def("select", &KernelPy::Select, "emit select op")
-    .def("broadcast", &KernelPy::Broadcast, "emit broadcast op", py::arg("input"), py::arg("shape"))
-    .def("full", &KernelPy::Full, "emit broadcast op", py::arg("input"), py::arg("shape"), py::arg("dtype") = "float32")
+    .def("broadcast", &KernelPy::Broadcast, "emit broadcast op")
+    .def("full", &KernelPy::Full, "emit broadcast op", py::arg("input"), py::arg("shape"), py::arg("dtype"))
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
     .def("sum", &KernelPy::Reduce<ReduceOpType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
          "emit sum")

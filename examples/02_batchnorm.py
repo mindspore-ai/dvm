@@ -25,7 +25,7 @@ def np_bn(X, gamma, beta):
 
 @dvm.kernel
 def bn_kernel(k, x, gamma, beta, rec_batch):
-    x = k.load(x, "float32")
+    x = k.load(x, dvm.float32)
     mean_sum = k.sum(x, (0,), False)
     rec_batch = k.scalar(rec_batch)
     mean = k.mul(mean_sum, rec_batch)
@@ -38,8 +38,8 @@ def bn_kernel(k, x, gamma, beta, rec_batch):
     norm_sqrt = k.sqrt(var)
     x_norm = k.div(x_sub, norm_sqrt)
 
-    gamma = k.load(gamma, "float32")
-    beta = k.load(beta, "float32")
+    gamma = k.load(gamma, dvm.float32)
+    beta = k.load(beta, dvm.float32)
     out_mul = k.mul(gamma, x_norm)
     out_add = k.add(out_mul, beta)
     out = k.store(out_add)

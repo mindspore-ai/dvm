@@ -1238,13 +1238,6 @@ NDObject *UnaryOp::Clone(CloneHelper &h) { return new UnaryOp(op_type_, h.GetClo
 
 void UnaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << unary_id_list[op_type_].name; }
 
-int UnaryOp::QueryId(const std::string &op_name) {
-  for (int i = 0; i < static_cast<int>(sizeof(unary_id_list) / sizeof(InsnIdTable)); ++i) {
-    if (op_name == unary_id_list[i].name) return i;
-  }
-  return -1;
-}
-
 uint64_t RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[kDataTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
   if (nd_.lead_dim() == nd_.lead_stride() || nd_.stride_back() == nd_.lead_stride()) {
@@ -1486,13 +1479,6 @@ NDObject *BinaryOp::Clone(CloneHelper &h) {
 }
 
 void BinaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << binary_id_list[op_type_].name; }
-
-int BinaryOp::QueryId(const std::string &op_name) {
-  for (int i = 0; i < static_cast<int>(sizeof(binary_id_list) / sizeof(InsnIdTable)); ++i) {
-    if (op_name == binary_id_list[i].name) return i;
-  }
-  return -1;
-}
 
 uint64_t CompareOp::Emit(VectorKernel &k) {
   vCompare op;

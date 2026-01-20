@@ -16,19 +16,26 @@
 import numpy as np
 import dvm
 
+def dvm_silu(k, x):
+    neg = k.mul(x, -1.0)
+    exp_neg = k.exp(neg)
+    denom = k.add(exp_neg, 1.0)
+    sigmoid = k.div(1.0, denom)
+    return k.mul(x, sigmoid)
+
 @dvm.kernel
 def matmul_post_fusion(k, a, b, bias, scale, shift):
-    a = k.load(a, "float16")
-    b = k.load(b, "float16")
-    bias = k.load(bias, "float32")
+    a = k.load(a, dvm.float16)
+    b = k.load(b, dvm.float16)
+    bias = k.load(bias, dvm.float32)
     scale = k.scalar(scale)
     shift = k.scalar(shift)
     out = k.matmul(a, b, False, False)
-    out = k.cast(out, "float32")
+    out = k.cast(out, dvm.float32)
     out = k.add(out, bias)
     out = k.mul(out, scale)
     out = k.add(out, shift)
-    out = k.maximum(out, 0.0)
+    out = dvm_silu(k, out)
     out = k.store(out)
     return out
 
@@ -46,6 +53,6 @@ print("***** expect *****")
 expect = np.matmul(a.astype(np.float32), b.astype(np.float32))
 expect = expect + bias
 expect = expect * scale + shift
-expect = np.maximum(expect, 0.0)
+expect = expect / (1.0 + np.exp(-expect))
 print(expect)
 assert np.allclose(out, expect, rtol=1e-2, atol=1e-2)

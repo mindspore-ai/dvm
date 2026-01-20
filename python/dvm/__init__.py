@@ -14,14 +14,29 @@
 # ============================================================================
 
 """ dvm python """
-from ._dvm_py import Device, Kernel, KernelBase, NDObject, IntArrayRef, ScalarRef
+from . import _dvm_py as _core
+from ._dvm_py import DataType, Device, Kernel, KernelBase, NDObject, IntArrayRef, ScalarRef
 from .jit import kernel
 
+bool = _core.bool
+float16 = _core.float16
+bfloat16 = _core.bfloat16
+float32 = _core.float32
+int32 = _core.int32
+int64 = _core.int64
+
 __all__ = [
+    "DataType",
     "Device",
     "Kernel",
     "KernelBase",
     "NDObject",
     "IntArrayRef",
     "ScalarRef",
+    "bool",
+    "float16",
+    "bfloat16",
+    "float32",
+    "int32",
+    "int64",
 ]

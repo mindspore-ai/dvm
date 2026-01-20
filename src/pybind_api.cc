@@ -391,38 +391,37 @@ IntArrayRef *RtKernelPy::GetShapeRef(py::object shape) {
 }
 
 py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
-                              const std::string &dtype) {
+                              DataType dtype) {
   auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
   auto depth_ref = shape_.emplace_back(new IntArrayRef(shape_vec_.emplace_back(1, depth)));
-  auto type_id = StringToTypeID(dtype);
   NDObject *op;
-  if (type_id == kInt32) {
+  if (dtype == kInt32) {
     op = kernel_.OneHot(indices_obj, depth_ref, axis, py::cast<int32_t>(on_value), py::cast<int32_t>(off_value));
   } else {
     auto on_float = py::cast<float>(on_value);
     auto off_float = py::cast<float>(off_value);
-    if (type_id == kFloat16) {
+    if (dtype == kFloat16) {
       op = kernel_.OneHot(indices_obj, depth_ref, axis, Float16(on_float), Float16(off_float));
-    } else if (type_id == kBFloat16) {
+    } else if (dtype == kBFloat16) {
       op = kernel_.OneHot(indices_obj, depth_ref, axis, BFloat16(on_float), BFloat16(off_float));
     } else {
-      ASSERT(type_id == kFloat32);
+      ASSERT(dtype == kFloat32);
       op = kernel_.OneHot(indices_obj, depth_ref, axis, on_float, off_float);
     }
   }
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::Load(py::object shape, const std::string &type) {
+py::object RtKernelPy::Load(py::object shape, DataType type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
-  auto op = kernel_.Load(nullptr, shape_ref, StringToTypeID(type));
+  auto op = kernel_.Load(nullptr, shape_ref, type);
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) {
+py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, DataType type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
@@ -432,40 +431,40 @@ py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t off
     auto &offset_vec = shape_vec_.emplace_back(1, offset);
     offset_ptr = &offset_vec[0];
   }
-  auto op = kernel_.Load(nullptr, shape_ref, stride_ref, offset_ptr, StringToTypeID(type));
+  auto op = kernel_.Load(nullptr, shape_ref, stride_ref, offset_ptr, type);
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, const std::string &type) {
+py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, DataType type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto start_ref = GetShapeRef(start);
   auto size_ref = GetShapeRef(size);
-  auto op = kernel_.SliceLoad(nullptr, shape_ref, start_ref, size_ref, StringToTypeID(type));
+  auto op = kernel_.SliceLoad(nullptr, shape_ref, start_ref, size_ref, type);
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
 py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step,
-                                        const std::string &type) {
+                                        DataType type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto start_ref = GetShapeRef(start);
   auto end_ref = GetShapeRef(end);
   auto step_ref = GetShapeRef(step);
-  auto op = kernel_.StridedSliceLoad(nullptr, shape_ref, start_ref, end_ref, step_ref, StringToTypeID(type));
+  auto op = kernel_.StridedSliceLoad(nullptr, shape_ref, start_ref, end_ref, step_ref, type);
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::MultiLoad(py::object shape, const std::string &type) {
+py::object RtKernelPy::MultiLoad(py::object shape, DataType type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
-  auto op = kernel_.MultiLoad(nullptr, shape_ref, StringToTypeID(type), &g_mpc.comm);
+  auto op = kernel_.MultiLoad(nullptr, shape_ref, type, &g_mpc.comm);
   info.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
 }

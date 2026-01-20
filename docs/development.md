@@ -2,6 +2,15 @@
 
 本文档记录DVM开发者在日常开发、调试等过程中常用技巧和方法。
 
+### 注意事项
+
+#### 类型与算子支持
+
+- 支持的数据类型：int32、float16、float32、bool、bfloat16。
+- `reduce(sum)` 输入必须为 float32（代码中对非 float32 直接返回空结果）。
+- `matmul` 输入仅支持 float16/bfloat16；bias 仅支持 float16/float32；输出可配置为 float32。
+- 在 A2 框架约束下，部分算子暂不支持 bfloat16，需要先 cast 成 float32 再计算。
+
 ### 仿真模拟
 
 DVM支持ESL和Simulator两种仿真调试模式，用于对VM Kernel进行软件仿真执行，以便识别性能瓶颈、寻找优化点等。 在完成CANN环境变量配置之后，按照如下步骤进行操作即可：

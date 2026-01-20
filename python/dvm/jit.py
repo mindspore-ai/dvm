@@ -16,6 +16,7 @@
 import os
 from . import Kernel
 
+
 class JitKernel(Kernel):
     def __init__(self, ker_type, dynamic):
         if dynamic:
@@ -26,6 +27,7 @@ class JitKernel(Kernel):
         self.inputs = None
         self.outputs = None
         self.dynamic = dynamic
+
     def build(self, func):
         arg_cnt = func.__code__.co_argcount - 1
         args = [i for i in range(arg_cnt)]
@@ -33,18 +35,22 @@ class JitKernel(Kernel):
         self.outputs = func(self, *args)
         if not self.dynamic:
             self.codegen(None)
+
     def load(self, index, dtype, shape=[]):
         op = Kernel.load(self, shape, dtype)
         self.inputs[index] = op
         return op
+
     def scalar(self, index):
         scalar = Kernel.scalar(self)
         self.inputs[index] = scalar
         return scalar
+
     def int_array(self, index):
         ref = Kernel.int_array(self)
         self.inputs[index] = ref
         return ref
+
     def __call__(self, *args):
         for inp, arg in zip(self.inputs, args):
             Kernel.input(self, inp, arg)
@@ -56,14 +62,17 @@ class JitKernel(Kernel):
         else:
             return self.output(self.outputs)
 
+
 def kernel(ktype="split", dynamic=True):
     if callable(ktype):
         func = ktype
         kobj = JitKernel("split", True)
         kobj.build(func)
         return kobj
+
     def decorate(func):
         kobj = JitKernel(ktype, dynamic)
         kobj.build(func)
         return kobj
+
     return decorate

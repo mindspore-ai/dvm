@@ -19,7 +19,29 @@ import subprocess
 import csv
 import inspect
 import numpy as np
-from . import Kernel
+from . import DataType, Kernel
+
+_DTYPE_NAME_MAP = {
+    "bool": DataType.bool,
+    "float16": DataType.float16,
+    "bfloat16": DataType.bfloat16,
+    "float32": DataType.float32,
+    "int32": DataType.int32,
+    "int64": DataType.int64,
+}
+
+
+def _normalize_dtype(dtype):
+    if isinstance(dtype, DataType):
+        return dtype
+    if isinstance(dtype, np.dtype):
+        dtype = dtype.__name__
+    if isinstance(dtype, str):
+        mapped = _DTYPE_NAME_MAP.get(dtype)
+        if mapped is None:
+            raise ValueError(f"Unsupported dtype string: {dtype}")
+        return mapped
+    return dtype
 
 
 class PerformanceResult:
@@ -45,8 +67,6 @@ class PerformanceResult:
 
 
 class Tester(Kernel):
-    __test__ = False
-
     def __init__(self, ker_type="", use_pass_opt=False, run_mode="dev", comm=None):
         if comm:
             os.environ["DEVICE_ID"] = str(comm.Get_rank())
@@ -63,7 +83,7 @@ class Tester(Kernel):
 
     @staticmethod
     def fast_random_normal(loc, scale, shape):
-        row_random = np.random.normal(loc, scale, (shape[-1], ))
+        row_random = np.random.normal(loc, scale, (shape[-1],))
         return np.broadcast_to(row_random, shape).copy()
 
     @staticmethod
@@ -77,63 +97,92 @@ class Tester(Kernel):
     def load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
             # dynamic shape scenario
-            return Kernel.load(self, shape_arr, dtype)
-        if dtype == "bfloat16":
+            return Kernel.load(self, shape_arr, _normalize_dtype(dtype))
+        dtype_id = _normalize_dtype(dtype)
+        if dtype_id == DataType.bfloat16:
             shape_arr = Kernel.convert_to_bf16(self, shape_arr)
-        elif dtype == None:
-            dtype = str(shape_arr.dtype)
+        elif dtype_id is None:
+            dtype_id = _normalize_dtype(str(shape_arr.dtype))
         shape = list(shape_arr.shape)
-        op = Kernel.load(self, shape, dtype)
+        op = Kernel.load(self, shape, dtype_id)
         self.input(op, shape_arr)
         return op
 
     def view_load(self, shape, stride, arr_dtype, offset=0, real_dtype=None):
-        if isinstance(arr_dtype, str):
+        if not isinstance(arr_dtype, np.ndarray):
             # dynamic shape scenario
-            return Kernel.view_load(self, shape, stride, arr_dtype)
-        dtype = str(arr_dtype.dtype)
-        if real_dtype:
-            assert (real_dtype == "bfloat16")
+            return Kernel.view_load(
+                self, shape, stride, offset, _normalize_dtype(arr_dtype)
+            )
+        dtype_id = _normalize_dtype(str(arr_dtype.dtype))
+        real_dtype_id = _normalize_dtype(real_dtype) if real_dtype is not None else None
+        if real_dtype_id is not None:
+            assert real_dtype_id == DataType.bfloat16
             arr_dtype = Kernel.convert_to_bf16(self, arr_dtype)
-            dtype = real_dtype
-        op = Kernel.view_load(self, shape, stride, offset, dtype)
+            dtype_id = real_dtype_id
+        op = Kernel.view_load(self, shape, stride, offset, dtype_id)
         self.input(op, arr_dtype)
         return op
 
     def slice_load(self, shape_arr, start, size, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
             # dynamic shape scenario
-            return Kernel.slice_load(self, shape_arr, start, size, dtype)
-        if dtype == "bfloat16":
+            return Kernel.slice_load(
+                self, shape_arr, start, size, _normalize_dtype(dtype)
+            )
+        dtype_id = _normalize_dtype(dtype)
+        if dtype_id == DataType.bfloat16:
             shape_arr = Kernel.convert_to_bf16(self, shape_arr)
-        elif dtype == None:
-            dtype = str(shape_arr.dtype)
+        elif dtype_id is None:
+            dtype_id = _normalize_dtype(str(shape_arr.dtype))
         shape = list(shape_arr.shape)
-        op = Kernel.slice_load(self, shape, start, size, dtype)
+        op = Kernel.slice_load(self, shape, start, size, dtype_id)
         self.input(op, shape_arr)
         return op
 
     def stridedslice_load(self, shape_arr, start, end, step, dtype=None):
         if dtype is not None:
-            return Kernel.stridedslice_load(self, shape_arr, start, end, step, dtype)
-        dtype = str(shape_arr.dtype)
+            dtype_id = _normalize_dtype(dtype)
+            if isinstance(shape_arr, np.ndarray) and dtype_id == DataType.bfloat16:
+                shape_arr = Kernel.convert_to_bf16(self, shape_arr)
+            return Kernel.stridedslice_load(self, shape_arr, start, end, step, dtype_id)
+        dtype_id = _normalize_dtype(str(shape_arr.dtype))
         shape = list(shape_arr.shape)
-        op = Kernel.stridedslice_load(self, shape, start, end, step, dtype)
+        op = Kernel.stridedslice_load(self, shape, start, end, step, dtype_id)
         self.input(op, shape_arr)
         return op
 
     def multi_load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
             # dynamic shape scenario
-            return Kernel.multi_load(self, shape_arr, dtype)
-        if dtype == "bfloat16":
+            return Kernel.multi_load(self, shape_arr, _normalize_dtype(dtype))
+        dtype_id = _normalize_dtype(dtype)
+        if dtype_id == DataType.bfloat16:
             shape_arr = Kernel.convert_to_bf16(self, shape_arr)
-        elif dtype == None:
-            dtype = str(shape_arr.dtype)
+        elif dtype_id is None:
+            dtype_id = _normalize_dtype(str(shape_arr.dtype))
         shape = list(shape_arr.shape)
-        op = Kernel.multi_load(self, shape, dtype)
+        op = Kernel.multi_load(self, shape, dtype_id)
         self.input(op, shape_arr)
         return op
+
+    def cast(self, x, dtype):
+        return Kernel.cast(self, x, _normalize_dtype(dtype))
+
+    def full(self, scalar, shape, dtype=None):
+        dtype_id = _normalize_dtype(dtype)
+        return Kernel.full(self, scalar, shape, dtype_id)
+
+    def one_hot(self, indices, depth, axis, on_value, off_value, dtype):
+        return Kernel.one_hot(
+            self,
+            indices,
+            depth,
+            axis,
+            on_value,
+            off_value,
+            _normalize_dtype(dtype),
+        )
 
     def store_expect(self, x, e, eps=None):
         op = Kernel.store(self, x)
@@ -234,11 +283,11 @@ class Tester(Kernel):
         perf = self.perf()
         return PerformanceResult(perf)
 
-    def dry_run(self, core_id = 0, is_cube = False):
+    def dry_run(self, core_id=0, is_cube=False):
         self.codegen()
         Kernel.dry_run(self, core_id, is_cube)
 
-    def run_msprof(self, path, test_num = 10):
+    def run_msprof(self, path, test_num=10):
         self.codegen()
         self.msprof(path, test_num)
         if not os.path.isdir(path):
@@ -247,7 +296,7 @@ class Tester(Kernel):
         subprocess.run(
             ["msprof", f"--export=on", f"--output={path}"],
             check=True,
-            stdout=subprocess.DEVNULL
+            stdout=subprocess.DEVNULL,
         )
         output_lines = []
         for root, _, files in os.walk(path):
@@ -301,6 +350,7 @@ class CommScope:
     def __init__(self, *ids):
         self.ids = ids
         self.comm_type = ""
+
     def __enter__(self):
         if self.ids:
             rank_size = len(self.ids)
@@ -317,6 +367,7 @@ class CommScope:
     def __exit__(self, type, value, trace):
         Kernel.join()
 
+
 class HcclScope(CommScope):
     """
     Create an hccl comm domain scope.
@@ -327,6 +378,7 @@ class HcclScope(CommScope):
         >>>     t = Tester()
         >>>     ...
     """
+
     def __init__(self, *ids):
         self.ids = ids
         self.comm_type = "hccl"

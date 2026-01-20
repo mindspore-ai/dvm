@@ -30,18 +30,17 @@ class RtKernelPy : public KernelPy {
   RtKernelPy(const std::string &ker_type, const std::string &run_type, int dev_id);
   ~RtKernelPy();
 
-  py::object Load(py::object shape, const std::string &type) override;
-  py::object ViewLoad(py::object shape, py::object stride, int64_t offset, const std::string &type) override;
+  py::object Load(py::object shape, DataType type) override;
+  py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataType type) override;
   py::object Store(py::object obj) override;
 
-  py::object SliceLoad(py::object shape, py::object start, py::object size, const std::string &type);
-  py::object StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step,
-                              const std::string &type);
-  py::object MultiLoad(py::object shape, const std::string &type);
+  py::object SliceLoad(py::object shape, py::object start, py::object size, DataType type);
+  py::object StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step, DataType type);
+  py::object MultiLoad(py::object shape, DataType type);
   py::object PadStore(py::object obj, int64_t pad_shape);
   void SetStoreInplace(py::object store);
   py::object OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
-                    const std::string &dtype);
+                    DataType dtype);
   py::object AllReduce(const std::string &type, py::object input);
   py::object AllGather(py::object input);
   py::object AllGatherV2(py::object input);

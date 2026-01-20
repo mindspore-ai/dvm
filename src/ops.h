@@ -1076,13 +1076,13 @@ class CubeOp : public NDObject {
   static constexpr int64_t ALIGN_128 = 128;
   static constexpr int64_t ALIGN_32 = 32;
   struct Tactics {
-    bool enable_splitk{false};
-    bool enable_pad{false};
-    bool enable_bias_cast{false};
+    bool enable_splitk;
+    bool enable_pad;
+    bool enable_bias_cast;
 
     int64_t k_stride;
-    int64_t lhs_pad_size{0};
-    int64_t rhs_pad_size{0};
+    int64_t lhs_pad_size;
+    int64_t rhs_pad_size;
   };
 
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
@@ -1092,7 +1092,7 @@ class CubeOp : public NDObject {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   void NormalizeCube();
-  virtual void InferCubeConfig();
+  virtual void InferTactics(Tactics &t) const;
   virtual void CodeGen(vCubeOp *code, CubeTuner *tuner);
   virtual void NormalizeOutput();
   virtual void GenTiling(vCubeOp *code);
@@ -1113,7 +1113,7 @@ class CubeOp : public NDObject {
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }
-
+  void TryBatchFold() { batch_fold_ = !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2; }
   uint64_t BaseSize() const { return m0_ * n0_ * ITEM_SIZE[type_id_]; }
 
   void Recover() {
@@ -1147,7 +1147,6 @@ class CubeOp : public NDObject {
   bool batch_fold_{false};
   bool set_real_{false};
   NDObject *bias_{nullptr};
-  Tactics tactics_;
   uint32_t batch_c0_{0};
   uint32_t batch_c1_{0};
   NDSpaceData ndd_;
@@ -1170,7 +1169,7 @@ class GmmOp : public CubeOp {
 
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
-  void InferCubeConfig();
+  void InferTactics(Tactics &t) const override;
   void NormalizeOutput() override;
   void CodeGen(vCubeOp *code, CubeTuner *tuner) override;
   void GenTiling(vCubeOp *code) override;

@@ -2293,23 +2293,22 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObjec
   bias_ = bias;
 }
 
-void CubeOp::InferCubeConfig() {
-  tactics_.enable_pad = false;
-  tactics_.lhs_pad_size = 0;
-  tactics_.rhs_pad_size = 0;
-  tactics_.enable_splitk = false;
-  tactics_.enable_bias_cast = false;
-  auto GetPad = [this](int64_t pad_size, int64_t &pad) {
+void CubeOp::InferTactics(Tactics &t) const {
+  t.enable_pad = false;
+  t.lhs_pad_size = 0;
+  t.rhs_pad_size = 0;
+  t.enable_splitk = false;
+  t.enable_bias_cast = false;
+  auto GetPad = [&t, this](int64_t pad_size, int64_t &pad) {
     if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
       return;
     }
     pad = ALIGN_256 - pad_size % ALIGN_256;
-    tactics_.enable_pad = true;
+    t.enable_pad = true;
   };
-  GetPad(trans_a_ ? m_align_ : k_align_, tactics_.lhs_pad_size);
-  GetPad(trans_b_ ? k_align_ : n_align_, tactics_.rhs_pad_size);
+  GetPad(trans_a_ ? m_align_ : k_align_, t.lhs_pad_size);
+  GetPad(trans_b_ ? k_align_ : n_align_, t.rhs_pad_size);
 
-  batch_fold_ = !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2;
   int64_t m_real = m_real_;
   if (batch_fold_) {
     m_real *= lhs_->nd_[2];
@@ -2317,13 +2316,13 @@ void CubeOp::InferCubeConfig() {
   }
   int64_t k_stride = g_system.L2Size() / (m_real + n_real_) / 2;
   if ((k_stride << 1) < k_real_ && k_real_ > MAX_SPLIT_K) {
-    tactics_.enable_splitk = true;
-    tactics_.k_stride = std::min(k_stride / ALIGN_256 * ALIGN_256, MAX_SPLIT_K);
-    tactics_.k_stride = std::max(tactics_.k_stride, MIN_SPLIT_K);
+    t.enable_splitk = true;
+    t.k_stride = std::min(k_stride / ALIGN_256 * ALIGN_256, MAX_SPLIT_K);
+    t.k_stride = std::max(t.k_stride, MIN_SPLIT_K);
   }
 
   if (bias_ && bias_->type_id_ == kBFloat16) {
-    tactics_.enable_bias_cast = true;
+    t.enable_bias_cast = true;
   }
 }
 
@@ -2762,10 +2761,10 @@ void GmmOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->group_num = core_loop_;
 }
 
-void GmmOp::InferCubeConfig() {
-  CubeOp::InferCubeConfig();
+void GmmOp::InferTactics(Tactics &t) const {
+  CubeOp::InferTactics(t);
   if (group_type_ == kSplit_K) {
-    tactics_.enable_splitk = false;
+    t.enable_splitk = false;
   }
 }
 

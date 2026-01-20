@@ -28,13 +28,13 @@ def np_attention(q, k_mat, v):
     return out.astype(np.float16)
 
 def dvm_softmax(k, x, axis):
-    x = k.cast(x, "float32")
+    x = k.cast(x, dvm.float32)
     max_x = k.max(x, (axis,), True)
     x = k.sub(x, max_x)
     exp_x = k.exp(x)
     denom = k.sum(exp_x, (axis,), True)
     out = k.div(exp_x, denom)
-    return k.cast(out, "float16")
+    return k.cast(out, dvm.float16)
 
 @dvm.kernel
 def attention_kernel(k, q, k_mat, v, scale):

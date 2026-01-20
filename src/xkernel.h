@@ -22,34 +22,91 @@
 #include "kernel.h"
 
 namespace dvm {
-class StagesKernel;
-class MixKernel : public VKernel {
+class CubeKernel : public VKernel {
  public:
-  MixKernel(uint32_t flags = 0) : VKernel(KernelType::kMix, flags), tuner_(g_system.online_tuner_) {}
-  ~MixKernel() override;
+  CubeKernel(KernelType ktype = KernelType::kCube, uint32_t flags = 0) : VKernel(ktype, flags), tuner_(g_system.online_tuner_) {}
+  ~CubeKernel() override;
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
+
   void SetTuner(CubeTuner *tuner) { tuner_ = tuner; }
+  size_t ReserveCodeSize() { return sizeof(vCubeOp); }
+  void NormalizeCube() {
+    if (cube_op_->output_ == nullptr) {
+      auto output = new NDStore(nullptr, cube_op_);
+      output->SetFlag(OBJ_FLAG_STAGE_IO);
+      cube_op_->output_ = output;
+    }
+    std::vector<NDObject *> empty_run_ops;
+    cube_op_->lhs_->Normalize(empty_run_ops);
+    cube_op_->rhs_->Normalize(empty_run_ops);
+    cube_op_->NormalizeCube();
+    cube_op_->output_->Normalize(empty_run_ops);
+    cube_op_->TryBatchFold();
+  }
+  uint8_t *DoCodeGen(uint8_t *code_ptr, uint64_t core_limit);
+
+ protected:
+  CubeOp *cube_op_{nullptr};
+  CubeTuner *tuner_;
+  bool reload_rhs_{false};
+};
+
+class MixKernelBase : public CubeKernel {
+ public:
+  MixKernelBase(KernelType ktype = KernelType::kMix, uint32_t flags = 0) : CubeKernel(ktype, flags) {}
+  ~MixKernelBase() override;
+
+  void Append(NDObject *obj) override;
+  uint64_t CodeGen() override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
+
+  void NormalizePost() {
+    if (post_fusion_) {
+      if (auto comm = post_fusion_->comm_op_) {
+        comm->mix_ = true;
+        if (comm->lhs_ == sload_) {
+          comm->SetCubeOp(cube_op_);
+        }
+      }
+      if (!post_fusion_->NormBuild()) {
+        DvmException("MixKernel broker affine failed");
+      }
+    }
+  }
+  size_t ReserveCodeSize() {
+    size_t size = CubeKernel::ReserveCodeSize();
+    if (post_fusion_) size += post_fusion_->ReserveCodeSize();
+    return size;
+  }
+  uint64_t DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve);
+
+ protected:
+  VKernelS *post_fusion_{nullptr};
+  NDAccess *sload_{nullptr};
+  RelocAddr gm_pos_;
+  std::vector<std::pair<NDAccess *, NDAccess *>> reloads_;
+};
+
+class StagesKernel;
+class MixKernel : public MixKernelBase {
+ public:
+  MixKernel(uint32_t flags = 0) : MixKernelBase(KernelType::kMix, flags) {}
+  ~MixKernel() override;
+  uint64_t CodeGen() override;
 
  protected:
   void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
   virtual void Release();
   uint64_t SplitKCodeGen();
   uint64_t UnAlignCodeGen();
-  uint64_t AlignCodeGen();
   uint64_t BiasBF16CodeGen();
-
-  VKernelS *post_fusion_{nullptr};
-  CubeOp *cube_op_{nullptr};
-  NDAccess *sload_{nullptr};
-
+  CubeOp::Tactics tactics_;
   StagesKernel *stage_kernel_{nullptr};
-  CubeTuner *tuner_;
-  RelocAddr gm_pos_;
-  std::vector<std::pair<NDAccess *, NDAccess *>> reloads_;
 };
 
 class DynMixKernel : public MixKernel {

@@ -57,7 +57,7 @@ void TryBatchFold(CubeOp *mm, int dim_size, const std::vector<NDObject *> &objec
 }
 }  // namespace
 
-MixKernel::~MixKernel() {
+CubeKernel::~CubeKernel() {
   if (cube_op_) {
     delete cube_op_->lhs_;
     delete cube_op_->rhs_;
@@ -68,11 +68,82 @@ MixKernel::~MixKernel() {
     }
     delete cube_op_;
   }
-  delete post_fusion_;
-  delete stage_kernel_;
 }
 
-void MixKernel::Append(NDObject *obj) {
+void CubeKernel::Append(NDObject *obj) {
+  if (obj->IsCube()) {
+    cube_op_ = static_cast<CubeOp *>(obj);
+    if (cube_op_->lhs_ == cube_op_->rhs_) {
+      auto lhs = static_cast<NDAccess *>(cube_op_->lhs_);
+      cube_op_->rhs_ = new NDLoad(nullptr, lhs->shape_ref_, lhs->type_id_);
+      reload_rhs_ = true;
+    }
+  } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
+    cube_op_->output_ = static_cast<NDAccess *>(obj);
+  }
+}
+
+uint8_t *CubeKernel::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit) {
+  ASSERT(cube_op_->output_ != nullptr);
+  ASSERT(cube_op_->bias_ == nullptr || cube_op_->bias_->type_id_ != kBFloat16);
+  vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_ptr);
+  cube_op_->CodeGen(cube_code, tuner_);
+  static_cast<NDAccess *>(cube_op_->lhs_)->addr_.Update(&cube_code->gm_a);
+  static_cast<NDAccess *>(cube_op_->rhs_)->addr_.Update(&cube_code->gm_b);
+  if (cube_code->flags & V_CUBE_FLAG_WITH_BIAS) {
+    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(&cube_code->gm_bias);
+  }
+  if (cube_code->flags & V_CUBE_FLAG_GROUPED_LIST) {
+    static_cast<NDAccess *>(static_cast<GmmOp *>(cube_op_)->group_list_)->addr_.Update(&cube_code->gm_group_list);
+  }
+  cube_op_->output_->addr_.Update(&cube_code->gm_c);
+  code_.block_dim_ = std::min(cube_op_->block_dim_, core_limit);
+  if (reload_rhs_) {
+    auto lhs = static_cast<NDAccess *>(cube_op_->lhs_);
+    auto rhs = static_cast<NDAccess *>(cube_op_->rhs_);
+    code_.BindOpFast(rhs->addr_, lhs->addr_);
+  }
+  return code_ptr + sizeof(vCubeOp);
+}
+
+uint64_t CubeKernel::CodeGen() {
+  NormalizeCube();
+  code_.Alloc(code_.HeadSize() + ReserveCodeSize());
+  code_.data_size_ =  DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC)) - code_.data_;
+  code_.UpdateC();
+  return 0;
+}
+
+void CubeKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+  oss << indent << "vgraph.cube(tile_num=" << cube_op_->core_loop_ << ") {\n";
+  std::string body_indent = indent + "  ";
+  oss << body_indent << "%3" << cube_op_->nd_;
+  oss << " = MatMul(%0" << cube_op_->lhs_->nd_ << ", %1" << cube_op_->rhs_->nd_;
+  if (cube_op_->bias_) {
+    oss << ", %2" << cube_op_->bias_->nd_;
+  }
+  oss << ")\n";
+  oss << indent << "}";
+}
+
+void CubeKernel::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<CubeKernel *>(base);
+  auto cube = k->cube_op_;
+  cube->lhs_->CloneUpdate(helper);
+  cube->rhs_->CloneUpdate(helper);
+  if (cube->bias_) {
+    cube->bias_->CloneUpdate(helper);
+  }
+  if (cube->obj_id_ == ObjectType::kGmmOp) {
+    static_cast<GmmOp *>(cube)->group_list_->CloneUpdate(helper);
+  }
+  cube_op_ = static_cast<CubeOp *>(cube->CloneUpdate(helper));
+  reload_rhs_ = k->reload_rhs_;
+}
+
+MixKernelBase::~MixKernelBase() { delete post_fusion_; }
+
+void MixKernelBase::Append(NDObject *obj) {
   constexpr uint32_t LOAD_VEC_USED = 0;
   constexpr uint32_t LOAD_PENDING = 1;
   constexpr uint32_t LOAD_CUBE_USED = 2;
@@ -80,21 +151,11 @@ void MixKernel::Append(NDObject *obj) {
     obj->xbuf_ = LOAD_PENDING;
   } else if (obj->IsCube()) {
     EXCEPTION_IF(cube_op_ != nullptr, "only one cube op in mix-kernel");
-    cube_op_ = static_cast<CubeOp *>(obj);
-    auto reload_check = [this](NDObject *&input) {
-      auto load = static_cast<NDAccess *>(input);
-      if (load->xbuf_ == LOAD_PENDING) {
-        load->xbuf_ = LOAD_CUBE_USED;
-      } else {
-        auto new_load = new NDLoad(nullptr, load->shape_ref_, load->type_id_);
-        reloads_.emplace_back(new_load, load);
-        input = new_load;
-      }
-    };
-    reload_check(cube_op_->lhs_);
-    reload_check(cube_op_->rhs_);
-    if (cube_op_->bias_) {
-      reload_check(cube_op_->bias_);
+    CubeKernel::Append(obj);
+    obj->lhs_->xbuf_ = LOAD_CUBE_USED;
+    obj->rhs_->xbuf_ = LOAD_CUBE_USED;
+    if (auto bias = static_cast<CubeOp *>(obj)->bias_) {
+      bias->xbuf_ = LOAD_CUBE_USED;
     }
   } else if (obj->IsStore() && obj->lhs_ == cube_op_) {
     cube_op_->output_ = static_cast<NDAccess *>(obj);
@@ -128,6 +189,136 @@ void MixKernel::Append(NDObject *obj) {
     post_fusion_->Append(obj);
   }
 }
+
+uint64_t MixKernelBase::CodeGen() {
+  NormalizeCube();
+  NormalizePost();
+  auto code_reserve = ReserveCodeSize();
+  code_.Alloc(code_.HeadSize() + code_reserve);
+  return DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC), code_reserve);
+}
+
+void MixKernelBase::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (post_fusion_ == nullptr) {
+    CubeKernel::Dump(oss, indent);
+    return;
+  }
+  std::string body_indent = indent + "  ";
+  oss << indent << "vgraph.mix() {\n";
+  oss << body_indent << "// cube" << std::endl;
+  CubeKernel::Dump(oss, body_indent);
+  oss << body_indent << "// post_fusion" << std::endl;
+  post_fusion_->Dump(oss, body_indent);
+  oss << std::endl;
+  oss << indent << "}";
+}
+
+void MixKernelBase::Clone(VKernel *base, CloneHelper &helper) {
+  CubeKernel::Clone(base, helper);
+  auto k = static_cast<MixKernelBase *>(base);
+  if (k->post_fusion_) {
+    post_fusion_ = IsDynamic() ? new VKernelD() : new VKernelS();
+    post_fusion_->Clone(k->post_fusion_, helper);
+    sload_ = static_cast<NDAccess *>(helper.GetClone(k->sload_));
+  }
+  for (auto &[load1, load2] : k->reloads_) {
+    auto clone1 = static_cast<NDAccess *>(helper.GetClone(load1));
+    auto clone2 = static_cast<NDAccess *>(helper.GetClone(load2));
+    reloads_.emplace_back(clone1, clone2);
+  }
+}
+
+uint64_t MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve) {
+  if (post_fusion_ == nullptr) {
+    code_.data_size_ =  CubeKernel::DoCodeGen(code_ptr, core_limit) - code_.data_;
+    code_.UpdateC();
+    return 0;
+  }
+  if (cube_op_->batch_fold_) {
+    TryBatchFold(cube_op_, sload_->nd_.size(), post_fusion_->objects_);
+  }
+  auto code_end = CubeKernel::DoCodeGen(code_ptr, core_limit);
+  auto cube_code = reinterpret_cast<vCubeOp *>(code_ptr);
+  uint64_t ws_size = sizeof(vMixGroupMsg) * code_.block_dim_;
+  gm_pos_.reloc_ = &cube_code->gm_pos;
+  code_.BindWorkspace(gm_pos_, 0);
+  if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
+    cube_op_->pingpong_store_ = true;
+    static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
+    cube_code->rank_size = comm->comm_->GetRankSize();
+    cube_code->flags |= V_CUBE_FLAG_PEER_STORE;
+    cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
+    comm->id_wrap_.ids_.push_back(&cube_code->unique_id);  // record vCubeOp's unique_id address
+    cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
+    code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
+  } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+    CubeStoreType sync_type = (cube_code->flags & V_CUBE_FLAG_OUT_FP32) ? kCubeStoreGM : g_system.GetCubeStoreType();
+    if (sync_type == kCubeStoreUBOnce) {
+      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC_ONCE;
+      cube_code->flags |= V_CUBE_FLAG_STORE_UB_ONCE;
+    } else if (sync_type == kCubeStoreUB) {
+      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC;
+      cube_code->flags |= V_CUBE_FLAG_STORE_UB;
+    } else if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
+      code_.BindOpFast(cube_op_->output_->addr_, inplace_store->addr_);
+      code_.BindOpFast(sload_->addr_, inplace_store->addr_);
+    } else {
+      cube_op_->pingpong_store_ = true;
+      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
+      cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
+      code_.BindWorkspace(cube_op_->output_->addr_, ws_size);
+      code_.BindWorkspace(sload_->addr_, ws_size);
+      ws_size += cube_op_->PostFusionWorkSpace();
+    }
+  } else {
+    code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
+  }
+  ShardParam shard;
+  shard.base = 0;
+  shard.sink = true;
+  shard.dom = &cube_op_->ndd_.dims;
+  shard.tile[0] = cube_op_->n0_;
+  shard.tail[0] = cube_op_->n_real_ % cube_op_->n0_;
+  shard.tile[1] = cube_op_->m0_;
+  shard.tail[1] = cube_op_->m_real_ % cube_op_->m0_;
+  shard.stride[0] = cube_op_->n_real_;
+  shard.stride[1] = cube_op_->n_real_ * cube_op_->m_real_;
+  post_fusion_->Shard(shard);
+  post_fusion_->PrepareTiling();
+  MixVisitCoder visit;
+  post_fusion_->AddVisitor(&visit);
+  size_t post_reserve = code_reserve - CubeKernel::ReserveCodeSize();
+  if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+    g_system.SetLocalMemSize(g_system.LocalMemSize() - cube_op_->BaseSize());
+    code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
+    g_system.SetLocalMemSize(g_system.LocalMemSize() + cube_op_->BaseSize());
+  } else {
+    code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
+  }
+  uint64_t subtile0 = (post_fusion_->tile_num_ + 1) / 2;
+  uint64_t subtile1 = post_fusion_->tile_num_ - subtile0;
+  if (cube_code->flags & V_CUBE_FLAG_STORE_UB) {
+    if (CeilDiv(cube_op_->m0_, post_fusion_->tile_num_) % CubeOp::BLOCK_SIZE) {
+      cube_code->flags |= V_CUBE_FLAG_DIS_UNITFLAG;
+    }
+    cube_code->ub_c = vCubeOp::UbInfoEncode(sload_->xbuf_, subtile0, subtile1);
+  } else if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+    cube_code->ub_c = vCubeOp::UbInfoEncode(g_system.LocalMemSize() - cube_op_->BaseSize(), subtile0, subtile1);
+  } else {
+    cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
+  }
+  if (!reloads_.empty()) {
+    for (auto &r : reloads_) {
+      code_.BindOpFast(r.first->addr_, r.second->addr_);
+    }
+  }
+  code_.data_size_ = code_end - code_.data_;
+  code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1);
+  code_.Combine(post_fusion_->code_, 0);
+  return ws_size;
+}
+
+MixKernel::~MixKernel() { delete stage_kernel_; }
 
 void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node) {
   for (auto &op : post_fusion_->build_ops_) {
@@ -166,7 +357,7 @@ void MixKernel::Release() {
 uint64_t MixKernel::UnAlignCodeGen() {
   stage_kernel_ = new StagesKernel(flags_);
   auto &builder = stage_kernel_->builder_;
-  int64_t pad_size[2] = {cube_op_->tactics_.lhs_pad_size, cube_op_->tactics_.rhs_pad_size};
+  int64_t pad_size[2] = {tactics_.lhs_pad_size, tactics_.rhs_pad_size};
   NDObject *inputs[2], *pad_inputs[2];
   NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
   for (size_t i = 0; i < 2; i++) {
@@ -222,7 +413,7 @@ uint64_t MixKernel::UnAlignCodeGen() {
 }
 
 uint64_t MixKernel::SplitKCodeGen() {
-  size_t k_stride = cube_op_->tactics_.k_stride;
+  size_t k_stride = tactics_.k_stride;
   auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
   size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
 
@@ -331,186 +522,24 @@ uint64_t MixKernel::BiasBF16CodeGen() {
   return workspace_size;
 }
 
-uint64_t MixKernel::AlignCodeGen() {
-  size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
-  size_t post_reserve = 0;
-  if (post_fusion_) {
-    if (auto comm = post_fusion_->comm_op_) {
-      comm->mix_ = true;
-      if (comm->lhs_ == sload_) {
-        comm->SetCubeOp(cube_op_);
-      }
-    }
-    if (!post_fusion_->NormBuild()) DvmException("MixKernel broker affine failed");
-    if (cube_op_->batch_fold_) {
-      TryBatchFold(cube_op_, sload_->nd_.size(), post_fusion_->objects_);
-    }
-    post_reserve = post_fusion_->ReserveCodeSize();
-  }
-  code_.Alloc(head_reserve + post_reserve);
-  vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
-  cube_op_->CodeGen(cube_code, tuner_);
-  static_cast<NDAccess *>(cube_op_->lhs_)->addr_.Update(&cube_code->gm_a);
-  static_cast<NDAccess *>(cube_op_->rhs_)->addr_.Update(&cube_code->gm_b);
-  if (cube_code->flags & V_CUBE_FLAG_WITH_BIAS) {
-    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(&cube_code->gm_bias);
-  }
-  if (cube_code->flags & V_CUBE_FLAG_GROUPED_LIST) {
-    static_cast<NDAccess *>(static_cast<GmmOp *>(cube_op_)->group_list_)->addr_.Update(&cube_code->gm_group_list);
-  }
-  cube_op_->output_->addr_.Update(&cube_code->gm_c);
-  code_.block_dim_ = cube_op_->block_dim_;
-  if (!post_fusion_) {
-    code_.data_size_ = head_reserve;
-    code_.UpdateC();
-    return 0;
-  }
-  uint64_t ws_size = sizeof(vMixGroupMsg) * code_.block_dim_;
-  gm_pos_.reloc_ = &cube_code->gm_pos;
-  code_.BindWorkspace(gm_pos_, 0);
-  if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
-    cube_op_->pingpong_store_ = true;
-    static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
-    cube_code->rank_size = comm->comm_->GetRankSize();
-    cube_code->flags |= V_CUBE_FLAG_PEER_STORE;
-    cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-    comm->id_wrap_.ids_.push_back(&cube_code->unique_id);  // record vCubeOp's unique_id address
-    cube_code->gm_c = reinterpret_cast<uint64_t>(comm->comm_->GetPeerMemPtr(comm->comm_->GetRankId()));
-    code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
-  } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    CubeStoreType sync_type = (cube_code->flags & V_CUBE_FLAG_OUT_FP32) ? kCubeStoreGM : g_system.GetCubeStoreType();
-    if (sync_type == kCubeStoreUBOnce) {
-      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC_ONCE;
-      cube_code->flags |= V_CUBE_FLAG_STORE_UB_ONCE;
-    } else if (sync_type == kCubeStoreUB) {
-      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC;
-      cube_code->flags |= V_CUBE_FLAG_STORE_UB;
-    } else if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
-      code_.BindOpFast(cube_op_->output_->addr_, inplace_store->addr_);
-      code_.BindOpFast(sload_->addr_, inplace_store->addr_);
-    } else {
-      cube_op_->pingpong_store_ = true;
-      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
-      cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      code_.BindWorkspace(cube_op_->output_->addr_, ws_size);
-      code_.BindWorkspace(sload_->addr_, ws_size);
-      ws_size += cube_op_->PostFusionWorkSpace();
-    }
-  } else {
-    code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
-  }
-  ShardParam shard;
-  shard.base = 0;
-  shard.sink = true;
-  shard.dom = &cube_op_->ndd_.dims;
-  shard.tile[0] = cube_op_->n0_;
-  shard.tail[0] = cube_op_->n_real_ % cube_op_->n0_;
-  shard.tile[1] = cube_op_->m0_;
-  shard.tail[1] = cube_op_->m_real_ % cube_op_->m0_;
-  shard.stride[0] = cube_op_->n_real_;
-  shard.stride[1] = cube_op_->n_real_ * cube_op_->m_real_;
-  post_fusion_->Shard(shard);
-  post_fusion_->PrepareTiling();
-  MixVisitCoder visit;
-  post_fusion_->AddVisitor(&visit);
-  uint8_t *code_end;
-  if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-    g_system.SetLocalMemSize(g_system.LocalMemSize() - cube_op_->BaseSize());
-    code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
-    g_system.SetLocalMemSize(g_system.LocalMemSize() + cube_op_->BaseSize());
-  } else {
-    code_end = post_fusion_->DoCodeGen(2, code_.data_ + head_reserve, post_reserve);
-  }
-  uint64_t subtile0 = (post_fusion_->tile_num_ + 1) / 2;
-  uint64_t subtile1 = post_fusion_->tile_num_ - subtile0;
-  if (cube_code->flags & V_CUBE_FLAG_STORE_UB) {
-    if (CeilDiv(cube_op_->m0_, post_fusion_->tile_num_) % CubeOp::BLOCK_SIZE) {
-      cube_code->flags |= V_CUBE_FLAG_DIS_UNITFLAG;
-    }
-    cube_code->ub_c = vCubeOp::UbInfoEncode(sload_->xbuf_, subtile0, subtile1);
-  } else if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-    cube_code->ub_c = vCubeOp::UbInfoEncode(g_system.LocalMemSize() - cube_op_->BaseSize(), subtile0, subtile1);
-  } else {
-    cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
-  }
-  code_.data_size_ = code_end - code_.data_;
-  code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1);
-  code_.Combine(post_fusion_->code_, 0);
-  return ws_size;
-}
-
 uint64_t MixKernel::CodeGen() {
-  if (cube_op_->output_ == nullptr) {
-    auto output = new NDStore(nullptr, cube_op_);
-    output->SetFlag(OBJ_FLAG_STAGE_IO);
-    cube_op_->output_ = output;
-  }
-  std::vector<NDObject *> empty_run_ops;
-  cube_op_->lhs_->Normalize(empty_run_ops);
-  cube_op_->rhs_->Normalize(empty_run_ops);
-  cube_op_->NormalizeCube();
-  cube_op_->output_->Normalize(empty_run_ops);
-  cube_op_->InferCubeConfig();
+  CubeKernel::NormalizeCube();
+  cube_op_->InferTactics(tactics_);
   uint64_t workspace_size = 0;
-  if (cube_op_->tactics_.enable_bias_cast) {
+  if (tactics_.enable_bias_cast) {
     workspace_size = BiasBF16CodeGen();
-  } else if (cube_op_->tactics_.enable_pad) {
+  } else if (tactics_.enable_pad) {
     workspace_size = UnAlignCodeGen();
-  } else if (cube_op_->tactics_.enable_splitk) {
+  } else if (tactics_.enable_splitk) {
     workspace_size = SplitKCodeGen();
   } else {
-    workspace_size = AlignCodeGen();
-  }
-  if (!reloads_.empty()) {
-    for (auto &r : reloads_) {
-      code_.BindOpFast(r.first->addr_, r.second->addr_);
-    }
+    NormalizePost();
+    size_t code_reserve = MixKernelBase::ReserveCodeSize();
+    code_.Alloc(code_.HeadSize() + code_reserve);
+    workspace_size = MixKernelBase::DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC), code_reserve);
   }
   Release();
   return workspace_size;
-}
-
-void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
-  oss << indent << "vgraph.mix(tile_num=" << cube_op_->core_loop_ << ") {\n";
-  std::string body_indent = indent + "  ";
-  oss << body_indent << "// cube" << std::endl;
-  oss << body_indent << "%" << cube_op_->index_ << cube_op_->nd_;
-  oss << " = MatMul(%" << cube_op_->lhs_->index_ << cube_op_->lhs_->nd_;
-  oss << ", %" << cube_op_->rhs_->index_ << cube_op_->rhs_->nd_;
-  if (cube_op_->bias_) {
-    oss << ", %" << cube_op_->bias_->index_ << cube_op_->bias_->nd_;
-  }
-  oss << ")\n";
-  if (post_fusion_) {
-    oss << body_indent << "// post_fusion" << std::endl;
-    post_fusion_->Dump(oss, body_indent);
-    oss << std::endl;
-  }
-  oss << indent << "}";
-}
-
-void MixKernel::Clone(VKernel *base, CloneHelper &helper) {
-  auto k = static_cast<MixKernel *>(base);
-  auto cube = k->cube_op_;
-  cube->lhs_->CloneUpdate(helper);
-  cube->rhs_->CloneUpdate(helper);
-  if (cube->bias_) {
-    cube->bias_->CloneUpdate(helper);
-  }
-  if (cube->obj_id_ == ObjectType::kGmmOp) {
-    static_cast<GmmOp *>(cube)->group_list_->CloneUpdate(helper);
-  }
-  cube_op_ = static_cast<CubeOp *>(cube->CloneUpdate(helper));
-  if (k->post_fusion_) {
-    post_fusion_ = IsDynamic() ? new VKernelD() : new VKernelS();
-    post_fusion_->Clone(k->post_fusion_, helper);
-    sload_ = static_cast<NDAccess *>(helper.GetClone(k->sload_));
-  }
-  for (auto &[load1, load2] : k->reloads_) {
-    auto clone1 = static_cast<NDAccess *>(helper.GetClone(load1));
-    auto clone2 = static_cast<NDAccess *>(helper.GetClone(load2));
-    reloads_.emplace_back(clone1, clone2);
-  }
 }
 
 void DynMixKernel::Record() {
@@ -825,21 +854,24 @@ void SequenceKernel::Append(NDObject *obj) {
 
 class CubeOptimizer {
  public:
-  explicit CubeOptimizer(CubeOp *dom) : dom_(dom) { dom_->InferCubeConfig(); }
+  explicit CubeOptimizer(CubeOp *dom) : dom_(dom) {
+    dom_->TryBatchFold();
+    dom_->InferTactics(tactics_);
+  }
 
   bool AlignA(std::vector<NDObject *> &ops) {
-    if (dom_->tactics_.lhs_pad_size == 0) {
+    if (tactics_.lhs_pad_size == 0) {
       return false;
     }
-    AlignInput(dom_->lhs_, dom_->tactics_.lhs_pad_size, ops);
+    AlignInput(dom_->lhs_, tactics_.lhs_pad_size, ops);
     return true;
   }
 
   bool AlignB(std::vector<NDObject *> &ops) {
-    if (dom_->tactics_.rhs_pad_size == 0) {
+    if (tactics_.rhs_pad_size == 0) {
       return false;
     }
-    AlignInput(dom_->rhs_, dom_->tactics_.rhs_pad_size, ops);
+    AlignInput(dom_->rhs_, tactics_.rhs_pad_size, ops);
     return true;
   }
 
@@ -862,12 +894,12 @@ class CubeOptimizer {
   }
 
   bool SplitK(std::vector<NDObject *> &ops) {
-    if (!dom_->tactics_.enable_splitk) {
+    if (!tactics_.enable_splitk) {
       return false;
     }
     auto load = new NDLoad(nullptr, dom_->shape_ref_, kFloat32);
     auto cast = new CastOp(load, dom_->type_id_);
-    size_t k_stride = dom_->tactics_.k_stride;
+    size_t k_stride = tactics_.k_stride;
     auto split_num = CeilDiv(static_cast<size_t>(dom_->k_real_), k_stride);
     size_t k_tail = dom_->k_real_ % k_stride ? dom_->k_real_ % k_stride : k_stride;
     size_t offset_a = 0;
@@ -924,6 +956,7 @@ class CubeOptimizer {
   }
 
   CubeOp *dom_;
+  CubeOp::Tactics tactics_;
 };
 
 class EagerVector : public VectorKernel {

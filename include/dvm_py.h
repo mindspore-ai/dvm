@@ -24,7 +24,6 @@
 
 namespace dvm {
 namespace py = pybind11;
-extern const char *DTYPE_NAMES[];
 void DvmException(const char *error_str);
 class NDObjectPy {
  public:
@@ -70,14 +69,15 @@ class IntArrayRefPy {
 
 class ScalarRefPy {
  public:
-  ScalarRefPy() = default;
+  ScalarRefPy() { data_.type = kDataTypeEnd; }
+  explicit ScalarRefPy(DataType type) { data_.type = type; }
   void Update(py::object val) {
     if (py::isinstance<py::int_>(val)) {
       data_ = val.cast<int>();
     } else if (py::isinstance<py::float_>(val)) {
       data_ = val.cast<float>();
     } else {
-      DvmException("unsupport type");
+      DvmException("Unsupported scalar value type for current data type.");
     }
   }
   ScalarRef data_;
@@ -127,9 +127,7 @@ class KernelPy {
     return ObjToPy(kernel_.Reduce<op_type>(PyToObj(input), GetShapeRef(dims), keepdims));
   }
 
-  py::object Cast(py::object input, DataType type) {
-    return ObjToPy(kernel_.Cast(PyToObj(input), type));
-  }
+  py::object Cast(py::object input, DataType type) { return ObjToPy(kernel_.Cast(PyToObj(input), type)); }
   py::object Select(py::object cond, py::object lhs, py::object rhs) {
     return ObjToPy(kernel_.Select(PyToObj(cond), PyToObj(lhs), PyToObj(rhs)));
   }
@@ -143,7 +141,7 @@ class KernelPy {
     } else if (py::isinstance<ScalarRefPy>(scalar)) {
       op = kernel_.Broadcast(PyToScalar(scalar), shape_ref, dtype);
     } else {
-      DvmException("Unsupported scalar type for full: expected int, float, NDSymInt, or NDSymFloat.");
+      DvmException("Unsupported scalar type for full: expected int, float, or ScalarRef.");
     }
     return ObjToPy(op);
   }
@@ -172,7 +170,7 @@ class KernelPy {
   void ParallelNext() { kernel_.ParallelNext(); }
   void SpecNext() { kernel_.SpecNext(); }
   py::object MakeIntArray() { return py::cast(std::make_shared<IntArrayRefPy>()); }
-  py::object MakeScalar() { return py::cast(std::make_shared<ScalarRefPy>()); }
+  py::object MakeScalar(DataType type = kDataTypeEnd) { return py::cast(std::make_shared<ScalarRefPy>(type)); }
   static void SetDeterm(bool enable);
   static void SetTuning(bool enable);
 
@@ -206,19 +204,13 @@ static inline void RegDvmPy(const py::module &m) {
     .def("shape", &NDObjectPy::GetShape, "get shape")
     .def("dtype", &NDObjectPy::GetDType, "get dtype");
 
-  auto dtype = py::enum_<DataType>(m, "DataType")
+  (void)py::enum_<DataType>(m, "DataType")
     .value("bool", kBool)
     .value("float16", kFloat16)
     .value("bfloat16", kBFloat16)
     .value("float32", kFloat32)
     .value("int32", kInt32)
     .value("int64", kInt64);
-  m.attr("bool") = dtype.attr("bool");
-  m.attr("float16") = dtype.attr("float16");
-  m.attr("bfloat16") = dtype.attr("bfloat16");
-  m.attr("float32") = dtype.attr("float32");
-  m.attr("int32") = dtype.attr("int32");
-  m.attr("int64") = dtype.attr("int64");
 
   (void)py::class_<IntArrayRefPy, std::shared_ptr<IntArrayRefPy>>(m, "IntArrayRef")
     .def(py::init<>())
@@ -233,7 +225,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def("load", &KernelPy::Load, "load array")
     .def("view_load", &KernelPy::ViewLoad, "load array")
     .def("store", &KernelPy::Store, "store array")
-    .def("scalar", &KernelPy::MakeScalar, "create scalar")
+    .def("scalar", &KernelPy::MakeScalar, "create scalar", py::arg("dtype") = kDataTypeEnd)
     .def("int_array", &KernelPy::MakeIntArray, "create int array")
     .def("sqrt", &KernelPy::Unary<UnaryOpType::kSqrt>, "emit sqrt")
     .def("abs", &KernelPy::Unary<UnaryOpType::kAbs>, "emit abs")

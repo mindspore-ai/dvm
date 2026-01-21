@@ -19,7 +19,7 @@ import subprocess
 import csv
 import inspect
 import numpy as np
-from . import DataType, Kernel, bfloat16
+from . import DataType, Kernel
 
 _DTYPE_NAME_MAP = {
     "bool": DataType.bool,

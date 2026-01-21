@@ -64,8 +64,6 @@ class RtKernelPy : public KernelPy {
   py::object Perf();
   py::object Msprof(const std::string &path, int64_t test_num);
 
-  static void SetDeterm(bool enable);
-  static void SetTuning(bool enable);
   static void SetCubeStoreType(int type) { g_system.SetCubeStoreType((CubeStoreType)type); }
 
   static void InitComm(int rank_id, int rank_size, const std::string &comm_type);

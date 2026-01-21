@@ -177,7 +177,7 @@ def test_reduce_fake_atomic():
 ])
 def test_atomic_determ(in_shape, dims, tile_depth):
     t = Tester()
-    t.set_determ(True)
+    t.set_deterministic(True)
     a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
     x = t.load(a)
     y = t.sum(x, dims, True)
@@ -191,7 +191,7 @@ def test_atomic_determ(in_shape, dims, tile_depth):
     expect = copy.deepcopy(t.output(out))
     t.run()
     output = t.output(out)
-    t.set_determ(False)
+    t.set_deterministic(False)
     assert (np.allclose(output, res, rtol=1e-4, atol=1e-4, equal_nan=True))
     assert (np.allclose(output, expect, rtol=1e-8, atol=1e-8, equal_nan=True))
 
@@ -210,7 +210,7 @@ def test_elemwise_reduce():
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_max_min_atomic_determ():
     t = Tester()
-    t.set_determ(True)
+    t.set_deterministic(True)
     a = np.random.normal(-0.5, 0.5, [65, 40, 4096]).astype(np.float32)
     x = t.load(a)
     y = t.max(x, (1,), True)
@@ -220,7 +220,7 @@ def test_max_min_atomic_determ():
     expect = copy.deepcopy(t.output(out))
     t.run()
     output = t.output(out)
-    t.set_determ(False)
+    t.set_deterministic(False)
     assert (np.allclose(output, res, rtol=1e-4, atol=1e-4, equal_nan=True))
     assert (np.allclose(output, expect, rtol=1e-8, atol=1e-8, equal_nan=True))
 

@@ -839,24 +839,6 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
   return remap_out;
 }
 
-void RtKernelPy::SetDeterm(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetDeterm();
-  } else {
-    conf.UnsetDeterm();
-  }
-}
-
-void RtKernelPy::SetTuning(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetOnlineTuner().SetLazyTuner();
-  } else {
-    conf.UnsetOnlineTuner().UnsetLazyTuner();
-  }
-}
-
 void RtKernelPy::Fork(int size, const std::string &comm_type) {
   ASSERT(size <= static_cast<int>(sizeof(g_mpc.pids) / sizeof(pid_t)));
   g_mpc.rank_size = size;
@@ -957,8 +939,6 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("dry_run", &RtKernelPy::DryRun, "dry run vm")
     .def_static("init_comm", &RtKernelPy::InitComm, "init communicatior")
     .def_static("set_cube_store_type", &RtKernelPy::SetCubeStoreType, "set sync type")
-    .def_static("set_determ", &RtKernelPy::SetDeterm, "set deterministic")
-    .def_static("set_online_tuning", &RtKernelPy::SetTuning, "set online tuning")
     .def_static("fork", &RtKernelPy::Fork, "fork process", py::arg("size"), py::arg("comm_type") = "")
     .def_static("join", &RtKernelPy::Join, "join process")
     .def_static("barrier", &RtKernelPy::Barrier, "barrier process")

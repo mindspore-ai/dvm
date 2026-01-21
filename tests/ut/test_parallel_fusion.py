@@ -50,7 +50,7 @@ def test_basic(shape1, shape2, shape3):
 @pytest.mark.parametrize('determ', [False, True])
 def test_reduce(determ):
     t = Tester("parallel")
-    t.set_determ(determ)
+    t.set_deterministic(determ)
     # kernel 0
     a0 = np.full((8192,), 0.1, np.float32)
     a = t.sum(t.load(a0), [0], False)
@@ -66,13 +66,13 @@ def test_reduce(determ):
     c = t.add(t.load(c0), 1.0)
     t.store_expect(c, 0.1 + 1.0)
     assert (t.run_check())
-    t.set_determ(False)
+    t.set_deterministic(False)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_reduce_determ_all():
     t = Tester("parallel")
-    t.set_determ(True)
+    t.set_deterministic(True)
     # kernel 0
     a0 = np.full((8192,), 0.1, np.float32)
     a = t.sum(t.load(a0), [0], False)
@@ -83,4 +83,4 @@ def test_reduce_determ_all():
     b = t.sum(t.load(b0), [0], False)
     t.store_expect(b, 4 * 0.1)
     assert (t.run_check())
-    t.set_determ(False)
+    t.set_deterministic(False)

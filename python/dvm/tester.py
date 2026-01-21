@@ -19,7 +19,7 @@ import subprocess
 import csv
 import inspect
 import numpy as np
-from . import DataType, Kernel
+from . import DataType, Kernel, bfloat16
 
 _DTYPE_NAME_MAP = {
     "bool": DataType.bool,
@@ -34,8 +34,6 @@ _DTYPE_NAME_MAP = {
 def _normalize_dtype(dtype):
     if isinstance(dtype, DataType):
         return dtype
-    if isinstance(dtype, np.dtype):
-        dtype = dtype.__name__
     if isinstance(dtype, str):
         mapped = _DTYPE_NAME_MAP.get(dtype)
         if mapped is None:
@@ -72,7 +70,8 @@ class Tester(Kernel):
             os.environ["DEVICE_ID"] = str(comm.Get_rank())
             os.environ["RANK_SIZE"] = str(comm.Get_size())
         self.comm = comm
-        dev_id = int(os.getenv("DEVICE_ID"))
+        dev_conf = os.getenv("DEVICE_ID")
+        dev_id = int(dev_conf) if dev_conf else 0
         Kernel.__init__(self, ker_type, run_mode, dev_id)
         self.is_dyn = "dyn" in ker_type
         self.is_codegen = False
@@ -94,16 +93,20 @@ class Tester(Kernel):
         x_bf32 = x_bf16_int.view(np.float32)
         return x_bf32
 
+    def _prepare_array_input(self, array, dtype):
+        dtype_id = _normalize_dtype(dtype)
+        if dtype_id == DataType.bfloat16:
+            array = Kernel.convert_to_bf16(self, array)
+        elif dtype_id is None:
+            dtype_id = _normalize_dtype(str(array.dtype))
+        shape = list(array.shape)
+        return array, dtype_id, shape
+
     def load(self, shape_arr, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
             # dynamic shape scenario
             return Kernel.load(self, shape_arr, _normalize_dtype(dtype))
-        dtype_id = _normalize_dtype(dtype)
-        if dtype_id == DataType.bfloat16:
-            shape_arr = Kernel.convert_to_bf16(self, shape_arr)
-        elif dtype_id is None:
-            dtype_id = _normalize_dtype(str(shape_arr.dtype))
-        shape = list(shape_arr.shape)
+        shape_arr, dtype_id, shape = self._prepare_array_input(shape_arr, dtype)
         op = Kernel.load(self, shape, dtype_id)
         self.input(op, shape_arr)
         return op
@@ -130,12 +133,7 @@ class Tester(Kernel):
             return Kernel.slice_load(
                 self, shape_arr, start, size, _normalize_dtype(dtype)
             )
-        dtype_id = _normalize_dtype(dtype)
-        if dtype_id == DataType.bfloat16:
-            shape_arr = Kernel.convert_to_bf16(self, shape_arr)
-        elif dtype_id is None:
-            dtype_id = _normalize_dtype(str(shape_arr.dtype))
-        shape = list(shape_arr.shape)
+        shape_arr, dtype_id, shape = self._prepare_array_input(shape_arr, dtype)
         op = Kernel.slice_load(self, shape, start, size, dtype_id)
         self.input(op, shape_arr)
         return op
@@ -146,8 +144,7 @@ class Tester(Kernel):
             if isinstance(shape_arr, np.ndarray) and dtype_id == DataType.bfloat16:
                 shape_arr = Kernel.convert_to_bf16(self, shape_arr)
             return Kernel.stridedslice_load(self, shape_arr, start, end, step, dtype_id)
-        dtype_id = _normalize_dtype(str(shape_arr.dtype))
-        shape = list(shape_arr.shape)
+        shape_arr, dtype_id, shape = self._prepare_array_input(shape_arr, None)
         op = Kernel.stridedslice_load(self, shape, start, end, step, dtype_id)
         self.input(op, shape_arr)
         return op
@@ -156,12 +153,7 @@ class Tester(Kernel):
         if not isinstance(shape_arr, np.ndarray):
             # dynamic shape scenario
             return Kernel.multi_load(self, shape_arr, _normalize_dtype(dtype))
-        dtype_id = _normalize_dtype(dtype)
-        if dtype_id == DataType.bfloat16:
-            shape_arr = Kernel.convert_to_bf16(self, shape_arr)
-        elif dtype_id is None:
-            dtype_id = _normalize_dtype(str(shape_arr.dtype))
-        shape = list(shape_arr.shape)
+        shape_arr, dtype_id, shape = self._prepare_array_input(shape_arr, dtype)
         op = Kernel.multi_load(self, shape, dtype_id)
         self.input(op, shape_arr)
         return op
@@ -250,7 +242,7 @@ class Tester(Kernel):
                 print("[{}, {}]: {}".format(i[0], i[1], i[1] - i[0] + 1))
 
         out = self.output(store)
-        if store.dtype() == "bfloat16":
+        if store.dtype() == DataType.bfloat16:
             out = Kernel.convert_from_bf16(self, out)
         if inspect.isfunction(expect):
             if not expect(out):

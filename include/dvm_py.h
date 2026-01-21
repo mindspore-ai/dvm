@@ -37,7 +37,7 @@ class NDObjectPy {
     }
     return out;
   }
-  std::string GetDType() const { return DTYPE_NAMES[obj_->type_id_]; }
+  DataType GetDType() const { return obj_->type_id_; }
   NDObject *Get() const { return obj_; }
 
  private:
@@ -173,6 +173,8 @@ class KernelPy {
   void SpecNext() { kernel_.SpecNext(); }
   py::object MakeIntArray() { return py::cast(std::make_shared<IntArrayRefPy>()); }
   py::object MakeScalar() { return py::cast(std::make_shared<ScalarRefPy>()); }
+  static void SetDeterm(bool enable);
+  static void SetTuning(bool enable);
 
  protected:
   NDObject *PyToObj(py::object obj) { return obj.cast<NDOpPyPtr>()->Get(); }
@@ -180,6 +182,24 @@ class KernelPy {
   ScalarRef *PyToScalar(py::object scalar) { return &(scalar.cast<ScalarRefPyPtr>()->data_); }
   Kernel kernel_;
 };
+
+inline void KernelPy::SetDeterm(bool enable) {
+  auto &conf = Config::Instance();
+  if (enable) {
+    conf.SetDeterm();
+  } else {
+    conf.UnsetDeterm();
+  }
+}
+
+inline void KernelPy::SetTuning(bool enable) {
+  auto &conf = Config::Instance();
+  if (enable) {
+    conf.SetOnlineTuner().SetLazyTuner();
+  } else {
+    conf.UnsetOnlineTuner().UnsetLazyTuner();
+  }
+}
 
 static inline void RegDvmPy(const py::module &m) {
   (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
@@ -245,7 +265,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def("logical_or", &KernelPy::Binary<BinaryOpType::kLogicalOr>, "emit logical_or")
     .def("select", &KernelPy::Select, "emit select op")
     .def("broadcast", &KernelPy::Broadcast, "emit broadcast op")
-    .def("full", &KernelPy::Full, "emit broadcast op", py::arg("input"), py::arg("shape"), py::arg("dtype"))
+    .def("full", &KernelPy::Full, "emit full op")
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
     .def("sum", &KernelPy::Reduce<ReduceOpType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
          "emit sum")
@@ -262,7 +282,9 @@ static inline void RegDvmPy(const py::module &m) {
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("p_next", &KernelPy::ParallelNext, "parallel next")
-    .def("spec_next", &KernelPy::SpecNext, "spec next");
+    .def("spec_next", &KernelPy::SpecNext, "spec next")
+    .def_static("set_deterministic", &KernelPy::SetDeterm, "set deterministic")
+    .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning");
 }
 }  // namespace dvm
 #endif  // _DVM_PY_API_H_

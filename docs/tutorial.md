@@ -292,8 +292,8 @@ import dvm
 # 构图
 @dvm.kernel
 def my_add(k, x, y):
-    a = k.load(x, np.float32)
-    b = k.load(y, np.float32)
+    a = k.load(x, dvm.float32)
+    b = k.load(y, dvm.float32)
     c = k.add(a, b)
     d = k.store(c)
     return d

@@ -18,6 +18,7 @@
 #define _DVM_H_
 
 #include <cstdint>
+#include <cstddef>
 #include <vector>
 
 namespace dvm {
@@ -494,14 +495,14 @@ class Kernel {
    * @param op operation to get.
    * @return shape reference.
    */
-  IntArrayRef *GetShape(NDObject *op) const;
+  static IntArrayRef *GetShape(NDObject *op);
 
   /**
    * @brief Get operation dtype.
    * @param op operation to get.
    * @return result dtype.
    */
-  DataType GetDType(NDObject *op) const;
+  static DataType GetDType(NDObject *op);
 
   /**
    * @brief Dump operation represent of this kernel.

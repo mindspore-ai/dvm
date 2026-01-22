@@ -23,8 +23,6 @@
 #include <memory>
 #include <fstream>
 #include "pybind11/numpy.h"
-#include "pybind11/pybind11.h"
-#include "pybind11/stl.h"
 #include "acl/acl_rt.h"
 #include "acl/acl_prof.h"
 #include "kernel.h"

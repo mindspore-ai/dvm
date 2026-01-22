@@ -17,7 +17,6 @@
 #ifndef _DVM_PYBIND_API_H_
 #define _DVM_PYBIND_API_H_
 #include <vector>
-#include "pybind11/pybind11.h"
 #include "code.h"
 #include "dvm_py.h"
 

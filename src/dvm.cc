@@ -1030,9 +1030,9 @@ void Kernel::SequenceAdd(KernelType type, uint32_t flags) {
 
 void Kernel::SpecNext() { static_cast<_SpecVector *>(kernel_)->Next(); }
 
-IntArrayRef *Kernel::GetShape(NDObject *op) const { return op->shape_ref_; }
+IntArrayRef *Kernel::GetShape(NDObject *op) { return op->shape_ref_; }
 
-DataType Kernel::GetDType(NDObject *op) const { return op->type_id_; }
+DataType Kernel::GetDType(NDObject *op) { return op->type_id_; }
 
 size_t Kernel::PreCodeGen() {
   uint64_t ws_size = kernel_->CodeGen();

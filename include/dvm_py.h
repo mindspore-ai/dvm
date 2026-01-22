@@ -20,6 +20,7 @@
 #include <string>
 #include <vector>
 #include "pybind11/pybind11.h"
+#include "pybind11/stl.h"
 #include "dvm.h"
 
 namespace dvm {
@@ -29,14 +30,15 @@ class NDObjectPy {
  public:
   explicit NDObjectPy(NDObject *obj) : obj_(obj) {}
   py::object GetShape() const {
-    const size_t size = obj_->shape_ref_->size;
+    auto *shape_ref = Kernel::GetShape(obj_);
+    const size_t size = shape_ref->size;
     py::tuple out(size);
     for (size_t i = 0; i < size; ++i) {
-      out[i] = py::cast(obj_->shape_ref_->data[i]);
+      out[i] = py::cast(shape_ref->data[i]);
     }
     return out;
   }
-  DataType GetDType() const { return obj_->type_id_; }
+  DataType GetDType() const { return Kernel::GetDType(obj_); }
   NDObject *Get() const { return obj_; }
 
  private:

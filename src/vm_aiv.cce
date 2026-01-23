@@ -158,22 +158,50 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
   vsel(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride, 2);
 }
 
-#define DELCARE_BINARY(builtin)                                                                                     \
-  template <typename T>                                                                                             \
-  __aicore_inline__ void repeat_##builtin(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint16_t repeat,     \
-                                          uint8_t dstBlockStride, uint8_t src0BlockStride, uint8_t src1BlockStride, \
-                                          uint8_t dstRepeatStride, uint8_t src0RepeatStride,                        \
-                                          uint8_t src1RepeatStride) {                                               \
-    for (; repeat > 255; repeat -= 255) {                                                                           \
-      builtin(dst, src0, src1, 255, dstBlockStride, src0BlockStride, src1BlockStride, dstRepeatStride,              \
-              src0RepeatStride, src1RepeatStride);                                                                  \
-      dst += 255 * TYPE_SHIFT(T) * dstRepeatStride;                                                                 \
-      src0 += 255 * TYPE_SHIFT(T) * src0RepeatStride;                                                               \
-      src1 += 255 * TYPE_SHIFT(T) * src1RepeatStride;                                                               \
-    }                                                                                                               \
-    builtin(dst, src0, src1, repeat, dstBlockStride, src0BlockStride, src1BlockStride, dstRepeatStride,             \
-            src0RepeatStride, src1RepeatStride);                                                                    \
+template <vReduceOpType RED_TYPE, typename T>
+__aicore_inline__ void BisectReduce(__ubuf__ T *xd, __ubuf__ T *xn0, __ubuf__ T *xn1) {
+  if constexpr (RED_TYPE == V_RED_SUM) {
+    vadd(xd, xn0, xn1, 1, 1, 1, 1, 8, 8, 8);
   }
+  if constexpr (RED_TYPE == V_RED_MAX) {
+    vmax(xd, xn0, xn1, 1, 1, 1, 1, 8, 8, 8);
+  }
+  if constexpr (RED_TYPE == V_RED_MIN) {
+    vmin(xd, xn0, xn1, 1, 1, 1, 1, 8, 8, 8);
+  }
+}
+
+// Reduce each [red_count, iter_size] slice per dup into one [iter_size] slice.
+// Performs a bisection tree reduction in-place on xn/xd; if red_count is odd,
+// the last slice is folded into the partial result on the tail path.
+// xd[dup_count, 1, iter_size] = xn[dup_count, red_count, iter_size]
+template <vReduceOpType RED_TYPE, typename T>
+__aicore_inline__ void ReduceBisectLoop(__ubuf__ T *&xd, __ubuf__ T *&xn, uint64_t red_count, uint64_t dup_count,
+                                        uint64_t dup_stride, uint64_t iter_size, __ubuf__ T *xd_base) {
+  while (red_count > 1) {
+    uint64_t iter_tail = red_count & 1ul;
+    red_count >>= 1;
+    uint64_t reduce_size = red_count * iter_size;
+    set_vector_mask(0, reduce_size);
+    for (uint64_t i = 0; i < dup_count; ++i) {
+      BisectReduce<RED_TYPE>(xd, xn, xn + reduce_size);
+      xd += dup_stride;
+      xn += dup_stride;
+    }
+    if (iter_tail) {
+      pipe_barrier(PIPE_V);
+      set_vector_mask(0, iter_size);
+      for (uint64_t i = 0; i < dup_count; ++i) {
+        xd -= dup_stride;
+        xn -= dup_stride;
+        BisectReduce<RED_TYPE>(xd, xd, xn + reduce_size + reduce_size);
+      }
+    }
+    xn = xd = xd_base;
+    pipe_barrier(PIPE_V);
+  }
+}
+
 
 #define DELCARE_UNARYS(builtin)                                                                             \
   template <typename T>                                                                                     \
@@ -217,10 +245,6 @@ __aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T
             src0RepeatStride, src1RepeatStride);                                                                      \
   }
 
-DELCARE_BINARY(vadd)
-DELCARE_BINARY(vmax)
-DELCARE_BINARY(vmin)
-
 DELCARE_UNARYS(vector_dup)
 
 DELCARE_CMPS(vcmpvs_ne)
@@ -260,24 +284,9 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
-  uint64_t simd_width = op.simd_width;
-  set_mask_norm();
-  SetVectorMask(simd_width);
-  copy_ubuf_to_ubuf((__ubuf__ void *)xd, (__ubuf__ void *)xn, 0, 1, (op.repeat * simd_width) >> BlockDataShift(T), 0, 0);
-  pipe_barrier(PIPE_V);
-  uint64_t rs = op.simd_width >> BlockDataShift(T);
-  while (op.repeat != 1) {
-    if (op.repeat & 1) {
-      uint64_t offset_repeat = (op.repeat / 2) * 2;
-      vmax(xd, xd, xd + offset_repeat * simd_width, 1, 1, 1, 1, rs, rs, rs);
-      pipe_barrier(PIPE_V);
-    }
-    op.repeat >>= 1;
-    repeat_vmax(xd, xd, xd + op.repeat * simd_width, op.repeat, 1, 1, 1, rs, rs, rs);
-    pipe_barrier(PIPE_V);
-  }
-  vcmax(xd, xd, 1, 1, 1, 0, ONLY_VALUE);
-  set_mask_count();
+  ReduceBisectLoop<V_RED_MAX, T>(xd, xn, op.repeat, 1, 0, op.simd_width, (__ubuf__ T *)(op.xd));
+  set_vector_mask(0, op.simd_width);
+  vcmax(xd, xn, 1, 1, 1, 0, ONLY_VALUE);
   set_flag(PIPE_V, PIPE_S, EVENT_ID0);
   wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
   __ubuf__ uint32_t *result = (__ubuf__ uint32_t *)(op.xd);
@@ -642,50 +651,13 @@ __aicore_inline__ void ReduceX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
   uint64_t simd_width = op.simd_width;
   uint64_t red_size = op.red_size / simd_width; // TODO: calc by host
-  uint64_t rs = op.simd_width >> BlockDataShift(T);
-  set_mask_norm();
-  SetVectorMask(simd_width);
-  while (red_size > 1) {
-    uint64_t iter_tail = red_size & 1ul;
-    red_size >>= 1;
-    for (uint64_t i = 0; i < op.dup_size; i++) {
-      if constexpr (RED_TYPE == V_RED_SUM) {
-        repeat_vadd(xd, xn, xn + red_size * simd_width, red_size, 1, 1, 1, rs, rs, rs);
-      }
-      if constexpr (RED_TYPE == V_RED_MAX) {
-        repeat_vmax(xd, xn, xn + red_size * simd_width, red_size, 1, 1, 1, rs, rs, rs);
-      }
-      if constexpr (RED_TYPE == V_RED_MIN) {
-        repeat_vmin(xd, xn, xn + red_size * simd_width, red_size, 1, 1, 1, rs, rs, rs);
-      }
-      xd += op.red_size;
-      xn += op.red_size;
-    }
-    xd -= op.red_size * op.dup_size;
-    xn -= op.red_size * op.dup_size;
-    if (iter_tail) {
-      pipe_barrier(PIPE_V);
-      for (uint64_t i = 0; i < op.dup_size; i++) {
-        if constexpr (RED_TYPE == V_RED_SUM) {
-          vadd(xd, xd, xn + red_size * 2 * simd_width, 1, 1, 1, 1, 0, 0, 0);
-        }
-        if constexpr (RED_TYPE == V_RED_MAX) {
-          vmax(xd, xd, xn + red_size * 2 * simd_width, 1, 1, 1, 1, 0, 0, 0);
-        }
-        if constexpr (RED_TYPE == V_RED_MIN) {
-          vmin(xd, xd, xn + red_size * 2 * simd_width, 1, 1, 1, 1, 0, 0, 0);
-        }
-        xd += op.red_size;
-        xn += op.red_size;
-      }
-    }
-    xn = xd = (__ubuf__ T *)(op.xd);
-    pipe_barrier(PIPE_V);
-  }
+  ReduceBisectLoop<RED_TYPE>(xd, xn, red_size, op.dup_size, op.red_size, simd_width, (__ubuf__ T *)(op.xd));
   vReduceX::DecodeBlock(pc, op);
   uint64_t dst_rs = op.dup_block + op.dup_pad;
   uint64_t src_rs = op.red_size * op.dup_block;
   uint64_t iter_num = op.dup_size / op.dup_block;
+  set_mask_norm();
+  SetVectorMask(simd_width);
   while (iter_num--) {
     if constexpr (RED_TYPE == V_RED_SUM) {
       repeat_vcadd(xd, xn, op.dup_block, 1, op.red_size >> BlockDataShift(T));
@@ -706,55 +678,21 @@ template <vReduceOpType RED_TYPE, typename T>
 __aicore_inline__ void ReduceY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vReduceY op;
   vReduceY::Decode(pc, head, op);
-  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
-  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
+  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
   uint64_t red_size = IsLastTile(tile) ? op.red_tail : op.red_size;
-  if (red_size == 1) { // red_tail may 1
-    uint64_t lenburst = op.dup_num * op.iter_size * sizeof(T) / 32;
+  if (red_size == 1) {
+    uint64_t lenburst = op.dup_num * op.iter_size >> BlockDataShift(T);
     copy_ubuf_to_ubuf(xd, xn, 0, 1, lenburst, 0, 0);
     return;
   }
-  uint64_t simd_width = op.simd_width;
-  uint64_t rs = simd_width >> BlockDataShift(T);
-  set_mask_norm();
-  SetVectorMask(simd_width);
-  uint64_t iter_repeat_num = op.iter_size / simd_width;
-  while (red_size > 1) {
-    uint64_t iter_tail = red_size & 1ul;
-    red_size >>= 1;  // op.red_size /= 2
-    uint64_t dup_stride = op.iter_size * red_size;
-    for (uint64_t dup = 0; dup < op.dup_num; ++dup) {
-      if constexpr (RED_TYPE == V_RED_SUM) {
-        repeat_vadd(xd, xn, xn + dup_stride, red_size * iter_repeat_num, 1, 1, 1, rs, rs, rs);
-        if (iter_tail) {
-          pipe_barrier(PIPE_V);
-          repeat_vadd(xd, xd, xn + dup_stride + dup_stride, iter_repeat_num, 1, 1, 1, rs, rs, rs);
-          xn += op.iter_size;
-        }
-      }
-      if constexpr (RED_TYPE == V_RED_MAX) {
-        repeat_vmax(xd, xn, xn + dup_stride, red_size * iter_repeat_num, 1, 1, 1, rs, rs, rs);
-        if (iter_tail) {
-          pipe_barrier(PIPE_V);
-          repeat_vmax(xd, xd, xn + dup_stride + dup_stride, iter_repeat_num, 1, 1, 1, rs, rs, rs);
-          xn += op.iter_size;
-        }
-      }
-      if constexpr (RED_TYPE == V_RED_MIN) {
-        repeat_vmin(xd, xn, xn + dup_stride, red_size * iter_repeat_num, 1, 1, 1, rs, rs, rs);
-        if (iter_tail) {
-          pipe_barrier(PIPE_V);
-          repeat_vmin(xd, xd, xn + dup_stride + dup_stride, iter_repeat_num, 1, 1, 1, rs, rs, rs);
-          xn += op.iter_size;
-        }
-      }
-      xn += dup_stride * 2;
-      xd += dup_stride;
-      pipe_barrier(PIPE_V);
-    }  // end for dup
-    xn = xd = (__ubuf__ T *)(op.xd);
-  }  // end while iter_num
-  set_mask_count();
+  uint64_t stride_size = op.iter_size * red_size;
+  ReduceBisectLoop<RED_TYPE>(xd, xn, red_size, op.dup_num, stride_size, op.iter_size, (__ubuf__ T *)(op.xd));
+  if (op.dup_num > 1) {
+    pipe_barrier(PIPE_V);
+    auto lenburst = op.iter_size >> BlockDataShift(T);
+    copy_ubuf_to_ubuf(xd, xn, 0, op.dup_num, lenburst, (stride_size >> BlockDataShift(T)) - lenburst, 0);
+  }
 }
 
 #define V_RED_HEAD_REPEAT_OFFSET    0

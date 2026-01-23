@@ -65,6 +65,8 @@ class PerformanceResult:
 
 
 class Tester(Kernel):
+    __test__ = False
+
     def __init__(self, ker_type="", use_pass_opt=False, run_mode="dev", comm=None):
         if comm:
             os.environ["DEVICE_ID"] = str(comm.Get_rank())

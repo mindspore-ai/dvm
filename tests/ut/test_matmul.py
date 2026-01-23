@@ -642,10 +642,10 @@ def test_matmul_post_fusion_cc_ub_sync_2(shape_a, shape_b):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-@pytest.mark.parametrize('mode', ["mix", "mix:dyn"])
-def test_same_matmul_input(mode):
+@pytest.mark.parametrize('mode, shape', [["mix", [1024, 2048]], ["mix:dyn", [1000, 2000]]])
+def test_same_matmul_input(mode, shape):
     t = Tester(mode)
-    g0 = np.random.normal(0, 0.01, [1024, 2048]).astype(np.float16)
+    g0 = np.random.normal(0, 0.01, shape).astype(np.float16)
     a = t.load(g0)
     c = t.matmul(a, a, False, True)
     expect = np.matmul(g0.astype(np.float32), g0.T.astype(np.float32)).astype(np.float16)

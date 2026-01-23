@@ -51,8 +51,9 @@ constexpr uint64_t WORKSPACE = 192ul * 1024ul - UB_WORKSPACE_SIZE;
 struct vRegTable {
   uint32_t blockidx;
   uint32_t blocknum;
+  uint64_t blockgroup;
   uint8_t *vm_code_base;
-  uint64_t reserved[2];
+  uint64_t reserved[1];
 };
 
 __aicore_inline__ __ubuf__ vRegTable *__restrict__ RegTable() {
@@ -66,6 +67,14 @@ __aicore_inline__ void vBlockInit(uint64_t blockidx, uint64_t blocknum) {
 
 __aicore_inline__ uint64_t vBlockIdx() { return RegTable()->blockidx; }
 __aicore_inline__ uint64_t vBlockNum() { return RegTable()->blocknum; }
+
+__aicore_inline__ void vBlockGroupInit(uint64_t groupidx, uint64_t groupnum) {
+  auto reg = (__ubuf__ uint64_t *)get_imm(VREG_TABLE_BASE + 8);
+  *reg = groupnum << 16 | groupidx;
+}
+__aicore_inline__ uint64_t vBlockGroup() { return RegTable()->blockgroup; }
+#define vGroupIdx(blockgroup)  ((blockgroup) & 0xfffful)
+#define vGroupNum(blockgroup)  (((blockgroup) >> 16) & 0xfffful)
 
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
   return (stride * type_size + 31) >> 5;
@@ -1346,7 +1355,8 @@ __aicore_inline__ void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile)
       return;
     }
   }
-  uint64_t pingpong_offset = op.pingpong ? block_num + block_idx : block_idx;
+  uint64_t blockgroup = vBlockGroup();
+  uint64_t pingpong_offset = op.pingpong ? vGroupNum(blockgroup) + vGroupIdx(blockgroup) : vGroupIdx(blockgroup);
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + pingpong_offset * op.pingpong_stride + op.tile_stride * tile_idx;
   __ubuf__ uint8_t* dst = (__ubuf__ uint8_t*)(op.xn);
   uint64_t truck_num = IsLastTile(tile) ? op.tail_iter : op.body_iter;
@@ -1671,7 +1681,8 @@ __aicore_inline__ void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t t
       return;
     }
   }
-  uint64_t pingpong_offset = op.pingpong ? block_num + block_idx : block_idx;
+  uint64_t blockgroup = vBlockGroup();
+  uint64_t pingpong_offset = op.pingpong ? vGroupNum(blockgroup) + vGroupIdx(blockgroup) : vGroupIdx(blockgroup);
   __gm__ uint64_t *flag_mem =
     (__gm__ uint64_t *)((__gm__ uint8_t *)op.from + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
 
@@ -1914,18 +1925,21 @@ __aicore_inline__ uint64_t VisitRed_4(bcodeptr_t pc) {
 __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
   vVisitMix op;
   vVisitMix::Decode(pc, op);
+  uint64_t blockgroup = vBlockGroup();
+  uint64_t vgroupidx = vGroupIdx(blockgroup);
+  uint64_t vgroupnum = vGroupNum(blockgroup);
   __gm__ vCubeOp *__restrict__ cube = op.cube;
-  uint64_t group_idx = op.group_idx > 0 ? op.group_idx : block_idx;
+  uint64_t group_idx = op.group_idx > 0 ? op.group_idx : vgroupidx;
   if (group_idx >= cube->group_num) {
     return 0;
   }
-  if (group_idx >= block_num) {
+  if (group_idx >= vgroupnum) {
     // Use vector to backsync, then use ffts to sync core
     if (cube->flags & V_CUBE_FLAG_PEER_STORE) {
       // cube peer_store backsync
       int32_t subblocknum = op.subtile1 == 0 ? 1 : 2;
-      int32_t expect = ((group_idx - block_idx) / block_num + 1) / 2 * subblocknum * (cube->rank_size -1);
-      uint64_t pingpong_offset = op.pingpong ? block_idx : block_idx + block_num;
+      int32_t expect = ((group_idx - vgroupidx) / vgroupnum + 1) / 2 * subblocknum * (cube->rank_size -1);
+      uint64_t pingpong_offset = op.pingpong ? vgroupidx : vgroupidx + vgroupnum;
       __gm__ int32_t *peer_mem =
         (__gm__ int32_t *)((__gm__ uint8_t *)cube->gm_c + PEERMEM_ATOMIC_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
       while (1) {
@@ -1949,7 +1963,7 @@ __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
     tile = op.subtile0 << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_TAIL_FLAG_OFFSET | op.subtile1 << V_TILE_COUNT_OFFSET;
   }
   wait_flag_dev(0);
-  __gm__ vMixGroupMsg *msg = reinterpret_cast<__gm__ vMixGroupMsg *>(cube->gm_pos + sizeof(vMixGroupMsg) * block_idx);
+  __gm__ vMixGroupMsg *msg = reinterpret_cast<__gm__ vMixGroupMsg *>(cube->gm_pos + sizeof(vMixGroupMsg) * vgroupidx);
   dcci(msg, 0);
   uint64_t pos = msg->pos[op.pingpong];
   uint64_t cidx = vGetBitRange(pos, V_MM_POS_C_OFFSET, V_MM_POS_C_BITS);
@@ -1959,9 +1973,9 @@ __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
   bool last_n = (nidx + 1) * cube->n0 > cube->n_real;
   uint64_t offset = (cidx * cube->m_real + midx * cube->m0) * cube->n_real + nidx * cube->n0;
   vVisitMix::UpdateShard(pc, pos, offset, last_m, last_n);
-  vVisitMix::Update(pc, group_idx + block_num, op.pingpong ^ 1ul);
+  vVisitMix::Update(pc, group_idx + vgroupnum, op.pingpong ^ 1ul);
   if (cube->flags & V_CUBE_FLAG_PEER_STORE) {
-    uint64_t pingpong_offset = op.pingpong ? block_num + block_idx : block_idx;
+    uint64_t pingpong_offset = op.pingpong ? vgroupnum + vgroupidx : vgroupidx;
     __gm__ uint64_t *peer_flag_mem =
       (__gm__ uint64_t *)((__gm__ uint8_t *)cube->gm_c + PEERMEM_FLAG_OFFSET + pingpong_offset * CACHE_LINE_SIZE);
     *peer_flag_mem = ((uint64_t)(cube->unique_id) << 32) | (offset + 1);
@@ -2127,6 +2141,7 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
     if (entry & V_ENTRY_FLAG_CUBE_MIX) {
       body_addr += sizeof(vCubeOp);
       code_size -= sizeof(vCubeOp) / sizeof(uint64_t);
+      vBlockGroupInit(blockidx >> 1, blocknum >> 1);
     }
     copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
     set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);

@@ -547,6 +547,11 @@ py::object RtKernelPy::ConvertFromBF16(py::object input) {
   return py::array(new_buf);
 }
 
+void RtKernelPy::ParallelAdd(const std::string &ker_type, int core_limit) {
+  auto [type, flags] = ParseKernelType(ker_type);
+  kernel_.ParallelAdd(type, flags, core_limit);
+}
+
 void RtKernelPy::SequenceAdd(const std::string &ker_type) {
   auto [type, flags] = ParseKernelType(ker_type);
   kernel_.SequenceAdd(type, flags);
@@ -922,6 +927,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("reducescatter", &RtKernelPy::ReduceScatter, "emit reducescatter op")
     .def("convert_to_bf16", &RtKernelPy::ConvertToBF16, "convert f32 array to bf16 array")
     .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
+    .def("parallel_add", &RtKernelPy::ParallelAdd, "add new parallel Kernel", py::arg("ktype"), py::arg("core_limit") = 0)
     .def("seq_add", &RtKernelPy::SequenceAdd, "add new sequence Kernel")
     .def("reset", &RtKernelPy::Reset, "reset eager")
     .def("clone", &RtKernelPy::Clone, "clone kernel")

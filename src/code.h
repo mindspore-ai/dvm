@@ -118,6 +118,17 @@ class Code : public CodeWrap {
     return GenEntry(V_ENTRY_FLAG_CUBE_MIX, V_ENTRY_TYPE_C, data_size);
   }
 
+  static inline uint64_t GenEntryMix(const MixVisitCoder *visit, uint64_t slice[], uint64_t tail[], uint64_t stride[],
+                                     uint64_t subtile0, uint64_t subtile1, uint8_t *code_begin, uint8_t *&code_end) {
+    auto visit_code = reinterpret_cast<uint64_t *>(code_end);
+    uint64_t visit_offset = (code_end - code_begin - sizeof(vCubeOp)) / sizeof(uint64_t);
+    for (auto &r : visit->rel_relocs_) {
+      *(r.first + r.second) |= static_cast<uint64_t>(visit_code - r.first);
+    }
+    code_end += vVisitMix::Encode(visit_code, slice, tail, stride, subtile0, subtile1) * sizeof(uint64_t);
+    return Code::GenEntryVE(V_VISIT_MIX, visit_offset, code_end  - code_begin) | V_ENTRY_FLAG_CUBE_MIX;
+  }
+
   void UpdateHead(uint64_t entry) {
     uint64_t *head = reinterpret_cast<uint64_t *>(data_);
     head[0] = 0;
@@ -146,18 +157,9 @@ class Code : public CodeWrap {
     UpdateHead(GenEntryC(data_size_ - HeadSize()));
   }
 
-  void UpdateMix(const MixVisitCoder *visit, uint64_t slice[], uint64_t tail[], uint64_t stride[], uint64_t subtile0,
-                 uint64_t subtile1) {
+  void UpdateMix(uint64_t entry) {
     target_ = kTargetMix;
-    uint64_t *visit_code = reinterpret_cast<uint64_t *>(data_ + data_size_);
-    data_size_ += vVisitMix::Encode(visit_code, slice, tail, stride, subtile0, subtile1) * sizeof(uint64_t);
-    for (auto &r : visit->rel_relocs_) {
-      *(r.first + r.second) |= static_cast<uint64_t>(visit_code - r.first);
-    }
-    uint64_t offset =
-      visit_code - reinterpret_cast<uint64_t *>(data_) - (HeadSize() + sizeof(vCubeOp)) / sizeof(uint64_t);
-    uint64_t entry = GenEntryVE(V_VISIT_MIX, offset, data_size_ - HeadSize());
-    UpdateHead(entry | V_ENTRY_FLAG_CUBE_MIX);
+    UpdateHead(entry);
   }
 
   static constexpr uint64_t HeadSize() { return sizeof(uint64_t) * 2; }  // ffts + entry
@@ -256,6 +258,13 @@ class PCodeEncoder {
     prog_data_ += code_size;
     return prog;
   }
+  uint64_t *CloneProg(uint64_t *prog) {
+    auto clone = prog_entry_;
+    for (int i = 0; i < vProgEntry::CODE_SIZE; ++i) {
+      *prog_entry_++ = prog[i];
+    }
+    return clone;
+  }
   void AssignAic(uint64_t block_begin, uint64_t block_num, uint64_t *prog) {
     Assign(aic_lookup_, block_begin, block_num, prog);
   }
@@ -270,8 +279,9 @@ class PCodeEncoder {
 
  protected:
   void Assign(uint8_t *lookup, uint64_t block_begin, uint64_t block_num, uint64_t *prog) {
+    auto prog_offset = prog - reinterpret_cast<uint64_t *>(code_->data_ + Code::HeadSize());
     for (uint64_t i = 0; i < block_num; ++i) {
-      lookup[block_begin + i] = prog - reinterpret_cast<uint64_t *>(code_->data_ + Code::HeadSize());
+      lookup[block_begin + i] = prog_offset;
     }
     vProgEntry::UpdateBlock(prog, block_begin, block_num);
   }

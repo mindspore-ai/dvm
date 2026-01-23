@@ -1081,47 +1081,71 @@ class DisAssembler {
   }
 
   void DasParallel(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, int target, const std::string &indent) {
-    auto get_programs = [bcode](uint64_t core_num, uint64_t lookup) -> std::vector<vProgEntry> {
-      std::vector<vProgEntry> programs;
+    struct ProgInfo {
+      vProgEntry prog;
+      uint32_t core_begin;
+      uint32_t core_end;
+    };
+    auto get_programs = [bcode](uint64_t core_num, uint64_t lookup, std::vector<ProgInfo> &programs) {
       uint64_t last_offset = 0;
       for (uint64_t i = 0; i < core_num; ++i) {
         uint64_t prog_offset = *(bcode + lookup + i);
-        if (prog_offset != V_ENTRY_P_LKUP_INVALID && prog_offset != last_offset) {
-          ASSERT(programs.empty() || i == programs.back().b_begin + programs.back().b_num);
+        if (prog_offset == V_ENTRY_P_LKUP_INVALID) continue;
+        if (prog_offset != last_offset) {
           auto &data = programs.emplace_back();
-          vProgEntry::Decode(reinterpret_cast<uint64_t *>(bcode) + prog_offset, data);
+          vProgEntry::Decode(reinterpret_cast<uint64_t *>(bcode) + prog_offset, data.prog);
+          data.core_begin = i;
+          data.core_end = i;
           last_offset = prog_offset;
+        } else {
+          programs.back().core_end = i;
         }
       }
-      return programs;
     };
-    oss << indent << "parallel() {" << std::endl;
-    auto child_indent = indent + "  ";
+    std::vector<ProgInfo> aic_programs, aiv_programs;
     if (target != Code::kTargetVec) {
       auto lookup = (entry >> V_ENTRY_P_AIC_LKUP_OFFSET) & V_ENTRY_P_LKUP_MASK;
-      auto programs = get_programs(g_system.CoreNum(CoreType::kAIC), lookup);
-      for (auto &prog : programs) {
-        oss << child_indent << "// block_range=[" << prog.b_begin << ", " << prog.b_begin + prog.b_num << ")" << std::endl;
-        uint64_t prog_size = vGetBitRange(prog.entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
-        DasCube(prog.entry, bcode + prog.offset, prog_size, child_indent);
-        oss << std::endl;
-      }
+      get_programs(g_system.CoreNum(CoreType::kAIC), lookup, aic_programs);
     }
     if (target != Code::kTargetCube) {
       auto lookup = (entry >> V_ENTRY_P_AIV_LKUP_OFFSET) & V_ENTRY_P_LKUP_MASK;
-      auto programs = get_programs(g_system.CoreNum(CoreType::kAIV), lookup);
-      for (auto &prog : programs) {
-        oss << child_indent << "// block_range=[" << prog.b_begin << ", " << prog.b_begin + prog.b_num << ")" << std::endl;
-        uint64_t prog_size = vGetBitRange(prog.entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
-        uint64_t ktype = prog.entry & V_ENTRY_MASK_TYPE;
-        if (ktype == V_ENTRY_TYPE_V) {
-          DasVec(prog.entry, bcode + prog.offset, prog_size, child_indent);
-        } else {
-          ASSERT(ktype == V_ENTRY_TYPE_VE);
-          DasVecEx(prog.entry, bcode + prog.offset, prog_size, child_indent); // TODO: mix visit
-        }
+      get_programs(g_system.CoreNum(CoreType::kAIV), lookup, aiv_programs);
+    }
+    oss << indent << "parallel() {" << std::endl;
+    auto child_indent = indent + "  ";
+    for (auto &[prog, core_begin, core_end] : aic_programs) {
+      ASSERT(core_begin == prog.b_begin && core_end + 1 == prog.b_begin + prog.b_num);
+      oss << child_indent << "// aic[" << core_begin << ", " << core_end << "]";
+      uint64_t prog_size =
+        vGetBitRange(prog.entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
+      if (auto ktype = prog.entry & V_ENTRY_MASK_TYPE; ktype == V_ENTRY_TYPE_C) {
         oss << std::endl;
+        DasCube(prog.entry, bcode + prog.offset, prog_size, child_indent);
+      } else {
+        auto it = std::find_if(aiv_programs.begin(), aiv_programs.end(),
+                               [&prog](const ProgInfo &info) { return info.prog.offset == prog.offset; });
+        ASSERT(it != aiv_programs.end());
+        oss << ", aiv[" << it->core_begin << ", " << it->core_end << "]" << std::endl;
+        DasMix(prog.entry, bcode + prog.offset, prog_size, child_indent);
       }
+      oss << std::endl;
+    }
+    for (auto &[prog, core_begin, core_end] : aiv_programs) {
+      ASSERT(core_begin == prog.b_begin && core_end + 1 == prog.b_begin + prog.b_num);
+      if (prog.entry & V_ENTRY_FLAG_CUBE_MIX) {
+        continue;
+      }
+      oss << child_indent << "// aiv[" << core_begin << ", " << core_end << "]" << std::endl;
+      uint64_t prog_size =
+        vGetBitRange(prog.entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t);
+      uint64_t ktype = prog.entry & V_ENTRY_MASK_TYPE;
+      if (ktype == V_ENTRY_TYPE_V) {
+        DasVec(prog.entry, bcode + prog.offset, prog_size, child_indent);
+      } else {
+        ASSERT(ktype == V_ENTRY_TYPE_VE);
+        DasVecEx(prog.entry, bcode + prog.offset, prog_size, child_indent);
+      }
+      oss << std::endl;
     }
     oss << indent << "}";
   }

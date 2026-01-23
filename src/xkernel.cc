@@ -108,9 +108,7 @@ uint8_t *CubeKernel::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit) {
 
 uint64_t CubeKernel::CodeGen() {
   NormalizeCube();
-  code_.Alloc(code_.HeadSize() + ReserveCodeSize());
-  code_.data_size_ =  DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC)) - code_.data_;
-  code_.UpdateC();
+  DoCodeGen();
   return 0;
 }
 
@@ -193,9 +191,7 @@ void MixKernelBase::Append(NDObject *obj) {
 uint64_t MixKernelBase::CodeGen() {
   NormalizeCube();
   NormalizePost();
-  auto code_reserve = ReserveCodeSize();
-  code_.Alloc(code_.HeadSize() + code_reserve);
-  return DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC), code_reserve);
+  return DoCodeGen();
 }
 
 void MixKernelBase::Dump(std::ostringstream &oss, const std::string &indent) {
@@ -228,12 +224,8 @@ void MixKernelBase::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
-uint64_t MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve) {
-  if (post_fusion_ == nullptr) {
-    code_.data_size_ =  CubeKernel::DoCodeGen(code_ptr, core_limit) - code_.data_;
-    code_.UpdateC();
-    return 0;
-  }
+MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve) {
+  ASSERT(post_fusion_ != nullptr);
   if (cube_op_->batch_fold_) {
     TryBatchFold(cube_op_, sload_->nd_.size(), post_fusion_->objects_);
   }
@@ -312,10 +304,9 @@ uint64_t MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t
       code_.BindOpFast(r.first->addr_, r.second->addr_);
     }
   }
-  code_.data_size_ = code_end - code_.data_;
-  code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1);
   code_.Combine(post_fusion_->code_, 0);
-  return ws_size;
+  auto entry = Code::GenEntryMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1, code_ptr, code_end);
+  return GenOut(code_end, ws_size, entry);
 }
 
 MixKernel::~MixKernel() { delete stage_kernel_; }
@@ -526,17 +517,27 @@ uint64_t MixKernel::CodeGen() {
   CubeKernel::NormalizeCube();
   cube_op_->InferTactics(tactics_);
   uint64_t workspace_size = 0;
-  if (tactics_.enable_bias_cast) {
-    workspace_size = BiasBF16CodeGen();
-  } else if (tactics_.enable_pad) {
-    workspace_size = UnAlignCodeGen();
-  } else if (tactics_.enable_splitk) {
-    workspace_size = SplitKCodeGen();
+  if (tactics_.enable_bias_cast || tactics_.enable_pad || tactics_.enable_splitk) {
+    if (tactics_.enable_bias_cast) {
+      workspace_size = BiasBF16CodeGen();
+    } else if (tactics_.enable_pad) {
+      workspace_size = UnAlignCodeGen();
+    } else {
+      workspace_size = SplitKCodeGen();
+    }
+    if (reload_rhs_) {
+      auto lhs = static_cast<NDAccess *>(cube_op_->lhs_);
+      auto rhs = static_cast<NDAccess *>(cube_op_->rhs_);
+      code_.BindOpFast(rhs->addr_, lhs->addr_);
+    }
+    if (!reloads_.empty()) {
+      for (auto &r : reloads_) {
+        code_.BindOpFast(r.first->addr_, r.second->addr_);
+      }
+    }
   } else {
     NormalizePost();
-    size_t code_reserve = MixKernelBase::ReserveCodeSize();
-    code_.Alloc(code_.HeadSize() + code_reserve);
-    workspace_size = MixKernelBase::DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC), code_reserve);
+    workspace_size = MixKernelBase::DoCodeGen();
   }
   Release();
   return workspace_size;
@@ -566,6 +567,279 @@ uint64_t DynMixKernel::CodeGen() {
   auto ws_size = MixKernel::CodeGen();
   Release();
   return ws_size;
+}
+
+int ParallelKernel::_IsolateWrap::LaunchWrap(void *workspace, void *stream) {
+  for (auto &code : codes_) {
+    code->RelocBinds(workspace);
+    code->Launch(workspace, stream);
+  }
+  return term_ ? 0 : next_->LaunchWrap(workspace, stream);
+}
+
+void ParallelKernel::_IsolateWrap::DasWrap(std::ostringstream &oss) {
+  for (auto &code : codes_) {
+    code->DisAssemble(oss);
+    oss << std::endl;
+  }
+  if (!term_) {
+    next_->DasWrap(oss);
+  }
+}
+
+ParallelKernel::~ParallelKernel() {
+  for (auto &n : vectors_) {
+    delete n.kernel;
+  }
+  for (auto &n : cubes_) {
+    delete n.kernel;
+  }
+  for (auto &n : mixes_) {
+    delete n.kernel;
+  }
+  if (wrap_) {
+    delete wrap_;
+  }
+}
+
+void ParallelKernel::AddKernel(KernelType type, uint32_t flags, size_t thread_limit) {
+  if (type == kVector) {
+    auto &node = vectors_.emplace_back(new VKernelS(flags), thread_limit);
+    current_ = node.kernel;
+  } else if (type == kCube) {
+    auto &node = cubes_.emplace_back(new CubeKernel(KernelType::kCube, flags), thread_limit);
+    current_ = node.kernel;
+  } else {
+    ASSERT(type == kMix);
+    auto &node = mixes_.emplace_back(new MixKernelBase(KernelType::kMix, flags), thread_limit);
+    current_ = node.kernel;
+  }
+}
+
+void ParallelKernel::Append(NDObject *obj) {
+  if (current_ == nullptr) { // backward compatible
+    AddKernel(kVector, 0, 0);
+  }
+  current_->Append(obj);
+}
+
+struct PCoreAllocator {
+  union {
+    uint64_t core_reserve{0};
+    uint64_t dyn_core;
+  };
+  uint64_t dyn_wload{0};
+  uint64_t core_begin{0};
+
+  template <typename K>
+  void Collect(ParallelKernel::Node &n, K k) {
+    n.code_reserve = k->ReserveCodeSize();
+    if constexpr (std::is_same<K, VKernelS *>::value) {
+      n.wload = k->tile_size_ * k->objects_.size();
+    } else {
+      auto cube = k->GetCube();
+      n.wload = cube->m_real_ * cube->n_real_ * cube->k_real_;
+    }
+    if (n.core_limit) {
+      core_reserve += n.core_limit;
+    } else {
+      core_reserve++;
+      dyn_wload += n.wload;
+    }
+  }
+  void UpdateDynCore(uint64_t total) {
+    if (core_reserve > total) {
+      DvmException("total core limit is overflow!");
+    }
+    dyn_core = total - core_reserve;
+  }
+  uint64_t GetCoreLimit(const ParallelKernel::Node &n) {
+    if (n.core_limit) {
+      return n.core_limit;
+    }
+    auto core_limit = dyn_core * n.wload / dyn_wload + 1ul;
+    dyn_wload -= n.wload;
+    return core_limit;
+  }
+  void Submit(const ParallelKernel::Node &n, uint64_t num, uint64_t M = 1) {
+    core_begin += num;
+    if (n.core_limit) {
+      dyn_core += n.core_limit * M - num;
+    } else {
+      dyn_core -= num - M;
+    }
+  }
+};
+
+uint64_t ParallelKernel::CodeGen() {
+  PCoreAllocator aic, aiv;
+  int target = -1;
+  int max_prog_num = 0;
+  uint64_t code_reserve = 0;
+  if (!vectors_.empty()) {
+    for (auto &n : vectors_) {
+      auto k = static_cast<VKernelS *>(n.kernel);
+      if (!k->NormBuild()) {
+        DvmException("ParallelKernel broker affine failed");
+      }
+      k->PrepareTiling();
+      aiv.Collect(n, k);
+      code_reserve += n.code_reserve;
+    }
+    max_prog_num += vectors_.size();
+    target = Code::kTargetVec;
+  }
+  if (!cubes_.empty()) {
+    for (auto &n : cubes_) {
+      auto k = static_cast<CubeKernel *>(n.kernel);
+      k->NormalizeCube();
+      aic.Collect(n, k);
+      code_reserve += n.code_reserve;
+    }
+    max_prog_num += cubes_.size();
+    target = target == Code::kTargetVec ? Code::kTargetMix : Code::kTargetCube;
+  }
+  if (!mixes_.empty()) {
+    if (uint64_t vec_align = CeilDiv(aiv.core_reserve, 2ul); vec_align > aic.core_reserve) {
+      aic.core_reserve = vec_align;
+    }
+    for (auto &n : mixes_) {
+      auto k = static_cast<MixKernelBase *>(n.kernel);
+      k->NormalizeCube();
+      k->NormalizePost();
+      aic.Collect(n, k);
+      aiv.core_reserve += n.core_limit ? n.core_limit * 2 : 2;
+      code_reserve += n.code_reserve;
+    }
+    max_prog_num += mixes_.size() * 2;
+    target = Code::kTargetMix;
+  }
+  if (target != Code::kTargetCube) {
+    aiv.UpdateDynCore(g_system.CoreNum(CoreType::kAIV));
+  }
+  if (target != Code::kTargetVec) {
+    aic.UpdateDynCore(g_system.CoreNum(CoreType::kAIC));
+  }
+  PCodeEncoder encoder;
+  encoder.Reset(&code_, target, max_prog_num, code_reserve);
+  uint64_t ws_size = 0;
+  for (auto &n : mixes_) {
+    auto prog_data = encoder.ProgData();
+    uint64_t core_limit = aic.GetCoreLimit(n);
+    auto k = static_cast<MixKernelBase *>(n.kernel);
+    auto out = k->DoCodeGen(prog_data, core_limit, n.code_reserve);
+    code_.Combine(k->code_, ws_size);
+    ws_size += out.ws_size;
+    uint64_t code_size = out.code_end - prog_data;
+    auto aic_prog = encoder.Append(out.entry, code_size);
+    auto aiv_prog = encoder.CloneProg(aic_prog);
+    uint64_t block_num = k->code_.block_dim_;
+    encoder.AssignAic(aic.core_begin, block_num, aic_prog);
+    aic.Submit(n, block_num);
+    block_num *= 2;
+    encoder.AssignAiv(aiv.core_begin, block_num, aiv_prog);
+    aiv.Submit(n, block_num, 2);
+  }
+  for (auto &n : cubes_) {
+    auto prog_data = encoder.ProgData();
+    uint64_t core_limit = aic.GetCoreLimit(n);
+    auto k = static_cast<CubeKernel *>(n.kernel);
+    uint64_t code_size = k->DoCodeGen(prog_data, core_limit) - prog_data;
+    code_.Combine(k->code_, 0);
+    uint64_t block_num = k->code_.block_dim_;
+    auto prog = encoder.Append(Code::GenEntryC(code_size), code_size);
+    encoder.AssignAic(aic.core_begin, block_num, prog);
+    aic.Submit(n, block_num);
+  }
+  for (auto &n : vectors_) {
+    auto prog_data = encoder.ProgData();
+    uint64_t core_limit = aiv.GetCoreLimit(n);
+    auto k = static_cast<VKernelS *>(n.kernel);
+    uint64_t code_size = k->DoCodeGen(core_limit, prog_data, n.code_reserve) - prog_data;
+    if (auto visit = k->GetVisitor<RedVisitCoder>(); visit != nullptr) {
+      ws_size += CodeGenVE(k, visit, prog_data, code_size, ws_size);
+      continue;
+    }
+    code_.Combine(k->code_, 0);
+    uint64_t block_num = k->CompactBlockDim(core_limit);
+    auto prog = encoder.Append(Code::GenEntryV(k->tile_num_, block_num, code_size), code_size);
+    encoder.AssignAiv(aiv.core_begin, block_num, prog);
+    aiv.Submit(n, block_num);
+  }
+  uint64_t block_dim =
+    target == Code::kTargetVec ? aiv.core_begin : std::max(aic.core_begin, (aiv.core_begin + 1) >> 1);
+  encoder.Submit(block_dim);
+  if (!block_dim) {
+    wrap_->term_ = true;
+  }
+  return ws_size;
+}
+
+uint64_t ParallelKernel::CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size,
+                                   uint64_t ws_size) {
+  auto &code = kernel->code_;
+  code.Alloc(code_size + Code::HeadSize() + RedVisitCoder::BCODE_MAX);
+  std::memcpy(code.data_ + Code::HeadSize(), code_begin, code_size);
+  for (auto op : kernel->build_ops_) {
+    if (op->IsLoad() || op->IsStore()) {
+      auto ac = static_cast<NDAccess *>(op);
+      ac->addr_.Update(code.data_ + Code::HeadSize(), code_begin);
+    }
+  }
+  for (auto op = code.bind_ops_; op != nullptr; op = op->bind_list_) {
+    op->Update(code.data_ + Code::HeadSize(), code_begin);
+  }
+  visit->Update(code.data_ + Code::HeadSize(), code_begin);
+  for (auto op = code.bind_wss_; op != nullptr; op = op->bind_list_) {
+    op->ws += ws_size;
+    op->Update(code.data_ + Code::HeadSize(), code_begin);
+  }
+  code.data_size_ = code_size + Code::HeadSize();
+  code.block_dim_ = CeilDiv<uint32_t>(visit->block_num_, 2);
+  code.UpdateVE(visit);
+  if (wrap_ == nullptr) {
+    wrap_ = new _IsolateWrap();
+    code_.InsertWrap(wrap_);
+  }
+  wrap_->codes_.push_back(&code);
+  return ws_size + visit->ws_size_;
+}
+
+void ParallelKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+  oss << indent << "vgraph.parallel() {" << std::endl;
+  std::string body_indent = indent + "  ";
+  for (auto &n : vectors_) {
+    n.kernel->Dump(oss, body_indent);
+    oss << std::endl;
+  }
+  for (auto &n : cubes_) {
+    n.kernel->Dump(oss, body_indent);
+    oss << std::endl;
+  }
+  for (auto &n : mixes_) {
+    n.kernel->Dump(oss, body_indent);
+    oss << std::endl;
+  }
+  oss << indent << "}";
+}
+
+void ParallelKernel::Clone(VKernel *base, CloneHelper &helper) {
+  auto k = static_cast<ParallelKernel*>(base);
+  for (auto &n : k->vectors_) {
+    auto clone = new VKernelS(n.kernel->Flags());
+    n.kernel->Clone(clone, helper);
+    vectors_.emplace_back(clone, n.core_limit);
+  }
+  for (auto &n : k->cubes_) {
+    auto clone = new CubeKernel(KernelType::kCube, n.kernel->Flags());
+    n.kernel->Clone(clone, helper);
+    cubes_.emplace_back(clone, n.core_limit);
+  }
+  for (auto &n : k->mixes_) {
+    auto clone = new MixKernelBase(KernelType::kMix, n.kernel->Flags());
+    n.kernel->Clone(clone, helper);
+    mixes_.emplace_back(clone, n.core_limit);
+  }
 }
 
 int StageCodeWrap::LaunchWrap(void *workspace, void *stream) {
@@ -776,7 +1050,7 @@ void StagesKernel::_Builder::StageSwitch(KernelType type) {
     kernel = is_dyn ? new DynMixKernel() : new MixKernel();
   } else if (type == KernelType::kParallel) {
     ASSERT(!is_dyn);
-    kernel = new VKernelP();
+    kernel = new ParallelKernel(0);
   } else {
     ASSERT(0);
   }
@@ -1048,9 +1322,11 @@ class EagerVector : public VectorKernel {
     uint64_t subtile0 = (tile_num_ + 1) / 2;
     uint64_t subtile1 = tile_num_ - subtile0;
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
-    code_.data_size_ = code_end - code_.data_;
     code_.block_dim_ = mm->block_dim_;
-    code_.UpdateMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1);
+    uint64_t entry = Code::GenEntryMix(&visit, shard.tile, shard.tail, shard.stride, subtile0, subtile1,
+                                       reinterpret_cast<uint8_t *>(cube_code), code_end);
+    code_.data_size_ = code_end - code_.data_;
+    code_.UpdateMix(entry);
     mm_ = mm;
     return cube_code;
   }

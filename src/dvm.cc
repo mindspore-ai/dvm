@@ -552,7 +552,7 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
     }
     case KernelType::kParallel: {
       EXCEPTION_IF(flags & KernelFlag::kDynamic, "dynamic shape parallel is not support");
-      kernel = new VKernelP();
+      kernel = new ParallelKernel(flags);
       break;
     }
     case KernelType::kSequence: {
@@ -1012,8 +1012,8 @@ NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool
 }
 
 void Kernel::ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit) {
-  ASSERT(kernel_->KType() == KernelType::kParallel && type == KernelType::kVector);
-  static_cast<VKernelP *>(kernel_)->AppendNext();
+  ASSERT(kernel_->KType() == KernelType::kParallel);
+  static_cast<ParallelKernel*>(kernel_)->AddKernel(type, flags, thread_limit);
 }
 
 void Kernel::SequenceAdd(KernelType type, uint32_t flags) {

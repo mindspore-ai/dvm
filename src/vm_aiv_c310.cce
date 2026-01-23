@@ -51,21 +51,29 @@ constexpr uint64_t WORKSPACE = 256ul * 1024ul - UB_WORKSPACE_SIZE;
 struct vRegTable {
   uint32_t blockidx;
   uint32_t blocknum;
-  uint64_t reserved[3];
+  uint64_t blockgroup;
+  uint64_t reserved[2];
 };
+
+__aicore_inline__ __ubuf__ vRegTable *__restrict__ RegTable() {
+  return reinterpret_cast<__ubuf__ vRegTable *>(get_imm(VREG_TABLE_BASE));
+}
 
 __aicore_inline__ void vBlockInit(uint64_t blockidx, uint64_t blocknum) {
   auto reg = (__ubuf__ uint64_t *)get_imm(VREG_TABLE_BASE);
   *reg = blocknum << 32 | blockidx;
 }
 
-__aicore_inline__ uint64_t vBlockIdx() {
-  return reinterpret_cast<__ubuf__ const vRegTable *>(VREG_TABLE_BASE)->blockidx;
-}
+__aicore_inline__ uint64_t vBlockIdx() { return RegTable()->blockidx; }
+__aicore_inline__ uint64_t vBlockNum() { return RegTable()->blocknum; }
 
-__aicore_inline__ uint64_t vBlockNum() {
-  return reinterpret_cast<__ubuf__ const vRegTable *>(VREG_TABLE_BASE)->blocknum;
+__aicore_inline__ void vBlockGroupInit(uint64_t groupidx, uint64_t groupnum) {
+  auto reg = (__ubuf__ uint64_t *)get_imm(VREG_TABLE_BASE + 8);
+  *reg = groupnum << 16 | groupidx;
 }
+__aicore_inline__ uint64_t vBlockGroup() { return RegTable()->blockgroup; }
+#define vGroupIdx(blockgroup)  ((blockgroup) & 0xfffful)
+#define vGroupNum(blockgroup)  (((blockgroup) >> 16) & 0xfffful)
 
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) {
   return (stride * type_size + 31) >> 5;
@@ -1307,7 +1315,8 @@ __aicore_inline__ void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile)
       return;
     }
   }
-  uint64_t pingpong_offset = op.pingpong ? block_num + block_idx : block_idx;
+  uint64_t blockgroup = vBlockGroup();
+  uint64_t pingpong_offset = op.pingpong ? vGroupNum(blockgroup) + vGroupIdx(blockgroup) : vGroupIdx(blockgroup);
   __gm__ uint8_t *src = (__gm__ uint8_t *)op.from + pingpong_offset * op.pingpong_stride + op.tile_stride * tile_idx;
   __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
   uint64_t truck_num = IsLastTile(tile) ? op.tail_iter : op.body_iter;
@@ -1566,13 +1575,16 @@ __aicore_inline__ uint64_t VisitRed_4(bcodeptr_t pc) {
 __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
   vVisitMix op;
   vVisitMix::Decode(pc, op);
+  uint64_t blockgroup = vBlockGroup();
+  uint64_t vgroupidx = vGroupIdx(blockgroup);
+  uint64_t vgroupnum = vGroupNum(blockgroup);
   __gm__ vCubeOp *__restrict__ cube = op.cube;
-  uint64_t group_idx = op.group_idx > 0 ? op.group_idx : block_idx;
+  uint64_t group_idx = op.group_idx > 0 ? op.group_idx : vgroupidx;
   if (group_idx >= cube->group_num) {
     return 0;
   }
   if (cube->flags & V_CUBE_FLAG_GROUP_SET) {
-    if (group_idx >= block_num) {
+    if (group_idx >= vgroupnum) {
       // Use vector to backsync, then sync core
       if (cube->flags & V_CUBE_FLAG_PEER_STORE) {
         // TODO: cube peer_store backsync
@@ -1598,7 +1610,7 @@ __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
   bool last_n = (nidx + 1) * cube->n0 > cube->n_real;
   uint64_t offset = (cidx * cube->m_real + midx * cube->m0) * cube->n_real + nidx * cube->n0;
   vVisitMix::UpdateShard(pc, pos, offset, last_m, last_n);
-  vVisitMix::Update(pc, group_idx + block_num, op.pingpong ^ 1ul);
+  vVisitMix::Update(pc, group_idx + vgroupnum, op.pingpong ^ 1ul);
   if (cube->flags & V_CUBE_FLAG_PEER_STORE) {
     // Todo: cube peer_store backsync
   }
@@ -1659,6 +1671,7 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
     if (entry & V_ENTRY_FLAG_CUBE_MIX) {
       body_addr += sizeof(vCubeOp);
       code_size -= sizeof(vCubeOp) / sizeof(uint64_t);
+      vBlockGroupInit(blockidx >> 1, blocknum >> 1);
     }
     copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
     set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);

@@ -46,6 +46,7 @@ class RtKernelPy : public KernelPy {
   py::object ReduceScatter(py::object input);
   py::object ConvertToBF16(py::object input);
   py::object ConvertFromBF16(py::object input);
+  void ParallelAdd(const std::string &ker_type, int core_limit);
   void SequenceAdd(const std::string &ker_type);
 
   void Reset();

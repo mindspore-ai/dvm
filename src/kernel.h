@@ -288,27 +288,6 @@ class SpecVector : public _SpecVector {
   uint64_t FallCodeGen();
 };
 
-class IsolateWrapVP;
-class VKernelP : public VKernel {
- public:
-  VKernelP() : VKernel(KernelType::kParallel, 0) {}
-  ~VKernelP() override;
-  void AppendNext() {
-    children_.push_back(new VKernelS());
-    EXCEPTION_IF(children_.size() > 8, "total sub-kernels of parallel kernel exceed limit(8)");
-  }
-  void Append(NDObject *obj) override;
-  uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
-  void Clone(VKernel *base, CloneHelper &helper) override;
-
- protected:
-  uint64_t CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size);
-
-  std::vector<VKernelS *> children_;
-  IsolateWrapVP *wrap_{nullptr};
-};
-
 class DumpRefHelper {
  public:
   explicit DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}

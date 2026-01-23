@@ -48,6 +48,13 @@ class CubeKernel : public VKernel {
     cube_op_->TryBatchFold();
   }
   uint8_t *DoCodeGen(uint8_t *code_ptr, uint64_t core_limit);
+  uint64_t DoCodeGen() {
+    code_.Alloc(code_.HeadSize() + ReserveCodeSize());
+    code_.data_size_ =  DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC)) - code_.data_;
+    code_.UpdateC();
+    return 0;
+  }
+  CubeOp *GetCube() const { return cube_op_; }
 
  protected:
   CubeOp *cube_op_{nullptr};
@@ -83,8 +90,26 @@ class MixKernelBase : public CubeKernel {
     if (post_fusion_) size += post_fusion_->ReserveCodeSize();
     return size;
   }
-  uint64_t DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve);
 
+  struct GenOut {
+    GenOut(uint8_t *c, uint64_t w, uint64_t e) : code_end(c), ws_size(w), entry(e) {}
+    uint8_t *code_end;
+    uint64_t ws_size;
+    uint64_t entry;
+  };
+  GenOut DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve);
+  uint64_t DoCodeGen() {
+    if (post_fusion_ == nullptr) {
+      return CubeKernel::DoCodeGen();
+    }
+    size_t code_reserve = ReserveCodeSize();
+    code_.Alloc(code_.HeadSize() + code_reserve);
+    auto out = DoCodeGen(code_.data_ + code_.HeadSize(), g_system.CoreNum(CoreType::kAIC), code_reserve);
+    code_.data_size_ = out.code_end - code_.data_;
+    code_.UpdateMix(out.entry);
+    return out.ws_size;
+  }
+ 
  protected:
   VKernelS *post_fusion_{nullptr};
   NDAccess *sload_{nullptr};
@@ -118,6 +143,43 @@ class DynMixKernel : public MixKernel {
   void Release() override;
   void Record();
   GraphTracker tracker_;
+};
+
+class ParallelKernel : public VKernel {
+ public:
+  explicit ParallelKernel(uint32_t flags) : VKernel(KernelType::kParallel, flags) {}
+  ~ParallelKernel() override;
+
+  void Append(NDObject *obj) override;
+  uint64_t CodeGen() override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
+  void AddKernel(KernelType type, uint32_t flags, size_t thread_limit);
+
+  struct Node {
+    Node() = default;
+    Node(VKernel *k, uint32_t limit) : kernel(k), core_limit(limit) {}
+    VKernel *kernel;
+    uint32_t core_limit;
+    uint32_t code_reserve;
+    uint64_t wload;
+  };
+
+ protected:
+  uint64_t CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8_t *code_begin, uint64_t code_size, uint64_t ws_size);
+
+  class _IsolateWrap : public CodeWrap {
+   public:
+    int LaunchWrap(void *workspace, void *stream) override;
+    void DasWrap(std::ostringstream &oss) override;
+    std::vector<Code *> codes_;
+    bool term_{false};
+  };
+  std::vector<Node> mixes_;
+  std::vector<Node> cubes_;
+  std::vector<Node> vectors_;
+  VKernel *current_{nullptr};
+  _IsolateWrap *wrap_{nullptr};
 };
 
 class StageCodeWrap : public CodeWrap {

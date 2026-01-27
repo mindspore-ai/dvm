@@ -187,13 +187,19 @@ class Code : public CodeWrap {
     wrap_ = wrap;
   }
 
-  void RelocBinds(void *workspace) {
+  void RelocWssBind(void *workspace) {
     for (auto op = bind_wss_; op != nullptr; op = op->bind_list_) {
       op->Reloc(static_cast<char *>(workspace) + op->ws);
     }
+  }
+  void RelocOpsBind() {
     for (auto op = bind_ops_; op != nullptr; op = op->bind_list_) {
       op->Reloc(reinterpret_cast<void *>(*op->op->reloc_));
     }
+  }
+  void RelocBinds(void *workspace) {
+    RelocWssBind(workspace);
+    RelocOpsBind();
   }
   void BindWorkspace(RelocAddr &op, uint64_t offset) {
     op.ws = offset;

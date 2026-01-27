@@ -1420,6 +1420,8 @@ class EagerVector : public VectorKernel {
     VectorKernel::Dump(oss, indent);
   }
 
+  uint64_t &GetWsReloc() { return block_align_; }
+
   CubeOp *mm_;
 };
 
@@ -1947,7 +1949,6 @@ void _SplitKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloc
         for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
           op->Reloc(static_cast<char *>(ws_mem) + op->ws);
         }
-        kernel->code_.bind_wss_ = nullptr;
       }
     }
     if (uint64_t code_size = kernel->code_.ReserveWorkspace(0); code_size > extern_code_size) {
@@ -2123,27 +2124,37 @@ class SlotWsAllocator : public WsAllocator {
 };
 
 void _SplitKernel::SlotCodeGen(const RelocEntry *relocs, size_t reloc_size) {
-  auto add_reloc = [this](uint64_t &insn, uint64_t ws_size) {
+  auto add_reloc = [this](uint64_t &insn) -> RelocAddr & {
     auto op = new NDLoadDummy(kFloat32);
     objects_.push_back(op);
     op->addr_.data = insn;
     op->addr_.Update(&insn);
+    return op->addr_;
   };
+  auto slot_bind = [this](uint64_t slot_id, RelocAddr &addr) {
+    auto &slot = ctx_->slot_ws_[slot_id];
+    if (slot.second == nullptr) {
+      slot.second = &addr;
+    } else {
+      code_.BindOpFast(addr, *slot.second);
+    }
+  };
+  code_.Clear();
   SlotWsAllocator slot_alloc(ctx_->slot_ws_);
   _SplitKernel::CodeGenR(relocs, reloc_size, &slot_alloc);
-  uint64_t ws_size = ctx_->slot_ws_.size();
   for (int i = kernel_begin_; i < kernel_used_; ++i) {
-    if (auto mm = kernels_[i]->mm_) {
-      auto code = reinterpret_cast<vCubeOp *>(kernels_[i]->code_.data_ + Code::HeadSize());
+    auto kernel = kernels_[i];
+    if (auto mm = kernel->mm_) {
+      auto code = reinterpret_cast<vCubeOp *>(kernel->code_.data_ + Code::HeadSize());
       if (mm->atomic_add_) {
-        add_reloc(code->gm_a, ws_size);
-        add_reloc(code->gm_b, ws_size);
+        add_reloc(code->gm_a);
+        add_reloc(code->gm_b);
         if (mm->bias_) {
-          add_reloc(code->gm_bias, ws_size);
+          add_reloc(code->gm_bias);
         }
-        add_reloc(code->gm_c, ws_size);
+        add_reloc(code->gm_c);
         if (mm->obj_id_ == ObjectType::kGmmOp) {
-          add_reloc(code->gm_group_list, ws_size);
+          add_reloc(code->gm_group_list);
         }
       } else {
         static_cast<NDAccess *>(mm->lhs_)->addr_.Update(&code->gm_a);
@@ -2158,22 +2169,23 @@ void _SplitKernel::SlotCodeGen(const RelocEntry *relocs, size_t reloc_size) {
         }
       }
       if (code->flags & V_CUBE_FLAG_GROUP_SET) {
-        add_reloc(code->gm_pos, ws_size);
+        add_reloc(code->gm_pos);
       }
+    }
+    if (auto wss = kernel->code_.bind_wss_) {
+      uint64_t slot_id = *wss->reloc_ - wss->ws - 1;
+      ASSERT(slot_id < ctx_->slot_ws_.size());
+      slot_bind(slot_id, add_reloc(kernel->GetWsReloc()));
     }
   }
   auto &ws = ctx_->slot_ws_;
   if (!ws.empty()) {
+    uint64_t ws_size = ctx_->slot_ws_.size();
     for (auto op : objects_) {
       if (op->IsSimd()) continue;
       auto &addr = static_cast<NDAccess *>(op)->addr_;
       if (addr.data > 0 && addr.data <= ws_size) {
-        auto &slot = ws[addr.data - 1];
-        if (slot.second == nullptr) {
-          slot.second = &addr;
-        } else {
-          code_.BindOpFast(addr, *slot.second);
-        }
+        slot_bind(addr.data - 1, addr);
       }
     }
     ASSERT(std::find_if(ws.begin(), ws.end(), [](std::pair<size_t, RelocAddr *> &slot)
@@ -2182,14 +2194,13 @@ void _SplitKernel::SlotCodeGen(const RelocEntry *relocs, size_t reloc_size) {
 }
 
 void _SplitKernel::RelocBinds() {
-  code_.RelocBinds(0);
-  code_.bind_ops_ = nullptr;
-  code_.bind_wss_ = nullptr;
+  code_.RelocOpsBind();
   for (int i = kernel_begin_; i < kernel_used_; ++i) {
     auto &code = kernels_[i]->code_;
-    code.RelocBinds(0);
-    code.bind_ops_ = nullptr;
-    code.bind_wss_ = nullptr;
+    code.RelocOpsBind();
+    if (code.bind_wss_) {
+      code.RelocWssBind(reinterpret_cast<void *>(kernels_[i]->GetWsReloc()));
+    }
   }
 }
 
@@ -2365,10 +2376,7 @@ void SplitGraphS::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloca
       slot.second->Reloc(ws_alloc->Alloc(slot.first));
     }
   }
-  code_.RelocBinds(0);
-  for (int i = kernel_begin_; i < kernel_used_; ++i) {
-    kernels_[i]->code_.RelocBinds(0);
-  }
+  RelocBinds();
 }
 
 void SplitEagerW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {

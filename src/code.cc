@@ -944,24 +944,24 @@ class DisAssembler {
       switch (visit_id) {
         case V_VISIT_RED_1: {
           auto v = reinterpret_cast<vVisitRed1 *>(visit_addr);
-          oss_ << ".visit: red_1, e=" << (v->e >> 32) << ", r1=" << (v->r1) << std::endl;
+          oss_ << ".visit: red_1, user=" << v->user_cnt << ", e=" << (v->e >> 32) << ", r1=" << (v->r1) << std::endl;
           break;
         }
         case V_VISIT_RED_2: {
           auto v = reinterpret_cast<vVisitRed2 *>(visit_addr);
-          oss_ << ".visit: red_2, e=" << (v->e >> 32) << ", r1=" << (v->e1_r1 & MASK_32) << ", e1="
+          oss_ << ".visit: red_2, user=" << v->user_cnt << ", e=" << (v->e >> 32) << ", r1=" << (v->e1_r1 & MASK_32) << ", e1="
                << (v->e1_r1 >> 32) << std::endl;
           break;
         }
         case V_VISIT_RED_3: {
           auto v = reinterpret_cast<vVisitRed3 *>(visit_addr);
-          oss_ << ".visit: red_3, e=" << (v->e >> 32) << ", r1=" << (v->r1) << ", e1=" << (v->e1_r2 >> 32)
+          oss_ << ".visit: red_3, user=" << v->user_cnt << ", e=" << (v->e >> 32) << ", r1=" << (v->r1) << ", e1=" << (v->e1_r2 >> 32)
               << ", r2=" << (v->e1_r2 & MASK_32) << std::endl;
           break;
         }
         case V_VISIT_RED_4: {
           auto v = reinterpret_cast<vVisitRed4 *>(visit_addr);
-          oss_ << ".visit: red_4, e=" << (v->e >> 32) << ", r1=" << (v->e1_r1 & MASK_32) << ", e1=" << (v->e1_r1 >> 32)
+          oss_ << ".visit: red_4, user=" << v->user_cnt << ", e=" << (v->e >> 32) << ", r1=" << (v->e1_r1 & MASK_32) << ", e1=" << (v->e1_r1 >> 32)
               << ", r2=" << (v->e2_r2 & MASK_32) << ", e2=" << (v->e2_r2 >> 32) << std::endl;
           break;
         }

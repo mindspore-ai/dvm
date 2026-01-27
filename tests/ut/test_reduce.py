@@ -197,6 +197,33 @@ def test_atomic_determ(in_shape, dims, tile_depth):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_multi_determ():
+    t = Tester()
+    in_shape, dims = [64, 8, 256, 8], (0, 2)
+    t.set_deterministic(True)
+    a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
+    x0 = t.load(a)
+    x = t.sum(t.mul(x0, 1.5), dims, True)
+    out_x = t.store(x)
+    y = t.sum(t.mul(x0, 0.8), dims, True)
+    out_y = t.store(y)
+    t.tile(3, 3, 64)
+    t.tile(2, 2, 8)
+    t.tile(1, 1, 16)
+    t.run()
+    e_x = copy.deepcopy(t.output(out_x))
+    e_y = copy.deepcopy(t.output(out_y))
+    t.run()
+    res_x = t.output(out_x)
+    res_y = t.output(out_y)
+    t.set_deterministic(False)
+    assert (np.allclose(res_x, np.sum(a * 1.5, dims, keepdims=True), rtol=1e-4, atol=1e-4, equal_nan=True))
+    assert (np.allclose(res_y, np.sum(a * 0.8, dims, keepdims=True), rtol=1e-4, atol=1e-4, equal_nan=True))
+    assert (np.allclose(res_x, e_x, rtol=1e-8, atol=1e-8, equal_nan=True))
+    assert (np.allclose(res_y, e_y, rtol=1e-8, atol=1e-8, equal_nan=True))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_elemwise_reduce():
     t = Tester()
     a = np.full([32, 2048], 0.01, np.float32)

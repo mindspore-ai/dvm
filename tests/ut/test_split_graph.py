@@ -165,3 +165,16 @@ def test_split_ws_align(mode):
     res = np.matmul(x_data.astype(np.float32), y_data.astype(np.float32)).astype(np.float16) + b_data + 0.1
     t.store_expect(z, res)
     assert (t.run_check())
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_ws_reloc():
+    t = Tester("split:unify_ws")
+    in_shape, dims = [30, 4000], (0,)
+    t.set_deterministic(True)
+    a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
+    x0 = t.load(a)
+    x = t.sum(t.mul(x0, 1.5), dims, True)
+    x = t.add(x, 0.1)
+    t.store_expect(x, np.sum(a * 1.5, dims, keepdims=True) + 0.1)
+    assert(t.run_check())
+    t.set_deterministic(False)

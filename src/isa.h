@@ -1865,11 +1865,13 @@ struct vVisitRed1 {
   uint32_t head;
   uint32_t r1;
   uint64_t e;
+  uint32_t user_cnt;
+  uint32_t reserved;
 };
 
 struct vVisitRed2 {
   uint32_t head;
-  uint32_t reserved;
+  uint32_t user_cnt;
   uint64_t e;
   uint64_t e1_r1;
 };
@@ -1878,7 +1880,8 @@ struct vVisitRed3 {
   uint64_t tidx_head;
   uint64_t e;
   uint64_t e1_r2;
-  uint64_t r1;
+  uint32_t r1;
+  uint32_t user_cnt;
 };
 
 struct vVisitRed4 {
@@ -1886,6 +1889,8 @@ struct vVisitRed4 {
   uint64_t e;
   uint64_t e1_r1;
   uint64_t e2_r2;
+  uint32_t user_cnt;
+  uint32_t reserved;
 };
 
 #define V_MM_POS_M_OFFSET 0

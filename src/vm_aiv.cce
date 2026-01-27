@@ -1726,6 +1726,13 @@ __aicore_inline__ T MakeRedHead(T repeat, T thread_size) {
   return head;
 }
 
+__aicore_inline__ void PadRedSync(uint32_t cnt) {
+  for (uint32_t i = 0; i < cnt; ++i) {
+    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+    wait_flag_dev(0);
+  }
+}
+
 __aicore_inline__ uint64_t VisitRed_1(bcodeptr_t pc) {
   __bcode__ vVisitRed1 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed1*>(pc);
   uint64_t blocknum = vBlockNum();
@@ -1753,8 +1760,7 @@ __aicore_inline__ uint64_t VisitRed_1(bcodeptr_t pc) {
     uint64_t thread_size = min(r1, blocknum / group_num);
     op->e += group_num;
     if (blockidx >= thread_size * group_num) {
-      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
-      wait_flag_dev(0);
+      PadRedSync(op->user_cnt);
       return 0;
     }
     uint64_t thread_idx = blockidx % thread_size;
@@ -1799,8 +1805,7 @@ __aicore_inline__ uint64_t VisitRed_2(bcodeptr_t pc) {
     uint64_t thread_size = min(r1, blocknum / group_num);
     op->e += group_num;
     if (blockidx >= thread_size * group_num) {
-      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
-      wait_flag_dev(0);
+      PadRedSync(op->user_cnt);
       return 0;
     }
     uint64_t thread_idx = blockidx % thread_size;
@@ -1849,8 +1854,7 @@ __aicore_inline__ uint64_t VisitRed_3(bcodeptr_t pc) {
     uint64_t thread_size = min(r1, blocknum / group_num);
     op->e += group_num;
     if (blockidx >= thread_size * group_num) {
-      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
-      wait_flag_dev(0);
+      PadRedSync(op->user_cnt);
       return 0;
     }
     uint64_t thread_idx = blockidx % thread_size;
@@ -1902,8 +1906,7 @@ __aicore_inline__ uint64_t VisitRed_4(bcodeptr_t pc) {
     uint64_t thread_size = min(r1, blocknum / group_num);
     op->e += group_num;
     if (blockidx >= thread_size * group_num) {
-      ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
-      wait_flag_dev(0);
+      PadRedSync(op->user_cnt);
       return 0;
     }
     uint64_t thread_idx = blockidx % thread_size;

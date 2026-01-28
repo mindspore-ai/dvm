@@ -24,6 +24,12 @@ fi
 export ASCEND_PATH=${ASCEND_TOOLKIT_HOME}
 export PYTHONPATH=$(pwd)/python:${PYTHONPATH}
 
+CCEC_BUILD_DATA=$(ccec --version | head -n 1)
+if [[ ${CCEC_BUILD_DATA:0:10} > "2025-12-00" ]]; then
+    export CANN_VER_85=1
+    echo "CANN version is 8.5+"
+fi
+
 # Optional: Print environment summary
 echo "Environment summary:"
 echo "---------------------------------"

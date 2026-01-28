@@ -18,7 +18,6 @@
 #define _DVM_SYSTEM_H_
 #include <iostream>
 #include <sstream>
-#include <functional>
 #include "dvm.h"
 
 // rts_runtime
@@ -79,8 +78,6 @@ enum SocType {
   kSocUnknow,
 };
 
-using LaunchFunc = std::function<rtError_t(const void*, uint32_t, void*, uint32_t, rtSmDesc_t*, rtStream_t)>;
-
 class CubeTuner;
 class System {
  public:
@@ -112,6 +109,12 @@ class System {
   // runtime api
   void *func_handles_[3];
 
+#ifndef __CANN_85__
+  void *rt_handle_{nullptr};
+  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
+  rtError_t(*rt_kernel_launch_)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
+#endif
+
  private:
   System();
   AiCoreArch arch_;
@@ -126,6 +129,16 @@ class System {
   SocType soc_name_{kSocUnknow};
   void *renamed_bin_{nullptr};
 };
+
+#ifndef __CANN_85__
+static inline int _stub_aclrtGetHardwareSyncAddr(void **addr) {
+  uint32_t len = 0;
+  return System::Instance().rt_get_c2c_addr_(reinterpret_cast<uint64_t *>(addr), &len);
+}
+#define aclrtGetHardwareSyncAddr(addr) _stub_aclrtGetHardwareSyncAddr(addr)
+#define aclrtLaunchKernelWithHostArgs(func_handle, blockDim, stream, _1, hostArgs, argsSize, _2, _3) \
+  System::Instance().rt_kernel_launch_(func_handle, blockDim, hostArgs, argsSize, nullptr, stream)
+#endif
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;

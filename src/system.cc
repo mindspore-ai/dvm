@@ -24,7 +24,6 @@
 #include "code.h"
 #include "tuning.h"
 
-#ifdef VK_SIM_MODEL
 // rts_runtime
 #if defined(__cplusplus)
 extern "C" {
@@ -51,8 +50,6 @@ rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 #if defined(__cplusplus)
 }
 #endif
-
-#endif // VK_SIM_MODEL
 
 extern const unsigned char g_vkernel_c220_bin[];
 extern unsigned int g_vkernel_c220_bin_len;
@@ -106,6 +103,39 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9372", kAscend910_9372, 20, 192 * MB}, {"Ascend910_9361", kAscend910_9361, 20, 96 * MB},
 };
 
+#if !defined(__CANN_85__) || defined(VK_SIM_MODEL)
+static void RegKernelWithRT(rtError_t (*reg_binary)(const rtDevBinary_t *, void **),
+                           rtError_t (*reg_function)(void *, const void *, const char_t *, const void *, uint32_t), System *sys) {
+  auto &func_handles = sys->func_handles_;
+  func_handles[Code::kTargetVec] = reinterpret_cast<uint8_t *>(sys) + Code::kTargetVec;
+  func_handles[Code::kTargetCube] = reinterpret_cast<uint8_t *>(sys) + Code::kTargetCube;
+  func_handles[Code::kTargetMix] = reinterpret_cast<uint8_t *>(sys) + Code::kTargetMix;
+  rtError_t err;
+  void *module = nullptr;
+  rtDevBinary_t dev_bin;
+  dev_bin.version = 0;
+  dev_bin.data = g_vkernel_c220_bin;
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
+  dev_bin.length = g_vkernel_c220_bin_len;
+  err = reg_binary(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
+  err = reg_function(module, func_handles[Code::kTargetVec], "vmain_mix_aiv", "vmain_mix_aiv", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
+
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
+  err = reg_binary(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
+  err = reg_function(module, func_handles[Code::kTargetCube], "vmain_mix_aic", "vmain_mix_aic", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
+
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
+  err = reg_binary(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
+  err = reg_function(module, func_handles[Code::kTargetMix], "vmain", "vmain", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
+}
+#endif
+
 System::System() {
   const SocConfig *config = nullptr;
   const std::string soc_name = GetSocName();
@@ -131,36 +161,12 @@ System::System() {
   l1_size_ = 512 * 1024;
   l0c_size_ = 128 * 1024;
 #ifdef VK_SIM_MODEL
-  rtError_t err;
-  void *module = nullptr;
-  rtDevBinary_t dev_bin;
-  dev_bin.version = 0;
-  dev_bin.data = g_vkernel_c220_bin;
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-  dev_bin.length = g_vkernel_c220_bin_len;
-
-  err = rtDevBinaryRegister(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-  uint8_t *stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetVec;
-  err = rtFunctionRegister(module, stub_func, "vmain_mix_aiv", "vmain_mix_aiv", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
-
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
-  err = rtDevBinaryRegister(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-  stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetCube;
-  err = rtFunctionRegister(module, stub_func, "vmain_mix_aic", "vmain_mix_aic", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
-
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-  err = rtDevBinaryRegister(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-  stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetMix;
-  err = rtFunctionRegister(module, stub_func, "vmain", "vmain", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
-
+  RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, this);
+  rt_kernel_launch_ = ::rtKernelLaunch;
   rt_get_c2c_addr_ = ::rtGetC2cCtrlAddr;
-#else
+  return;
+#endif
+#ifdef __CANN_85__
   renamed_bin_ = std::malloc(g_vkernel_c220_bin_len);
   memcpy_s(renamed_bin_, g_vkernel_c220_bin_len, g_vkernel_c220_bin, g_vkernel_c220_bin_len);
   for (uint32_t pos = 0; pos < g_mix_symbol_len_c220; ++pos) {
@@ -189,6 +195,23 @@ System::System() {
   err = aclrtBinaryLoadFromData(g_vkernel_c220_bin, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
   err |= aclrtBinaryGetFunction(bin_handle, "vmain", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
+#else
+  rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
+  EXCEPTION_IF(rt_handle_ == nullptr, "Load libruntime.so failed");
+  auto rt_binary_register =
+    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(rt_handle_, "rtDevBinaryRegister"));
+  EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
+  auto rt_function_register =
+    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
+      dlsym(rt_handle_, "rtFunctionRegister"));
+  EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
+  rt_kernel_launch_ =
+    reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
+      dlsym(rt_handle_, "rtKernelLaunch"));
+  EXCEPTION_IF(!rt_kernel_launch_, "load rt_kernel_launch symbol failed");
+  rt_get_c2c_addr_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(rt_handle_, "rtGetC2cCtrlAddr"));
+  EXCEPTION_IF(!rt_get_c2c_addr_, "load rt_get_c2c_addr symbol failed");
+  RegKernelWithRT(rt_binary_register, rt_function_register, this);
 #endif
 }
 
@@ -199,6 +222,11 @@ System::~System() {
   if (lazy_tuner_) {
     delete lazy_tuner_;
   }
+#ifndef __CANN_85__
+  if (rt_handle_) {
+    dlclose(rt_handle_);
+  }
+#endif
   if (renamed_bin_) {
     std::free(renamed_bin_);
   }

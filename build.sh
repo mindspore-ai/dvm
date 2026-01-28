@@ -72,7 +72,7 @@ done
 
 MAKE_ARGS="${MAKE_ARGS} -j${THREAD_NUM}"
 
-TARGET_FILE="libdvm.a"
+TARGET_FILE=(libdvm.a g_vkernel_c220_bin g_vkernel_c310_bin)
 echo "---------------- build start ----------------"
 echo "MAKE_ARGS: ${MAKE_ARGS}"
 set --
@@ -100,6 +100,6 @@ echo "git branch: ${git_branch}" >> ${git_info_file}
 echo "commit  id: ${git_commit_id}" >> ${git_info_file}
 
 # Copy target to output directory
-cp ${TARGET_FILE} ${OUTPUT_DIR}
+cp ${TARGET_FILE[@]} ${OUTPUT_DIR}
 cd ${OUTPUT_DIR}
 write_checksum

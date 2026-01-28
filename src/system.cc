@@ -90,9 +90,14 @@ extern const uint64_t g_access_func_offset_c220[];
 
 extern const unsigned char g_vkernel_c310_bin[];
 extern unsigned int g_vkernel_c310_bin_len;
+extern const uint64_t g_mix_symbols_c310[];
+extern const unsigned int g_mix_symbol_len_c310;
 
 extern const unsigned char g_vkernel_c220_bin[];
 extern unsigned int g_vkernel_c220_bin_len;
+extern const uint64_t g_mix_symbols_c220[];
+extern const unsigned int g_mix_symbol_len_c220;
+
 namespace dvm {
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kDataTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t), sizeof(int64_t)};
@@ -169,6 +174,39 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9599", kAscend910_9599, kAiCore_C310, 36, 128 * MB},
 };
 
+#if !defined(__CANN_85__) || defined(VK_SIM_MODEL)
+static void RegKernelWithRT(rtError_t (*reg_binary)(const rtDevBinary_t *, void **),
+                           rtError_t (*reg_function)(void *, const void *, const char_t *, const void *, uint32_t),
+                           const unsigned char *bin_data, unsigned int bin_len, void *func_handles[3]) {
+  func_handles[Code::kTargetVec] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetVec;
+  func_handles[Code::kTargetCube] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetCube;
+  func_handles[Code::kTargetMix] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetMix;
+  rtError_t err;
+  void *module = nullptr;
+  rtDevBinary_t dev_bin;
+  dev_bin.version = 0;
+  dev_bin.data = bin_data;
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
+  dev_bin.length = bin_len;
+  err = reg_binary(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
+  err = reg_function(module, func_handles[Code::kTargetVec], "dvm_mix_aiv", "dvm_mix_aiv", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
+
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
+  err = reg_binary(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
+  err = reg_function(module, func_handles[Code::kTargetCube], "dvm_mix_aic", "dvm_mix_aic", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
+
+  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
+  err = reg_binary(&dev_bin, &module);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
+  err = reg_function(module, func_handles[Code::kTargetMix], "dvm", "dvm", 0);
+  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
+}
+#endif
+
 void System::DoInit() {
   inited_ = true;
   const SocConfig *config = nullptr;
@@ -210,10 +248,50 @@ void System::DoInit() {
     local_mem_size_ = 256 * 1024 - ub_workspace_size_;
   }
 #ifdef VK_SIM_MODEL
-  auto rt_binary_register = rtDevBinaryRegister;
-  auto rt_function_register = rtFunctionRegister;
+  RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
   rt_kernel_launch_ = ::rtKernelLaunch;
   rt_get_c2c_addr_ = ::rtGetC2cCtrlAddr;
+  return;
+#endif
+
+#ifdef __CANN_85__
+  const uint64_t *g_mix_symbols;
+  unsigned int g_mix_symbol_len;
+  if (arch_ == kAiCore_C220) {
+    g_mix_symbols = g_mix_symbols_c220;
+    g_mix_symbol_len = g_mix_symbol_len_c220;
+  } else {
+    g_mix_symbols = g_mix_symbols_c310;
+    g_mix_symbol_len = g_mix_symbol_len_c310;
+  }
+  renamed_bin_ = std::malloc(g_vkernel_bin_len);
+  std::memcpy(renamed_bin_, g_vkernel_bin, g_vkernel_bin_len);
+  for (uint32_t pos = 0; pos < g_mix_symbol_len; ++pos) {
+    *(static_cast<char *>(renamed_bin_) + g_mix_symbols[pos]) = 'a'; // mix -> aix
+  }
+  aclrtBinaryLoadOption opt_data[2];
+  opt_data[0].type = ACL_RT_BINARY_LOAD_OPT_MAGIC;
+  opt_data[1].type = ACL_RT_BINARY_LOAD_OPT_LAZY_LOAD;
+  opt_data[1].value.isLazyLoad = 1;
+  aclrtBinaryLoadOptions bin_opt;
+  bin_opt.numOpt = 2;
+  bin_opt.options = opt_data;
+  aclrtBinHandle bin_handle;
+
+  opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_VECTOR_CORE;
+  auto err = aclrtBinaryLoadFromData(renamed_bin_, g_vkernel_bin_len, &bin_opt, &bin_handle);
+  err |= aclrtBinaryGetFunction(bin_handle, "dvm_aix_aiv", &func_handles_[Code::kTargetVec]);
+  EXCEPTION_IF(err != ACL_SUCCESS, "reg vec failed");
+
+  opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_CUBE_CORE;
+  err = aclrtBinaryLoadFromData(renamed_bin_, g_vkernel_bin_len, &bin_opt, &bin_handle);
+  err |= aclrtBinaryGetFunction(bin_handle, "dvm_aix_aic", &func_handles_[Code::kTargetCube]);
+  EXCEPTION_IF(err != ACL_SUCCESS, "reg cube failed");
+
+  opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_AICORE;
+  err = aclrtBinaryLoadFromData(g_vkernel_bin, g_vkernel_bin_len, &bin_opt, &bin_handle);
+  err |= aclrtBinaryGetFunction(bin_handle, "dvm", &func_handles_[Code::kTargetMix]);
+  EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
 #else
   rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
   EXCEPTION_IF(rt_handle_ == nullptr, "Load libruntime.so failed");
@@ -230,6 +308,9 @@ void System::DoInit() {
   EXCEPTION_IF(!rt_kernel_launch_, "load rt_kernel_launch symbol failed");
   rt_get_c2c_addr_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(rt_handle_, "rtGetC2cCtrlAddr"));
   EXCEPTION_IF(!rt_get_c2c_addr_, "load rt_get_c2c_addr_ symbol failed");
+
+  RegKernelWithRT(rt_binary_register, rt_function_register, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
+#endif
 
   auto prof_handle = dlopen("libprofapi.so", RTLD_LAZY | RTLD_LOCAL);
   EXCEPTION_IF(prof_handle == nullptr, "Load libprofapi.so failed");
@@ -254,33 +335,6 @@ void System::DoInit() {
 
   auto ret = msprof_register_callback_(0, ProfCommandHandler);
   EXCEPTION_IF(ret != MSPROF_ERROR_NONE, "MsprofRegisterCallBack failed.");
-#endif
-  rtError_t err;
-  void *module = nullptr;
-  rtDevBinary_t dev_bin;
-  dev_bin.version = 0;
-  dev_bin.data = g_vkernel_bin;
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
-  dev_bin.length = g_vkernel_bin_len;
-  err = rt_binary_register(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
-  uint8_t *stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetVec;
-  err = rt_function_register(module, stub_func, "dvm_mix_aiv", "dvm_mix_aiv", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
-
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
-  err = rt_binary_register(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
-  stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetCube;
-  err = rt_function_register(module, stub_func, "dvm_mix_aic", "dvm_mix_aic", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
-
-  dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
-  err = rt_binary_register(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
-  stub_func = reinterpret_cast<uint8_t *>(this) + Code::kTargetMix;
-  err = rt_function_register(module, stub_func, "dvm", "dvm", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 }
 
 System::~System() {
@@ -293,11 +347,14 @@ System::~System() {
   if (lazy_tuner_) {
     delete lazy_tuner_;
   }
-#ifndef VK_SIM_MODEL
+#ifndef __CANN_85__
   if (rt_handle_) {
     dlclose(rt_handle_);
   }
 #endif
+  if (renamed_bin_) {
+    std::free(renamed_bin_);
+  }
 }
 
 void *System::CreateStream() {

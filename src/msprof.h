@@ -145,18 +145,6 @@ struct NodeInfo {
   }
 };
 
-template <typename T>
-class ScopedValueGuard {
- public:
-  ScopedValueGuard(T &target, T new_value) : target_(target), old_value_(target) { target_ = std::move(new_value); }
-
-  ~ScopedValueGuard() { target_ = std::move(old_value_); }
-
- private:
-  T &target_;
-  T old_value_;
-};
-
 class MsprofHelper {
  public:
   MsprofHelper() = default;

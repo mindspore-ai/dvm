@@ -570,7 +570,7 @@ uint64_t DynMixKernel::CodeGen() {
 }
 
 int ParallelKernel::_IsolateWrap::LaunchWrap(void *workspace, void *stream) {
-  for (auto &code : codes_) {
+  for (auto code : codes_) {
     code->RelocBinds(workspace);
     code->Launch(workspace, stream);
   }
@@ -578,12 +578,18 @@ int ParallelKernel::_IsolateWrap::LaunchWrap(void *workspace, void *stream) {
 }
 
 void ParallelKernel::_IsolateWrap::DasWrap(std::ostringstream &oss) {
-  for (auto &code : codes_) {
+  for (auto code : codes_) {
     code->DisAssemble(oss);
     oss << std::endl;
   }
   if (!term_) {
     next_->DasWrap(oss);
+  }
+}
+
+void ParallelKernel::_IsolateWrap::CollectWrap(std::vector<Code *> &codes) {
+  for (auto code : codes_) {
+    code->CollectWrap(codes);
   }
 }
 
@@ -853,6 +859,12 @@ void StageCodeWrap::DasWrap(std::ostringstream &oss) {
   for (auto s : kernel_->stages_) {
     s->kernel->code_.DisAssemble(oss);
     oss << std::endl;
+  }
+}
+
+void StageCodeWrap::CollectWrap(std::vector<Code *> &codes) {
+  for (auto s : kernel_->stages_) {
+    s->kernel->code_.Collect(codes);
   }
 }
 

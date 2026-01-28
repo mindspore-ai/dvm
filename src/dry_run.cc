@@ -17,6 +17,7 @@
 #include <cstring>
 #include "isa.h"
 #include "system.h"
+#include "code.h"
 
 namespace dvm {
 /************* cce definition ***************/
@@ -204,7 +205,6 @@ uint64_t g_subblocknum{1};
 bool g_cube_core{false};
 void *g_bytecode{nullptr};
 uint8_t *g_ubuf_mem{nullptr};
-LaunchFunc g_origin_launch;
 
 struct FuncEntry {
   const uint64_t **offsets;
@@ -251,12 +251,21 @@ void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_
 }
 } // end namespace
 
-rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size, rtSmDesc_t *sm, rtStream_t stm) {
+void DryLaunch(Code *code, void *workspace, void *stream, uint64_t core_idx, bool is_cube) {
+  g_cube_core = is_cube;
+  g_subblocknum = code->target_ > 0 ? 2 : 1;
+  if (is_cube) {
+    block_idx = core_idx;
+  } else {
+    block_idx = core_idx / g_subblocknum;
+    g_subblockid = core_idx & 1;
+  }
+  block_num = code->block_dim_;
+  size_t size = code->data_size_;
   g_bytecode = std::malloc(size);
-  std::memcpy(g_bytecode, args, size);
+  std::memcpy(g_bytecode, code->data_, size);
   uint64_t ffts_addr = *(reinterpret_cast<uint64_t*>(g_bytecode));
   uint64_t entry = *(reinterpret_cast<uint64_t*>(g_bytecode) + 1);
-  block_num = block;
   if (!g_cube_core) {
     g_ubuf_mem = reinterpret_cast<uint8_t *>(std::malloc(size + PC_BASE));
     dvm_mix_aiv(ffts_addr, entry);
@@ -265,25 +274,5 @@ rtError_t DryLaunch(const void *stub, uint32_t block, void *args, uint32_t size,
     dvm_mix_aic(ffts_addr, entry);
   }
   std::free(g_bytecode);
-  return 0;
-}
-
-void DryRunEntry(uint64_t core_idx, bool is_cube, int target) {
-  auto &sys = g_system;
-  g_origin_launch = sys.rt_kernel_launch_;
-  sys.rt_kernel_launch_ = DryLaunch;
-  g_cube_core = is_cube;
-  g_subblocknum = target > 0 ? 2 : 1;
-  if (is_cube) {
-    block_idx = core_idx;
-  } else {
-    block_idx = core_idx / g_subblocknum;
-    g_subblockid = core_idx & 1;
-  }
-}
-
-void DryRunExit() {
-  auto &sys = g_system;
-  sys.rt_kernel_launch_ = g_origin_launch;
 }
 }  // namespace dvm

@@ -221,8 +221,7 @@ class DevRunner : public KernelRunner {
   int dev_id_{0};
 };
 
-void DryRunEntry(uint64_t core_idx, bool is_cube, int target);
-void DryRunExit();
+void DryLaunch(Code *code, void *workspace, void *stream, uint64_t core_idx, bool is_cube);
 
 class DryRunner : public KernelRunner {
  public:
@@ -255,15 +254,24 @@ class DryRunner : public KernelRunner {
     return 0;
   }
 
+  struct _LaunchGuard : public CodeLaunchGuard {
+    _LaunchGuard(Code &code, uint64_t core_idx, bool is_cube)
+        : CodeLaunchGuard(code), core_idx_(core_idx), is_cube_(is_cube) {}
+    int CodeLaunch(Code *code, void *workspace, void *stream) override {
+      DryLaunch(code, workspace, stream, core_idx_, is_cube_);
+      return 0;
+    }
+    uint64_t core_idx_;
+    bool is_cube_;
+  };
+
   void DryRun(Kernel &kernel, void *workspace, int core_id, bool is_cube) {
-    int target = kernel.GetImpl()->code_.target_;
-    DryRunEntry(core_id, is_cube || target == Code::kTargetCube, target);
+    _LaunchGuard guard(kernel.GetImpl()->code_, core_id, is_cube);
     if (kernel.GetImpl()->IsSplit()) {
       kernel.Launch(nullptr);
     } else {
       ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, nullptr));
     }
-    DryRunExit();
   }
 
  private:

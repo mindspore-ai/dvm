@@ -111,3 +111,13 @@ if __name__ == '__main__':
                             print(function_address_map.get(ins_name, '0x0000') + ', // ' + ins_name)
     if pipe_cnt < 3:
         raise ValueError("Some pipe not found")
+    with open(f"g_vkernel_{arch}_bin", "rb") as fin:
+        bin_data = fin.read()
+        all_pos = []
+        pos = bin_data.find(b"mix_")
+        while pos >= 0:
+            all_pos.append(str(pos))
+            pos = bin_data.find(b"mix_", pos + 4)
+        pos_str = ", ".join(all_pos)
+        print(f"extern const unsigned long int g_mix_symbols_{arch}[] = {{{pos_str}}};")
+        print(f"extern const unsigned int g_mix_symbol_len_{arch} = {len(all_pos)};")

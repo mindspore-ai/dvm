@@ -17,7 +17,6 @@
 #ifndef _DVM_SYSTEM_H_
 #define _DVM_SYSTEM_H_
 #include <iostream>
-#include <functional>
 #include "dvm.h"
 
 // rts_runtime
@@ -103,7 +102,6 @@ enum ProfilerLevel {
   Level2,
 };
 
-using LaunchFunc = std::function<rtError_t(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>;
 
 class CubeTuner;
 class System : public Config {
@@ -155,14 +153,7 @@ class System : public Config {
   CubeTuner *lazy_tuner_{nullptr};
 
   // runtime api
-  uint8_t *StubFunc(int target) { return reinterpret_cast<uint8_t *>(this) + target; }
-  rtError_t rtKernelLaunch(const void *stubFunc, uint32_t blockDim, void *args, uint32_t argsSize,
-                           rtStream_t stm) const {
-    return rt_kernel_launch_(stubFunc, blockDim, args, argsSize, nullptr, stm);
-  }
-  rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len) const { return rt_get_c2c_addr_(addr, len); }
-
-  LaunchFunc rt_kernel_launch_;
+  void *func_handles_[3];
   void *CreateStream();
   const uint64_t *g_simd_func_offset_;
   const uint64_t *g_access_func_offset_;
@@ -173,6 +164,12 @@ class System : public Config {
   int32_t (*msprof_report_api_)(uint32_t agingFlag, const MsprofApi *api);
   int32_t (*msprof_report_compact_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
   int32_t (*msprof_report_additional_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
+
+#ifndef __CANN_85__
+  void *rt_handle_{nullptr};
+  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
+  rtError_t(*rt_kernel_launch_)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
+#endif
 
  private:
   void DoInit();
@@ -190,12 +187,21 @@ class System : public Config {
   uint64_t cube_core_num_;
   SocType soc_name_{kSocUnknow};
 
-  void *rt_handle_{nullptr};
   void *comm_stream_{nullptr};
-  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
+  void *renamed_bin_{nullptr};
 };
 
 extern System g_system;
+
+#ifndef __CANN_85__
+static inline int _stub_aclrtGetHardwareSyncAddr(void **addr) {
+  uint32_t len = 0;
+  return g_system.rt_get_c2c_addr_(reinterpret_cast<uint64_t *>(addr), &len);
+}
+#define aclrtGetHardwareSyncAddr(addr) _stub_aclrtGetHardwareSyncAddr(addr)
+#define aclrtLaunchKernelWithHostArgs(func_handle, blockDim, stream, _1, hostArgs, argsSize, _2, _3) \
+  g_system.rt_kernel_launch_(func_handle, blockDim, hostArgs, argsSize, nullptr, stream)
+#endif
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;

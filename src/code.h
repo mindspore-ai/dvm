@@ -18,6 +18,7 @@
 #define _DVM_CODE_H_
 #include <sstream>
 #include <cstring>
+#include "acl/acl_rt.h"
 #include "isa.h"
 #include "system.h"
 
@@ -80,6 +81,7 @@ class CodeWrap {
   virtual int LaunchWrap(void *workspace, void *stream);
   virtual void CombineWrap(Code *to, uint64_t ws_base);
   virtual void DasWrap(std::ostringstream &oss);
+  virtual void CollectWrap(std::vector<Code *> &codes);
   CodeWrap *next_{nullptr};
 };
 
@@ -181,6 +183,15 @@ class Code : public CodeWrap {
   void DasWrap(std::ostringstream &oss) override;
   int LaunchWrap(void *workspace, void *stream) override;
   void CombineWrap(Code *to, uint64_t ws_base) override;
+  void CollectWrap(std::vector<Code *> &codes) override;
+
+  void Collect(std::vector<Code *> &codes) {
+    if (wrap_) {
+      wrap_->CollectWrap(codes);
+    } else {
+      codes.push_back(this);
+    }
+  }
 
   void InsertWrap(CodeWrap *wrap) {
     wrap->next_ = wrap_ ? wrap_ : this;
@@ -211,6 +222,18 @@ class Code : public CodeWrap {
   }
   void BindOp(RelocAddr &op, const RelocAddr &target);
 
+  int DoLaunch(void *workspace, void *stream) {
+    if (target_ == kTargetMix) {
+      auto err = aclrtGetHardwareSyncAddr(reinterpret_cast<void **>(data_));
+      if (err != ACL_SUCCESS) return err;
+    }
+    if (likely(data_size_ <= PARAM_TABLE_LIMIT)) {
+      auto func_handle = g_system.func_handles_[target_];
+      return aclrtLaunchKernelWithHostArgs(func_handle, block_dim_, stream, nullptr, data_, data_size_, nullptr, 0);
+    }
+    return LaunchEx(workspace, stream);
+  }
+
   unsigned char *data_{nullptr};
   uint32_t data_size_{0};
   uint32_t block_dim_{0};
@@ -221,18 +244,6 @@ class Code : public CodeWrap {
   size_t mem_size_{0};
 
  private:
-  int DoLaunch(void *workspace, void *stream) {
-    if (unlikely(data_size_ > PARAM_TABLE_LIMIT)) {
-      return LaunchEx(workspace, stream);
-    }
-    if (target_ == kTargetMix) {
-      uint32_t ffts_len;
-      auto ret = g_system.rtGetC2cCtrlAddr(reinterpret_cast<uint64_t *>(data_), &ffts_len);
-      if (ret != RT_ERROR_NONE) return ret;
-    }
-    uint8_t *stub_func = g_system.StubFunc(target_);
-    return g_system.rtKernelLaunch(stub_func, block_dim_, data_, data_size_, stream);
-  }
   int LaunchEx(void *workspace, void *stream);
   uint64_t ReserveCodeSpace(uint64_t workspace_size);
 
@@ -250,6 +261,18 @@ class Code : public CodeWrap {
     op.bind_list_ = pos;
     pos = &op;
   }
+};
+
+class CodeLaunchGuard : public CodeWrap {
+ public:
+  CodeLaunchGuard(Code &root);
+  virtual ~CodeLaunchGuard();
+  int LaunchWrap(void *workspace, void *stream) override;
+  virtual int CodeLaunch(Code *code, void *workspace, void *stream) = 0;
+
+ protected:
+  std::vector<Code *> codes_;
+  size_t launch_idx_{0};
 };
 
 class PCodeEncoder {

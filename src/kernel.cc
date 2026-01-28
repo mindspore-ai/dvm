@@ -68,6 +68,12 @@ class IdleCleanWrap : public CodeWrap {
     oss << "\nvmain.idle() {}";
   }
 
+  void CollectWrap(std::vector<Code *> &codes) override {
+    for (auto k : kernels_) {
+      k->code_.Collect(codes);
+    }
+  }
+
  private:
   std::vector<VKernelD *> kernels_;
 };
@@ -108,7 +114,6 @@ class IdleCodeWrap : public CodeWrap {
 };
 
 static std::unique_ptr<IdleCodeWrap> g_idle_wrap;
-static std::mutex g_rt_kernel_launch_mutex;
 
 VKernel::~VKernel() {
   if (g_idle_wrap) {
@@ -168,17 +173,20 @@ int VKernel::Launch(void *stream) {
   code_.RelocBinds(pre_ws_mem_);
   if (likely(!g_system.enable_profile_ || msprof_ == nullptr)) {
     return code_.Launch(pre_ws_mem_, stream);
-  }
-  {
-    std::lock_guard<std::mutex> lock(g_rt_kernel_launch_mutex);
-    ScopedValueGuard<LaunchFunc> guard(g_system.rt_kernel_launch_, [real_rt_launch = g_system.rt_kernel_launch_, this](
-                                                                     const void *stub, auto &&...rest_args) {
-      uint32_t target = reinterpret_cast<const uint8_t *>(stub) - reinterpret_cast<uint8_t *>(&g_system);
-      msprof_->Update(target);
-      auto ret = real_rt_launch(stub, std::forward<decltype(rest_args)>(rest_args)...);
-      msprof_->ReportTask();
-      return ret;
-    });
+  } else {
+    struct _MsprofLaunchGuard : public CodeLaunchGuard {
+      _MsprofLaunchGuard(Code &code, MsprofHelper *helper) : CodeLaunchGuard(code), helper_(helper) {}
+
+
+      int CodeLaunch(Code *code, void *workspace, void *stream) {
+        helper_->Update(code->target_);
+        int ret = code->DoLaunch(workspace, stream);
+        helper_->ReportTask();
+        return ret;
+      }
+      MsprofHelper *helper_;
+    };
+    _MsprofLaunchGuard guard(code_, msprof_);
     return code_.Launch(pre_ws_mem_, stream);
   }
 }

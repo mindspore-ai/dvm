@@ -172,6 +172,7 @@ class ParallelKernel : public VKernel {
    public:
     int LaunchWrap(void *workspace, void *stream) override;
     void DasWrap(std::ostringstream &oss) override;
+    void CollectWrap(std::vector<Code *> &codes) override;
     std::vector<Code *> codes_;
     bool term_{false};
   };
@@ -187,6 +188,7 @@ class StageCodeWrap : public CodeWrap {
   explicit StageCodeWrap(StagesKernel *kernel) : kernel_(kernel) {}
   int LaunchWrap(void *workspace, void *stream) override;
   void DasWrap(std::ostringstream &oss) override;
+  void CollectWrap(std::vector<Code *> &codes) override;
 
  private:
   StagesKernel *kernel_;

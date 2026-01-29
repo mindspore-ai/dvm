@@ -2314,7 +2314,6 @@ void SplitGraphD::Append(NDObject *op) {
 }
 
 void SplitGraphD::Normalize() {
-  Reset();
   tracker_.Recover();
   for (auto op : objects_) {
     if (!(op->flags_ & OBJ_FLAG_EAGER)) {
@@ -2322,6 +2321,7 @@ void SplitGraphD::Normalize() {
       NDObject::mem_pool_.Put(op);
     }
   }
+  Reset();
   _SplitGraph::Normalize();
 }
 

@@ -6,7 +6,7 @@
 ---
 
 #### 项目介绍
-DVM(Device Virtual Machine)是当前业界唯一的微秒级实时AI算子编译和执行框架，可以实现对深度神经网络中的手写或融合算子在运行时根据具体Shape做实时算子编译和执行。通过实时编译技术，使得DVM可以原生支持动态Shape、动态图等动态网络场景的高性能图算融合和算子执行。除此之外，DVM也可以用于静态Shape图算融合、自定义手写算子等其它传统算子执行优化场景。当前，DVM已应用于[MindSpore](https://www.mindspore.cn)、[torch_npu](https://www.gitcode.com/Ascend/pytorch)等多个下游AI框架，用于解决图模式甚至Eager模式的自动图算融合优化问题。对于大部分网络场景，都可获得较为显著的整网融合性能收益。
+DVM(Device Virtual Machine)是当前业界唯一的微秒级实时AI算子编译和执行框架，可以实现对深度神经网络中的手写或融合算子在运行时根据具体Shape做实时算子编译和执行。通过实时编译技术，使得DVM可以原生支持动态Shape、动态图等动态网络场景的高性能图算融合和算子执行。除此之外，DVM也可以用于静态Shape图算融合、自定义手写算子等其它传统算子执行优化场景。当前，DVM已应用于[MindSpore](https://gitcode.com/mindspore/mindspore)、[torch_npu](https://gitcode.com/Ascend/pytorch)等多个下游AI框架，用于实现图模式或Eager模式的自动图算融合优化。对于大部分网络场景，都可获得较为显著的整网融合性能收益。
 
 DVM支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构
 
@@ -50,7 +50,7 @@ DVM支持在linux下进行编译执行，并依赖如下环境配置：
 #### 许可证
 [Apache License 2.0](https://gitcode.com/mindspore/dvm/blob/master/LICENSE)
 
-#### 技术讨论SIG(Special Interest Group)
+#### Special Interest Group(SIG)
 
 如果您对DVM相关技术讨论感兴趣，请考虑加入AKG SIG群。
 

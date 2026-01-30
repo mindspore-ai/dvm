@@ -15,7 +15,7 @@
 
 """ dvm python """
 from . import _dvm_py as _core
-from ._dvm_py import DataType, Device, Kernel, KernelBase, NDObject, IntArrayRef, ScalarRef
+from ._dvm_py import DataType, Device, Kernel, PyKernel, NDObject, IntArrayRef, ScalarRef
 from .jit import kernel
 
 bool_ = DataType.bool
@@ -29,7 +29,7 @@ __all__ = [
     "DataType",
     "Device",
     "Kernel",
-    "KernelBase",
+    "PyKernel",
     "NDObject",
     "IntArrayRef",
     "ScalarRef",

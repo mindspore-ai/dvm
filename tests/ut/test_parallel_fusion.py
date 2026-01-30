@@ -27,18 +27,19 @@ from tests.mark_utils import arg_mark
 def test_basic(shape1, shape2, shape3):
     t = Tester("parallel")
     # kernel 0
+    t.parallel_add(Tester.K_VEC)
     a0 = np.full(shape1, 0.1, np.float32)
     a = t.load(a0)
     b = t.mul(a, 0.3)
     c = t.store_expect(b, 0.1 * 0.3)
     # kernel 1
-    t.p_next()
+    t.parallel_add(Tester.K_VEC)
     b0 = np.full(shape2, 0.1, np.float32)
     a = t.load(b0)
     b = t.add(a, 0.3)
     c = t.store_expect(b, 0.1 + 0.3)
     # kernel 3
-    t.p_next()
+    t.parallel_add(Tester.K_VEC)
     c0 = np.full(shape3, 0.1, np.float32)
     a = t.load(c0)
     b = t.add(a, 0.3)
@@ -52,16 +53,17 @@ def test_reduce(determ):
     t = Tester("parallel")
     t.set_deterministic(determ)
     # kernel 0
+    t.parallel_add(Tester.K_VEC)
     a0 = np.full((8192,), 0.1, np.float32)
     a = t.sum(t.load(a0), [0], False)
     t.store_expect(a, 8192 * 0.1)
     # kernel 1
-    t.p_next()
+    t.parallel_add(Tester.K_VEC)
     b0 = np.full((4, 4096), 0.1, np.float32)
     b = t.sum(t.load(b0), [0], False)
     t.store_expect(b, 4 * 0.1)
     # kernel 2
-    t.p_next()
+    t.parallel_add(Tester.K_VEC)
     c0 = np.full((1,), 0.1, np.float32)
     c = t.add(t.load(c0), 1.0)
     t.store_expect(c, 0.1 + 1.0)
@@ -74,11 +76,12 @@ def test_reduce_determ_all():
     t = Tester("parallel")
     t.set_deterministic(True)
     # kernel 0
+    t.parallel_add(Tester.K_VEC)
     a0 = np.full((8192,), 0.1, np.float32)
     a = t.sum(t.load(a0), [0], False)
     t.store_expect(a, 8192 * 0.1)
     # kernel 1
-    t.p_next()
+    t.parallel_add(Tester.K_VEC)
     b0 = np.full((4, 4096), 0.1, np.float32)
     b = t.sum(t.load(b0), [0], False)
     t.store_expect(b, 4 * 0.1)
@@ -88,7 +91,7 @@ def test_reduce_determ_all():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-@pytest.mark.parametrize('ktype1, ktype2', [["cube", "cube"], ["cube", "mix"], ["mix", "mix"]])
+@pytest.mark.parametrize('ktype1, ktype2', [[Tester.K_CUBE, Tester.K_CUBE], [Tester.K_CUBE, Tester.K_MIX], [Tester.K_MIX, Tester.K_MIX]])
 def test_cube_cube(ktype1, ktype2):
     t = Tester("parallel")
     t.parallel_add(ktype1)
@@ -98,7 +101,7 @@ def test_cube_cube(ktype1, ktype2):
     x1 = t.load(xb)
     x2 = t.matmul(x0, x1, False, False)
     x2_e = np.matmul(xa.astype(np.float32), xb.astype(np.float32)).astype(np.float16)
-    if ktype1 == "mix":
+    if ktype1 == Tester.K_MIX:
         x2 = t.mul(x2, 0.5)
         x2_e = x2_e * 0.5
     t.store_expect(x2, x2_e, 1e-3)
@@ -109,7 +112,7 @@ def test_cube_cube(ktype1, ktype2):
     y1 = t.load(yb)
     y2 = t.matmul(y0, y1, False, False)
     y2_e = np.matmul(ya.astype(np.float32), yb.astype(np.float32)).astype(np.float16)
-    if ktype2 == "mix":
+    if ktype2 == Tester.K_MIX:
         y2 = t.add(y2, 0.3)
         y2_e = y2_e + 0.3
     t.store_expect(y2, y2_e, 1e-3)
@@ -118,7 +121,7 @@ def test_cube_cube(ktype1, ktype2):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-@pytest.mark.parametrize('ktype', ["cube", "mix"])
+@pytest.mark.parametrize('ktype', [Tester.K_CUBE, Tester.K_MIX])
 def test_cube_vector(ktype):
     t = Tester("parallel")
     t.parallel_add(ktype)
@@ -128,11 +131,11 @@ def test_cube_vector(ktype):
     x1 = t.load(xb)
     x2 = t.matmul(x0, x1, False, False)
     x2_e = np.matmul(xa.astype(np.float32), xb.astype(np.float32)).astype(np.float16)
-    if ktype == "mix":
+    if ktype == Tester.K_MIX:
         x2 = t.mul(x2, 0.5)
         x2_e = x2_e * 0.5
     t.store_expect(x2, x2_e, 1e-3)
-    t.parallel_add("vector")
+    t.parallel_add(Tester.K_VEC)
     ya = np.random.normal(0, 0.1, [10, 1024]).astype(np.float16)
     y0 = t.load(ya)
     y1 = t.add(y0, 0.3)
@@ -146,18 +149,18 @@ def test_cube_vector(ktype):
 @pytest.mark.parametrize('m_limit, c_limit, v_limit', [[0, 0, 0], [8, 8, 0], [0, 0, 10]])
 def test_mix_cube_vector(m_limit, c_limit, v_limit):
     t = Tester("parallel")
-    t.parallel_add("mix", m_limit)
+    t.parallel_add(Tester.K_MIX, 0, m_limit)
     xa = Tester.fast_random_normal(0, 0.1, [1024, 768]).astype(np.float16)
     xb = Tester.fast_random_normal(0, 0.1, [768, 2000]).astype(np.float16)
     x0 = t.matmul(t.load(xa), t.load(xb), False, False)
     x1 = t.mul(x0, 0.5)
     t.store_expect(x1, np.matmul(xa.astype(np.float32), xb.astype(np.float32)).astype(np.float16) * 0.5, 1e-3)
-    t.parallel_add("cube", c_limit)
+    t.parallel_add(Tester.K_CUBE, 0, c_limit)
     ya = Tester.fast_random_normal(0, 0.1, [1536, 768]).astype(np.float16)
     yb = Tester.fast_random_normal(0, 0.1, [768, 768]).astype(np.float16)
     y0 = t.matmul(t.load(ya), t.load(yb), False, False)
     t.store_expect(y0, np.matmul(ya.astype(np.float32), yb.astype(np.float32)).astype(np.float16), 1e-3)
-    t.parallel_add("vector", v_limit)
+    t.parallel_add(Tester.K_VEC, 0, v_limit)
     za = np.random.normal(0, 0.1, [10, 2000]).astype(np.float32)
     z0 = t.load(za)
     z1 = t.add(z0, 0.3)

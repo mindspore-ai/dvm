@@ -19,7 +19,8 @@ import subprocess
 import csv
 import inspect
 import numpy as np
-from . import DataType, Kernel
+from . import DataType
+from . import PyKernel as Kernel
 
 _DTYPE_NAME_MAP = {
     "bool": DataType.bool,
@@ -96,11 +97,12 @@ class Tester(Kernel):
         return x_bf32
 
     def _prepare_array_input(self, array, dtype):
-        dtype_id = _normalize_dtype(dtype)
+        if dtype is None:
+            dtype_id = _normalize_dtype(str(array.dtype))
+        else:
+            dtype_id = _normalize_dtype(dtype)
         if dtype_id == DataType.bfloat16:
             array = Kernel.convert_to_bf16(self, array)
-        elif dtype_id is None:
-            dtype_id = _normalize_dtype(str(array.dtype))
         shape = list(array.shape)
         return array, dtype_id, shape
 

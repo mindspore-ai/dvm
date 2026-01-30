@@ -26,6 +26,13 @@
 namespace dvm {
 namespace py = pybind11;
 void DvmException(const char *error_str);
+class DataTypePy {
+ public:
+  explicit constexpr DataTypePy(DataType dtype) : dtype_(dtype) {}
+  operator DataType() const { return dtype_; }
+  DataType dtype_;
+};
+
 class NDObjectPy {
  public:
   explicit NDObjectPy(NDObject *obj) : obj_(obj) {}
@@ -38,7 +45,7 @@ class NDObjectPy {
     }
     return out;
   }
-  DataType GetDType() const { return Kernel::GetDType(obj_); }
+  DataTypePy GetDType() const { return DataTypePy(Kernel::GetDType(obj_)); }
   NDObject *Get() const { return obj_; }
 
  private:
@@ -72,7 +79,7 @@ class IntArrayRefPy {
 class ScalarRefPy {
  public:
   ScalarRefPy() { data_.type = kDataTypeEnd; }
-  explicit ScalarRefPy(DataType type) { data_.type = type; }
+  explicit ScalarRefPy(DataTypePy type) { data_.type = type; }
   void Update(py::object val) {
     if (py::isinstance<py::int_>(val)) {
       data_ = val.cast<int>();
@@ -93,10 +100,9 @@ class KernelPy {
   KernelPy() = default;
   virtual ~KernelPy() {}
 
-  virtual py::object Load(py::object shape, DataType type) = 0;
-  virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataType type) = 0;
+  virtual py::object Load(py::object shape, DataTypePy type) = 0;
+  virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) = 0;
   virtual py::object Store(py::object obj) = 0;
-  virtual IntArrayRef *GetShapeRef(py::object shape) = 0;
 
   template <UnaryOpType op_type>
   py::object Unary(py::object input) {
@@ -129,11 +135,11 @@ class KernelPy {
     return ObjToPy(kernel_.Reduce<op_type>(PyToObj(input), GetShapeRef(dims), keepdims));
   }
 
-  py::object Cast(py::object input, DataType type) { return ObjToPy(kernel_.Cast(PyToObj(input), type)); }
+  py::object Cast(py::object input, DataTypePy type) { return ObjToPy(kernel_.Cast(PyToObj(input), type)); }
   py::object Select(py::object cond, py::object lhs, py::object rhs) {
     return ObjToPy(kernel_.Select(PyToObj(cond), PyToObj(lhs), PyToObj(rhs)));
   }
-  py::object Full(py::object scalar, py::object shape, DataType dtype) {
+  py::object Full(py::object scalar, py::object shape, DataTypePy dtype) {
     auto shape_ref = GetShapeRef(shape);
     NDObject *op = nullptr;
     if (py::isinstance<py::int_>(scalar)) {
@@ -167,52 +173,70 @@ class KernelPy {
                                     GroupType(group_type), GroupListType(group_list_type));
     return ObjToPy(op);
   }
+  void SetStoreInplace(py::object store) { kernel_.SetStoreInplace(PyToObj(store)); }
   py::object DisAssemble() { return py::cast(kernel_.Das()); }
   py::object DumpGraph() { return py::cast(kernel_.Dump()); }
-  void ParallelNext() { kernel_.ParallelNext(); }
   void SpecNext() { kernel_.SpecNext(); }
+  void ParallelAdd(int ktype, uint32_t flags, int core_limit) { kernel_.ParallelAdd(static_cast<KernelType>(ktype), flags, core_limit); }
+  void SequenceAdd(int ktype, uint32_t flags) { kernel_.SequenceAdd(static_cast<KernelType>(ktype), flags); }
   py::object MakeIntArray() { return py::cast(std::make_shared<IntArrayRefPy>()); }
-  py::object MakeScalar(DataType type = kDataTypeEnd) { return py::cast(std::make_shared<ScalarRefPy>(type)); }
-  static void SetDeterm(bool enable);
-  static void SetTuning(bool enable);
+  py::object MakeScalar(DataTypePy type) { return py::cast(std::make_shared<ScalarRefPy>(type)); }
+
+  static void SetDeterm(bool enable) {
+    if (enable) {
+      Config::Instance().SetDeterm();
+    } else {
+      Config::Instance().UnsetDeterm();
+    }
+  }
+  static void SetOnlineTuning(bool enable) {
+    if (enable) {
+      Config::Instance().SetOnlineTuner();
+    } else {
+      Config::Instance().UnsetOnlineTuner();
+    }
+  }
+
+  static constexpr int K_VEC = KernelType::kVector;
+  static constexpr int K_CUBE = KernelType::kCube;
+  static constexpr int K_MIX = KernelType::kMix;
+  static constexpr int K_PARAL = KernelType::kParallel;
+  static constexpr int K_SEQ = KernelType::kSequence;
+  static constexpr int K_SPLIT = KernelType::kSplit;
+  static constexpr int K_EAGER = KernelType::kEager;
+  static constexpr uint32_t F_DYN = KernelFlag::kDynamic;
+  static constexpr uint32_t F_UWS = KernelFlag::kUnifyWS;
+  static constexpr uint32_t F_SPEC = KernelFlag::kSpeculate;
 
  protected:
+  virtual IntArrayRef *GetShapeRef(py::object shape) = 0;
   NDObject *PyToObj(py::object obj) { return obj.cast<NDOpPyPtr>()->Get(); }
   py::object ObjToPy(NDObject *obj) { return py::cast(std::make_shared<NDObjectPy>(obj)); }
   ScalarRef *PyToScalar(py::object scalar) { return &(scalar.cast<ScalarRefPyPtr>()->data_); }
   Kernel kernel_;
 };
 
-inline void KernelPy::SetDeterm(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetDeterm();
-  } else {
-    conf.UnsetDeterm();
-  }
-}
-
-inline void KernelPy::SetTuning(bool enable) {
-  auto &conf = Config::Instance();
-  if (enable) {
-    conf.SetOnlineTuner().SetLazyTuner();
-  } else {
-    conf.UnsetOnlineTuner().UnsetLazyTuner();
-  }
-}
+constexpr auto bool_py = DataTypePy(kBool);
+constexpr auto float16_py = DataTypePy(kFloat16);
+constexpr auto bfloat16_py = DataTypePy(kBFloat16);
+constexpr auto float32_py = DataTypePy(kFloat32);
+constexpr auto int32_py = DataTypePy(kInt32);
+constexpr auto int64_py = DataTypePy(kInt64);
 
 static inline void RegDvmPy(const py::module &m) {
   (void)py::class_<NDObjectPy, std::shared_ptr<NDObjectPy>>(m, "NDObject")
     .def("shape", &NDObjectPy::GetShape, "get shape")
     .def("dtype", &NDObjectPy::GetDType, "get dtype");
 
-  (void)py::enum_<DataType>(m, "DataType")
-    .value("bool", kBool)
-    .value("float16", kFloat16)
-    .value("bfloat16", kBFloat16)
-    .value("float32", kFloat32)
-    .value("int32", kInt32)
-    .value("int64", kInt64);
+  (void)py::class_<DataTypePy>(m, "DataType")
+    .def("__eq__", [](const DataTypePy &self, const DataTypePy &other) { return self.dtype_ == other.dtype_; })
+    .def("__ne__", [](const DataTypePy &self, const DataTypePy &other) { return self.dtype_ != other.dtype_; })
+    .def_readonly_static("bool", &bool_py)
+    .def_readonly_static("float16", &float16_py)
+    .def_readonly_static("bfloat16", &bfloat16_py)
+    .def_readonly_static("float32", &float32_py)
+    .def_readonly_static("int32", &int32_py)
+    .def_readonly_static("int64", &int64_py);
 
   (void)py::class_<IntArrayRefPy, std::shared_ptr<IntArrayRefPy>>(m, "IntArrayRef")
     .def(py::init<>())
@@ -223,11 +247,12 @@ static inline void RegDvmPy(const py::module &m) {
   (void)py::class_<ScalarRefPy, std::shared_ptr<ScalarRefPy>>(m, "ScalarRef")
     .def("update", &ScalarRefPy::Update, "update value");
 
-  (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "KernelBase")
+  (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "Kernel")
     .def("load", &KernelPy::Load, "load array")
     .def("view_load", &KernelPy::ViewLoad, "load array")
     .def("store", &KernelPy::Store, "store array")
-    .def("scalar", &KernelPy::MakeScalar, "create scalar", py::arg("dtype") = kDataTypeEnd)
+    .def("set_store_inplace", &KernelPy::SetStoreInplace, "store inplace")
+    .def("scalar", &KernelPy::MakeScalar, "create scalar", py::arg("dtype") = DataTypePy(kDataTypeEnd))
     .def("int_array", &KernelPy::MakeIntArray, "create int array")
     .def("sqrt", &KernelPy::Unary<UnaryOpType::kSqrt>, "emit sqrt")
     .def("abs", &KernelPy::Unary<UnaryOpType::kAbs>, "emit abs")
@@ -275,10 +300,21 @@ static inline void RegDvmPy(const py::module &m) {
          py::arg("group_list_type") = 0)
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
-    .def("p_next", &KernelPy::ParallelNext, "parallel next")
     .def("spec_next", &KernelPy::SpecNext, "spec next")
+    .def("parallel_add", &KernelPy::ParallelAdd, "add new parallel Kernel", py::arg("ktype"), py::arg("flags") = 0, py::arg("core_limit") = 0)
+    .def("seq_add", &KernelPy::SequenceAdd, "add new sequence Kernel", py::arg("ktype"), py::arg("flags") = 0)
+    .def_readonly_static("K_VEC", &KernelPy::K_VEC)
+    .def_readonly_static("K_CUBE", &KernelPy::K_CUBE)
+    .def_readonly_static("K_MIX", &KernelPy::K_MIX)
+    .def_readonly_static("K_PARAL", &KernelPy::K_PARAL)
+    .def_readonly_static("K_SEQ", &KernelPy::K_SEQ)
+    .def_readonly_static("K_SPLIT", &KernelPy::K_SPLIT)
+    .def_readonly_static("K_EAGER", &KernelPy::K_EAGER)
+    .def_readonly_static("F_DYN", &KernelPy::F_DYN)
+    .def_readonly_static("F_UWS", &KernelPy::F_UWS)
+    .def_readonly_static("F_SPEC", &KernelPy::F_SPEC)
     .def_static("set_deterministic", &KernelPy::SetDeterm, "set deterministic")
-    .def_static("set_online_tuning", &KernelPy::SetTuning, "set online tuning");
+    .def_static("set_online_tuning", &KernelPy::SetOnlineTuning, "set online tuning");
 }
 }  // namespace dvm
 #endif  // _DVM_PY_API_H_

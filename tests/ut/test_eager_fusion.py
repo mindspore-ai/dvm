@@ -358,7 +358,7 @@ def test_eager_load_reuse():
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_eager_lazy_tuner():
     t = Tester("eager")
-    Tester.set_online_tuning(True)
+    Tester.set_lazy_tuning(True)
     shape = [4096, 4096]
     a = np.random.normal(0, 0.01, shape).astype(np.float16)
     b = np.random.normal(0, 0.01, shape).astype(np.float16)
@@ -370,7 +370,7 @@ def test_eager_lazy_tuner():
         t.store_expect(x2, expect, 1e-3)
         assert (t.run_check())
         t.reset()
-    Tester.set_online_tuning(False)
+    Tester.set_lazy_tuning(False)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

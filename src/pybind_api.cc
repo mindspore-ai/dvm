@@ -397,7 +397,7 @@ IntArrayRef *RtKernelPy::GetShapeRef(py::object shape) {
 }
 
 py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
-                              DataType dtype) {
+                              DataTypePy dtype) {
   auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
   auto depth_ref = shape_.emplace_back(new IntArrayRef(shape_vec_.emplace_back(1, depth)));
   NDObject *op;
@@ -418,7 +418,7 @@ py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::objec
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::Load(py::object shape, DataType type) {
+py::object RtKernelPy::Load(py::object shape, DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
@@ -427,7 +427,7 @@ py::object RtKernelPy::Load(py::object shape, DataType type) {
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, DataType type) {
+py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
@@ -442,7 +442,7 @@ py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t off
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, DataType type) {
+py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
@@ -454,7 +454,7 @@ py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object 
 }
 
 py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step,
-                                        DataType type) {
+                                        DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
@@ -466,7 +466,7 @@ py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::
   return py::cast(std::make_shared<NDObjectPy>(op));
 }
 
-py::object RtKernelPy::MultiLoad(py::object shape, DataType type) {
+py::object RtKernelPy::MultiLoad(py::object shape, DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
@@ -489,11 +489,6 @@ py::object RtKernelPy::PadStore(py::object obj, int64_t pad_size) {
   auto &store = stores_.emplace_back();
   store.op = op;
   return py::cast(std::make_shared<NDObjectPy>(op));
-}
-
-void RtKernelPy::SetStoreInplace(py::object obj) {
-  auto store = obj.cast<NDOpPyPtr>()->Get();
-  kernel_.SetStoreInplace(store);
 }
 
 py::object RtKernelPy::AllReduce(const std::string &type, py::object input) {
@@ -553,16 +548,6 @@ py::object RtKernelPy::ConvertFromBF16(py::object input) {
                           buf.strides);
   f32s_.push_back(std::move(float_data));
   return py::array(new_buf);
-}
-
-void RtKernelPy::ParallelAdd(const std::string &ker_type, int core_limit) {
-  auto [type, flags] = ParseKernelType(ker_type);
-  kernel_.ParallelAdd(type, flags, core_limit);
-}
-
-void RtKernelPy::SequenceAdd(const std::string &ker_type) {
-  auto [type, flags] = ParseKernelType(ker_type);
-  kernel_.SequenceAdd(type, flags);
 }
 
 void RtKernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
@@ -921,13 +906,12 @@ class DevicePy {
 
 PYBIND11_MODULE(_dvm_py, m) {
   RegDvmPy(m);
-  py::class_<RtKernelPy, KernelPy, std::shared_ptr<RtKernelPy>>(m, "Kernel")
+  py::class_<RtKernelPy, KernelPy, std::shared_ptr<RtKernelPy>>(m, "PyKernel")
     .def(py::init<const std::string &, const std::string &, int>())
     .def("slice_load", &RtKernelPy::SliceLoad, "load array")
     .def("stridedslice_load", &RtKernelPy::StridedSliceLoad, "load array")
     .def("multi_load", &RtKernelPy::MultiLoad, "load array(for reducescatter)")
     .def("pad_store", &RtKernelPy::PadStore, "pad store array")
-    .def("set_store_inplace", &RtKernelPy::SetStoreInplace, "store inplace")
     .def("one_hot", &RtKernelPy::OneHot, "emit onehot op")
     .def("allreduce", &RtKernelPy::AllReduce, "emit allreduce op")
     .def("allgather", &RtKernelPy::AllGather, "emit allgather op")
@@ -935,8 +919,6 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("reducescatter", &RtKernelPy::ReduceScatter, "emit reducescatter op")
     .def("convert_to_bf16", &RtKernelPy::ConvertToBF16, "convert f32 array to bf16 array")
     .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
-    .def("parallel_add", &RtKernelPy::ParallelAdd, "add new parallel Kernel", py::arg("ktype"), py::arg("core_limit") = 0)
-    .def("seq_add", &RtKernelPy::SequenceAdd, "add new sequence Kernel")
     .def("reset", &RtKernelPy::Reset, "reset eager")
     .def("clone", &RtKernelPy::Clone, "clone kernel")
     .def("input", &RtKernelPy::Input, "get ouput array")
@@ -951,6 +933,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("dry_run", &RtKernelPy::DryRun, "dry run vm")
     .def_static("init_comm", &RtKernelPy::InitComm, "init communicatior")
     .def_static("set_cube_store_type", &RtKernelPy::SetCubeStoreType, "set sync type")
+    .def_static("set_lazy_tuning", &RtKernelPy::SetLazyTuning, "set lazy tuning")
     .def_static("fork", &RtKernelPy::Fork, "fork process", py::arg("size"), py::arg("comm_type") = "")
     .def_static("join", &RtKernelPy::Join, "join process")
     .def_static("barrier", &RtKernelPy::Barrier, "barrier process")

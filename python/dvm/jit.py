@@ -14,7 +14,7 @@
 # ============================================================================
 
 import os
-from . import Kernel
+from . import PyKernel as Kernel
 
 
 class JitKernel(Kernel):

@@ -136,6 +136,10 @@ k.Launch(stream);
 + 元Kernel: 包括kVector、 kCube、 kMix三种类型。 作为最基础的Kernel执行单位。其包含的元算子组合受限于融合Pattern；
 + 堆叠Kernel：包括kParallel、kSequence、kSplit、kEager。将多个元算子Kernel堆叠在一起进行整体执行。前两者实现手工堆叠，后两者分别对应图模式和Eager模式的自动堆叠。
 
+通过将不同类型元算子进行堆叠执行，既充分利用和发挥了DVM字节码编译的灵活性，又能显著降低运行时开销和提升硬件资源利用率。堆叠执行图示如下：
+
+![堆叠](figures/stacking.png)
+
 DVM当前支持的Kernel类型整体对比如下表：
 
 | Kernel名 | Kernel类型 | 功能描述 | 适用场景 |

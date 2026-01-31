@@ -1536,11 +1536,21 @@ uint64_t VKernelS::CodeGen() {
 void VKernelS::Append(NDObject *obj) { build_ops_.push_back(obj); }
 
 bool VKernelS::NormBuild() {
-  if (!Normalize(true)) {
-    return false;
+  if (IsDynamic()) {
+    Clear();
+    if (static_ops_.empty()) {
+      StaticInit(build_ops_);
+    }
+    if (!Normalize(true)) {
+      return false;
+    }
+  } else {
+    if (!Normalize(true)) {
+      return false;
+    }
+    Optimize(build_ops_, nullptr);
+    StaticInit(objects_);
   }
-  Optimize(build_ops_, nullptr);
-  StaticInit(objects_);
   BuildDomain();
   return true;
 }
@@ -1565,18 +1575,6 @@ void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
     oss << std::endl;
   }
   oss << indent << "}";
-}
-
-bool VKernelD::NormBuild() {
-  Recover();
-  if (static_ops_.empty()) {
-    StaticInit(build_ops_);
-  }
-  if (!Normalize(true)) {
-    return false;
-  }
-  BuildDomain();
-  return true;
 }
 
 _SpecVector::~_SpecVector() {
@@ -1642,7 +1640,7 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     return false;
   };
   if constexpr (dyn_shape) {
-    Recover();
+    Clear();
     if (static_ops_.empty()) {
       StaticInit(build_ops_);
     }

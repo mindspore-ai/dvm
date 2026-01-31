@@ -54,6 +54,10 @@ class CubeKernel : public VKernel {
     code_.UpdateC();
     return 0;
   }
+  void Clear() {
+    code_.Clear();
+    cube_op_->Clear();
+  }
   CubeOp *GetCube() const { return cube_op_; }
 
  protected:
@@ -108,6 +112,10 @@ class MixKernelBase : public CubeKernel {
     code_.data_size_ = out.code_end - code_.data_;
     code_.UpdateMix(out.entry);
     return out.ws_size;
+  }
+  void Clear() {
+    CubeKernel::Clear();
+    post_fusion_->Clear();
   }
  
  protected:

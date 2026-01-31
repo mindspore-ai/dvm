@@ -1125,6 +1125,11 @@ class CubeOp : public NDObject {
       m_align_ /= batch_size;
     }
   }
+  void Clear() {
+    atomic_add_ = false;
+    batch_fold_ = false;
+    set_real_ = false;
+  }
 
   NDAccess *output_{nullptr};
   uint64_t block_dim_{0};

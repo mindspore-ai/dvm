@@ -551,7 +551,6 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
       break;
     }
     case KernelType::kParallel: {
-      EXCEPTION_IF(flags & KernelFlag::kDynamic, "dynamic shape parallel is not support");
       kernel = new ParallelKernel(flags);
       break;
     }

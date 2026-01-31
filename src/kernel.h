@@ -226,7 +226,7 @@ class VKernelS : public VectorKernel {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 
-  virtual bool NormBuild();
+  bool NormBuild();
 
   bool Normalize(bool broker_norm) {
     if (broker_norm && broker_num_ == -1) {
@@ -244,6 +244,11 @@ class VKernelS : public VectorKernel {
   bool BrokerAffine();
   uint64_t BrokerCodeGen(VKernel **hold_kernel);
 
+  void Clear() {
+    code_.Clear();
+    objects_.clear();
+  }
+
   std::vector<NDObject *> build_ops_;
 
  protected:
@@ -252,15 +257,9 @@ class VKernelS : public VectorKernel {
   VKernel *stage_kernel_{nullptr};
 };
 
-class VKernelD : public VKernelS {
+class VKernelD : public VKernelS {  // TODO: remove VKernelD
  public:
   VKernelD(uint32_t flags = KernelFlag::kDynamic) : VKernelS(flags) {}
-  bool NormBuild() override;
-
-  void Recover() {
-    code_.Clear();
-    objects_.clear();
-  }
 };
 
 class _SpecVector : public VKernelD {

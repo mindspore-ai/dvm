@@ -107,6 +107,9 @@ uint8_t *CubeKernel::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit) {
 }
 
 uint64_t CubeKernel::CodeGen() {
+  if (IsDynamic()) {
+    Clear();
+  }
   NormalizeCube();
   DoCodeGen();
   return 0;
@@ -189,6 +192,9 @@ void MixKernelBase::Append(NDObject *obj) {
 }
 
 uint64_t MixKernelBase::CodeGen() {
+  if (IsDynamic()) {
+    Clear();
+  }
   NormalizeCube();
   NormalizePost();
   return DoCodeGen();
@@ -545,7 +551,7 @@ uint64_t MixKernel::CodeGen() {
 
 void DynMixKernel::Record() {
   if (post_fusion_) {
-    static_cast<VKernelD *>(post_fusion_)->Recover();
+    static_cast<VKernelD *>(post_fusion_)->Clear();
     for (auto op : post_fusion_->build_ops_) {
       op->ForInput([this](NDObject *&in) { tracker_.Record(&in); });
     }
@@ -609,6 +615,9 @@ ParallelKernel::~ParallelKernel() {
 }
 
 void ParallelKernel::AddKernel(KernelType type, uint32_t flags, size_t thread_limit) {
+  if (IsDynamic()) {
+    flags |= KernelFlag::kDynamic;
+  }
   if (type == kVector) {
     auto &node = vectors_.emplace_back(new VKernelS(flags), thread_limit);
     current_ = node.kernel;
@@ -678,6 +687,10 @@ struct PCoreAllocator {
 };
 
 uint64_t ParallelKernel::CodeGen() {
+  bool dynamic = IsDynamic();
+  if (dynamic) {
+    code_.Clear();
+  }
   PCoreAllocator aic, aiv;
   int target = -1;
   int max_prog_num = 0;
@@ -698,6 +711,9 @@ uint64_t ParallelKernel::CodeGen() {
   if (!cubes_.empty()) {
     for (auto &n : cubes_) {
       auto k = static_cast<CubeKernel *>(n.kernel);
+      if (dynamic) {
+        k->Clear();
+      }
       k->NormalizeCube();
       aic.Collect(n, k);
       code_reserve += n.code_reserve;
@@ -711,6 +727,9 @@ uint64_t ParallelKernel::CodeGen() {
     }
     for (auto &n : mixes_) {
       auto k = static_cast<MixKernelBase *>(n.kernel);
+      if (dynamic) {
+        k->Clear();
+      }
       k->NormalizeCube();
       k->NormalizePost();
       aic.Collect(n, k);
@@ -2259,10 +2278,7 @@ void _SplitGraph::Normalize() {
   for (auto op : build_ops_) {
     if (op->IsCube()) {
       auto mm = static_cast<CubeOp *>(op);
-      // TODO: cube support reuse
-      mm->atomic_add_ = false;
-      mm->batch_fold_ = false;
-      mm->set_real_ = false;
+      mm->Clear();
       auto real_out = AppendCube(mm);
       mm->block_dim_ = reinterpret_cast<uint64_t>(real_out);
     } else {

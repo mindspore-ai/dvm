@@ -167,3 +167,43 @@ def test_mix_cube_vector(m_limit, c_limit, v_limit):
     z2 = t.sum(z1, (0,), True)
     t.store_expect(z2, np.sum(za + 0.3, (0,), keepdims=True))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('ktype', [Tester.K_CUBE, Tester.K_MIX])
+def test_cube_vector_dyn(ktype):
+    t = Tester("parallel:dyn")
+    t.parallel_add(ktype)
+    xa = t.load([-1], "float16")
+    xb = t.load([-1], "float16")
+    x0 = t.matmul(xa, xb, False, False)
+    if ktype == Tester.K_MIX:
+        x0 = t.mul(x0, 0.5)
+        x0 = t.add(x0, 0.02)
+    x_out = t.store(x0)
+    t.parallel_add(Tester.K_VEC)
+    ya = t.load([-1], "float32")
+    yb = t.load([-1], "float32")
+    y0 = t.add(ya, yb)
+    y1 = t.sum(y0, (1,), True)
+    y_out = t.store(y1)
+    iterations = [
+        [[512, 2048], [2048, 1024], [1, 2000, 128], [4, 1, 128]],
+        [[2, 1024, 768], [768, 1024], [1, 512], [4000, 512]],
+        [[512, 1024], [1024, 768], [1024, 200], [1024, 200]]]
+    for xa_shape, xb_shape, ya_shape, yb_shape in iterations:
+        xa_data = np.random.normal(0, 0.1, xa_shape).astype(np.float16)
+        xb_data = np.random.normal(0, 0.1, xb_shape).astype(np.float16)
+        ya_data = np.random.normal(0, 0.1, ya_shape).astype(np.float32)
+        yb_data = np.random.normal(0, 0.1, yb_shape).astype(np.float32)
+        t.input(xa, xa_data)
+        t.input(xb, xb_data)
+        t.input(ya, ya_data)
+        t.input(yb, yb_data)
+        t.run()
+        x_e = np.matmul(xa_data.astype(np.float32), xb_data.astype(np.float32)).astype(np.float16)
+        if ktype == Tester.K_MIX:
+            x_e = x_e * 0.5 + 0.02
+        t.check(x_out, x_e, 1e-3)
+        y_e = np.sum(ya_data + yb_data, (1,), keepdims=True)
+        t.check(y_out, y_e, 1e-3)

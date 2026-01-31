@@ -169,7 +169,7 @@ auto a = k.Load(tensor_a.addr(), shape_a, dvm::kFloat16);
 auto b = k.Load(tensor_b.addr(), shape_a, dvm::kFloat16);
 auto c = k.Binary<dvm::kAdd>(a, b);
 auto d = k.Binary<dvm::kSqrt>(c);
-auto e = k.Reduce<dvm::kSum>(d, dims, True);
+auto e = k.Reduce<dvm::kSum>(d, dims, true);
 auto out = k.Store(e);
 ```
 
@@ -188,7 +188,7 @@ k.Reset(dvm::kCube, 0);
 
 auto a = k.Load(tensor_a.addr(), shape_a, dvm::kFloat16);
 auto b = k.Load(tensor_b.addr(), shape_a, dvm::kFloat16);
-auto c = k.MatMul(a, b, False, False, nullptr);
+auto c = k.MatMul(a, b, false, false, nullptr);
 auto out = k.Store(c);
 ```
 
@@ -204,7 +204,7 @@ k.Reset(dvm::kMix, 0);
 // Cube计算
 auto a = k.Load(tensor_a.addr(), shape_a, dvm::kFloat16);
 auto b = k.Load(tensor_b.addr(), shape_a, dvm::kFloat16);
-auto c = k.MatMul(a, b, False, False, nullptr);
+auto c = k.MatMul(a, b, false, false, nullptr);
 
 // Vector计算
 auto d = k.Cast(c, dvm::kFloat32);
@@ -217,22 +217,28 @@ auto out = k.Store(f);
 
 Parallel堆叠可以实现将多个相互之间无依赖的元Kernel分配到不同的AIC/AIV核并行计算执行，从而提升多核并行度和整体算力利用率。
 
-构图代码示例：
+主要功能规格：
++ 支持多个Vector、Cube、Mix的同类型或不同类型元Kernel做并行堆叠；
++ 在ParallelAdd时，可以对部分或全部子Kernel指定其最大可用核数上限。所有核数上限之和不能超过物理可用核数。
+
+以实现Vector、Cube两个不同类型kernel并行为例，对应构图代码示例如下：
 ```c++
 dvm::Kernel k;
 k.Reset(dvm::kParallel, 0);
 
 // Kernel 1 
-k.ParallelAdd(dvm::kVector, 0);
+k.ParallelAdd(dvm::kVector);
 auto a1 = k.Load(tensor_a.addr(), shape_a, dvm::kFloat32);
 auto a2 = k.Add(a1, 1.0);
-auto out_a = k.Store(a2);
+auto a3 = k.Reduce<dvm::kSum>(a2, dims, false);
+auto out_a = k.Store(a3);
 
 // Kernel 2
-k.ParallelAdd(dvm::kVector, 0);
-auto b1 = k.Load(tensor_b.addr(), shape_b, dvm::kFloat32);
-auto b2 = k.Reduce<dvm::kSum>(b1, dims, False);
-auto out_b = k.Store(b2);
+k.ParallelAdd(dvm::kCube);
+auto b1 = k.Load(tensor_b.addr(), shape_b, dvm::kFloat16);
+auto b2 = k.Load(tensor_c.addr(), shape_c, dvm::kFloat16);
+auto b3 = k.MatMul(b1, b2, false, false, nullptr);
+auto out_b = k.Store(b3);
 ```
 
 ### 3.5 Sequence堆叠
@@ -257,7 +263,7 @@ auto a3 = k.Cast(a2, dvm::kFloat16);
 // Kernel 2
 k.SequenceAdd(dvm::kMix, 0);
 auto b1 = k.Load(tensor_b.addr(), shape_b, dvm::kFloat16);
-auto b2 = k.MatMul(a3, b1, False, True, nullptr); // 直接使用a3
+auto b2 = k.MatMul(a3, b1, false, true, nullptr); // 直接使用a3
 auto b3 = k.Binary<dvm::kMul>(b2, 0.5);
 auto out_b = k.Store(b3);
 ```
@@ -273,7 +279,7 @@ auto a1 = k.Load(tensor_a.addr(), shape_a, dvm::kFloat32);
 auto a2 = k.Add(a1, 1.0);
 auto a3 = k.Cast(a2, dvm::kFloat16);
 auto b1 = k.Load(tensor_b.addr(), shape_b, dvm::kFloat16);
-auto b2 = k.MatMul(a3, b1, False, True, nullptr); // 直接使用a3
+auto b2 = k.MatMul(a3, b1, false, true, nullptr); // 直接使用a3
 auto b3 = k.Binary<dvm::kMul>(b2, 0.5);
 auto out_b = k.Store(b3);
 ```
@@ -345,4 +351,4 @@ std::cout << k.Das() << std::endl;
 
 DVM内部对于各类错误使用场景会有不同ASSERT断言处理。但为了实时CodeGen性能，这些断言在Release版本中不会编译使能。所以，如果算子执行异常，一种可能方式是替换DVM的Debug版本。
 
-DVM Debug版本编译: ```make dbg=1```
+如果需要使用DVM Debug版本, 请在DVM编译make命令中增加```dbg=1```选项。 比如：: ```make dbg=1 -j8```

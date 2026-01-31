@@ -228,6 +228,16 @@ class Kernel {
   ~Kernel();
 
   /**
+   * @brief Kernel copy. ONLY one Kernel hold the implementation instance.
+   */
+  Kernel& operator=(Kernel &k) {
+    kernel_ = k.kernel_;
+    k.kernel_ = nullptr;
+    return *this;
+  }
+  explicit Kernel(Kernel &k) { *this = k; }
+
+  /**
    * @brief Set this kernel to a specific kernel type.
    * @param type target kernel type.
    * @param flags flag options combined of KernelFlag::XX.
@@ -443,7 +453,7 @@ class Kernel {
    * @brief add a new parallel sub kenrel. support with kParallel kernel type.
    * @param type sub kernel type. current only support kVector type.
    * @param flags sub kernel flags.
-   * @param thread_limit RESERVED. sub kernel maximum thread limit.
+   * @param thread_limit sub kernel maximum thread limit. auto assign if 0.
    */
   void ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit = 0);
 

@@ -34,7 +34,7 @@ DVM支持在linux下进行编译执行，并依赖如下环境配置：
    make -j32
    ```
 4. DVM验证执行。包括基于DVM相关接口定义算子计算逻辑以及执行算子。 DVM当前支持两种使用方式：
-   + 使用python接口: 如 ```python examples/01_add.py```。 这种方式当前主要用于DVM功能验证，在实际网络场景使用较少；
+   + 使用python接口: 如 ```python examples/01_add.py```。 这种方式主要用于DVM功能验证或自定义算子表达；
    + 使用C++接口: 需要用户程序包含libdvm.a, 并基于DVM的C++接口进行算子定义和执行。具体示例可参考: [cc example](examples/cc/README.md)
 
 

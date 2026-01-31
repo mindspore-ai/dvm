@@ -1,6 +1,6 @@
 # DVM应用开发指南
 
-本文介绍如何基于DVM完成不同类型算子的计算逻辑表达和执行。
+本文介绍如何基于DVM完成不同类型算子的计算逻辑表达和执行。目标读者为基于DVM进行自定义算子或融合算子开发者。
 
 ## 1. 概述
 
@@ -352,3 +352,124 @@ std::cout << k.Das() << std::endl;
 DVM内部对于各类错误使用场景会有不同ASSERT断言处理。但为了实时CodeGen性能，这些断言在Release版本中不会编译使能。所以，如果算子执行异常，一种可能方式是替换DVM的Debug版本。
 
 如果需要使用DVM Debug版本, 请在DVM编译make命令中增加```dbg=1```选项。 比如：: ```make dbg=1 -j8```
+
+ 
+## 6. API列表
+
+DVM C++ API大部分都以Kernel类成员函数进行实现。以下API接口如无特别说明，默认都是Kernel类成员函数。
+
+### 6.1 Kernel初始化
+
+| API | 说明 |
+| --- | --- |
+| `void Reset(KernelType type, uint32_t flags)` | 重置初始化，需要完成构图才能使用 |
+| `void Clone(const Kernel &base, CloneHelper &helper)` | 从已经完成构图的Kernel克隆初始化，无需重复构图 |
+| `void SetNameHint(const char *name, const char *fullname)` | 设置Kernel名字信息 |
+
+### 6.2 构图表达
+
+#### 6.2.1 全局访存
+
+| API | 说明 |
+| --- | --- |
+| `NDObject *Load(void *addr, IntArrayRef *shape, DataType type)` | 连续Load |
+| `NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type)` | 非连续Load |
+| `NDObject *Store(void *addr, NDObject *input)` | Store |
+
+#### 6.2.2 Vector计算
+
+| API | 说明 |
+| --- | --- |
+| `NDObject *Unary<kSqrt>(NDObject *input)` | 开平方 |
+| `NDObject *Unary<kAbs>(NDObject *input)` | 绝对值 |
+| `NDObject *Unary<kLog>(NDObject *input)` | 对数 |
+| `NDObject *Unary<kExp>(NDObject *input)` | 自然指数 |
+| `NDObject *Unary<kReciprocal>(NDObject *input)` | 倒数 |
+| `NDObject *Unary<kIsFinite>(NDObject *input)` | 有限数值判断 |
+| `NDObject *Unary<kLogicalNot>(NDObject *input)` | 逻辑反 |
+| `NDObject *Unary<kRound>(NDObject *input)` | 四舍五入取整 |
+| `NDObject *Unary<kFloor>(NDObject *input)` | 向下取整 |
+| `NDObject *Unary<kCeil>(NDObject *input)` | 向上取整 |
+| `NDObject *Unary<kTrunc>(NDObject *input)` | 数值截断 |
+| `NDObject *Binary<Add>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 加法 |
+| `NDObject *Binary<Sub>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 减法 |
+| `NDObject *Binary<Mul>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 乘法 |
+| `NDObject *Binary<Div>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 除法 |
+| `NDObject *Binary<Pow>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 指数幂 |
+| `NDObject *Binary<Maximum>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 提取最大值 |
+| `NDObject *Binary<Minimum>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 提取最小值 |
+| `NDObject *Binary<Equal>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 相等 |
+| `NDObject *Binary<NotEqual>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 不等于 |
+| `NDObject *Binary<Greater>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 大于 |
+| `NDObject *Binary<GreaterEqual>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 大于等于 |
+| `NDObject *Binary<Less>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 小于 |
+| `NDObject *Binary<LessEqual>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 小于等于 |
+| `NDObject *Binary<LogicalAnd>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 逻辑与 |
+| `NDObject *Binary<LogicalOr>([NDObject *\|Scalar] lhs,  [NDObject *\|Scalar] rhs)` | 逻辑或 |
+| `NDObject *Reduce<kSum>(NDObject *input, IntArrayRef *dims, bool keepdims)` | 规约求和 |
+| `NDObject *Reduce<kMax>(NDObject *input, IntArrayRef *dims, bool keepdims)` | 规约求最大值 |
+| `NDObject *Reduce<kMin>(NDObject *input, IntArrayRef *dims, bool keepdims)` | 规约求最小值 |
+| `NDObject *Select(NDObject *cond, NDObject *lhs, NDObject *rhs)` | 数值选择 |
+| `NDObject *Cast(NDObject *input, DataType type)` | 类型转换 |
+| `NDObject *Broadcast(NDObject *input, IntArrayRef *shape)` | 张量广播 |
+| `NDObject *Broadcast([Scalar] val, IntArrayRef *shape, DataType type)` | 标量广播 |
+| `NDObject *Reshape(NDObject *input, IntArrayRef *shape)` | Reshape |
+| `NDObject *Copy(NDObject *input)` | 张量拷贝 |
+
+#### 6.2.3 Cube计算
+
+| API | 说明 |
+| --- | --- |
+| `NDObject *MatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias)` | 矩阵乘法 |
+| `NDObject *GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias, ...)` | 分组矩阵乘法 |
+
+#### 6.2.4 内存语义通信
+
+| API | 说明 |
+| --- | --- |
+| `NDObject *AllReduce(NDObject *input, const Comm *comm)` | AllReduce |
+| `NDObject *AllGather(NDObject *input, const Comm *comm)` | AllGather |
+| `NDObject *AllGatherV2(NDObject *input, const Comm *comm)` | AllGatherV2 |
+| `NDObject *ReduceScatter(NDObject *input, const Comm *comm)` | ReduceScatter |
+
+#### 6.2.5 构图控制
+
+| API | 说明 |
+| --- | --- |
+| `void SetStoreInplace(NDObject *store)` | 标记原地Store |
+| `void SpecNext()` | 切换下一个投机分段 |
+| `void ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit = 0)` | 添加并行堆叠子Kernel |
+| `void SequenceAdd(KernelType type, uint32_t flags)` | 添加顺序堆叠子Kernel |
+
+### 6.3 编译执行
+
+| API | 说明 |
+| --- | --- |
+| `void Normalize()` | Shape推导和正则化 |
+| `void CodeGen(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc)` | 编译生成字节码 |
+| `int Launch(void *stream)` | 下发执行 |
+| `size_t PreCodeGen()` | 预编译 |
+| `int Launch(const RelocEntry *relocs, size_t reloc_size, void *workspace, void *stream)` | 预编译下发执行 |
+| `void Clear()` | 清理执行上下文(Eager) |
+
+### 6.4 杂项
+
+| API | 说明 |
+| --- | --- |
+| `IntArrayRef *GetShape(NDObject *op)` | 获取OP Shape |
+| `DataType GetDType(NDObject *op)` | 获取Op 数据类型 |
+| `const char *Dump() const` | Dump元算子构图 |
+| `const char *Das() const` | Dump字节码反汇编 |
+
+### 6.5 全局配置
+
+全局配置接口通过Config单例进行提供。
+
+| API/类型 | 说明 |
+| --- | --- |
+| `Config &SetDeterm()` | 开启确定性计算 |
+| `Config &UnsetDeterm()` | 关闭确定性计算 |
+| `Config &SetOnlineTuner()` | 开启在线Tuning |
+| `Config &UnsetOnlineTuner()` | 关闭在线Tuning |
+| `Config &SetLazyTuner()` | 开启Lazy Tuning |
+| `Config &UnsetLazyTuner()` | 关闭Lazy Tuning |

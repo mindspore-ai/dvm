@@ -31,7 +31,8 @@ class RtKernelPy : public KernelPy {
 
   py::object Load(py::object shape, DataTypePy type) override;
   py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) override;
-  py::object Store(py::object obj) override;
+  py::object Store(py::object obj, DataTypePy type) override;
+
 
   py::object SliceLoad(py::object shape, py::object start, py::object size, DataTypePy type);
   py::object StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step, DataTypePy type);

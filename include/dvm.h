@@ -149,6 +149,10 @@ struct IntArrayRef {
 
 struct ScalarRef {
   ScalarRef() = default;
+  template <typename T>
+  ScalarRef(T val) {
+    *this = val;
+  }
   ScalarRef &operator=(float val) {
     type = kFloat32;
     f32 = val;

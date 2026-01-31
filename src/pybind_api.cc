@@ -398,7 +398,7 @@ IntArrayRef *RtKernelPy::GetShapeRef(py::object shape) {
 
 py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
                               DataTypePy dtype) {
-  auto indices_obj = indices.cast<NDOpPyPtr>()->Get();
+  auto indices_obj = PyToObj(indices);
   auto depth_ref = shape_.emplace_back(new IntArrayRef(shape_vec_.emplace_back(1, depth)));
   NDObject *op;
   if (dtype == kInt32) {
@@ -415,7 +415,7 @@ py::object RtKernelPy::OneHot(py::object indices, int depth, int axis, py::objec
       op = kernel_.OneHot(indices_obj, depth_ref, axis, on_float, off_float);
     }
   }
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::Load(py::object shape, DataTypePy type) {
@@ -424,7 +424,7 @@ py::object RtKernelPy::Load(py::object shape, DataTypePy type) {
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto op = kernel_.Load(nullptr, shape_ref, type);
   info.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) {
@@ -439,7 +439,7 @@ py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t off
   }
   auto op = kernel_.Load(nullptr, shape_ref, stride_ref, offset_ptr, type);
   info.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object size, DataTypePy type) {
@@ -450,7 +450,7 @@ py::object RtKernelPy::SliceLoad(py::object shape, py::object start, py::object 
   auto size_ref = GetShapeRef(size);
   auto op = kernel_.SliceLoad(nullptr, shape_ref, start_ref, size_ref, type);
   info.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step,
@@ -463,7 +463,7 @@ py::object RtKernelPy::StridedSliceLoad(py::object shape, py::object start, py::
   auto step_ref = GetShapeRef(step);
   auto op = kernel_.StridedSliceLoad(nullptr, shape_ref, start_ref, end_ref, step_ref, type);
   info.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::MultiLoad(py::object shape, DataTypePy type) {
@@ -472,27 +472,28 @@ py::object RtKernelPy::MultiLoad(py::object shape, DataTypePy type) {
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto op = kernel_.MultiLoad(nullptr, shape_ref, type, &g_mpc.comm);
   info.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
-py::object RtKernelPy::Store(py::object obj) {
-  auto in_obj = obj.cast<NDOpPyPtr>()->Get();
+py::object RtKernelPy::Store(py::object obj, DataTypePy type) {
+  auto in_obj = PyToObj(obj);
+  if (type != kDataTypeEnd) {
+    in_obj = kernel_.Cast(in_obj, type);
+  }
   auto op = kernel_.Store(nullptr, in_obj);
   auto &store = stores_.emplace_back();
   store.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::PadStore(py::object obj, int64_t pad_size) {
-  auto in_obj = obj.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.PadStore(nullptr, in_obj, pad_size);
+  auto op = kernel_.PadStore(nullptr, PyToObj(obj), pad_size);
   auto &store = stores_.emplace_back();
   store.op = op;
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(op);
 }
 
 py::object RtKernelPy::AllReduce(const std::string &type, py::object input) {
-  auto input_obj = input.cast<NDOpPyPtr>()->Get();
   ReduceType reduce_type{ReduceType::kReduceTypeEnd};
   if (type == "sum") {
     reduce_type = ReduceType::kSum;
@@ -501,26 +502,17 @@ py::object RtKernelPy::AllReduce(const std::string &type, py::object input) {
   } else {
     throw py::value_error("Unsupported AllReduce type: " + type);
   }
-  auto op = kernel_.AllReduce(reduce_type, input_obj, &g_mpc.comm);
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(kernel_.AllReduce(reduce_type, PyToObj(input), &g_mpc.comm));
 }
 
 py::object RtKernelPy::ReduceScatter(py::object input) {
-  auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.ReduceScatter(input_obj, &g_mpc.comm);
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(kernel_.ReduceScatter(PyToObj(input), &g_mpc.comm));
 }
 
-py::object RtKernelPy::AllGather(py::object input) {
-  auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.AllGather(input_obj, &g_mpc.comm);
-  return py::cast(std::make_shared<NDObjectPy>(op));
-}
+py::object RtKernelPy::AllGather(py::object input) { return ObjToPy(kernel_.AllGather(PyToObj(input), &g_mpc.comm)); }
 
 py::object RtKernelPy::AllGatherV2(py::object input) {
-  auto input_obj = input.cast<NDOpPyPtr>()->Get();
-  auto op = kernel_.AllGatherV2(input_obj, &g_mpc.comm);
-  return py::cast(std::make_shared<NDObjectPy>(op));
+  return ObjToPy(kernel_.AllGatherV2(PyToObj(input), &g_mpc.comm));
 }
 
 py::object RtKernelPy::ConvertToBF16(py::object input) {
@@ -682,7 +674,7 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
 
 void RtKernelPy::Input(py::object obj, py::object val) {
   if (py::isinstance<NDObjectPy>(obj)) {
-    auto op = static_cast<NDAccess *>(obj.cast<NDOpPyPtr>()->Get());
+    auto op = static_cast<NDAccess *>(PyToObj(obj));
     auto &info = FindVectorInfo(loads_, op);
     auto input = py::array(val);
     py::buffer_info buf = input.request();
@@ -705,7 +697,7 @@ void RtKernelPy::Input(py::object obj, py::object val) {
 }
 
 py::object RtKernelPy::Output(py::object store) {
-  auto op = store.cast<NDOpPyPtr>()->Get();
+  auto op = PyToObj(store);
   auto &info = FindVectorInfo(stores_, op);
   ASSERT(info.dev);
   std::vector<ssize_t> shape;
@@ -730,8 +722,7 @@ py::object RtKernelPy::Output(py::object store) {
 }
 
 void RtKernelPy::ClearStoreMemory(py::object store) {
-  auto op = store.cast<NDOpPyPtr>()->Get();
-  auto &info = FindVectorInfo(stores_, op);
+  auto &info = FindVectorInfo(stores_, PyToObj(store));
   info.clear_mem = true;
 }
 
@@ -768,11 +759,11 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
   struct _CloneHelper : public CloneHelper {
     IntArrayRef *GetClone(IntArrayRef *shape) override {
       auto it = ref_map_.find(shape);
-      return it != ref_map_.end()  ? static_cast<IntArrayRef *>(it->second) : shape;
+      return it != ref_map_.end() ? static_cast<IntArrayRef *>(it->second) : shape;
     }
     ScalarRef *GetClone(ScalarRef *scalar) override {
       auto it = ref_map_.find(scalar);
-      return it != ref_map_.end()  ? static_cast<ScalarRef *>(it->second) : scalar;
+      return it != ref_map_.end() ? static_cast<ScalarRef *>(it->second) : scalar;
     }
     NDObject *GetClone(NDObject *op) override {
       auto it = op_map_.find(op);
@@ -827,9 +818,7 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
   }
   for (size_t i = 0; i < remap_size; ++i) {
     if (py::isinstance<NDObjectPy>(remap_list[i])) {
-      auto obj = remap_list[i].cast<NDOpPyPtr>()->Get();
-      obj = helper.GetClone(obj);
-      remap_out[i] = py::cast(std::make_shared<NDObjectPy>(obj));
+      remap_out[i] = ObjToPy(helper.GetClone(PyToObj(remap_list[i])));
     }
   }
   return remap_out;

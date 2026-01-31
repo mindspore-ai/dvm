@@ -102,7 +102,7 @@ class KernelPy {
 
   virtual py::object Load(py::object shape, DataTypePy type) = 0;
   virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) = 0;
-  virtual py::object Store(py::object obj) = 0;
+  virtual py::object Store(py::object obj, DataTypePy type) = 0;
 
   template <UnaryOpType op_type>
   py::object Unary(py::object input) {
@@ -250,7 +250,7 @@ static inline void RegDvmPy(const py::module &m) {
   (void)py::class_<KernelPy, std::shared_ptr<KernelPy>>(m, "Kernel")
     .def("load", &KernelPy::Load, "load array")
     .def("view_load", &KernelPy::ViewLoad, "load array")
-    .def("store", &KernelPy::Store, "store array")
+    .def("store", &KernelPy::Store, "store array", py::arg("obj"), py::arg("type") = DataTypePy(kDataTypeEnd))
     .def("set_store_inplace", &KernelPy::SetStoreInplace, "store inplace")
     .def("scalar", &KernelPy::MakeScalar, "create scalar", py::arg("dtype") = DataTypePy(kDataTypeEnd))
     .def("int_array", &KernelPy::MakeIntArray, "create int array")

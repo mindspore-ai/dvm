@@ -79,6 +79,7 @@ enum SocType {
 };
 
 class CubeTuner;
+class Code;
 class System {
  public:
   static System &Instance() {
@@ -107,13 +108,10 @@ class System {
   CubeTuner *lazy_tuner_{nullptr};
 
   // runtime api
+  int (*code_launch_)(const System &self, const Code *code, void *extern_ws, void *stream){nullptr};
   void *func_handles_[3];
-
-#ifndef __CANN_85__
-  void *rt_handle_{nullptr};
-  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
-  rtError_t(*rt_kernel_launch_)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
-#endif
+  void *get_ffts_addr_func_{nullptr};
+  void *kernel_launch_func_{nullptr};
 
  private:
   System();
@@ -128,17 +126,11 @@ class System {
   uint64_t cube_core_num_;
   SocType soc_name_{kSocUnknow};
   void *renamed_bin_{nullptr};
-};
+  void *rt_handle_{nullptr};
 
-#ifndef __CANN_85__
-static inline int _stub_aclrtGetHardwareSyncAddr(void **addr) {
-  uint32_t len = 0;
-  return System::Instance().rt_get_c2c_addr_(reinterpret_cast<uint64_t *>(addr), &len);
-}
-#define aclrtGetHardwareSyncAddr(addr) _stub_aclrtGetHardwareSyncAddr(addr)
-#define aclrtLaunchKernelWithHostArgs(func_handle, blockDim, stream, _1, hostArgs, argsSize, _2, _3) \
-  System::Instance().rt_kernel_launch_(func_handle, blockDim, hostArgs, argsSize, nullptr, stream)
-#endif
+  static int CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream);
+  static int CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream);
+};
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;

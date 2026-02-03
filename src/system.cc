@@ -103,9 +103,10 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9372", kAscend910_9372, 20, 192 * MB}, {"Ascend910_9361", kAscend910_9361, 20, 96 * MB},
 };
 
-#if !defined(__CANN_85__) || defined(VK_SIM_MODEL)
-static void RegKernelWithRT(rtError_t (*reg_binary)(const rtDevBinary_t *, void **),
-                           rtError_t (*reg_function)(void *, const void *, const char_t *, const void *, uint32_t), System *sys) {
+
+static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, System *sys) {
+  auto reg_binary = reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(reg_binary_func);
+  auto reg_function = reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(reg_function_func);
   auto &func_handles = sys->func_handles_;
   func_handles[Code::kTargetVec] = reinterpret_cast<uint8_t *>(sys) + Code::kTargetVec;
   func_handles[Code::kTargetCube] = reinterpret_cast<uint8_t *>(sys) + Code::kTargetCube;
@@ -134,7 +135,51 @@ static void RegKernelWithRT(rtError_t (*reg_binary)(const rtDevBinary_t *, void 
   err = reg_function(module, func_handles[Code::kTargetMix], "vmain", "vmain", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 }
-#endif
+
+int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
+  typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
+  typedef rtError_t (*LaunchKernelFunc)(const void *func, uint32_t blockdim, void *args, uint32_t argssize,
+                                          rtSmDesc_t *, rtStream_t);
+  if (code->target_ == Code::kTargetMix) {
+    auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
+    uint32_t len = 0;
+    auto err = get_ffts(reinterpret_cast<uint64_t *>(code->data_), &len);
+    if (err != 0) return err;
+  }
+  auto func_handle = static_cast<const void *>(reinterpret_cast<const uint8_t *>(&self) + code->target_);
+  auto launch = reinterpret_cast<LaunchKernelFunc>(self.kernel_launch_func_);
+  if (likely(code->data_size_ <= PARAM_TABLE_LIMIT)) {
+    return launch(func_handle, code->block_dim_, code->data_, code->data_size_, nullptr, stream);
+  }
+  auto data_dev = reinterpret_cast<uint8_t *>(extern_ws);
+  auto ret =
+    aclrtMemcpyAsync(data_dev, code->data_size_, code->data_, code->data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+  EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
+  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(code->data_) + 1)};
+  return launch(func_handle, code->block_dim_, args, sizeof(args), nullptr, stream);
+}
+
+int System::CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream) {
+  typedef int (*GetFftsFunc)(void **addr);
+  typedef int (*LaunchHostArgFunc)(const void *func_handle, uint32_t blockdim, void *stream, void *cfg, void *hostargs,
+                                   size_t argssize, void *placeHolder, size_t placehoderNum);
+  if (code->target_ == Code::kTargetMix) {
+    auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
+    auto err = get_ffts(reinterpret_cast<void **>(code->data_));
+    if (err != 0) return err;
+  }
+  auto func_handle = self.func_handles_[code->target_];
+  auto launch = reinterpret_cast<LaunchHostArgFunc>(self.kernel_launch_func_);
+  if (likely(code->data_size_ <= PARAM_TABLE_LIMIT)) {
+    return launch(func_handle, code->block_dim_, stream, nullptr, code->data_, code->data_size_, nullptr, 0);
+  }
+  auto data_dev = reinterpret_cast<uint8_t *>(extern_ws);
+  auto ret =
+    aclrtMemcpyAsync(data_dev, code->data_size_, code->data_, code->data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+  EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
+  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(code->data_) + 1)};
+  return launch(func_handle, code->block_dim_, stream, nullptr, args, sizeof(args), nullptr, 0);
+}
 
 System::System() {
   const SocConfig *config = nullptr;
@@ -162,11 +207,38 @@ System::System() {
   l0c_size_ = 128 * 1024;
 #ifdef VK_SIM_MODEL
   RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, this);
-  rt_kernel_launch_ = ::rtKernelLaunch;
-  rt_get_c2c_addr_ = ::rtGetC2cCtrlAddr;
+  code_launch_ = CodeLaunchRT;
+  kernel_launch_func_ = ::rtKernelLaunch;
+  get_ffts_addr_func_ = ::rtGetC2cCtrlAddr;
   return;
 #endif
+  rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
+  if (rt_handle_) {
+    kernel_launch_func_ = dlsym(rt_handle_, "rtKernelLaunch");
+    get_ffts_addr_func_ = dlsym(rt_handle_, "rtGetC2cCtrlAddr");
+    if (kernel_launch_func_ && get_ffts_addr_func_) {
+      auto reg_binary = dlsym(rt_handle_, "rtDevBinaryRegister");
+      auto reg_function = dlsym(rt_handle_, "rtFunctionRegister");
+      EXCEPTION_IF(reg_binary == nullptr || reg_function == nullptr, "load rt_binary_register symbol failed");
+      RegKernelWithRT(reg_binary, reg_function, this);
+      code_launch_ = CodeLaunchRT;
+      return;
+    }
+    dlclose(rt_handle_);
+    rt_handle_ = nullptr;
+  }
 #ifdef __CANN_85__
+  rt_handle_ = dlopen("libascendcl.so", RTLD_LAZY | RTLD_LOCAL);
+  EXCEPTION_IF(rt_handle_ == nullptr, "dlopen libascendcl failed");
+  typedef aclError (*LoadBinaryFunc)(const void *data, size_t len, const aclrtBinaryLoadOptions *opt,
+                                     aclrtBinHandle *handle);
+  typedef aclError (*GetFunctionFunc)(aclrtBinHandle handle, const char *name, void **funchandle);
+  auto load_binary = reinterpret_cast<LoadBinaryFunc>(dlsym(rt_handle_, "aclrtBinaryLoadFromData"));
+  auto get_function = reinterpret_cast<GetFunctionFunc>(dlsym(rt_handle_, "aclrtBinaryGetFunction"));
+  kernel_launch_func_ = dlsym(rt_handle_, "aclrtLaunchKernelWithHostArgs");
+  get_ffts_addr_func_ = dlsym(rt_handle_, "aclrtGetHardwareSyncAddr");
+  EXCEPTION_IF(!(load_binary && get_function && kernel_launch_func_ && get_ffts_addr_func_),
+               "dlsym load failed");
   renamed_bin_ = std::malloc(g_vkernel_c220_bin_len);
   memcpy_s(renamed_bin_, g_vkernel_c220_bin_len, g_vkernel_c220_bin, g_vkernel_c220_bin_len);
   for (uint32_t pos = 0; pos < g_mix_symbol_len_c220; ++pos) {
@@ -182,36 +254,22 @@ System::System() {
 
   aclrtBinHandle bin_handle;
   opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_VECTOR_CORE;
-  auto err = aclrtBinaryLoadFromData(renamed_bin_, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
-  err |= aclrtBinaryGetFunction(bin_handle, "vmain_aix_aiv", &func_handles_[Code::kTargetVec]);
+  auto err = load_binary(renamed_bin_, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
+  err |= get_function(bin_handle, "vmain_aix_aiv", &func_handles_[Code::kTargetVec]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg vec failed");
 
   opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_CUBE_CORE;
-  err = aclrtBinaryLoadFromData(renamed_bin_, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
-  err |= aclrtBinaryGetFunction(bin_handle, "vmain_aix_aic", &func_handles_[Code::kTargetCube]);
+  err = load_binary(renamed_bin_, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
+  err |= get_function(bin_handle, "vmain_aix_aic", &func_handles_[Code::kTargetCube]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg cube failed");
 
   opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_AICORE;
-  err = aclrtBinaryLoadFromData(g_vkernel_c220_bin, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
-  err |= aclrtBinaryGetFunction(bin_handle, "vmain", &func_handles_[Code::kTargetMix]);
+  err = load_binary(g_vkernel_c220_bin, g_vkernel_c220_bin_len, &bin_opt, &bin_handle);
+  err |= get_function(bin_handle, "vmain", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
+  code_launch_ = CodeLaunchACL;
 #else
-  rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(rt_handle_ == nullptr, "Load libruntime.so failed");
-  auto rt_binary_register =
-    reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(dlsym(rt_handle_, "rtDevBinaryRegister"));
-  EXCEPTION_IF(rt_binary_register == nullptr, "load rt_binary_register symbol failed");
-  auto rt_function_register =
-    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(
-      dlsym(rt_handle_, "rtFunctionRegister"));
-  EXCEPTION_IF(rt_function_register == nullptr, "load rt_function_register symbol failed");
-  rt_kernel_launch_ =
-    reinterpret_cast<rtError_t (*)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t)>(
-      dlsym(rt_handle_, "rtKernelLaunch"));
-  EXCEPTION_IF(!rt_kernel_launch_, "load rt_kernel_launch symbol failed");
-  rt_get_c2c_addr_ = reinterpret_cast<rtError_t (*)(uint64_t *, uint32_t *)>(dlsym(rt_handle_, "rtGetC2cCtrlAddr"));
-  EXCEPTION_IF(!rt_get_c2c_addr_, "load rt_get_c2c_addr symbol failed");
-  RegKernelWithRT(rt_binary_register, rt_function_register, this);
+  EXCEPTION_IF(rt_handle_ == nullptr, "dlopen libruntime failed");
 #endif
 }
 

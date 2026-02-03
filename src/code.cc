@@ -1143,19 +1143,6 @@ void Code::BindOp(RelocAddr &op, const RelocAddr &target) {
   InsertBind(bind_ops_, op);
 }
 
-int Code::LaunchEx(void *workspace, void *stream) {
-#ifdef VK_SIM_MODEL
-  return -1;
-#else
-  auto data_dev = reinterpret_cast<uint8_t *>(workspace);
-  auto ret = aclrtMemcpyAsync(data_dev, data_size_, data_, data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
-  EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
-  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(data_) + 1)};
-  auto func_handle = System::Instance().func_handles_[target_];
-  return aclrtLaunchKernelWithHostArgs(func_handle, block_dim_, stream, nullptr, args, sizeof(args), nullptr, 0);
-#endif
-}
-
 uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
   uint64_t *head = reinterpret_cast<uint64_t *>(data_);
   head[1] |= V_ENTRY_FLAG_EXTERN_CODE;

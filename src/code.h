@@ -213,15 +213,8 @@ class Code : public CodeWrap {
   void BindOp(RelocAddr &op, const RelocAddr &target);
 
   int DoLaunch(void *workspace, void *stream) {
-    if (target_ == kTargetMix) {
-      auto err = aclrtGetHardwareSyncAddr(reinterpret_cast<void **>(data_));
-      if (err != ACL_SUCCESS) return err;
-    }
-    if (likely(data_size_ <= PARAM_TABLE_LIMIT)) {
-      auto func_handle = System::Instance().func_handles_[target_];
-      return aclrtLaunchKernelWithHostArgs(func_handle, block_dim_, stream, nullptr, data_, data_size_, nullptr, 0);
-    }
-    return LaunchEx(workspace, stream);
+    auto &sys = System::Instance();
+    return sys.code_launch_(sys, this, workspace, stream);
   }
 
   unsigned char *data_{nullptr};
@@ -234,7 +227,6 @@ class Code : public CodeWrap {
   size_t mem_size_{0};
 
  private:
-  int LaunchEx(void *workspace, void *stream);
   uint64_t ReserveCodeSpace(uint64_t workspace_size);
 
   void InsertBind(RelocAddr *&pos, RelocAddr &op) {

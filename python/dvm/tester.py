@@ -115,19 +115,17 @@ class Tester(Kernel):
         self.input(op, shape_arr)
         return op
 
-    def view_load(self, shape, stride, arr_dtype, offset=0, real_dtype=None):
+    def view_load(self, shape, stride, arr_dtype, real_dtype=None):
         if not isinstance(arr_dtype, np.ndarray):
             # dynamic shape scenario
-            return Kernel.view_load(
-                self, shape, stride, offset, _normalize_dtype(arr_dtype)
-            )
+            return Kernel.view_load(self, shape, stride, _normalize_dtype(arr_dtype))
         dtype_id = _normalize_dtype(str(arr_dtype.dtype))
         real_dtype_id = _normalize_dtype(real_dtype) if real_dtype is not None else None
         if real_dtype_id is not None:
             assert real_dtype_id == DataType.bfloat16
             arr_dtype = Kernel.convert_to_bf16(self, arr_dtype)
             dtype_id = real_dtype_id
-        op = Kernel.view_load(self, shape, stride, offset, dtype_id)
+        op = Kernel.view_load(self, shape, stride, dtype_id)
         self.input(op, arr_dtype)
         return op
 

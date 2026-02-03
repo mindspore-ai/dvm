@@ -272,11 +272,10 @@ class Kernel {
    * @param addr memory address of input tensor. also can be relocated at codegen stage.
    * @param shape shape reference of input tensor.
    * @param stride stride reference of input tensor.
-   * @param size size reference of input tensor.
    * @param dtype data type of input tensor.
    * @return the result load operation.
    */
-  NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type);
+  NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, DataType type);
 
   /**
    * @brief [DEPRECATED] Emit a slice load operation from input tensor. please use incontinuous load.

@@ -101,7 +101,7 @@ class KernelPy {
   virtual ~KernelPy() {}
 
   virtual py::object Load(py::object shape, DataTypePy type) = 0;
-  virtual py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) = 0;
+  virtual py::object ViewLoad(py::object shape, py::object stride, DataTypePy type) = 0;
   virtual py::object Store(py::object obj, DataTypePy type) = 0;
 
   template <UnaryOpType op_type>

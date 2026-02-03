@@ -427,17 +427,12 @@ py::object RtKernelPy::Load(py::object shape, DataTypePy type) {
   return ObjToPy(op);
 }
 
-py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) {
+py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto stride_ref = GetShapeRef(stride);
-  const int64_t *offset_ptr = nullptr;
-  if (offset != 0) {
-    auto &offset_vec = shape_vec_.emplace_back(1, offset);
-    offset_ptr = &offset_vec[0];
-  }
-  auto op = kernel_.Load(nullptr, shape_ref, stride_ref, offset_ptr, type);
+  auto op = kernel_.Load(nullptr, shape_ref, stride_ref, type);
   info.op = op;
   return ObjToPy(op);
 }

@@ -439,7 +439,7 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
 class NDSliceLoad : public NDViewLoad {
  public:
   NDSliceLoad(void *src, IntArrayRef *src_ref, IntArrayRef *start_ref, IntArrayRef *size_ref, DataType type_id)
-      : NDViewLoad(src, size_ref, &stride_data_, &offset_data_, type_id), start_ref_(start_ref), src_ref_(src_ref) {
+      : NDViewLoad(src, size_ref, &stride_data_, type_id), start_ref_(start_ref), src_ref_(src_ref) {
     MESS(offset_data_, 10);
   }
   void Normalize(std::vector<NDObject *> &run_ops) {
@@ -460,6 +460,7 @@ class NDSliceLoad : public NDViewLoad {
       }
     }
     NDViewLoad::Normalize(run_ops);
+    offset_bytes_ = static_cast<uint64_t>(offset_data_) * ITEM_SIZE[type_id_];
   }
   NDObject *Clone(CloneHelper &h) override {
     auto src_ref = h.GetClone(src_ref_);
@@ -467,7 +468,6 @@ class NDSliceLoad : public NDViewLoad {
     auto shape_ref = h.GetClone(shape_ref_);
     return new NDSliceLoad(addr_.gm, src_ref, start_ref, shape_ref, type_id_);
   }
-
  protected:
   IntArrayRef *start_ref_;
   IntArrayRef *src_ref_;
@@ -647,10 +647,10 @@ NDObject *Kernel::Load(void *addr, IntArrayRef *shape, DataType type) {
   return obj;
 }
 
-NDObject *Kernel::Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type) {
+NDObject *Kernel::Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, DataType type) {
   NDObject *obj;
   if (stride) {
-    obj = new NDViewLoad(addr, shape, stride, offset, type);
+    obj = new NDViewLoad(addr, shape, stride, type);
   } else {
     obj = new NDLoad(addr, shape, type);
   }

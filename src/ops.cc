@@ -730,6 +730,7 @@ void NDViewLoad::Normalize(std::vector<NDObject *> &run_ops) {
   }
   tail_dim_ = dim_size;
   tail_size_ = 0;
+  offset_bytes_ = 0;
 }
 
 void NDViewLoad::Tile(const TileParam &tp) {
@@ -792,7 +793,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
   uint64_t *var_insn = insn_ + vViewLoad::VAR_OFFSET;
   op.xd = xbuf_;
   op.from = addr_.data;
-  op.offset = offset_ ? static_cast<uint64_t>(*offset_) * ITEM_SIZE[type_id_] : 0;
+  op.offset = offset_bytes_;
   op.iter_size = fold_dim[0] * ITEM_SIZE[type_id_];
   // loop space
   int loop_start;
@@ -832,13 +833,13 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
 NDObject *NDViewLoad::Clone(CloneHelper &h) {
   auto shape_ref = h.GetClone(shape_ref_);
   auto src_stride_ref = h.GetClone(src_stride_ref_);
-  return new NDViewLoad(addr_.gm, shape_ref, src_stride_ref, offset_, type_id_);
+  return new NDViewLoad(addr_.gm, shape_ref, src_stride_ref, type_id_);
 }
 
 void NDViewLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "ViewLoad";
   if (verbose) {
-    int64_t offset = offset_ ? *offset_ : 0;
+    int64_t offset = static_cast<int64_t>(offset_bytes_ / ITEM_SIZE[type_id_]);
     oss << "<" << offset << ", " << *src_stride_ref_ << ">";
   }
 }
@@ -1669,7 +1670,7 @@ uint64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
   op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();
   const static vSimdInsnID id_list[kDataTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_BROADCAST_X_B16, V_BROADCAST_X_B32,
-                                                V_BROADCAST_X_B32};
+                                                    V_BROADCAST_X_B32};
   ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
@@ -1984,8 +1985,7 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
     if (input->nd_[d] == 1) continue;
     if (d != red_ext) {
       if (lead_dim == -1) {
-        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++)
-          ;
+        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++);
       }
       if (red_start >= 0) {
         _ReduceOp *obj;
@@ -2011,8 +2011,7 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
       red_start = d;
     }
     red_end = d;
-    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++)
-      ;
+    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
   }
   ndd_.dims = input->nd_.dims();
   if (red_start != -1) {
@@ -2286,7 +2285,7 @@ uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
       return _ReduceOp::Emit(k);
     }
     k.AddVisitor(visit_);
-    ws_offset = 0; // TODO: multi workspace
+    ws_offset = 0;  // TODO: multi workspace
     visit_->ws_size_ = ndd_.stride_back() * sizeof(float) * visit_->block_num_;
   } else {
     AddTileVisit(round_tile_.size(), coder);

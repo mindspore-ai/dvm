@@ -30,7 +30,7 @@ class RtKernelPy : public KernelPy {
   ~RtKernelPy();
 
   py::object Load(py::object shape, DataTypePy type) override;
-  py::object ViewLoad(py::object shape, py::object stride, int64_t offset, DataTypePy type) override;
+  py::object ViewLoad(py::object shape, py::object stride, DataTypePy type) override;
   py::object Store(py::object obj, DataTypePy type) override;
 
 

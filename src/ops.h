@@ -533,8 +533,8 @@ class NDLoad : public NDAccess {
 
 class NDViewLoad : public NDAccess {
  public:
-  NDViewLoad(void *src, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType dtype)
-      : NDAccess(src, nullptr, dtype, ObjectType::kViewLoad), src_stride_ref_(stride), offset_(offset) {
+  NDViewLoad(void *src, IntArrayRef *shape, IntArrayRef *stride, DataType dtype)
+      : NDAccess(src, nullptr, dtype, ObjectType::kViewLoad), src_stride_ref_(stride) {
     shape_ref_ = shape;
     nd_.data = &ndd_;
   }
@@ -550,12 +550,12 @@ class NDViewLoad : public NDAccess {
 
  protected:
   IntArrayRef *src_stride_ref_;
-  const int64_t *offset_;
   DimArray src_stride_;
   DimArray tile_;
   int tail_dim_;
   int tail_size_;
   NDSpaceData ndd_;
+  uint64_t offset_bytes_{0};
 };
 
 // split input to `multi_size` parts, everytime load a piece from all parts
@@ -1267,7 +1267,7 @@ class AllReduceOpBase : public CommOp {
 template <bool is_bf16>
 class AllReduceOp : public AllReduceOpBase {
  public:
-  AllReduceOp(int op_type, NDObject *input, const Communicator *comm) : AllReduceOpBase(op_type, input, comm){};
+  AllReduceOp(int op_type, NDObject *input, const Communicator *comm) : AllReduceOpBase(op_type, input, comm) {};
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;

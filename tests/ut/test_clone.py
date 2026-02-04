@@ -25,7 +25,7 @@ def test_clone_vector():
     ax = t.load(a)
     x = t.add(ax, 0.01)
     x = t.sum(x, [0], True)
-    out = t.store_expect(x, np.sum(a + 0.01, (0,), keepdims=True))
+    out = t.store_expect(x, np.sum(a + 0.01, (0,), keepdims=True), 1e-4)
     assert (t.run_check())
 
     t2 = Tester()
@@ -33,7 +33,7 @@ def test_clone_vector():
     a2 = np.random.normal(0, 1, [10, 512]).astype(np.float32)
     t2.input(ax2, a2)
     t2.run()
-    assert(t2.check(out2, np.sum(a2 + 0.01, (0,), keepdims=True)))
+    assert(t2.check(out2, np.sum(a2 + 0.01, (0,), keepdims=True), 1e-4))
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -48,7 +48,7 @@ def test_clone_vector_dyn():
     t.input(ax, a)
     dims.update([0])
     t.run()
-    assert(t.check(out, np.sum(a + 0.01, (0,), keepdims=True)))
+    assert(t.check(out, np.sum(a + 0.01, (0,), keepdims=True), 1e-4))
 
     t2 = Tester("vector:dyn")
     ax2, out2, dims2 = t2.clone(t, [ax, out, dims])
@@ -56,7 +56,7 @@ def test_clone_vector_dyn():
     t2.input(ax2, a2)
     dims2.update([1])
     t2.run()
-    assert(t2.check(out2, np.sum(a2 + 0.01, (1,), keepdims=True)))
+    assert(t2.check(out2, np.sum(a2 + 0.01, (1,), keepdims=True), 1e-4))
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

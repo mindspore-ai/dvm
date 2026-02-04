@@ -104,6 +104,7 @@ enum ProfilerLevel {
 
 
 class CubeTuner;
+class Code;
 class System : public Config {
  public:
   System() = default;
@@ -153,7 +154,11 @@ class System : public Config {
   CubeTuner *lazy_tuner_{nullptr};
 
   // runtime api
+  int (*code_launch_)(const System &self, const Code *code, void *extern_ws, void *stream){nullptr};
   void *func_handles_[3];
+  void *get_ffts_addr_func_{nullptr};
+  void *kernel_launch_func_{nullptr};
+
   void *CreateStream();
   const uint64_t *g_simd_func_offset_;
   const uint64_t *g_access_func_offset_;
@@ -165,18 +170,9 @@ class System : public Config {
   int32_t (*msprof_report_compact_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
   int32_t (*msprof_report_additional_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
 
-#ifndef __CANN_85__
-  void *rt_handle_{nullptr};
-  rtError_t (*rt_get_c2c_addr_)(uint64_t *addr, uint32_t *len){nullptr};
-  rtError_t(*rt_kernel_launch_)(const void *, uint32_t, void *, uint32_t, rtSmDesc_t *, rtStream_t){nullptr};
-#endif
-
  private:
   void DoInit();
-  bool inited_{false};
-  CubeStoreType cube_store_type_{kCubeStoreGM};
 
-  AiCoreArch arch_;
   uint64_t local_mem_size_;
   uint64_t ub_workspace_size_;
   uint64_t l2_size_;
@@ -185,23 +181,19 @@ class System : public Config {
   uint64_t event_num_;
   uint64_t vector_core_num_;
   uint64_t cube_core_num_;
+  AiCoreArch arch_;
   SocType soc_name_{kSocUnknow};
-
+  bool inited_{false};
+  CubeStoreType cube_store_type_{kCubeStoreGM};
   void *comm_stream_{nullptr};
   void *renamed_bin_{nullptr};
+  void *rt_handle_{nullptr};
+
+  static int CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream);
+  static int CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream);
 };
 
 extern System g_system;
-
-#ifndef __CANN_85__
-static inline int _stub_aclrtGetHardwareSyncAddr(void **addr) {
-  uint32_t len = 0;
-  return g_system.rt_get_c2c_addr_(reinterpret_cast<uint64_t *>(addr), &len);
-}
-#define aclrtGetHardwareSyncAddr(addr) _stub_aclrtGetHardwareSyncAddr(addr)
-#define aclrtLaunchKernelWithHostArgs(func_handle, blockDim, stream, _1, hostArgs, argsSize, _2, _3) \
-  g_system.rt_kernel_launch_(func_handle, blockDim, hostArgs, argsSize, nullptr, stream)
-#endif
 
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;

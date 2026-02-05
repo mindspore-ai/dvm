@@ -164,12 +164,6 @@ class System : public Config {
   const uint64_t *g_access_func_offset_;
   const uint64_t *g_visit_func_offset_;
 
-  uint64_t (*msprof_sys_cycle_time_)();
-  uint64_t (*msprof_get_hash_id_)(const char *hashInfo, size_t length);
-  int32_t (*msprof_report_api_)(uint32_t agingFlag, const MsprofApi *api);
-  int32_t (*msprof_report_compact_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
-  int32_t (*msprof_report_additional_info_)(uint32_t agingFlag, const VOID_PTR data, uint32_t length);
-
  private:
   void DoInit();
 

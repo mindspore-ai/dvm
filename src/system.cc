@@ -55,31 +55,6 @@ rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 }
 #endif
 
-#ifdef VK_SIM_MODEL
-#include "hccl/hccl.h"
-
-HcclResult HcclGetRootInfo(HcclRootInfo *rootInfo) { return HCCL_SUCCESS; }
-HcclResult HcclCommInitRootInfo(uint32_t nRanks, const HcclRootInfo *rootInfo, uint32_t rank, HcclComm *comm) {
-  return HCCL_SUCCESS;
-}
-HcclResult HcclGetRankId(HcclComm comm, uint32_t *rank) { return HCCL_SUCCESS; }
-HcclResult HcclGetRankSize(HcclComm comm, uint32_t *rankSize) { return HCCL_SUCCESS; }
-HcclResult HcclCommDestroy(HcclComm comm) { return HCCL_SUCCESS; }
-
-HcclResult HcclAllReduce(void *sendBuf, void *recvBuf, uint64_t count, HcclDataType dataType, HcclReduceOp op,
-                         HcclComm comm, aclrtStream stream) {
-  return HCCL_SUCCESS;
-}
-HcclResult HcclAllGather(void *sendBuf, void *recvBuf, uint64_t sendCount, HcclDataType dataType, HcclComm comm,
-                         aclrtStream stream) {
-  return HCCL_SUCCESS;
-}
-HcclResult HcclReduceScatter(void *sendBuf, void *recvBuf, uint64_t recvCount, HcclDataType dataType, HcclReduceOp op,
-                             HcclComm comm, aclrtStream stream) {
-  return HCCL_SUCCESS;
-}
-#endif
-
 extern const uint64_t g_visit_func_offset_c310[];
 extern const uint64_t g_simd_func_offset_c310[];
 extern const uint64_t g_access_func_offset_c310[];
@@ -210,7 +185,7 @@ static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, cons
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
   typedef rtError_t (*LaunchKernelFunc)(const void *func, uint32_t blockdim, void *args, uint32_t argssize,
-                                          rtSmDesc_t *, rtStream_t);
+                                        rtSmDesc_t *, rtStream_t);
   if (code->target_ == Code::kTargetMix) {
     auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
     uint32_t len = 0;
@@ -299,28 +274,7 @@ void System::DoInit() {
   get_ffts_addr_func_ = ::rtGetC2cCtrlAddr;
   return;
 #endif
-  auto prof_handle = dlopen("libprofapi.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(prof_handle == nullptr, "Load libprofapi.so failed");
-  msprof_sys_cycle_time_ = reinterpret_cast<uint64_t (*)()>(dlsym(prof_handle, "MsprofSysCycleTime"));
-  EXCEPTION_IF(msprof_sys_cycle_time_ == nullptr, "load msprof_sys_cycle_time symbol failed");
-  msprof_get_hash_id_ =
-    reinterpret_cast<uint64_t (*)(const char *hashInfo, size_t length)>(dlsym(prof_handle, "MsprofGetHashId"));
-  EXCEPTION_IF(msprof_get_hash_id_ == nullptr, "load msprof_get_hash_id symbol failed");
-  msprof_report_api_ =
-    reinterpret_cast<int32_t (*)(uint32_t agingFlag, const MsprofApi *api)>(dlsym(prof_handle, "MsprofReportApi"));
-  EXCEPTION_IF(msprof_report_api_ == nullptr, "load msprof_report_api symbol failed");
-  msprof_report_compact_info_ = reinterpret_cast<int32_t (*)(uint32_t agingFlag, const VOID_PTR data, uint32_t length)>(
-    dlsym(prof_handle, "MsprofReportCompactInfo"));
-  EXCEPTION_IF(msprof_report_compact_info_ == nullptr, "load msprof_report_compact_info symbol failed");
-  msprof_report_additional_info_ =
-    reinterpret_cast<int32_t (*)(uint32_t agingFlag, const VOID_PTR data, uint32_t length)>(
-      dlsym(prof_handle, "MsprofReportAdditionalInfo"));
-  EXCEPTION_IF(msprof_report_additional_info_ == nullptr, "load msprof_report_additional_info symbol failed");
-  auto msprof_register_callback_ = reinterpret_cast<int32_t (*)(uint32_t moduleId, ProfCommandHandle prof_handle)>(
-    dlsym(prof_handle, "MsprofRegisterCallback"));
-  EXCEPTION_IF(msprof_register_callback_ == nullptr, "load msprof_register_callback symbol failed");
-
-  auto ret = msprof_register_callback_(0, ProfCommandHandler);
+  auto ret = MsprofRegisterCallback(0, ProfCommandHandler);
   EXCEPTION_IF(ret != MSPROF_ERROR_NONE, "MsprofRegisterCallBack failed.");
 
   rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
@@ -349,8 +303,7 @@ void System::DoInit() {
   auto get_function = reinterpret_cast<GetFunctionFunc>(dlsym(rt_handle_, "aclrtBinaryGetFunction"));
   kernel_launch_func_ = dlsym(rt_handle_, "aclrtLaunchKernelWithHostArgs");
   get_ffts_addr_func_ = dlsym(rt_handle_, "aclrtGetHardwareSyncAddr");
-  EXCEPTION_IF(!(load_binary && get_function && kernel_launch_func_ && get_ffts_addr_func_),
-               "dlsym load failed");
+  EXCEPTION_IF(!(load_binary && get_function && kernel_launch_func_ && get_ffts_addr_func_), "dlsym load failed");
   const uint64_t *g_mix_symbols;
   unsigned int g_mix_symbol_len;
   if (arch_ == kAiCore_C220) {
@@ -363,7 +316,7 @@ void System::DoInit() {
   renamed_bin_ = std::malloc(g_vkernel_bin_len);
   std::memcpy(renamed_bin_, g_vkernel_bin, g_vkernel_bin_len);
   for (uint32_t pos = 0; pos < g_mix_symbol_len; ++pos) {
-    *(static_cast<char *>(renamed_bin_) + g_mix_symbols[pos]) = 'a'; // mix -> aix
+    *(static_cast<char *>(renamed_bin_) + g_mix_symbols[pos]) = 'a';  // mix -> aix
   }
   aclrtBinaryLoadOption opt_data[2];
   opt_data[0].type = ACL_RT_BINARY_LOAD_OPT_MAGIC;

@@ -54,7 +54,7 @@ void InitLaunchApi(const uint64_t name_hash, MsprofApi *api) {
   api->itemId = name_hash;
 }
 uint64_t GetMsprofHashId(const char *info) {
-  uint64_t hash_id = g_system.msprof_get_hash_id_(info, strlen(info));
+  uint64_t hash_id = MsprofGetHashId(info, strlen(info));
   return hash_id;
 }
 
@@ -130,7 +130,7 @@ void MsprofHelper::UpdateReportNode(uint32_t block_dim) {
 }
 
 void MsprofHelper::Update(uint32_t kernel_target) {
-  addition_info_.api.beginTime = g_system.msprof_sys_cycle_time_();
+  addition_info_.api.beginTime = MsprofSysCycleTime();
   auto &prof_node_basic_info = addition_info_.node_basic_info.data.nodeBasicInfo;
   if (kernel_target == Code::kTargetCube) {
     prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
@@ -142,27 +142,27 @@ void MsprofHelper::Update(uint32_t kernel_target) {
 }
 
 void MsprofHelper::ReportTask() {
-  const uint64_t prof_time = g_system.msprof_sys_cycle_time_();
+  const uint64_t prof_time = MsprofSysCycleTime();
   auto tid = syscall(SYS_gettid);
   if (g_system.profiler_level_ >= Level0) {
     if (addition_info_.node_basic_info.data.nodeBasicInfo.taskType ==
         static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC)) {
       addition_info_.context_id_info.threadId = static_cast<uint32_t>(tid);
       addition_info_.context_id_info.timeStamp = prof_time;
-      g_system.msprof_report_additional_info_(false, &addition_info_.context_id_info, sizeof(MsprofAdditionalInfo));
+      MsprofReportAdditionalInfo(false, &addition_info_.context_id_info, sizeof(MsprofAdditionalInfo));
     }
     addition_info_.api.endTime = prof_time;
     addition_info_.api.threadId = static_cast<uint32_t>(tid);
-    g_system.msprof_report_api_(false, &addition_info_.api);
+    MsprofReportApi(false, &addition_info_.api);
   }
   if (g_system.profiler_level_ >= Level1) {
     addition_info_.node_basic_info.timeStamp = prof_time;
     addition_info_.node_basic_info.threadId = static_cast<uint32_t>(tid);
-    g_system.msprof_report_compact_info_(false, &addition_info_.node_basic_info, sizeof(MsprofCompactInfo));
+    MsprofReportCompactInfo(false, &addition_info_.node_basic_info, sizeof(MsprofCompactInfo));
     for (auto &tensor_info_wrapper : addition_info_.tensor_info_wrappers) {
       tensor_info_wrapper.tensor_info.timeStamp = prof_time;
       tensor_info_wrapper.tensor_info.threadId = static_cast<uint32_t>(tid);
-      g_system.msprof_report_additional_info_(false, &tensor_info_wrapper.tensor_info, sizeof(MsprofAdditionalInfo));
+      MsprofReportAdditionalInfo(false, &tensor_info_wrapper.tensor_info, sizeof(MsprofAdditionalInfo));
     }
   }
 }

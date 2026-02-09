@@ -654,6 +654,19 @@ def test_zero_shape_mm():
     a = np.full([0, 1024], 0.001, np.float16)
     b = np.full([1024, 1024], 0.001, np.float16)
     x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    out = t.store(x2)
+    t.run()
+    assert(out.shape() == (0, 1024))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_zero_shape_cv():
+    t = Tester("eager")
+    a = np.full([0, 1024], 0.001, np.float16)
+    b = np.full([1024, 1024], 0.001, np.float16)
+    x0 = t.load(a)
     x0 = t.add(x0, 0.01)
     x1 = t.load(b)
     x2 = t.matmul(x0, x1, False, False)

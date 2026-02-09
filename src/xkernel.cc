@@ -1926,7 +1926,7 @@ void _SplitKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloc
     if (area->dom_->IsCube()) {
       auto mm = static_cast<CubeOp *>(area->dom_);
       auto cube_gen = [this, ws_alloc](NDObject *in) {
-        if (auto io = static_cast<NDAccess *>(in); io->addr_.gm == nullptr) {
+        if (auto io = static_cast<NDAccess *>(in); io->addr_.gm == nullptr && !(io->flags_ & OBJ_FLAG_EAGER)) {
           auto store = GetStore(io);
           io->addr_.gm = store->addr_.gm ? store->addr_.gm : AllocWS(store, ws_alloc);
         }

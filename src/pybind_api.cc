@@ -699,7 +699,6 @@ void RtKernelPy::Input(py::object obj, py::object val) {
 py::object RtKernelPy::Output(py::object store) {
   auto op = PyToObj(store);
   auto &info = FindVectorInfo(stores_, op);
-  ASSERT(info.dev);
   std::vector<ssize_t> shape;
   std::vector<ssize_t> strides;
   ssize_t itemsize = ITEM_SIZE[op->type_id_];
@@ -715,6 +714,7 @@ py::object RtKernelPy::Output(py::object store) {
     strides.push_back(stride);
   }
   if (size > 0) {
+    ASSERT(info.dev);
     ERROR_CHECK(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
   }
   py::buffer_info buf(info.host, itemsize, GetBufferFormat(op->type_id_), ndim, shape, strides);

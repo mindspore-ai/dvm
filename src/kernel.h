@@ -26,6 +26,7 @@
 
 namespace dvm {
 class MsprofHelper;
+class IdleCleanWrap;
 class VKernel {
  public:
   VKernel(KernelType ktype, uint32_t flags) : ktype_(ktype), flags_(flags) {}
@@ -69,6 +70,7 @@ class VKernel {
   MsprofHelper *msprof_{nullptr};
   const char *op_name_{nullptr};
   const char *op_fullname_{nullptr};
+  IdleCleanWrap *idle_clean_wrap_{nullptr};
   std::string dump_str_;
 };
 

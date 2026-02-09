@@ -84,56 +84,24 @@ class IdleCodeWrap : public CodeWrap {
   void DasWrap(std::ostringstream &oss) override {
     oss << "vmain.idle() {}";
   }
-
-  IdleCleanWrap *Erase(VKernel *k) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    auto it = wraps_.find(k);
-    if (it != wraps_.end()) {
-      auto wrap = it->second;
-      wraps_.erase(it);
-      return wrap;
-    }
-    return nullptr;
-  }
-
-  IdleCleanWrap *Get(VKernel *k) {
-    std::lock_guard<std::mutex> guard(mutex_);
-    auto it = wraps_.find(k);
-    if (it != wraps_.end()) {
-      return it->second;
-    } else {
-      auto wrap = new IdleCleanWrap();
-      wraps_[k] = wrap;
-      return wrap;
-    }
-  }
-
- private:
-  std::mutex mutex_;
-  std::unordered_map<VKernel *, IdleCleanWrap *> wraps_;
 };
 
-static std::unique_ptr<IdleCodeWrap> g_idle_wrap;
 
 VKernel::~VKernel() {
-  if (g_idle_wrap) {
-    if (auto wrap = g_idle_wrap->Erase(this)) {
-      delete wrap;
-    }
-  }
+  delete idle_clean_wrap_;
   delete msprof_;
 }
 
 void VKernel::UpdateIdle(const std::vector<NDObject *> &cleans) {
-  if (!g_idle_wrap) {
-    g_idle_wrap = std::make_unique<IdleCodeWrap>();
-  }
+  static IdleCodeWrap idle_code_wrap;
   if (cleans.empty()) {
-    code_.InsertWrap(g_idle_wrap.get());
+    code_.InsertWrap(&idle_code_wrap);
   } else {
-    auto wrap = g_idle_wrap->Get(this);
-    wrap->CodeGen(cleans);
-    code_.InsertWrap(wrap);
+    if (idle_clean_wrap_ == nullptr) {
+      idle_clean_wrap_ = new IdleCleanWrap();
+    }
+    idle_clean_wrap_->CodeGen(cleans);
+    code_.InsertWrap(idle_clean_wrap_);
   }
 }
 

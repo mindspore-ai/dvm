@@ -188,6 +188,13 @@ void MixKernelBase::Append(NDObject *obj) {
       }
     });
     post_fusion_->Append(obj);
+    if (obj->IsComm()) {
+      auto comm = static_cast<CommOp *>(obj);
+      comm->mix_ = true;
+      if (comm->lhs_ == sload_) {
+        comm->SetCubeOp(cube_op_);
+      }
+    }
   }
 }
 
@@ -1626,7 +1633,6 @@ NDObject *_SplitKernel::Exchange(NDObject *input, int to_aid) {
     InitStoreInfo(store, GetArea(input));
     SetStore(input, store);
     objects_.push_back(store);
-    ASSERT(GetRecentLoad(store) == nullptr);  // construct to nullptr
   } else if (auto recent = GetRecentLoad(store); recent != nullptr && GetArea(recent) == to_aid) {
     return recent;
   }
@@ -1818,7 +1824,14 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
   }
   int aid = area_used_++;
   auto area = EagerArea::Assign(this, aid);
-  area->ResetMix(mm, EagerArea::kPending);
+  int state = EagerArea::kPending;
+  if (mm->obj_id_ == kGmmOp) {
+    auto gmm = static_cast<GmmOp *>(mm);
+    if (gmm->group_type_ != GmmSplitType::kSplit_K) {
+      state = EagerArea::kSubmitted;
+    }
+  }
+  area->ResetMix(mm, state);
   area->depend_mask_ |= dep_mask;
   SetArea(mm, aid);
   SetStore(mm, output);

@@ -309,13 +309,14 @@ def test_dyn_gmm_type2():
 
 
 @pytest.mark.mix
+@pytest.mark.parametrize("mode", ["mix", "eager"])
 @pytest.mark.parametrize(
     "m, n, k, group_list",
     [
         [1280, 2560, 1024, [256, 512, 800, 1024]],
     ],
 )
-def test_gmm_group_list_type_2(m, n, k, group_list):
+def test_gmm_group_list_type_2(mode, m, n, k, group_list):
     b = len(group_list)
     x_shape = [m, k]
     w_shape = [k, n]
@@ -341,7 +342,8 @@ def test_gmm_group_list_type_2(m, n, k, group_list):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_gmm_split_graph():
+@pytest.mark.parametrize("post_fusion", [True, False])
+def test_gmm_split_graph(post_fusion):
     x = Tester.fast_random_normal(0, 0.01, [4096, 4096]).astype(np.float16)
     w = Tester.fast_random_normal(0, 0.01, [4, 4096, 4096]).astype(np.float16)
     group_list = np.array([10, 256, 3000, 4096]).astype(np.int64)
@@ -351,5 +353,8 @@ def test_gmm_split_graph():
     w_d = t.load(w)
     group_list_d = t.load(group_list)
     res = t.grouped_matmul(x_d, w_d, False, False, None, group_list_d, 0)
+    if post_fusion:
+        res = t.add(res, 0.03)
+        expect = expect + 0.03
     t.store_expect(res, expect)
     assert t.run_check()

@@ -77,16 +77,8 @@ class MixKernelBase : public CubeKernel {
   void Clone(VKernel *base, CloneHelper &helper) override;
 
   void NormalizePost() {
-    if (post_fusion_) {
-      if (auto comm = post_fusion_->comm_op_) {
-        comm->mix_ = true;
-        if (comm->lhs_ == sload_) {
-          comm->SetCubeOp(cube_op_);
-        }
-      }
-      if (!post_fusion_->NormBuild()) {
-        DvmException("MixKernel broker affine failed");
-      }
+    if (post_fusion_ && !post_fusion_->NormBuild()) {
+      DvmException("MixKernel broker affine failed");
     }
   }
   size_t ReserveCodeSize() {
@@ -360,6 +352,7 @@ class _SplitKernel : public VKernel {
     InitObjInfo(store, area);
     SetStoreSize(store, store->Size());
     SetStoreInplace(store, 0);
+    SetRecentLoad(static_cast<NDAccess *>(store), nullptr);
   }
 
   void *AllocWS(NDAccess *store, WsAllocator *alloc) {

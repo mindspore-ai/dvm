@@ -1149,16 +1149,21 @@ __aicore_inline__ void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     if (!op.broadcast_m) {
       if (uint64_t end_m = shard.last_m ? shard.tail_m : shard.slice_m; begin_tmp < end_m && nidx == 0) {
         dst += (shard_offset / shard.stride_n + begin_tmp) * op.type_size;
-        copy_ubuf_to_gm_align_b8(dst, src, 0, 1, min(end_m - begin_tmp, op.tile_stride) * op.type_size, 0, 0, 0, 0);
+        uint64_t lenburst = min(end_m - begin_tmp, op.tile_stride) * op.type_size;
+        copy_ubuf_to_gm_align_b8(dst, src, 0, 1, lenburst, 0, 0, 0, 0);
+        OVER_WRITE_CHECK(pc, head, ((uint64_t)dst - (uint64_t)op.gm) + lenburst);
       }
     } else if (!op.broadcast_n) {
       if (uint64_t end_n = shard.last_n ? shard.tail_n : shard.slice_n; begin_tmp < end_n && midx == 0) {
         dst += (cidx * shard.stride_n + shard_offset % shard.stride_n) * op.type_size;
-        copy_ubuf_to_gm_align_b8(dst, src, 0, 1, min(end_n - begin_tmp, op.tile_stride) * op.type_size, 0, 0, 0, 0);
+        uint64_t lenburst = min(end_n - begin_tmp, op.tile_stride) * op.type_size;
+        copy_ubuf_to_gm_align_b8(dst, src, 0, 1, lenburst, 0, 0, 0, 0);
+        OVER_WRITE_CHECK(pc, head, ((uint64_t)dst - (uint64_t)op.gm) + lenburst);
       }
     } else if (midx == 0 && nidx == 0 && tile_idx == 0) {
       dst += cidx * op.type_size;
       copy_ubuf_to_gm_align_b8(dst, src, 0, 1, op.type_size, 0, 0, 0, 0);
+      OVER_WRITE_CHECK(pc, head, (cidx + 1) * op.type_size);
     }
     return;
   }
@@ -1182,6 +1187,7 @@ __aicore_inline__ void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t offset_slice = begin_m * shard.stride_n + begin_n + shard_offset;
   dst += offset_slice * op.type_size;
   SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, shard.stride_n, pad_size, op.type_size);
+  OVER_WRITE_CHECK(pc, head, end_m * shard.stride_n + end_n + shard_offset);
 }
 
 __aicore_inline__ void SliceStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {

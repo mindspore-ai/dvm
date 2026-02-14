@@ -30,7 +30,7 @@
 2. Kernel计算构图：基于DVM的元算子构图表达接口，完成该Kernel对应的计算逻辑表达；
 3. Normalize: 调用Normalize接口，使其根据IntArrayRef参数所指向的最新Shape, 对计算操作进行Shape推导。 每次Shape发生变化都需要重新推导；
 4. CodeGen: 调用CodeGen接口，使其进行Kernel编译并得到对应的字节码虚拟指令。动态shape每次Launch前都需要编译，静态Shape编译一次即可；
-5. Launch: 调用Launch接口，使其根据该Kenrel对应的字节码虚拟指令, 调用RTS Launch接口下发执行DVM虚拟机，并由其其完成字节码虚拟指令的解释执行。
+5. Launch: 调用Launch接口，使其根据该Kernel对应的字节码虚拟指令, 调用RTS Launch接口下发执行DVM虚拟机，并由其完成字节码虚拟指令的解释执行。
 
 使用注意点：
 + 同一个Kernel对象，可以在更新输入输出地址（静态Shape）、重新编译（动态Shape）、重新构图和编译（动态图）等操作之后，被重新Launch执行；
@@ -294,7 +294,7 @@ Eager堆叠类似Split堆叠。不同点是，Split用于图模式，会缓存�
 
 除了C++接口外，DVM也支持基于Python接口进行构图表达。Python接口主要用于自定义融合算子等场景。Python接口借助装饰器等python语法机制，屏蔽了C++接口对应的Normalize/CodeGen/Launch等调用，所以使用上会更加简单。
 
-对于每个融合算子，用户需要实现一个对应的python函数用于进行构图表达，并且这个函数需要使用```dvm.kernel```装饰器进行装饰。这个python构图函数的首个参数为装饰器自动插入的Kernel对象，其它参数为kernel调用所对应的placeholder参数。完成构图之后，可以真实Tensor为输入（依赖下游AI框架），调用这个python构图函数即可完成Kenrel的编译执行。代码示例：
+对于每个融合算子，用户需要实现一个对应的python函数用于进行构图表达，并且这个函数需要使用```dvm.kernel```装饰器进行装饰。这个python构图函数的首个参数为装饰器自动插入的Kernel对象，其它参数为kernel调用所对应的placeholder参数。完成构图之后，可以真实Tensor为输入（依赖下游AI框架），调用这个python构图函数即可完成Kernel的编译执行。代码示例：
 
 ```python
 import dvm
@@ -373,7 +373,7 @@ DVM C++ API大部分都以Kernel类成员函数进行实现。以下API接口如
 | API | 说明 |
 | --- | --- |
 | `NDObject *Load(void *addr, IntArrayRef *shape, DataType type)` | 连续Load |
-| `NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, const int64_t *offset, DataType type)` | 非连续Load |
+| `NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, DataType type)` | 非连续Load |
 | `NDObject *Store(void *addr, NDObject *input)` | Store |
 
 #### 6.2.2 Vector计算

@@ -291,7 +291,6 @@ class SplitContext {
     mem_pos_ = 0;
   }
 
-  std::vector<NDObject *> app_;
   std::vector<NDAccess *> gen_;
   std::vector<std::pair<NDAccess *, size_t>> kill_;
   std::vector<NDObject *> build_;
@@ -384,6 +383,7 @@ class _SplitKernel : public VKernel {
     void *extern_code_;
   };
   std::vector<NDObject *> objects_;
+  std::vector<NDObject *> temp_vec_;
   SplitContext *__restrict__ ctx_;
   friend EagerArea;
 };

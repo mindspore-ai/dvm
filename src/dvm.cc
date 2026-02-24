@@ -363,7 +363,7 @@ template <BinaryType op_type, typename T, bool rhs_val>
 NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
   auto vkernel = kernel->GetImpl();
   if constexpr (op_type == BinaryType::kAdd || op_type == BinaryType::kMul || op_type == BinaryType::kMinimum ||
-                op_type == BinaryType::kMinimum) {
+                op_type == BinaryType::kMaximum) {
     NDObject *obj;
     if constexpr (std::is_same<T, ScalarRef *>::value) {
       obj = new BinaryScalarRefOp(binary_map[op_type], input, val);

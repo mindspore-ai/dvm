@@ -1529,7 +1529,6 @@ class EagerArea {
 };
 
 SplitContext::SplitContext() {
-  app_.reserve(24);
   gen_.reserve(12);
   kill_.reserve(12);
   build_.reserve(64);
@@ -1613,6 +1612,7 @@ _SplitKernel::_SplitKernel(KernelType type, uint32_t flags) : VKernel(type, flag
     }
     ASSERT(g_eager_pv_width <= EagerVector::kMaxPvNum);
   }
+  temp_vec_.reserve(24);
 }
 
 _SplitKernel::~_SplitKernel() {
@@ -1629,7 +1629,7 @@ NDObject *_SplitKernel::Exchange(NDObject *input, int to_aid) {
   NDAccess *store = GetStore(input);
   if (store == nullptr) {
     store = new NDStore(nullptr, input);
-    store->Normalize(ctx_->app_);
+    store->Normalize(temp_vec_);
     InitStoreInfo(store, GetArea(input));
     SetStore(input, store);
     objects_.push_back(store);
@@ -1652,7 +1652,7 @@ NDObject *_SplitKernel::SplitPush(EagerArea *area, NDObject *input) {
     if (input == c->dom_) {
       input = Exchange(input, v->area_id_);
       SetArea(input, v->area_id_);
-      ctx_->app_.push_back(input);
+      temp_vec_.push_back(input);
     }
     v->dom_ = c->dom_;
     pv_black_mask_ |= 1ul << v->area_id_;
@@ -1708,7 +1708,7 @@ NDObject *_SplitKernel::SplitPush(EagerArea *area, NDObject *input) {
     }
   }
   SetArea(input, area->area_id_);
-  ctx_->app_.push_back(input);
+  temp_vec_.push_back(input);
   return input;
 }
 
@@ -1717,7 +1717,7 @@ void _SplitKernel::Split(NDObject *root) {
   EagerArea *area = EagerArea::Assign(this, kidx);
   area->Reset(root);
   SetArea(root, kidx);
-  auto &stack = ctx_->app_;
+  auto &stack = temp_vec_;
   stack.push_back(root);
   while (!stack.empty()) {
     auto op = stack.back();
@@ -1765,7 +1765,7 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
   mm->flags_ |= OBJ_FLAG_EAGER;
   mm->NormalizeCube();
   CubeOptimizer opt(mm);
-  auto &temp_ops = ctx_->app_;
+  auto &temp_ops = temp_vec_;
   uint64_t dep_mask = 0;
   auto prepare_input = [this, &dep_mask, &temp_ops](bool is_stuff, NDObject *&input) {
     if (is_stuff) {

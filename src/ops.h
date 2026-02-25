@@ -678,7 +678,6 @@ class ReshapeOp : public CopyOp {
   struct ChangeRange {
     int begin{0};
     int size{0};
-    int in_begin{0};
     int in_size{0};
   };
 

@@ -1207,12 +1207,14 @@ class DomainUnifier {
       }
     };
     while (op->VisitChangeRange(range)) {
-      if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.in_begin, range.in_size)) {
+      if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size)) {
         gen_update(op->nd_.data->dims, range.begin, range.size);
-        ReshapeRange(prop, range.in_begin, range.in_size, update);
+        ReshapeRange(prop, range.begin, range.in_size, update);
+        range.begin += range.size;
       } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size)) {
-        gen_update(op->lhs_->nd_.data->dims, range.in_begin, range.in_size);
+        gen_update(op->lhs_->nd_.data->dims, range.begin, range.in_size);
         ReshapeRange(prop, range.begin, range.size, update);
+        range.begin += range.in_size;
       } else {
         return false;
       }

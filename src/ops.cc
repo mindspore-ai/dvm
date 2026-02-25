@@ -1191,26 +1191,22 @@ NDObject *ReshapeOp::Clone(CloneHelper &h) {
 void ReshapeOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Reshape"; }
 
 bool ReshapeOp::VisitChangeRange(ChangeRange &range) {
-  int in_idx = range.in_begin + range.size;
-  int out_idx = range.begin + range.size;
   int out_size = ndd_.size();
   int in_size = lhs_->nd_.size();
-  while (out_idx < out_size && ndd_[out_idx] == lhs_->nd_[in_idx]) {
-    in_idx++;
-    out_idx++;
+  while (range.begin < out_size && range.begin < in_size && ndd_[range.begin] == lhs_->nd_[range.begin]) {
+    range.begin++;
   }
-  if (out_idx == out_size || in_idx == in_size) {
-    return false;
-  }
-  range.begin = out_idx;
-  range.in_begin = in_idx;
-  size_t in_prod = lhs_->nd_[in_idx++];
-  size_t out_prod = ndd_[out_idx++];
-  while (in_prod != out_prod) {
-    if (in_prod < out_prod) {
-      in_prod *= lhs_->nd_[in_idx++];
-    } else {
-      out_prod *= ndd_[out_idx++];
+  int out_idx = range.begin;
+  int in_idx = range.begin;
+  if (out_idx < out_size && in_idx < in_size) {
+    size_t in_prod = lhs_->nd_[in_idx++];
+    size_t out_prod = ndd_[out_idx++];
+    while (in_prod != out_prod) {
+      if (in_prod < out_prod) {
+        in_prod *= lhs_->nd_[in_idx++];
+      } else {
+        out_prod *= ndd_[out_idx++];
+      }
     }
   }
   int in_one = 0;
@@ -1226,7 +1222,7 @@ bool ReshapeOp::VisitChangeRange(ChangeRange &range) {
   }
   range.size = out_idx - range.begin;
   range.in_size = in_idx - range.begin;
-  return true;
+  return range.size || range.in_size;
 }
 
 uint64_t UnaryOp::Emit(VectorKernel &k) {

@@ -276,19 +276,23 @@ def test_matmul_post_fusion_forward():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_matmul_post_fusion_sload():
+@pytest.mark.parametrize('shape_a, shape_b, shape_c', [
+    ([1, 8, 2048, 512], [1, 8, 512, 128], [8, 2048, 128]),
+    ([2048, 512], [512, 512], [2048, 1, 512]),
+    ([2048, 512], [512, 512], [1024, 1024]),
+    ([2048, 512], [512, 512], [1, 2048, 512, 1, 1]),
+    ([2048, 512], [512, 512], [2048 * 512]),
+])
+def test_matmul_post_fusion_sload(shape_a, shape_b, shape_c):
     t = Tester("mix")
-    shape_a = [1, 32, 512, 2048]
-    shape_b = [1, 32, 512, 128]
-    shape_c = [32, 2048, 128]
     ax = Tester.fast_random_normal(0, 0.01, shape_a).astype(np.float16)
     bx = Tester.fast_random_normal(0, 0.01, shape_b).astype(np.float16)
     cx = Tester.fast_random_normal(0, 0.01, shape_c).astype(np.float16)
-    np_c = np.matmul(ax.astype(np.float32).transpose(0, 1, 3, 2), bx.astype(np.float32)).astype(np.float16)
+    np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16)
     a = t.load(ax)
     b = t.load(bx)
     cc = t.load(cx)
-    c = t.matmul(a, b, True, False)
+    c = t.matmul(a, b, False, False)
     e = t.reshape(c, shape_c)
     f = t.add(e, cc)
     t.store_expect(f, np.reshape(np_c, shape_c) + cx, 2e-3)

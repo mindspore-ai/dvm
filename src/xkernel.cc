@@ -1791,6 +1791,14 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
       input = Exchange(input, area_used_);
       area->state_ = EagerArea::kSubmitted;
       dep_mask |= 1ul << aid;
+    } else {
+      // exclusive cube input to avoid fused
+      auto acc = static_cast<NDAccess *>(input);
+      acc->addr_.Update(&acc->addr_.data);
+      input = new NDLoad(acc->addr_.gm, acc->shape_ref_, acc->type_id_);
+      SetStore(input, acc);
+      input->Normalize(temp_ops);
+      objects_.push_back(input);
     }
     SetArea(input, area_used_);
   };
@@ -2338,6 +2346,9 @@ void SplitGraphD::Append(NDObject *op) {
         tracker_.Record(&static_cast<CubeOp *>(op)->bias_);
       }
     }
+  }
+  if (!op->IsSimd()) {
+    tracker_.Record(reinterpret_cast<NDObject **>(&static_cast<NDAccess *>(op)->addr_.gm));
   }
   _SplitGraph::Append(op);
 }

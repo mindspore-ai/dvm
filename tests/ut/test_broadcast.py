@@ -209,3 +209,13 @@ def test_broadcast_bool():
     x1 = t.broadcast(x0, [2, 3])
     t.store_expect(x1, True)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_broadcastx_repeat_unalign():
+    t = Tester()
+    a = np.random.normal(0, 1, [555555, 1]).astype(np.float16)
+    x = t.load(a)
+    y = t.broadcast(x, [555555, 16])
+    t.store_expect(y, np.broadcast_to(a, [555555, 16]))
+    assert (t.run_check())

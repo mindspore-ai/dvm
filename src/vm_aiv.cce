@@ -653,10 +653,11 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   set_vector_mask(0, TYPE_SHIFT(T));
   for (uint64_t i = 0; i < op.iter_num; ++i) {
     uint64_t repeat = op.lead_num >> 3;
-    for (; repeat > 255; repeat -= 255) {
-      vbrcb(xd, xn, rs, rs << 3, 255);
-      xd += count * (255 << 3);
-      xn += 255 << 3;
+    // Use 254 (not 255) to avoid 32B misalignment when xn is uint16_t.
+    for (; repeat > 254; repeat -= 254) {
+      vbrcb(xd, xn, rs, rs << 3, 254);
+      xd += count * (254 << 3);
+      xn += 254 << 3;
     }
     vbrcb(xd, xn, rs, rs << 3, repeat);
     xd += count * (repeat << 3);

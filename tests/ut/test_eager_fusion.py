@@ -475,6 +475,35 @@ def test_eager_cv_2():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
+def test_eager_cv_same_input_1():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.matmul(x0, x0, False, False)
+    x2 = t.add(x1, 0.1)
+    x0_e = a.astype(np.float32)
+    expect_x2 = np.matmul(x0_e, x0_e).astype(np.float16) + 0.1
+    t.store_expect(x2, expect_x2)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_eager_cv_same_input_2():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.add(x2, x1)
+    expect_x3 = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16) + b
+    t.store_expect(x3, expect_x3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b, shape_broadcast', [
     [[1024, 512], [512, 1024], [1, 1024]],
     [[512, 512], [512, 1024], [512, 1]],

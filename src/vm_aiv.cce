@@ -21,6 +21,7 @@ constexpr uint64_t WORKSPACE = 192ul * 1024ul - UB_WORKSPACE_SIZE;
 
 #define VREG_TABLE_BASE 0
 #define PC_BASE 32
+#define VBRCB_NUM 8
 
 #define MASK_32 0xfffffffful
 #define INVALID_INT  uint64_t(-1)
@@ -578,29 +579,46 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint64_t count = op.count;
   uint64_t rs = count >> BlockDataShift(T);
-  if (op.lead_num & 7) {
-    set_flag(PIPE_V, PIPE_S, EVENT_ID0);
-    wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  }
-  set_vector_mask(0, TYPE_SHIFT(T));
+  uint64_t tail = (op.lead_num & 7);
   for (uint64_t i = 0; i < op.iter_num; ++i) {
-    uint64_t repeat = op.lead_num >> 3;
     // Use 254 (not 255) to avoid 32B misalignment when xn is uint16_t.
+    uint64_t repeat = op.lead_num >> 3;
     for (; repeat > 254; repeat -= 254) {
-      vbrcb(xd, xn, rs, rs << 3, 254);
-      xd += count * (254 << 3);
-      xn += 254 << 3;
+      vbrcb(xd, xn, rs, rs * VBRCB_NUM, 254);
+      xd += count * 254 * VBRCB_NUM;
+      xn += 254 * VBRCB_NUM;
     }
-    vbrcb(xd, xn, rs, rs << 3, repeat);
-    xd += count * (repeat << 3);
-    xn += repeat << 3;
-
-    for (uint64_t j = 0; j < (op.lead_num & 7); ++j) {
-      vector_dup(xd, static_cast<T>(*xn), 1, 1, 1, 0, 0);
-      xd += count;
-      xn += 1;
+    vbrcb(xd, xn, rs, rs * VBRCB_NUM, repeat);
+    xd += count * (repeat * VBRCB_NUM + tail);
+    xn += repeat * VBRCB_NUM + tail + op.lead_pad;
+  }
+  if (tail > 0) {
+    xd = (__ubuf__ T *)(op.xd);
+    xn = (__ubuf__ T *)(op.xn);
+    __ubuf__ T *ws = (__ubuf__ T *)(WORKSPACE);
+    for (uint64_t i = 0; i < op.iter_num; ++i) {
+      uint64_t repeat = op.lead_num >> 3;
+      xd += count * repeat * VBRCB_NUM;
+      xn += repeat * VBRCB_NUM;
+      pipe_barrier(PIPE_V);
+      if constexpr (sizeof(T) == sizeof(uint16_t)) {
+        if (repeat & 1ul) {
+          vbrcb(ws, xn - VBRCB_NUM, 1, 8, 2);
+          pipe_barrier(PIPE_V);
+          copy_ubuf_to_ubuf(xd, ws + BlockNum(T), 0, tail, 1, 0, rs - 1);
+        } else {
+          vbrcb(ws, xn, 1, 0, 1);
+          pipe_barrier(PIPE_V);
+          copy_ubuf_to_ubuf(xd, ws, 0, tail, 1, 0, rs - 1);
+        }
+      } else {
+        vbrcb(ws, xn, 1, 0, 1);
+        pipe_barrier(PIPE_V);
+        copy_ubuf_to_ubuf(xd, ws, 0, tail, 1, 0, rs - 1);
+      }
+      xd += count * tail;
+      xn += tail + op.lead_pad;
     }
-    xn += op.lead_pad;
   }
   if (count > TYPE_SHIFT(T)) {
     set_vector_mask(0, count);

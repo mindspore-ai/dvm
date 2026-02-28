@@ -1682,9 +1682,10 @@ NDObject *_SplitKernel::SplitPush(EagerArea *area, NDObject *input) {
     }
     if (input->IsLoad()) {
       auto ac = static_cast<NDAccess *>(input);
-      auto load = new NDLoad(ac->addr_.gm, ac->shape_ref_, ac->type_id_);
+      auto load = new NDLoad(nullptr, ac->shape_ref_, ac->type_id_);
       if (input->CheckFlag(OBJ_FLAG_EAGER)) {
         SetStore(load, input);  // TRICK: force load entry wss alloc as swap load to update its gm
+        SetStoreSize(ac, 0);
       } else {
         auto store = GetStore(input);
         ASSERT(store != nullptr && store->IsStore());
@@ -1793,10 +1794,12 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
       dep_mask |= 1ul << aid;
     } else {
       // exclusive cube input to avoid fused
+      ASSERT(input->flags_ & OBJ_FLAG_EAGER);
       auto acc = static_cast<NDAccess *>(input);
       acc->addr_.Update(&acc->addr_.data);
-      input = new NDLoad(acc->addr_.gm, acc->shape_ref_, acc->type_id_);
+      input = new NDLoad(nullptr, acc->shape_ref_, acc->type_id_);
       SetStore(input, acc);
+      SetStoreSize(acc, 0);
       input->Normalize(temp_ops);
       objects_.push_back(input);
     }
@@ -2346,9 +2349,6 @@ void SplitGraphD::Append(NDObject *op) {
         tracker_.Record(&static_cast<CubeOp *>(op)->bias_);
       }
     }
-  }
-  if (!op->IsSimd()) {
-    tracker_.Record(reinterpret_cast<NDObject **>(&static_cast<NDAccess *>(op)->addr_.gm));
   }
   _SplitGraph::Append(op);
 }

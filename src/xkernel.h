@@ -356,7 +356,9 @@ class _SplitKernel : public VKernel {
 
   void *AllocWS(NDAccess *store, WsAllocator *alloc) {
     auto size = GetStoreSize(store);
-    if (auto mem = ctx_->Alloc(size); mem != nullptr) {
+    if (unlikely(size == 0)) {
+      store->addr_.data = uint64_t(-1);
+    } else if (auto mem = ctx_->Alloc(size); mem != nullptr) {
       store->addr_.gm = mem->addr;
       SetStoreSize(store, mem->size);
     } else {

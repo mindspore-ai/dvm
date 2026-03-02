@@ -294,14 +294,31 @@ class MatMul {
     }
   }
 
-  __force_inline__ __aicore__ void LoadBias(__cbuf__ void *__restrict__ dst,
-                                            __gm__ void *__restrict__ src,
+  __force_inline__ __aicore__ void LoadBias(__cbuf__ void *__restrict__ dst, __gm__ void *__restrict__ src,
                                             uint64_t n_actual) {
-    // TODO
+    copy_gm_to_cbuf_align_v2((__cbuf__ uint8_t *)dst,    // dst
+                             (__gm__ uint8_t *)src,      // src
+                             0,                          // sid
+                             1,                          // burst num
+                             n_actual * BiasTypeSize(),  // len burst
+                             0,                          // left padding num
+                             0,                          // right padding num
+                             true,                       // constant padding ctl
+                             0,                          // l2 cache ctl
+                             0,                          // burst src stride
+                             0                           // burst dst stride
+    );
   }
 
   __force_inline__ __aicore__ void LoadBt(uint64_t dst, __cbuf__ void *__restrict__ src, uint64_t n_actual) {
-    // TODO
+    copy_cbuf_to_bt(dst,                                       // dst
+                    (__cbuf__ T *)src,                         // src
+                    true,                                      // convControl
+                    1,                                         // nBurst
+                    CeilDiv(n_actual * BiasTypeSize(), 32UL),  // lenBurst
+                    0,                                         // srcGap
+                    0                                          // dstGap
+    );
   }
 
   __force_inline__ __aicore__ void MAD(__cc__ float *__restrict__ c, 
@@ -855,8 +872,6 @@ extern "C"  __global__ __aicore__ void dvm_mix_aic(uint64_t ffts_addr, uint64_t 
     }
   }
   if (entry & V_ENTRY_FLAG_CUBE_MIX) {
-    // Notice: l0c -> ub directly, ffts is not necessary.
-    set_ffts_base_addr(ffts_addr);
     __gm__ vCubeOp *__restrict__ op = reinterpret_cast<__gm__ vCubeOp*>(body_addr);
     uint64_t flags = op->flags;
     uint64_t tile_num = op->group_num;

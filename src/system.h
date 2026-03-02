@@ -85,8 +85,9 @@ enum SocType {
   kAscend910_9372,
   kAscend910_9361,
   // C310
-  kAscend910_9589,
-  kAscend910_9599,
+  kAscend950PR_9579,
+  kAscend950PR_9589,
+  kAscend950PR_9599,
   kSocUnknow,
 };
 
@@ -183,7 +184,9 @@ class System : public Config {
   void *renamed_bin_{nullptr};
   void *rt_handle_{nullptr};
 
+  template <AiCoreArch arch>
   static int CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream);
+  template <AiCoreArch arch>
   static int CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream);
 };
 

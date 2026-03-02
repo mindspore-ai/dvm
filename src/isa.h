@@ -699,10 +699,9 @@ struct vReduceY {
   uint64_t red_size;
   uint64_t red_tail;
   uint64_t dup_num;
-  uint64_t simd_width;
   // pc[0]: xd(18)
-  // pc[1]: dup_num(16) << 48 | red_tail(16) << 16 | red_size(16) << 16 | iter_size(16)
-  // pc[2]: xn(18) << 16 |simd_width(8)
+  // pc[1]: dup_num(16) << 48 | red_tail(16) << 32 | red_size(16) << 16 | iter_size(16)
+  // pc[2]: xn(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vReduceY &op) {
     op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
@@ -710,8 +709,7 @@ struct vReduceY {
     op.red_size = (data >> 16) & 0xfffful;
     op.red_tail = (data >> 32) & 0xfffful;
     op.dup_num = data >> 48;
-    op.simd_width = pc[2] & 0xfful;
-    op.xn = (pc[2] >> 16) & V_X_MASK;
+    op.xn = pc[2] & V_X_MASK;
   }
   __aicore_inline__ uint64_t GetXd(bcodeptr_t pc, uint64_t head) { return (head >> V_HEAD_EXT_OFFSET) & V_X_MASK; }
 
@@ -719,7 +717,7 @@ struct vReduceY {
     uint64_t size = 3;
     pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.dup_num << 48 | op.red_tail << 32 | op.red_size << 16 | op.iter_size;
-    pc[2] = op.xn << 16 | op.simd_width;
+    pc[2] = op.xn;
     return size;
   }
 };

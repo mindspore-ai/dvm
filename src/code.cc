@@ -474,8 +474,6 @@ void DumpReduceY(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << op.iter_size << "x[" << op.red_size << "]x" << op.dup_num;
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
   DumpVal("red_tail", op.red_tail, oss);
-  oss << ", ";
-  DumpVal("simd_width", op.simd_width, oss);
 }
 
 void DumpReduceJoin(const DumpInfo &dump_info, std::ostringstream &oss) {

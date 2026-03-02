@@ -505,35 +505,6 @@ __aicore_inline__ void Cast(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     builtin##_count<VTYPE, IsRhs>(xd, xn, val, op.count); \
   } while (0)
 
-template <typename T>
-__aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  vElementAny op;
-  vElementAny::Decode(pc, head, op);
-  if (IsLastTile(tile)) {
-    op.repeat = op.repeat_tail;
-  }
-  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
-  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
-  uint64_t simd_width = op.simd_width;
-  uint16_t lenburst = (op.repeat * simd_width) >> BlockDataShift(T);
-  SetVectorMask(simd_width);
-  copy_ubuf_to_ubuf((__ubuf__ void *)xd, (__ubuf__ void *)xn, 0, 1, lenburst, 0, 0);
-  while (op.repeat != 1) {
-    if (op.repeat & 1) {
-      uint64_t offset_repeat = op.repeat & ~1;
-      vmax_mask(xd, xd, xd + offset_repeat * simd_width, 1, simd_width, simd_width, simd_width);
-    }
-    op.repeat >>= 1;
-    vmax_mask(xd, xd, xd + op.repeat * simd_width, op.repeat, simd_width, simd_width, simd_width);
-  }
-  vcmax_mask(xd, xd, 1, 1, 1);
-  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  __ubuf__ T *result = (__ubuf__ T *)(op.xd);
-  if (*result != 0) {
-    vStoreCond::EncodeCond(pc + vElementAny::STORE_COND_OFFSET, 0, 1);
-  }
-}
 
 template <typename T>
 __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -626,6 +597,85 @@ __aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) 
       break;
   }
 }
+
+
+template <vReduceOpType RED_TYPE, typename V>
+__simd_callee__ __aicore_inline__ void BisectReduce(V &vreg2, V &vreg0, V &vreg1, vector_bool stPreg) {
+  if constexpr (RED_TYPE == V_RED_SUM) {
+    vadd(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
+  }
+  if constexpr (RED_TYPE == V_RED_MAX) {
+    vmax(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
+  }
+  if constexpr (RED_TYPE == V_RED_MIN) {
+    vmin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
+  }
+}
+
+template <vReduceOpType RED_TYPE, typename T>
+__aicore_inline__ void ReduceBisectLoop(__ubuf__ T *&xd, __ubuf__ T *&xn, uint64_t red_count, uint16_t dup_count,
+                                        uint32_t dup_stride, uint32_t iter_size, __ubuf__ T *xd_base) {
+  while (red_count > 1) {
+    uint16_t iter_tail = red_count & 1ul;
+    red_count >>= 1;
+    uint32_t sregLower = BlockNum(T);
+    uint32_t reduce_size = red_count * iter_size;
+    constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();
+    __VEC_SCOPE__ {
+      RegTensor<T> vreg0;
+      RegTensor<T> vreg1;
+      RegTensor<T> vreg2;
+      vector_bool stPreg;
+      uint16_t repeat = CeilDiv(reduce_size, sregLower);
+      uint16_t repeat_tail = CeilDiv(iter_size, sregLower);
+      for (uint16_t i = 0; i < dup_count; i++) {
+        uint32_t count = reduce_size;
+        for (uint16_t j = 0; j < repeat; j++) {
+          uint32_t offset = i * dup_stride + j * sregLower;
+          stPreg = UpdateMask<T>(count);
+          vlds(vreg0, xn, offset, NORM);
+          vlds(vreg1, xn + reduce_size, offset, NORM);
+          BisectReduce<RED_TYPE>(vreg2, vreg0, vreg1, stPreg);
+          vsts(vreg2, xd, offset, distValue, stPreg);
+        }
+        mem_bar(VST_VLD);
+        uint32_t count_tail = iter_size;
+        for (uint16_t k = 0; k < iter_tail; k++) {
+          for (uint16_t j = 0; j < repeat_tail; j++) {
+            stPreg = UpdateMask<T>(count_tail);
+            uint32_t offset = i * dup_stride + j * sregLower;
+            vlds(vreg0, xd, offset, NORM);
+            vlds(vreg1, xn + reduce_size * 2, offset, NORM);
+            BisectReduce<RED_TYPE>(vreg2, vreg0, vreg1, stPreg);
+            vsts(vreg2, xd, offset, distValue, stPreg);
+          }
+        }
+      }
+    }
+    xn = xd = xd_base;
+  }
+}
+template <typename T>
+__aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vElementAny op;
+  vElementAny::Decode(pc, head, op);
+  if (IsLastTile(tile)) {
+    op.repeat = op.repeat_tail;
+  }
+  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
+  ReduceBisectLoop<V_RED_MAX, T>(xd, xn, op.repeat, 1, 0, op.simd_width, (__ubuf__ T *)(op.xd));
+  set_vector_mask(0, op.simd_width);
+  SetVectorMask(op.simd_width);
+  vcmax_mask(xd, xd, 1, 1, 1);
+  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  __ubuf__ uint32_t *result = (__ubuf__ uint32_t *)(op.xd);
+  if (*result != 0) {
+    vStoreCond::EncodeCond(pc + vElementAny::STORE_COND_OFFSET, 0, 1);
+  }
+}
+
 
 template <typename T, typename G = UintFor<T>>
 __aicore_inline__ void IsFinite(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -794,58 +844,13 @@ __aicore_inline__ void ReduceX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   if (IsLastTile(tile)) {
     op.red_size = op.red_tail;
   }
-  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
-  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
+  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
   uint64_t simd_width = op.simd_width;
-  uint32_t red_size = op.red_size / simd_width;  // TODO: calc by host
-  uint16_t iter = 31 - __builtin_clz(red_size);
-  SetVectorMask(simd_width);
-  for (uint16_t k = 0; k < iter; ++k) {
-    uint16_t iter_tail = red_size & 1ul;
-    red_size >>= 1;
-    __VEC_SCOPE__ {
-      RegTensor<T> vreg0;
-      RegTensor<T> vreg1;
-      RegTensor<T> vreg2;
-      vector_bool stPreg = MoveMask<T>();
-      constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();
-      for (uint16_t i = 0; i < (uint16_t)op.dup_size; i++) {
-        for (uint16_t j = 0; j < (uint16_t)red_size; j++) {
-          uint32_t offset = i * op.red_size + j * simd_width;
-          vlds(vreg0, xn, offset, NORM);
-          vlds(vreg1, xn + red_size * simd_width, offset, NORM);
-          if constexpr (RED_TYPE == V_RED_SUM) {
-            vadd(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MAX) {
-            vmax(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MIN) {
-            vmin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          vsts(vreg2, xd, offset, distValue, stPreg);
-        }
-      }
-      for (uint16_t j = 0; j < iter_tail; j++) {
-        for (uint16_t i = 0; i < (uint16_t)op.dup_size; i++) {
-          vlds(vreg0, xd, i * op.red_size, NORM);
-          vlds(vreg1, xn + red_size * 2 * simd_width, i * op.red_size, NORM);
-          if constexpr (RED_TYPE == V_RED_SUM) {
-            vadd(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MAX) {
-            vmax(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MIN) {
-            vmin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          vsts(vreg2, xd, i * op.red_size, distValue, stPreg);
-        }
-      }
-    }
-    xn = xd = (__ubuf__ T *)(op.xd);
-  }
+  uint64_t red_size = op.red_size / simd_width;
+  ReduceBisectLoop<RED_TYPE>(xd, xn, red_size, op.dup_size, op.red_size, simd_width, (__ubuf__ T *)(op.xd));
   vReduceX::DecodeBlock(pc, op);
+  SetVectorMask(simd_width);
   uint64_t src_rs = op.red_size * op.dup_block;
   uint64_t iter_num = op.dup_size / op.dup_block;
   __VEC_SCOPE__ {
@@ -853,7 +858,7 @@ __aicore_inline__ void ReduceX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     RegTensor<T> vreg1;
     vector_align ureg;
     vector_bool exPreg = MoveMask<T>();
-    for (uint16_t k = 0; k < (uint16_t)op.dup_block; ++k) {
+    for (uint16_t k = 0; k < (uint16_t)iter_num; ++k) {
       for (uint16_t i = 0; i < (uint16_t)op.dup_block; ++i) {
         vlds(vreg0, xn, i * op.red_size + k * src_rs, NORM);
         if constexpr (RED_TYPE == V_RED_SUM) {
@@ -876,67 +881,19 @@ template <vReduceOpType RED_TYPE, typename T>
 __aicore_inline__ void ReduceY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vReduceY op;
   vReduceY::Decode(pc, head, op);
-  __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
-  __ubuf__ T *xd = (__ubuf__ T*)(op.xd);
+  __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
+  __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
   uint64_t red_size = IsLastTile(tile) ? op.red_tail : op.red_size;
-  if (red_size == 1) { // red_tail may 1
-    uint64_t lenburst = op.dup_num * op.iter_size * sizeof(T) / 32;
+  if (red_size == 1) {
+    uint64_t lenburst = op.dup_num * op.iter_size >> BlockDataShift(T);
     copy_ubuf_to_ubuf(xd, xn, 0, 1, lenburst, 0, 0);
     return;
   }
-  uint64_t simd_width = op.simd_width;
-  SetVectorMask(simd_width);
-  uint64_t iter_repeat_num = op.iter_size / simd_width;
-  uint16_t iter = 31 - __builtin_clz(red_size);
-  for (uint16_t k = 0; k < iter; ++k) {
-    uint64_t iter_tail = red_size & 1ul;
-    red_size >>= 1;
-    uint64_t dup_stride = op.iter_size * red_size;
-    uint16_t repeat = red_size * iter_repeat_num;
-    uint32_t repeat_tail = iter_tail ? iter_repeat_num : 0;
-    uint32_t offset_tail = iter_tail ? dup_stride * 2 + op.iter_size : dup_stride * 2;
-    __VEC_SCOPE__ {
-      RegTensor<T> vreg0;
-      RegTensor<T> vreg1;
-      RegTensor<T> vreg2;
-      vector_bool stPreg = MoveMask<T>();
-      constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();
-      for (uint16_t k = 0; k < (uint16_t)op.dup_num; ++k) { 
-        for (uint16_t j = 0; j < (uint16_t)repeat; j++) {
-          uint32_t xn_offset = k * offset_tail + j * simd_width;
-          uint32_t xd_offset = k * dup_stride + j * simd_width;
-          vlds(vreg0, xn, xn_offset, NORM);
-          vlds(vreg1, xn + dup_stride, xn_offset, NORM);
-          if constexpr (RED_TYPE == V_RED_SUM) {
-            vadd(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MAX) {
-            vmax(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MIN) {
-            vmin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          vsts(vreg2, xd, xd_offset, distValue, stPreg);
-        }
-        for (uint16_t j = 0; j < (uint16_t)repeat_tail; j++) {
-          uint32_t xn_offset = k * offset_tail + j * simd_width;
-          uint32_t xd_offset = k * dup_stride + j * simd_width;
-          vlds(vreg0, xd, xd_offset, NORM);
-          vlds(vreg1, xn + dup_stride + dup_stride, xn_offset, NORM);
-          if constexpr (RED_TYPE == V_RED_SUM) {
-            vadd(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MAX) {
-            vmax(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          if constexpr (RED_TYPE == V_RED_MIN) {
-            vmin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);
-          }
-          vsts(vreg2, xd, xd_offset, distValue, stPreg);
-        }
-      }  // end for dup
-    }    // end while iter_num
-    xn = xd = (__ubuf__ T *)(op.xd);
+  uint64_t stride_size = op.iter_size * red_size;
+  ReduceBisectLoop<RED_TYPE>(xd, xn, red_size, op.dup_num, stride_size, op.iter_size, (__ubuf__ T *)(op.xd));
+  if (op.dup_num > 1) {
+    auto lenburst = op.iter_size >> BlockDataShift(T);
+    copy_ubuf_to_ubuf(xd, xn, 0, op.dup_num, lenburst, (stride_size >> BlockDataShift(T)) - lenburst, 0);
   }
 }
 
@@ -1675,7 +1632,6 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
     }
     copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
     set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
-    set_ffts_base_addr(ffts_addr);
     vBlockInit(blockidx, blocknum);
     uint64_t visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);
     uint64_t visit_offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);

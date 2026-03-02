@@ -79,9 +79,9 @@ def test_remove_pad_03():
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_remove_pad_04():
     t = Tester()
-    a = np.random.normal(0, 1, (20, 4096, 1)).astype(np.float32)
-    b = np.random.normal(0, 1, (20, 4096, 77)).astype(np.float16)
-    c = np.random.normal(0, 1, (20, 4096, 77)).astype(np.float16)
+    a = np.random.normal(0, 0.1, (20, 4096, 1)).astype(np.float32)
+    b = np.random.normal(0, 0.1, (20, 4096, 77)).astype(np.float16)
+    c = np.random.normal(0, 0.1, (20, 4096, 77)).astype(np.float16)
     expect = (c - a.astype(np.float16)) * b * 1.2
     a = t.load(a)
     b = t.load(b)
@@ -98,8 +98,8 @@ def test_remove_pad_04():
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_remove_pad_multi_user():
     t = Tester()
-    a0 = np.random.normal(0, 100, [1, 4096, 4]).astype(np.float32)
-    a1 = np.abs(np.random.normal(0, 100, [1, 4096, 1]).astype(np.float32)) + 1e-4
+    a0 = np.random.normal(0, 1, [1, 4096, 4]).astype(np.float32)
+    a1 = np.abs(np.random.normal(0, 10, [1, 4096, 1]).astype(np.float32)) + 1e-4
     e1 = a0 / a1
     e2 = e1 * 2.0
     x0 = t.load(a0)

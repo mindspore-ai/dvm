@@ -1851,7 +1851,6 @@ uint64_t _ReduceOp::Emit(VectorKernel &k) {
     op.xd = xbuf_;
     op.xn = lhs_->xbuf_;
     op.iter_size = ndd_.stride(start_dim_);
-    op.simd_width = SelectSimdWidth(op.iter_size, type_id_);
     op.red_size = lhs_->nd_.stride(end_dim_) / op.iter_size;
     ASSERT(op.red_size > 1);
     if (InRange(tail_dim_)) {

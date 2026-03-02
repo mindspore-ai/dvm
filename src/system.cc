@@ -145,8 +145,9 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9382", kAscend910_9382, kAiCore_C220, 24, 192 * MB},
   {"Ascend910_9372", kAscend910_9372, kAiCore_C220, 20, 192 * MB},
   {"Ascend910_9361", kAscend910_9361, kAiCore_C220, 20, 96 * MB},
-  {"Ascend910_9589", kAscend910_9589, kAiCore_C310, 32, 128 * MB},
-  {"Ascend910_9599", kAscend910_9599, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950PR_9579", kAscend950PR_9579, kAiCore_C310, 24, 128 * MB},
+  {"Ascend950PR_9589", kAscend950PR_9589, kAiCore_C310, 32, 128 * MB},
+  {"Ascend950PR_9599", kAscend950PR_9599, kAiCore_C310, 36, 128 * MB},
 };
 
 static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, const unsigned char *bin_data,
@@ -182,15 +183,18 @@ static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, cons
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 }
 
+template <AiCoreArch arch>
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
   typedef rtError_t (*LaunchKernelFunc)(const void *func, uint32_t blockdim, void *args, uint32_t argssize,
                                         rtSmDesc_t *, rtStream_t);
-  if (code->target_ == Code::kTargetMix) {
-    auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
-    uint32_t len = 0;
-    auto err = get_ffts(reinterpret_cast<uint64_t *>(code->data_), &len);
-    if (err != 0) return err;
+  if constexpr (arch == kAiCore_C220) {
+    if (code->target_ == Code::kTargetMix) {
+      auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
+      uint32_t len = 0;
+      auto err = get_ffts(reinterpret_cast<uint64_t *>(code->data_), &len);
+      EXCEPTION_IF(err != 0, "get_ffts failed");
+    }
   }
   auto func_handle = static_cast<const void *>(reinterpret_cast<const uint8_t *>(&self) + code->target_);
   auto launch = reinterpret_cast<LaunchKernelFunc>(self.kernel_launch_func_);
@@ -205,14 +209,17 @@ int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, 
   return launch(func_handle, code->block_dim_, args, sizeof(args), nullptr, stream);
 }
 
+template <AiCoreArch arch>
 int System::CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef int (*GetFftsFunc)(void **addr);
   typedef int (*LaunchHostArgFunc)(const void *func_handle, uint32_t blockdim, void *stream, void *cfg, void *hostargs,
                                    size_t argssize, void *placeHolder, size_t placehoderNum);
-  if (code->target_ == Code::kTargetMix) {
-    auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
-    auto err = get_ffts(reinterpret_cast<void **>(code->data_));
-    if (err != 0) return err;
+  if constexpr (arch == kAiCore_C220) {
+    if (code->target_ == Code::kTargetMix) {
+      auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
+      auto err = get_ffts(reinterpret_cast<void **>(code->data_));
+      EXCEPTION_IF(err != 0, "get_ffts failed");
+    }
   }
   auto func_handle = self.func_handles_[code->target_];
   auto launch = reinterpret_cast<LaunchHostArgFunc>(self.kernel_launch_func_);
@@ -269,7 +276,7 @@ void System::DoInit() {
   }
 #ifdef VK_SIM_MODEL
   RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
-  code_launch_ = CodeLaunchRT;
+  code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
   kernel_launch_func_ = ::rtKernelLaunch;
   get_ffts_addr_func_ = ::rtGetC2cCtrlAddr;
   return;
@@ -286,7 +293,7 @@ void System::DoInit() {
       auto reg_function = dlsym(rt_handle_, "rtFunctionRegister");
       EXCEPTION_IF(reg_binary == nullptr || reg_function == nullptr, "load rt_binary_register symbol failed");
       RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
-      code_launch_ = CodeLaunchRT;
+      code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
       return;
     }
     dlclose(rt_handle_);
@@ -341,7 +348,7 @@ void System::DoInit() {
   err = load_binary(g_vkernel_bin, g_vkernel_bin_len, &bin_opt, &bin_handle);
   err |= get_function(bin_handle, "dvm", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
-  code_launch_ = CodeLaunchACL;
+  code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchACL<kAiCore_C220> : CodeLaunchACL<kAiCore_C310>;
 #else
   EXCEPTION_IF(rt_handle_ == nullptr, "dlopen libruntime failed");
 #endif

@@ -216,34 +216,33 @@ __aicore_inline__ void ReduceBisectLoop(__ubuf__ T *&xd, __ubuf__ T *&xn, uint64
     builtin(dst, val, repeat, dstBlockStride, srcBlockStride, dstRepeatStride, srcRepeatStride);            \
   }
 
-#define DELCARE_CMPS(builtin)                                                                                         \
-  template <typename T>                                                                                               \
-  __aicore_inline__ void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ T *src0, T src1, uint16_t repeat,           \
-                                          uint16_t dstBlockStride, uint16_t src0BlockStride, uint8_t dstRepeatStride, \
-                                          uint8_t src0RepeatStride) {                                                 \
-    for (; repeat > 255; repeat -= 255) {                                                                             \
-      builtin(dst, src0, src1, 255, dstBlockStride, src0BlockStride, dstRepeatStride, src0RepeatStride);              \
-      dst += 255 * 32 * dstRepeatStride;                                                                              \
-      src0 += 255 * TYPE_SHIFT(T) * src0RepeatStride;                                                                 \
-    }                                                                                                                 \
-    builtin(dst, src0, src1, repeat, dstBlockStride, src0BlockStride, dstRepeatStride, src0RepeatStride);             \
+// Keep uint8_t *dst 32-byte aligned for cmp mask writes.
+#define CMP_REPEAT_SHIFT(T) (sizeof(T) == 4 ? 252 : 254)
+
+#define DELCARE_CMPS(builtin)                                                                                 \
+  template <typename T>                                                                                       \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ T *src0, T src1, uint16_t repeat) { \
+    constexpr uint64_t repeat_shift = CMP_REPEAT_SHIFT(T);                                                    \
+    for (; repeat > repeat_shift; repeat -= repeat_shift) {                                                   \
+      builtin(dst, src0, src1, repeat_shift, 1, 1, 8, 8);                                                     \
+      dst += repeat_shift * TYPE_SHIFT(T);                                                                     \
+      src0 += repeat_shift * BlockNum(T);                                                                      \
+    }                                                                                                         \
+    builtin(dst, src0, src1, repeat, 1, 1, 8, 8);                                                             \
   }
 
-#define DELCARE_CMP(builtin)                                                                                          \
-  template <typename T>                                                                                               \
-  __aicore_inline__ void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint16_t repeat, \
-                                          uint8_t dstBlockStride, uint8_t src0BlockStride, uint8_t src1BlockStride,   \
-                                          uint8_t dstRepeatStride, uint8_t src0RepeatStride,                          \
-                                          uint8_t src1RepeatStride) {                                                 \
-    for (; repeat > 255; repeat -= 255) {                                                                             \
-      builtin(dst, src0, src1, 255, dstBlockStride, src0BlockStride, src1BlockStride, dstRepeatStride,                \
-              src0RepeatStride, src1RepeatStride);                                                                    \
-      dst += 255 * 32 * dstRepeatStride;                                                                              \
-      src0 += 255 * TYPE_SHIFT(T) * src0RepeatStride;                                                                 \
-      src1 += 255 * TYPE_SHIFT(T) * src1RepeatStride;                                                                 \
-    }                                                                                                                 \
-    builtin(dst, src0, src1, repeat, dstBlockStride, src0BlockStride, src1BlockStride, dstRepeatStride,               \
-            src0RepeatStride, src1RepeatStride);                                                                      \
+#define DELCARE_CMP(builtin)                                                                         \
+  template <typename T>                                                                              \
+  __aicore_inline__ void repeat_##builtin(__ubuf__ uint8_t *dst, __ubuf__ T *src0, __ubuf__ T *src1, \
+                                          uint16_t repeat) {                                         \
+    constexpr uint64_t repeat_shift = CMP_REPEAT_SHIFT(T);                                           \
+    for (; repeat > repeat_shift; repeat -= repeat_shift) {                                          \
+      builtin(dst, src0, src1, repeat_shift, 1, 1, 1, 8, 8, 8);                                     \
+      dst += repeat_shift * TYPE_SHIFT(T);                                                           \
+      src0 += repeat_shift * BlockNum(T);                                                            \
+      src1 += repeat_shift * BlockNum(T);                                                            \
+    }                                                                                                \
+    builtin(dst, src0, src1, repeat, 1, 1, 1, 8, 8, 8);                                              \
   }
 
 DELCARE_UNARYS(vector_dup)
@@ -360,7 +359,7 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 #define CMP_DISPATCH(op_type, builtin)                                        \
   case op_type:                                                               \
     do {                                                                      \
-      repeat_##builtin(ws, xn, xm, MaxRepeat(op.count, T), 1, 1, 1, 8, 8, 8); \
+      repeat_##builtin(ws, xn, xm, MaxRepeat(op.count, T));                    \
       set_vector_mask(0, BlockNum(T));                                        \
       pipe_barrier(PIPE_V);                                                   \
       if constexpr (op_type == V_CMP_NE) {                                    \
@@ -402,7 +401,7 @@ __aicore_inline__ void CompareInt(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ int32_t *xn = (__ubuf__ int32_t *)(op.xn);
   __ubuf__ uint8_t *ws = (__ubuf__ uint8_t *)(op.ws);
   set_vector_mask(0, op.count);
-  repeat_vcmpv_eq(ws, xn, xm, MaxRepeat(op.count, int32_t), 1, 1, 1, 8, 8, 8);
+  repeat_vcmpv_eq(ws, xn, xm, MaxRepeat(op.count, int32_t));
   set_vector_mask(0, BlockNum(int32_t));
   pipe_barrier(PIPE_V);
   if (op.type == V_CMP_NE) {
@@ -425,7 +424,7 @@ __aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) 
 #define CMPS_DISPATCH(op_type, builtin)                                     \
   case op_type:                                                             \
     do {                                                                    \
-      repeat_##builtin(ws, xn, val, MaxRepeat(op.count, T), 1, 1, 8, 8);    \
+      repeat_##builtin(ws, xn, val, MaxRepeat(op.count, T));               \
       pipe_barrier(PIPE_V);                                                 \
       set_vector_mask(0, BlockNum(T));                                      \
       if constexpr (op_type == V_CMP_NE) {                                  \
@@ -510,7 +509,7 @@ __aicore_inline__ void _PowerProc(__ubuf__ float *xd, __ubuf__ float *xm, __ubuf
   // Check 0^0
   set_cmpmask((__ubuf__ void *)(WORKSPACE));
   pipe_barrier(PIPE_V);
-  repeat_vcmpvs_ne(ws1, xm, (float)0, cmp_repeat, 1, 1, rs, rs);
+  repeat_vcmpvs_ne(ws1, xm, (float)0, cmp_repeat);
   pipe_barrier(PIPE_V);
   vsel(xd, xd, ws1, repeat, 1, 1, 1, rs, rs, 0, 1);
   pipe_barrier(PIPE_V);
@@ -520,7 +519,7 @@ __aicore_inline__ void _PowerProc(__ubuf__ float *xd, __ubuf__ float *xm, __ubuf
   pipe_barrier(PIPE_V);
   vconv_s322f32(ws0, (__ubuf__ int32_t *)ws0, repeat, 1, 1, rs, rs);
   pipe_barrier(PIPE_V);
-  repeat_vcmpv_eq((__ubuf__ uint8_t *)ws1, ws0, xm, cmp_repeat, 1, 1, 1, rs, rs, rs);
+  repeat_vcmpv_eq((__ubuf__ uint8_t *)ws1, ws0, xm, cmp_repeat);
   set_cmpmask((__ubuf__ void *)(WORKSPACE + 256));
 
   // Constructing the odd-even case
@@ -541,7 +540,7 @@ __aicore_inline__ void _PowerProc(__ubuf__ float *xd, __ubuf__ float *xm, __ubuf
   vmul(ws0, ws0, xd, repeat, 1, 1, 1, rs, rs, rs);
   pipe_barrier(PIPE_V);
 
-  repeat_vcmpvs_lt(ws1, xn, (float)0, cmp_repeat, 1, 1, rs, rs);
+  repeat_vcmpvs_lt(ws1, xn, (float)0, cmp_repeat);
 }
 
 __aicore_inline__ void Power(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -827,7 +826,7 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T*)(op.xn);
   __ubuf__ uint8_t *ws = (__ubuf__ uint8_t*)(op.ws);
   set_vector_mask(0, op.count);
-  repeat_vcmpvs_ne(ws, cond, (T)0, MaxRepeat(op.count, T), 1, 1, 8, 8);
+  repeat_vcmpvs_ne(ws, cond, (T)0, MaxRepeat(op.count, T));
   SelectMode2(xd, xn, xm, 1, 8, op.ws);
 }
 

@@ -146,3 +146,15 @@ def test_cmp_bf16(op, func):
     z = op(t, x, y)
     t.store_expect(z, func(a, b))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_cmp_repeat_overflow():
+    t = Tester()
+    a = np.random.normal(-1, 1, [2048, 9]).astype(np.float16)
+    x = t.load(a)
+    x = t.cast(x, "float32")
+    z = t.less_equal(x, 2.0)
+    z = t.cast(z, "bool")
+    t.store_expect(z, np.less_equal(a, 2))
+    assert t.run_check()

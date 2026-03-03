@@ -111,3 +111,14 @@ def test_cmp_s_ws_inplace():
     z = t.binary("Equal", x, 1.0)
     t.store_expect(z, np.equal(a, 1.0).astype(np.float16))
     assert(t.run_check())
+
+
+def test_cmp_repeat_overflow():
+    t = Tester()
+    a = np.random.normal(-1, 1, [2048, 9]).astype(np.float16)
+    x = t.load(a)
+    x = t.cast(x, "float32")
+    z = t.binary("LessEqual", x, 2.0)
+    z = t.cast(z, "bool")
+    t.store_expect(z, np.less_equal(a, 2))
+    assert(t.run_check())

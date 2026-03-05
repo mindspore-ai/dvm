@@ -618,13 +618,14 @@ void Comm::Init(void *hccl_comm) {
   comm_ = new HcclComm(hccl_comm);
 }
 
-Kernel::Kernel() : kernel_{nullptr} { g_system.Init(); }
+Kernel::Kernel() : kernel_{nullptr} {}
 
 Kernel::~Kernel() { delete kernel_; }
 
 void Kernel::SetNameHint(const char *name, const char *fullname) { kernel_->SetNameHint(name, fullname); }
 
 void Kernel::Reset(KernelType type, uint32_t flags) {
+  g_system.Init();
   if (kernel_) {
     delete kernel_;
   }

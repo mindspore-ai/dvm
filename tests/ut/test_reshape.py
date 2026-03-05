@@ -174,6 +174,25 @@ def test_unalign_broadcast():
     assert (t.run_check())
 
 
+arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape1, shape2, shape3", [
+    [[10, 20, 8], [20, 8], [200, 8]],
+    [[10, 20, 8], [8], [200, 8]],
+    [[10, 20, 8], [8], [10, 160]],
+])
+def test_unalign_broadcast_2(shape1, shape2, shape3):
+    t = Tester()
+    a = np.full(shape1, 0.3, np.float32)
+    b = np.full(shape2, 0.2, np.float32)
+    x1 = t.load(a)
+    x2 = t.load(b)
+    x3 = t.add(x1, x2)
+    x4 = t.reshape(x3, shape3)
+    x5 = t.mul(x4, 0.1)
+    t.store_expect(x5, 0.05)
+    assert (t.run_check())
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_reduce_lead_dim():
     t = Tester()

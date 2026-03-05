@@ -285,18 +285,31 @@ float GetRedInitScalar(int red_op) {
 }
 
 template <int AFFINE>
-void BroadReduceFoldProp(const DimArray &dim_in, const DimArray &dim_out, PropRange &range) {
-  const DimArray &small_dim = AFFINE == PropRange::BROADCAST ? dim_in : dim_out;
+void BroadReduceFoldProp(const DimArray &small_dim, const DimArray &big_dim, PropRange &range) {
   int state = 0;  // -1 - broadcast/reduce; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
-  for (int i = range.base; i > range.base - range.depth; --i) {
-    if ((state == -1 && small_dim[i] != 1) || (state == 1 && dim_in[i] != dim_out[i])) {
+  int range_base = range.base;
+  if (int small_size = small_dim.size(); range_base >= small_size) {
+    if (!small_size) {
+      return;
+    }
+    for (int i = small_size; i < std::min<int>(range_base + 1, big_dim.size()); ++i) {
+      if (big_dim[i] != 1) {
+        state = -1;
+        break;
+      }
+    }
+    range_base = small_size - 1;
+    new_depth = range.base - range_base;
+  }
+  for (int i = range_base; i > range.base - range.depth; --i) {
+    if ((state == -1 && small_dim[i] != 1) || (state == 1 && small_dim[i] != big_dim[i])) {
       break;
     }
     if (state == 0) {
       if (small_dim[i] != 1)
         state = 1;
-      else if (dim_in[i] != dim_out[i])
+      else if (small_dim[i] != big_dim[i])
         state = -1;
     }
     new_depth++;
@@ -308,26 +321,28 @@ void BroadReduceFoldProp(const DimArray &dim_in, const DimArray &dim_out, PropRa
 }
 
 template <int AFFINE>
-void BroadReduceAlignProp(const DimArray &dim_in, const DimArray &dim_out, PropRange &range) {
-  const DimArray &small_dim = AFFINE == PropRange::BROADCAST ? dim_in : dim_out;
+void BroadReduceAlignProp(const DimArray &small_dim, const DimArray &big_dim, PropRange &range) {
   int state = 0;  // -1 - broadcast/reduce; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
-  for (int i = 0; i < range.depth; ++i) {
-    if ((state == -1 && small_dim[i] != 1) || (state == 1 && dim_in[i] != dim_out[i])) {
+  int depth_size = std::min<int>(range.depth, small_dim.size());
+  for (int i = 0; i < depth_size; ++i) {
+    if ((state == -1 && small_dim[i] != 1) || (state == 1 && small_dim[i] != big_dim[i])) {
       break;
     }
     if (state == 0) {
       if (small_dim[i] != 1)
         state = 1;
-      else if (dim_in[i] != dim_out[i])
+      else if (small_dim[i] != big_dim[i])
         state = -1;
     }
     new_depth++;
   }
-  if (state == -1 && range.affine < AFFINE) {
-    range.affine = AFFINE;
+  if (state) {
+    if (state == -1 && range.affine < AFFINE) {
+      range.affine = AFFINE;
+    }
+    range.depth = new_depth;
   }
-  range.depth = new_depth;
 }
 }  // namespace
 
@@ -699,7 +714,8 @@ void NDViewLoad::AlignProp(NDObject *op, PropRange &range) {
   auto view = static_cast<NDViewLoad *>(op);
   auto &stride = view->src_stride_;
   auto &dims = view->ndd_.dims;
-  for (int d = 1; d < range.depth; ++d) {
+  int depth_size = std::min<int>(range.depth, dims.size());
+  for (int d = 1; d < depth_size; ++d) {
     if (stride[d - 1] * dims[d - 1] != stride[d]) {
       range.depth = d;
       break;
@@ -710,7 +726,9 @@ void NDViewLoad::AlignProp(NDObject *op, PropRange &range) {
 void NDViewLoad::FoldProp(NDObject *op, PropRange &range) {
   auto &stride = static_cast<NDViewLoad *>(op)->src_stride_;
   auto &dims = static_cast<NDViewLoad *>(op)->ndd_.dims;
-  for (int d = 1; d < range.depth; ++d) {
+  int dim_size = dims.size();
+  int depth_begin = range.base < dim_size ? 1 : range.base + 2 - dim_size;
+  for (int d = depth_begin; d < range.depth; ++d) {
     if (stride[range.base - d] * dims[range.base - d] != stride[range.base - d + 1]) {
       range.depth = d;
       break;
@@ -1780,13 +1798,13 @@ void BroadcastScalarOp::Dump(bool verbose, std::ostringstream &oss) {
 void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
   auto &lhs_nd = op->lhs_->nd_;
   auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
-  BroadReduceFoldProp<PropRange::REDUCE>(lhs_nd.data->dims, ndd.dims, range);
+  BroadReduceFoldProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
 }
 
 void _ReduceOp::AlignProp(NDObject *op, PropRange &range) {
   auto &lhs_nd = op->lhs_->nd_;
   auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
-  BroadReduceAlignProp<PropRange::REDUCE>(lhs_nd.data->dims, ndd.dims, range);
+  BroadReduceAlignProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
   range.simd_dim = 1;
 }
 
@@ -2873,7 +2891,7 @@ void ReduceScatterOp::FoldProp(NDObject *op, PropRange &range) {
   }
   auto &lhs_nd = self->lhs_->nd_;
   auto &ndd = self->ndd_;
-  BroadReduceFoldProp<PropRange::REDUCE>(lhs_nd.data->dims, ndd.dims, range);
+  BroadReduceFoldProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
 }
 
 void ReduceScatterOp::AlignProp(NDObject *op, PropRange &range) {
@@ -2883,7 +2901,7 @@ void ReduceScatterOp::AlignProp(NDObject *op, PropRange &range) {
   }
   auto &lhs_nd = self->lhs_->nd_;
   auto &ndd = self->ndd_;
-  BroadReduceAlignProp<PropRange::REDUCE>(lhs_nd.data->dims, ndd.dims, range);
+  BroadReduceAlignProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
 }
 
 NDObject *ReduceScatterOp::Clone(CloneHelper &h) { return new ReduceScatterOp(h.GetClone(lhs_), comm_); }

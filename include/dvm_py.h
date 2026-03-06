@@ -142,14 +142,16 @@ class KernelPy {
   py::object Full(py::object scalar, py::object shape, DataTypePy dtype) {
     auto shape_ref = GetShapeRef(shape);
     NDObject *op = nullptr;
-    if (py::isinstance<py::int_>(scalar)) {
+    if (py::isinstance<py::bool_>(scalar)) {
+      op = kernel_.Broadcast(static_cast<int>(scalar.cast<bool>()), shape_ref, dtype);
+    } else if (py::isinstance<py::int_>(scalar)) {
       op = kernel_.Broadcast(scalar.cast<int>(), shape_ref, dtype);
     } else if (py::isinstance<py::float_>(scalar)) {
       op = kernel_.Broadcast(scalar.cast<float>(), shape_ref, dtype);
     } else if (py::isinstance<ScalarRefPy>(scalar)) {
       op = kernel_.Broadcast(PyToScalar(scalar), shape_ref, dtype);
     } else {
-      DvmException("Unsupported scalar type for full: expected int, float, or ScalarRef.");
+      DvmException("Unsupported scalar type for full: expected bool, int, float, or ScalarRef.");
     }
     return ObjToPy(op);
   }

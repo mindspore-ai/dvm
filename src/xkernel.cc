@@ -1281,17 +1281,7 @@ class EagerVector : public VectorKernel {
   void Append(NDObject *obj) override {
     obj->index_ = objects_.size();
     objects_.push_back(obj);
-    int type = obj->type_id_;
-    if (type > max_type_) {
-      max_type_ = type;
-    } else if (type < min_type_) {
-      min_type_ = type;
-    }
-    if (obj->IsLoad()) {
-      static_ops_.push_back(obj);
-    } else if (obj->IsStore()) {
-      static_ops_.push_back(obj->lhs_);
-    }
+    StaticAppend(obj);
   }
 
   void Reset(NDObject *dom) {
@@ -1300,6 +1290,7 @@ class EagerVector : public VectorKernel {
     mm_ = nullptr;
     objects_.clear();
     code_.Clear();
+    load_num_ = 0;
     static_ops_.clear();
   }
 

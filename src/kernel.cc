@@ -14,7 +14,6 @@
  * limitations under the License.
  */
 
-#include <queue>
 #include <unordered_map>
 #include <climits>
 #include <memory>
@@ -161,6 +160,41 @@ int VKernel::Launch(void *stream) {
 
 void VKernel::Clone(VKernel *base, CloneHelper &helper) { DvmException("unsupport clone kernel"); }
 
+struct XbufPool {
+  using Node = std::pair<uint64_t, NDObject *>;
+  enum { BUILTIN_POOL_SIZE = 16 };
+
+  XbufPool(uint32_t size) {
+    if (likely(size <= BUILTIN_POOL_SIZE)) {
+      pool_ = builtin_pool_;
+      size_mask_ = BUILTIN_POOL_SIZE - 1;
+    } else {
+      size = 1u << (32 - __builtin_clz(size - 1));
+      pool_ = new Node[size];
+      size_mask_ = size - 1;
+    }
+  }
+  ~XbufPool() {
+    if (size_mask_ > BUILTIN_POOL_SIZE) {
+      delete[] pool_;
+    }
+  }
+  void Push(uint64_t xbuf, NDObject *user) {
+    auto &node = pool_[(prod_++) & size_mask_];
+    node.first = xbuf;
+    node.second = user;
+  }
+  Node &Pop() { return pool_[(cons_++) & size_mask_]; }
+  Node &Front() const { return pool_[cons_ & size_mask_]; }
+  bool Empty() const { return prod_ == cons_; }
+
+  Node *pool_;
+  uint32_t size_mask_;
+  uint32_t prod_{0};
+  uint32_t cons_{0};
+  Node builtin_pool_[BUILTIN_POOL_SIZE];
+};
+
 class CodeGenHelper {
  public:
   struct EventManager {
@@ -170,16 +204,23 @@ class CodeGenHelper {
     int sync_idx{-1};
   };
 
-  CodeGenHelper(VectorKernel &kernel, uint32_t xbuf_size) : xbuf_size_(xbuf_size), kernel_(kernel) {}
+  CodeGenHelper(VectorKernel &kernel, uint32_t xbuf_size, uint32_t pool_size)
+      : free_xbuf_(pool_size), xbuf_size_(xbuf_size), kernel_(kernel) {}
   uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve, uint32_t tile_size) {
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
     static_xbuf_ = code_reserve;
-    for (auto op : kernel_.static_ops_) {
-      op->xbuf_ = static_xbuf_;
-      if (op->obj_id_ == kMultiLoad) {
-        static_xbuf_ += xbuf_size_ + xbuf_size_;
-        static_cast<NDMultiLoad *>(op)->xbuf_size_ = xbuf_size_;
-      } else if (op->type_id_ != kernel_.max_type_) {
+    for (size_t i = 0; i < kernel_.static_ops_.size(); ++i) {
+      auto op = kernel_.static_ops_[i];
+      if (i < kernel_.load_num_) {
+        op->xbuf_ = static_xbuf_;
+        if (op->obj_id_ == kMultiLoad) {
+          static_xbuf_ += xbuf_size_ + xbuf_size_;
+          static_cast<NDMultiLoad *>(op)->xbuf_size_ = xbuf_size_;
+        }
+      } else {
+        op->lhs_->xbuf_ = static_xbuf_;
+      }
+      if (op->type_id_ != kernel_.max_type_) {
         static_xbuf_ += tile_size * ITEM_SIZE[op->type_id_];
       } else {
         static_xbuf_ += xbuf_size_;
@@ -209,7 +250,7 @@ class CodeGenHelper {
         case kGenSimd1: {
           auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_->xbuf_, op);
+            free_xbuf_.Push(op->lhs_->xbuf_, op);
           }
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
@@ -221,10 +262,10 @@ class CodeGenHelper {
         case kGenSimd2: {
           auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_->xbuf_, op);
+            free_xbuf_.Push(op->lhs_->xbuf_, op);
           }
           if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-            free_xbuf_.emplace(op->rhs_->xbuf_, op);
+            free_xbuf_.Push(op->rhs_->xbuf_, op);
           }
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
@@ -257,7 +298,7 @@ class CodeGenHelper {
           auto flex = static_cast<FlexOp *>(op);
           code_ptr += GenFlexOpCommon(flex);
           if (op->flags_ & OBJ_FLAG_FLEX_RREE_XHS) {
-            free_xbuf_.emplace(flex->xhs_->xbuf_, op);
+            free_xbuf_.Push(flex->xhs_->xbuf_, op);
           }
           NDObject *inputs[3] = {flex->lhs_, flex->rhs_, flex->xhs_};
           if (inputs[0]->index_ < inputs[1]->index_) {
@@ -304,7 +345,7 @@ class CodeGenHelper {
             AllocOutXBuf(op);
           }
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.emplace(op->lhs_->xbuf_, op);
+            free_xbuf_.Push(op->lhs_->xbuf_, op);
           }
           auto code_size = op->Emit(kernel_);
           code_ptr += code_size;
@@ -324,58 +365,46 @@ class CodeGenHelper {
  private:
   void BackwardSync() {
     auto &objects = kernel_.objects_;
-    EventManager vl_event, sv_event;
-    auto alloc_event = [backward_event_num = kernel_.backward_event_num_](EventManager &m, uint64_t &event) -> bool {
-      if (auto next = m.hold_event + 1; next < backward_event_num) {
-        m.hold_event = next;
-        event = static_cast<uint64_t>(next);
-        return true;
-      }
-      event = static_cast<uint64_t>(m.hold_event);
-      return false;
-    };
-    vl_event.sync_idx = sv_event.sync_idx = static_cast<int>(objects.size());
-    for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-      auto op = *it;
-      if (op->flags_ & OBJ_FLAG_DEAD) {
+    uint64_t max_event = kernel_.backward_event_num_ - 1;
+    uint64_t cur_event = 0;
+    int sync_idx = 0;
+    for (size_t i = 0; i < kernel_.load_num_; ++i) {
+      auto load = kernel_.static_ops_[i];
+      if (load->flags_ & OBJ_FLAG_DEAD) {
         continue;
       }
-      if (op->IsStore()) {  // STORE -> SIMD
-        auto simd = op->lhs_;
-        if (simd->index_ < sv_event.sync_idx) {
-          uint64_t event;
-          if (alloc_event(sv_event, event)) {
-            *(op->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
-          } else {
-            auto to_sync = objects[sv_event.sync_idx]->insn_;
-            *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
-          }
-          *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
-          sv_event.sync_idx = simd->index_;
-        }
-      } else if (op->IsSimd() && op->lhs_) {
-        // SIMD -> LOAD
-        NDObject *load = nullptr;
-        if (op->lhs_->IsLoad()) load = op->lhs_;
-        auto rhs = op->rhs_;
-        if (rhs) {
-          if (rhs->IsLoad() && (load == nullptr || rhs->index_ < load->index_)) load = rhs;
-          if (op->flags_ & OBJ_FLAG_XHS) {
-            NDObject *xhs = reinterpret_cast<FlexOp *>(op)->xhs_;
-            if (xhs->IsLoad() && (load == nullptr || xhs->index_ < load->index_)) load = xhs;
-          }
-        }
-        if (load != nullptr && load->index_ < vl_event.sync_idx) {
-          uint64_t event;
-          if (alloc_event(vl_event, event)) {
-            *(op->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
-          } else {
-            auto to_sync = objects[vl_event.sync_idx]->insn_;
-            *to_sync &= ~(0x1ul << V_M_HEAD_WAIT_FLAG_OFFSET);
-          }
+      auto simd = objects[load->last_ref_];
+      if (simd->index_ > sync_idx) {
+        uint64_t event;
+        if (cur_event <= max_event) {
+          event = cur_event++;
           *(load->insn_) |= 1ul << V_M_HEAD_WAIT_FLAG_OFFSET | event << V_M_HEAD_WAIT_EVENT_OFFSET;
-          vl_event.sync_idx = load->index_;
+        } else {
+          event = max_event;
+          auto from_sync = objects[sync_idx]->tail_insn_;
+          *from_sync &= ~(0x1ul << V_HEAD_BACK_SET_OFFSET);
         }
+        *(simd->tail_insn_) |= 1ul << V_HEAD_BACK_SET_OFFSET | event << V_HEAD_B_SET_EVENT_OFFSET;
+        sync_idx = simd->index_;
+      }
+    }
+    cur_event = 0;
+    sync_idx = objects.size();
+    for (size_t i = kernel_.static_ops_.size(); i > kernel_.load_num_; --i) {
+      auto store = kernel_.static_ops_[i - 1];
+      auto simd = objects[store->first_def_];
+      if (simd->index_ < sync_idx) {
+        uint64_t event;
+        if (cur_event <= max_event) {
+          event = cur_event++;
+          *(store->tail_insn_) |= 1ul << V_M_HEAD_SET_FLAG_OFFSET | event << V_M_HEAD_SET_EVENT_OFFSET;
+        } else {
+          event = max_event;
+          auto to_sync = objects[sync_idx]->insn_;
+          *to_sync &= ~(0x1ul << V_HEAD_BACK_WAIT_OFFSET);
+        }
+        *(simd->insn_) |= 1ul << V_HEAD_BACK_WAIT_OFFSET | event << V_HEAD_B_WAIT_EVENT_OFFSET;
+        sync_idx = simd->index_;
       }
     }
   }
@@ -402,15 +431,15 @@ class CodeGenHelper {
       if (op->ws_num_ > 1) {
         auto anti = AllocDynXBuf(op, op->wss_[1]);
         if (anti) anti_ops[anti_num++] = anti;
-        free_xbuf_.emplace(op->wss_[1], op);
+        free_xbuf_.Push(op->wss_[1], op);
       }
-      free_xbuf_.emplace(op->wss_[0], op);
+      free_xbuf_.Push(op->wss_[0], op);
     }
     if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-      free_xbuf_.emplace(op->lhs_->xbuf_, op);
+      free_xbuf_.Push(op->lhs_->xbuf_, op);
     }
     if (op->flags_ & OBJ_FLAG_FREE_RHS) {
-      free_xbuf_.emplace(op->rhs_->xbuf_, op);
+      free_xbuf_.Push(op->rhs_->xbuf_, op);
     }
     int size = op->Emit(kernel_);
     for (int i = 0; i < anti_num; ++i) {
@@ -421,19 +450,17 @@ class CodeGenHelper {
 
   NDObject *AllocDynXBuf(NDObject *obj, uint64_t &xbuf) {
     NDObject *anti = nullptr;
-    if (!free_xbuf_.empty() && free_xbuf_.front().second->index_ < vector_vector_sync) {
+    if (!free_xbuf_.Empty() && free_xbuf_.Front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
-      xbuf = free_xbuf_.front().first;
-      free_xbuf_.pop();
+      xbuf = free_xbuf_.Pop().first;
     } else if (static_xbuf_ + xbuf_size_ <= g_system.LocalMemSize()) {
       xbuf = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     } else {
-      ASSERT(!free_xbuf_.empty());
-      auto &op = free_xbuf_.front();
+      ASSERT(!free_xbuf_.Empty());
+      auto &op = free_xbuf_.Pop();
       xbuf = op.first;
       anti = op.second;
-      free_xbuf_.pop();
     }
     return anti;
   }
@@ -508,7 +535,7 @@ class CodeGenHelper {
   }
 
   uint64_t static_xbuf_;
-  std::queue<std::pair<uint64_t, NDObject *>> free_xbuf_;
+  XbufPool free_xbuf_;
 
   uint32_t xbuf_size_;
 
@@ -871,7 +898,8 @@ std::string &VKernel::DisAssemble() {
 }
 
 uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve) {
-  int64_t tile_size_limit = Analyze();
+  int64_t live_peak = Analyze();
+  int64_t tile_size_limit = TileSizeLimit(live_peak);
   // tiling
   if (likely(tiles_.empty())) {
     ShapeTiling(tile_size_limit, core_limit);
@@ -896,7 +924,7 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   // codegen
   code_.block_dim_ = core_limit;
   forward_event_num_ = backward_event_num_ = g_system.EventNum();
-  CodeGenHelper helper(*this, tile_size * ITEM_SIZE[max_type_]);
+  CodeGenHelper helper(*this, tile_size * ITEM_SIZE[max_type_], live_peak);
   auto code_end = helper.Generate(code_ptr, code_reserve, tile_size);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
   return code_end;
@@ -967,14 +995,8 @@ int64_t VectorKernel::Analyze() {
   constexpr int REUSE_REJECT = -1;
   constexpr int REUSE_READY = 0;
   constexpr int REUSE_SUCC = 1;
-  int cur_live = static_ops_.size();
-  if (comm_op_) {
-    cur_live += comm_op_->XbufReserve();
-    if (comm_op_->obj_id_ == kReduceScatter && static_cast<ReduceScatterOp *>(comm_op_)->multi_load_) {
-      cur_live += 1;
-    }
-  }
-  auto LivenessEnd = [this, &cur_live](NDObject *op, NDObject *end) {
+
+  auto LivenessEnd = [this](NDObject *op, NDObject *end) {
     // TODO: check if other comm op can also spare 1 xbuf(like AllReduce)
     if (end->IsSimd()) {
       if (!OP_LIVE(end)) {
@@ -988,15 +1010,17 @@ int64_t VectorKernel::Analyze() {
     } else if (!OP_LIVE(end)) {
       ASSERT(end->IsLoad());
       OP_GEN_S(end);
+      end->last_ref_ = op->index_;
     }
     return false;
   };
-  for (auto op : static_ops_) {
-    if (op->IsSimd()) {
-      OP_GEN_S(op);
-    }
+  for (size_t i = load_num_; i < static_ops_.size(); ++i) {
+    auto store = static_ops_[i];
+    store->first_def_ = store->lhs_->index_;
+    OP_GEN_S(store->lhs_);
   }
-  int live_peak = cur_live;
+  int cur_live = 0;
+  int live_peak = 0;
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
     if (op->IsSimd()) {
@@ -1090,35 +1114,19 @@ int64_t VectorKernel::Analyze() {
       }
     }
   }
-  int64_t free_mem = g_system.LocalMemSize() - ReserveCodeSize();
-  int64_t peak_size = ITEM_SIZE[max_type_] * live_peak;
-  if (max_type_ != min_type_ && !comm_op_) {
-    for (auto &op : static_ops_) {
-      peak_size -= ITEM_SIZE[max_type_] - ITEM_SIZE[op->type_id_];
-    }
-  }
-  return free_mem / peak_size;  // max tile_size for each op
+  return live_peak;
 }
 
 void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {
   max_type_ = min_type_ = objects.front()->type_id_;
   for (auto op : objects) {
-    if (op->IsLoad()) {
-      static_ops_.push_back(op);
-    } else if (op->IsStore()) {
-      static_ops_.push_back(op->lhs_);
-    } else if (op->IsComm()) {
+    StaticAppend(op);
+    if (op->IsComm()) {
       ASSERT(comm_op_ == nullptr);
       comm_op_ = static_cast<CommOp *>(op);
       if (comm_op_->max_type_ > max_type_) {
         max_type_ = comm_op_->max_type_;
       }
-    }
-    int type = op->type_id_;
-    if (type > max_type_) {
-      max_type_ = type;
-    } else if (type < min_type_) {
-      min_type_ = type;
     }
   }
 }
@@ -1354,17 +1362,7 @@ class SplitVector : public VectorKernel {
     max_type_ = comm_op_ ? comm_op_->max_type_ : objects_.front()->type_id_;
     min_type_ = objects_.front()->type_id_;
     for (auto op : objects_) {
-      if (op->IsLoad()) {
-        static_ops_.push_back(op);
-      } else if (op->IsStore()) {
-        static_ops_.push_back(op->lhs_);
-      }
-      int type = op->type_id_;
-      if (type > max_type_) {
-        max_type_ = type;
-      } else if (type < min_type_) {
-        min_type_ = type;
-      }
+      StaticAppend(op);
     }
     BuildDomain();
     return DoCodeGen(g_system.CoreNum());
@@ -1596,7 +1594,7 @@ template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::CodeGen() {
   auto reduce_fall_check = [this]() ->  bool {
     if (!post_reduces_.empty()) {
-      int tile_size_limit = Analyze();
+      int tile_size_limit = TileSizeLimit(Analyze());
       auto ndd = dom_->nd_.data;
       const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
       for (auto op : post_reduces_) {

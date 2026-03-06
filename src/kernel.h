@@ -204,9 +204,46 @@ class VectorKernel : public VKernel {
     return tile_size_;
   }
 
+  int64_t TileSizeLimit(int64_t live_peak) {
+    live_peak += static_ops_.size();
+    if (comm_op_) {
+      live_peak += comm_op_->XbufReserve();
+      if (comm_op_->obj_id_ == kReduceScatter && static_cast<ReduceScatterOp *>(comm_op_)->multi_load_) {
+        live_peak += 1;
+      }
+    }
+    int64_t peak_size = ITEM_SIZE[max_type_] * live_peak;
+    if (max_type_ != min_type_ && !comm_op_) {
+      for (auto op : static_ops_) {
+        peak_size -= ITEM_SIZE[max_type_] - ITEM_SIZE[op->type_id_];
+      }
+    }
+    return (g_system.LocalMemSize() - ReserveCodeSize()) / peak_size;
+  }
+
+  void StaticAppend(NDObject *obj) {
+    int type = obj->type_id_;
+    if (type > max_type_) {
+      max_type_ = type;
+    } else if (type < min_type_) {
+      min_type_ = type;
+    }
+    if (obj->IsLoad()) {
+      if (load_num_ == static_ops_.size()) {
+        static_ops_.push_back(obj);
+      } else {
+        static_ops_.insert(static_ops_.begin() + load_num_, obj);
+      }
+      load_num_++;
+    } else if (obj->IsStore()) {
+      static_ops_.push_back(obj);
+    }
+  }
+
   int max_type_;
   int min_type_;
 
+  size_t load_num_{0};
   std::vector<NDObject *> static_ops_;
 
   struct DimTile {

@@ -474,7 +474,11 @@ class NDObject {
   DataType type_id_;
   int prop_id_;
   int index_;
-  int reuse_dep_;
+  union {
+    int reuse_dep_; // simd(reuse)
+    int last_ref_;  // load, simd(no_reuse)
+    int first_def_; // store
+  };
   uint32_t flags_{0};
   uint64_t *insn_;       // when in optimization passes, used to point to the next NDObject
   uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject

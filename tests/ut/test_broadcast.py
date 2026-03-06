@@ -129,6 +129,15 @@ def test_broadcast_s():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('scalar', [0.0, 0.2, True])
+def test_broadcast_s_bool(scalar):
+    t = Tester()
+    x = t.full(scalar, [2, 64], "bool")
+    t.store_expect(x, np.full([2, 64], scalar, dtype=np.bool_))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('lead_dim', [1024, 511])
 def test_broadcast_store_rank_1(lead_dim):
     t = Tester()

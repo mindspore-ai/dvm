@@ -874,6 +874,9 @@ NDObject *Kernel::ElemAny(NDObject *input) {
 
 template <typename T>
 NDObject *Kernel::Broadcast(T val, IntArrayRef *shape, DataType type) {
+  if (type == DataType::kBool) {
+    return Cast(Broadcast(val, shape, DataType::kFloat16), DataType::kBool);
+  }
   NDObject *obj;
   if constexpr (std::is_same<T, ScalarRef *>::value) {
     obj = new BroadcastScalarRefOp(val, shape, type);

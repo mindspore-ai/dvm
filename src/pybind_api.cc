@@ -156,13 +156,25 @@ class KernelRunner : public WsAllocator {
   virtual void AllocStore(StoreInfo &store) = 0;
   virtual void Reset() = 0;
   virtual int Run(Kernel &kernel, void *workspace, bool sync) = 0;
+  void *Stream() const { return stream_; }
+
+ protected:
+  void *stream_{nullptr};
 };
 
 class DevRunner : public KernelRunner {
  public:
-  DevRunner(int dev_id) { dev_id_ = dev_id; }
+  DevRunner(int dev_id) {
+    uint32_t dev_count = 0;
+    ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
+    ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
+    ERROR_CHECK(aclrtSetDevice(dev_id));
+    ERROR_CHECK(aclrtCreateStream(&stream_));
+    dev_id_ = dev_id;
+  }
   ~DevRunner() override {
     Reset();
+    aclrtDestroyStream(stream_);
     aclrtResetDevice(dev_id_);
   }
 
@@ -198,11 +210,11 @@ class DevRunner : public KernelRunner {
 
   int Run(Kernel &kernel, void *workspace, bool sync) override {
     if (kernel.GetImpl()->IsSplit()) {
-      kernel.Launch(nullptr);
+      kernel.Launch(stream_);
     } else {
-      ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, nullptr));
+      ERROR_CHECK(kernel.Launch(nullptr, 0, workspace, stream_));
     }
-    return sync ? aclrtSynchronizeStream(nullptr) : 0;
+    return sync ? aclrtSynchronizeStream(stream_) : 0;
   }
 
   void Reset() override {
@@ -368,10 +380,6 @@ class RunnerManager {
 };
 
 RtKernelPy::RtKernelPy(const std::string &ker_type, const std::string &run_type, int dev_id) {
-  uint32_t dev_count = 0;
-  ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
-  ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
-  ERROR_CHECK(aclrtSetDevice(dev_id));
   runner_ = RunnerManager::Instance().Get(run_type, dev_id);
   auto [type, flags] = ParseKernelType(ker_type);
   kernel_.Reset(type, flags);
@@ -637,7 +645,7 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
     mgr.ProfStart();
     while (test_num--) {
       ResetStoreMemory(stores_);
-      kernel_.Launch(nullptr);
+      kernel_.Launch(runner_->Stream());
     }
   } else {
     constexpr const char *kTempFusionOp = "DvmOp";
@@ -659,7 +667,7 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
     }
     while (test_num--) {
       ResetStoreMemory(stores_);
-      ERROR_CHECK(kernel_.Launch(relocs.data(), relocs.size(), workspace_, nullptr));
+      ERROR_CHECK(kernel_.Launch(relocs.data(), relocs.size(), workspace_, runner_->Stream()));
     }
   }
   aclrtSynchronizeStream(nullptr);

@@ -174,7 +174,7 @@ def test_unalign_broadcast():
     assert (t.run_check())
 
 
-arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("shape1, shape2, shape3", [
     [[10, 20, 8], [20, 8], [200, 8]],
     [[10, 20, 8], [8], [200, 8]],

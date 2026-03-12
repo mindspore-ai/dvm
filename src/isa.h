@@ -1088,7 +1088,7 @@ struct vViewLoad {
   uint64_t loop_depth;
   uint64_t tile_depth;
   // pc[0]: reserved(16) << 18 | xd(18)
-  // pc[1]: dst_gap(4) << 62 | loop_depth(4) << 56 | tile_depth(4) << 52 | tail_size(18) << 34 | iter_size(18) << 16 |
+  // pc[1]: dst_gap(4) << 60 | loop_depth(4) << 56 | tile_depth(4) << 52 | tail_size(18) << 34 | iter_size(18) << 16 |
   // iter_num(16)
   // pc[2]: src_gap(32) << 32 | offset(32) pc[3]: from(64) pc[VAR::loop_depth]: loop_size(16) << 48 |
   // dst_stride(16) << 32 | src_stride(32) pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
@@ -1100,7 +1100,7 @@ struct vViewLoad {
     op.tail_size = vGetBitRange(data1, 34, 18);
     op.tile_depth = vGetBitRange(data1, 52, 4);
     op.loop_depth = vGetBitRange(data1, 56, 4);
-    op.dst_gap = data1 >> 62;
+    op.dst_gap = data1 >> 60;
     uint64_t data2 = pc[2];
     op.src_gap = data2 >> 32;
     op.offset = vGetBitRange(data2, 0, 32);
@@ -1118,7 +1118,7 @@ struct vViewLoad {
   __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewLoad &op) {
     uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
     pc[0] = vMakeAccHead(id, op.xd, size);
-    pc[1] = op.dst_gap << 62 | op.loop_depth << 56 | op.tile_depth << 52 | op.tail_size << 34 | op.iter_size << 16 |
+    pc[1] = op.dst_gap << 60 | op.loop_depth << 56 | op.tile_depth << 52 | op.tail_size << 34 | op.iter_size << 16 |
             op.iter_num;
     pc[2] = op.src_gap << 32 | op.offset;
     pc[3] = op.from;

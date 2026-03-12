@@ -1207,11 +1207,11 @@ class DomainUnifier {
       }
     };
     while (op->VisitChangeRange(range)) {
-      if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size)) {
+      if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size, range.size)) {
         gen_update(op->nd_.data->dims, range.begin, range.size);
         ReshapeRange(prop, range.begin, range.in_size, update);
         range.begin += range.size;
-      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size)) {
+      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size)) {
         gen_update(op->lhs_->nd_.data->dims, range.begin, range.in_size);
         ReshapeRange(prop, range.begin, range.size, update);
         range.begin += range.in_size;
@@ -1238,13 +1238,13 @@ class DomainUnifier {
     return -1;
   }
 
-  bool AffineCheck(int prop, int range_begin, int range_size) {
+  bool AffineCheck(int prop, int range_begin, int range_size, int out_size) {
     PropRange range;
     range.base = range_begin + range_size - 1;
     range.depth = range_size;
     range.affine = PropRange::ELEMWISE;
     for (auto op : objects_) {
-      if (op->prop_id_ != prop) continue;
+      if (op->prop_id_ != prop || op->SharedNdd()) continue;
       if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
         return false;
       }
@@ -1252,7 +1252,12 @@ class DomainUnifier {
       if (range.depth != range_size) {
         return false;
       }
-      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size)) {
+      if (out_size == 0) {
+        for (auto d = range.base; d < range.base + range_size; ++d) {
+          if (op->nd_[d] != 1) return false;
+        }
+      }
+      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {
         return false;
       }
     }
@@ -1554,22 +1559,39 @@ _SpecVector::~_SpecVector() {
 }
 
 void _SpecVector::Append(NDObject *obj) {
+  obj->ForInput([this](NDObject *&in) {
+    if (in->obj_id_ == ObjectType::kReduce) {
+      auto red = static_cast<ReduceOp *>(in);
+      if (red->insn_ == nullptr) {
+        post_reduces_.push_back(in);
+        if (!red->KeepDims()) {
+          in = new ReshapeOp(red, red->shape_ref_);
+          VKernelS::Append(in);
+          in->index_ = stage_ids_.size();
+          stage_ids_.push_back(last_stage_);
+        }
+        red->insn_ = reinterpret_cast<uint64_t *>(in);
+      } else if (!red->KeepDims()) {
+        in = reinterpret_cast<NDObject *>(red->insn_);
+      }
+    } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
+      stage_ids_[in->index_] = last_stage_;
+    }
+  });
   VKernelS::Append(obj);
   obj->index_ = stage_ids_.size();
   int sid;
   if (obj->IsStore()) {
     sid = stage_ids_[obj->lhs_->index_];
+  } else if (obj->IsLoad()) {
+    sid = -1;
   } else {
-    sid = obj->IsLoad() ? -1 : last_stage_;
+    sid = last_stage_;
+    if (obj->obj_id_ == ObjectType::kReduce) {
+      obj->insn_ = nullptr;
+    }
   }
   stage_ids_.push_back(sid);
-  obj->ForInput([this](NDObject *in) {
-    if (in->obj_id_ == ObjectType::kReduce) {
-      post_reduces_.push_back(in);
-    } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
-      stage_ids_[in->index_] = last_stage_;
-    }
-  });
 }
 
 void _SpecVector::Clone(VKernel *base, CloneHelper &helper) {

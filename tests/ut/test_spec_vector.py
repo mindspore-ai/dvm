@@ -55,8 +55,10 @@ def test_spec_fall_reduce(shape_a, dims):
     x2 = t.add(x1, 0.02)
     x3 = t.sum(x2, dims, False)
     t.spec_next()
-    x4 = t.mul(x3, 0.5)
-    t.store_expect(x4, np.sum(a + 0.02, axis=dims, keepdims=False) * 0.5)
+    x3_expect = np.sum(a + 0.02, axis=dims, keepdims=False)
+    b = np.random.normal(0.0, 0.3, x3_expect.shape).astype(np.float32)
+    x4 = t.mul(x3, t.load(b))
+    t.store_expect(x4, x3_expect * b)
     assert (t.run_check())
 
 

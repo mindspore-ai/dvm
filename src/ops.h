@@ -1009,6 +1009,7 @@ class ReduceOp : public _ReduceOp {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  bool KeepDims() const { return keepdims_; }
 
   RedVisitCoder *visit_;
   AtomicCleanWrap *clean_wrap_{nullptr};

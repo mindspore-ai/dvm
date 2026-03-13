@@ -529,6 +529,31 @@ class ReshapeRankOp : public ReshapeOp {
   const Communicator *comm_;
 };
 
+class OneHotAffine : public ReshapeOp {
+ public:
+  OneHotAffine(NDObject *input, int axis) : ReshapeOp(input, &dst_shape_), axis_(axis) {}
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    auto data = lhs_->shape_ref_->data;
+    size_t size = lhs_->shape_ref_->size + 1;
+    size_t axis = axis_ >= 0 ? axis_ : size + axis_;
+    ASSERT(axis < size);
+    dst_shape_.Resize(size);
+    for (size_t i = 0; i < dst_shape_.size; ++i) {
+      dst_shape_[i] = i != axis ? *data++ : 1;
+    }
+    ReshapeOp::Normalize(run_ops);
+  }
+  NDObject *Clone(CloneHelper &h) override { return new OneHotAffine(h.GetClone(lhs_), axis_); }
+  void Dump(bool verbose, std::ostringstream &oss) override {
+    oss << "OneHotAffine";
+    if (verbose) {
+      oss << "<" << axis_ << ">";
+    }
+  }
+  int axis_;
+  ShapeWithRef dst_shape_;
+};
+
 VKernel *NewKernel(KernelType type, uint32_t flags) {
   VKernel *kernel;
   switch (type) {
@@ -559,11 +584,10 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
       break;
     }
     case KernelType::kSplit: {
-      bool unify_ws = flags & KernelFlag::kUnifyWS;
       if (flags & KernelFlag::kDynamic) {
-        kernel = unify_ws ? new SplitGraphDW() : new SplitGraphD();
+        kernel = flags & KernelFlag::kUnifyWS ? new SplitGraphDW() : new SplitGraphD();
       } else {
-        kernel = new SplitGraphS(unify_ws);
+        kernel = new SplitGraphS(flags);
       }
       break;
     }
@@ -907,6 +931,8 @@ NDObject *Kernel::Broadcast(NDObject *input, IntArrayRef *shape) {
 
 template <typename T>
 NDObject *Kernel::OneHot(NDObject *indices, IntArrayRef *depth, int axis, T on_value, T off_value) {
+  indices = new OneHotAffine(indices, axis);
+  kernel_->Append(indices);
   auto on_code = EncodeScalar(on_value);
   auto off_code = EncodeScalar(off_value);
   auto obj = new OneHotOp(indices, depth, axis, on_code, off_code, TypeTrait<T>::ID);

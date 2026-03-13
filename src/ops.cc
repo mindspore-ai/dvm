@@ -2081,27 +2081,18 @@ NDObject *ReduceOp::Clone(CloneHelper &h) {
 }
 
 void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {
+  // update shape_ref
+  shape_.Resize(lhs_->shape_ref_->size);
   int64_t depth = depth_->data[0];
-  int64_t axis = axis_;
-  // updae shape_ref
-  shape_.Resize(lhs_->shape_ref_->size + 1);
-  if (axis < 0) {
-    axis = shape_.size + axis;
-  }
-  size_t in_idx = 0;
+  size_t axis = axis_ >= 0 ? axis_ : shape_.size + axis_;
   for (size_t i = 0; i < shape_.size; ++i) {
-    if (i == static_cast<size_t>(axis)) {
-      shape_[i] = depth;
-    } else {
-      shape_[i] = lhs_->shape_ref_->data[in_idx++];
-    }
+    shape_[i] = i == axis ? depth : lhs_->shape_ref_->data[i];
   }
   depth_dim_ = shape_.size - axis - 1;
   // update ndd
-  ndd_.dims.resize(lhs_->nd_.size() + 1);
-  size_t lhs_idx = 0;
+  ndd_.dims.resize(lhs_->nd_.size());
   for (size_t i = 0; i < ndd_.size(); ++i) {
-    ndd_.dims[i] = i == static_cast<size_t>(depth_dim_) ? depth : lhs_->nd_[lhs_idx++];
+    ndd_.dims[i] = i == static_cast<size_t>(depth_dim_) ? depth : lhs_->nd_[i];
   }
   tile_dim_ = ndd_.size();
 }

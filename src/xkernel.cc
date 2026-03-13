@@ -2369,6 +2369,31 @@ void SplitGraphD::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
+namespace {
+static size_t CombineAssign(SplitContext::SlotWorkspace &ws) {
+  size_t total_size = 0;
+  for (auto &slot : ws) {
+    slot.first = RoundUp(slot.first, 512ul);
+    total_size += slot.first;
+  }
+  return total_size;
+}
+
+static void CombineAlloc(const SplitContext::SlotWorkspace &ws, void *mem) {
+  uint8_t *ws_mem = static_cast<uint8_t *>(mem);
+  for (auto &slot : ws) {
+    slot.second->Reloc(ws_mem);
+    ws_mem += slot.first;
+  }
+}
+
+static void CombineAllocDyn(SplitContext::SlotWorkspace &ws, WsAllocator *ws_alloc) {
+  auto size = CombineAssign(ws);
+  CombineAlloc(ws, ws_alloc->Alloc(size));
+  ws.clear();
+}
+}
+
 void SplitGraphS::Normalize() {
   if (!objects_.empty()) {
     return;
@@ -2393,18 +2418,8 @@ void SplitGraphS::Normalize() {
       }
     }
   }
-}
-
-static void CombineAlloc(SplitContext::SlotWorkspace &ws, WsAllocator *alloc) {
-  uint64_t total_size = 0;
-  for (auto &slot : ws) {
-    slot.first = RoundUp(slot.first, 512ul);
-    total_size += slot.first;
-  }
-  uint8_t *ws_mem = static_cast<uint8_t *>(alloc->Alloc(total_size));
-  for (auto &slot : ws) {
-    slot.second->Reloc(ws_mem);
-    ws_mem += slot.first;
+  if (flags_ & KernelFlag::kUnifyWS) {
+    ws_size_ = CombineAssign(slot_ws_);
   }
 }
 
@@ -2412,8 +2427,10 @@ void SplitGraphS::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloca
   for (size_t i = 0; i < reloc_size; ++i, ++relocs) {
     static_cast<NDAccess *>(relocs->io)->addr_.Reloc(relocs->addr);
   }
-  if (single_ws_) {
-    CombineAlloc(slot_ws_, ws_alloc);
+  if (flags_ & KernelFlag::kUnifyWS) {
+    if (ws_size_) {
+      CombineAlloc(slot_ws_, ws_alloc->Alloc(ws_size_));
+    }
   } else {
     for (auto &slot : slot_ws_) {
       slot.second->Reloc(ws_alloc->Alloc(slot.first));
@@ -2424,15 +2441,17 @@ void SplitGraphS::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloca
 
 void SplitEagerW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
   SlotCodeGen(relocs, reloc_size);
-  CombineAlloc(ctx_->slot_ws_, ws_alloc);
-  ctx_->slot_ws_.clear();
+  if (!ctx_->slot_ws_.empty()) {
+    CombineAllocDyn(ctx_->slot_ws_, ws_alloc);
+  }
   RelocBinds();
 }
 
 void SplitGraphDW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
   SlotCodeGen(relocs, reloc_size);
-  CombineAlloc(ctx_->slot_ws_, ws_alloc);
-  ctx_->slot_ws_.clear();
+  if (!ctx_->slot_ws_.empty()) {
+    CombineAllocDyn(ctx_->slot_ws_, ws_alloc);
+  }
   RelocBinds();
 }
 }  // namespace dvm

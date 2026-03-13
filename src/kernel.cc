@@ -1133,7 +1133,7 @@ void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {
 
 static inline void SetPdHead(NDObject *op, NDObject *head) { op->insn_ = reinterpret_cast<uint64_t *>(head); }
 static inline NDObject *GetPdHead(NDObject *op) { return reinterpret_cast<NDObject *>(op->insn_); }
-static inline bool IsBroker(NDObject *op) { return op->obj_id_ == kReshape || op->obj_id_ == kOneHot; }
+static inline bool IsBroker(NDObject *op) { return op->obj_id_ == kReshape; }
 
 void VKernelS::BrokerInit() {
   broker_num_ = 0;
@@ -1215,11 +1215,17 @@ class DomainUnifier {
       }
     };
     while (op->VisitChangeRange(range)) {
-      if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size, range.size)) {
+      if (range.size == 0) {
+        ExpandDim(op->prop_id_, range.begin, range.in_size);
+        range.begin += range.in_size;
+      } else if (range.in_size == 0) {
+        ExpandDim(op->lhs_->prop_id_, range.begin, range.size);
+        range.begin += range.size;
+      } else if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size)) {
         gen_update(op->nd_.data->dims, range.begin, range.size);
         ReshapeRange(prop, range.begin, range.in_size, update);
         range.begin += range.size;
-      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size)) {
+      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size)) {
         gen_update(op->lhs_->nd_.data->dims, range.begin, range.in_size);
         ReshapeRange(prop, range.begin, range.size, update);
         range.begin += range.in_size;
@@ -1231,22 +1237,12 @@ class DomainUnifier {
     return true;
   }
 
-  void Process(OneHotOp *op) {
-    ExpandDim(op->lhs_->prop_id_, op->DepthDim());
-    op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
-  }
-
  private:
   int BrokerRemap(NDObject *op, int dim) {
-    if (op->obj_id_ == kOneHot) {
-      return dim < static_cast<OneHotOp *>(op)->DepthDim() || op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) ? dim : dim + 1;
-    } else if (op->obj_id_ == kReshape && op->CheckFlag(OBJ_FLAG_BROKER_AFFINED)) {
-      return dim;
-    }
-    return -1;
+    return IsBroker(op) && op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) ? dim : -1;
   }
 
-  bool AffineCheck(int prop, int range_begin, int range_size, int out_size) {
+  bool AffineCheck(int prop, int range_begin, int range_size) {
     PropRange range;
     range.base = range_begin + range_size - 1;
     range.depth = range_size;
@@ -1260,12 +1256,7 @@ class DomainUnifier {
       if (range.depth != range_size) {
         return false;
       }
-      if (out_size == 0) {
-        for (auto d = range.base; d < range.base + range_size; ++d) {
-          if (op->nd_[d] != 1) return false;
-        }
-      }
-      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {
+      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size)) {
         return false;
       }
     }
@@ -1312,21 +1303,23 @@ class DomainUnifier {
     }
   }
 
-  void ExpandDim(int prop, int idx) {
+  void ExpandDim(int prop, int idx, int expand_size) {
     for (auto op : objects_) {
       if (op->prop_id_ != prop) continue;
       if (auto ndd = op->Ndd(); ndd != nullptr) {
         auto &dims = ndd->dims;
         if (int dim_size = dims.size(); idx < dim_size) {
           for (int i = dim_size - 1; i >= idx; --i) {
-            dims[i + 1] = dims[i];
+            dims[i + expand_size] = dims[i];
           }
-          dims[idx] = 1;
-          dims.resize(dim_size + 1);
+          for (int i = 0; i < expand_size; ++i) {
+            dims[idx + i] = 1;
+          }
+          dims.resize(dim_size + expand_size);
         }
       }
       if (auto rmap = BrokerRemap(op, idx); rmap >= 0) {
-        ExpandDim(op->lhs_->prop_id_, rmap);
+        ExpandDim(op->lhs_->prop_id_, rmap, expand_size);
       }
       op->DimChanged();
     }
@@ -1344,8 +1337,6 @@ bool VKernelS::BrokerAffine() {
       ASSERT(!IsBroker(op) || op->prop_id_ != op->lhs_->prop_id_);
       if (op->obj_id_ == kReshape) {
         if (!unifier.Process(static_cast<ReshapeOp *>(op))) return false;
-      } else if (op->obj_id_ == kOneHot) {
-        unifier.Process(static_cast<OneHotOp *>(op));
       } else {
         continue;
       }
@@ -1403,10 +1394,6 @@ uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
       }
       auto load = new NDLoad(nullptr, op->shape_ref_, op->type_id_);
       load->Normalize(k->objects_);
-      if (op->obj_id_ == kOneHot) {
-        auto ndd = load->Ndd();
-        ndd->dims[static_cast<OneHotOp *>(op)->DepthDim()] = 1;
-      }
       k->objects_.push_back(load);
       k->build_ops_.push_back(load);
       stage->StageLoad(k, load, store);

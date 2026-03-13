@@ -430,13 +430,13 @@ class SplitGraphD : public _SplitGraph {
 
 class SplitGraphS : public _SplitGraph {
  public:
-  SplitGraphS(bool single_ws) : _SplitGraph(single_ws ? KernelFlag::kUnifyWS : 0), single_ws_(single_ws) {}
+  SplitGraphS(uint32_t flags) : _SplitGraph(flags) {}
   void Normalize() override;
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
 
  protected:
   SplitContext::SlotWorkspace slot_ws_;
-  bool single_ws_;
+  uint64_t ws_size_{0};
 };
 
 class SplitEagerW : public VKernelE {

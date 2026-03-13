@@ -914,8 +914,10 @@ class DisAssembler {
     if (op->flags & V_CUBE_FLAG_WITH_BIAS) {
       oss << ", ";
       DumpVal("gm_bias", reinterpret_cast<void *>(op->gm_bias), oss);
-      oss << ", ";
-      DumpVal("bias_type", (op->flags & V_CUBE_FLAG_BIAS_FP16) ? "fp16" : "fp32", oss);
+      if (op->flags & V_CUBE_FLAG_BIAS_FP32) {
+        oss << ", ";
+        DumpVal("bias_fp32", "", oss);
+      }
     }
   }
 

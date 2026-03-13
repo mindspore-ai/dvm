@@ -1168,6 +1168,9 @@ __aicore_inline__ void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vLoad op;
   vLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
+  uint64_t iter_size = op.iter_size;
+  uint64_t body_iter = op.body_iter;
+
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vLoad::ROUND_OFFSET);
     if (tile_idx == INVALID_INT) {
@@ -1176,17 +1179,17 @@ __aicore_inline__ void Load(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + op.tile_stride * tile_idx;
   if (IsLastTile(tile)) {
-    if (op.body_iter == 1) {
-      op.iter_size = op.tail_iter;
+    if (body_iter == 1) {
+      iter_size = op.tail_iter;
     } else {
-      op.body_iter = op.tail_iter;
+      body_iter = op.tail_iter;
     }
   }
   __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xn);
   uint32_t dst_stride = op.pad_size + op.iter_size;
   uint32_t src_stride = op.iter_size;
-  copy_gm_to_ubuf_align_v2(dst, src, 0, op.body_iter, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
-  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.body_iter * op.iter_size);
+  copy_gm_to_ubuf_align_v2(dst, src, 0, body_iter, iter_size, 0, 0, false, 0, src_stride, dst_stride);
+  OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + body_iter * iter_size);
 }
 
 __aicore_inline__ void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
@@ -1285,6 +1288,82 @@ __aicore_inline__ void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile)
   }
 }
 
+__aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewLoad op;
+  vViewLoad::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  for (uint64_t i = op.tile_depth; i > 0 && tile_idx > 0; --i) {
+    uint64_t space, stride;
+    vViewLoad::DecodeTile(pc[vViewLoad::VAR_OFFSET - 1 + op.loop_depth + i], space, stride);
+    uint64_t factor = tile_idx / space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * space;
+  }
+  __gm__ uint8_t *src = (__gm__ uint8_t *)op.from + tile_offset;
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xd);
+  uint32_t src_stride = op.src_gap + op.iter_size;
+  uint32_t dst_stride = (op.dst_gap + CeilDiv(op.iter_size, 32UL)) << 5;
+  if (op.loop_depth == 0) {
+    if (IsLastTile(tile)) {
+      if (op.iter_num == 1) {
+        op.iter_size = op.tail_size;
+      } else {
+        op.iter_num = op.tail_size;
+      }
+    }
+    copy_gm_to_ubuf_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
+  } else if (op.loop_depth == 1) {
+    uint64_t loop_size, dst_loop_stride, src_loop_stride;
+    vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET], loop_size, dst_loop_stride, src_loop_stride);
+    if (IsLastTile(tile)) {
+      loop_size = op.tail_size;
+    }
+    for (uint64_t i = 0; i < loop_size; ++i) {
+      copy_gm_to_ubuf_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
+      dst += dst_loop_stride;
+      src += src_loop_stride;
+    }
+  } else if (op.loop_depth == 2) {
+    uint64_t loop_size0, dst_stride0, src_stride0;
+    uint64_t loop_size1, dst_stride1, src_stride1;
+    vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET], loop_size0, dst_stride0, src_stride0);
+    vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET + 1], loop_size1, dst_stride1, src_stride1);
+    if (IsLastTile(tile)) {
+      loop_size1 = op.tail_size;
+    }
+    for (uint64_t i = 0; i < loop_size1; ++i) {
+      for (uint64_t j = 0; j < loop_size0; ++j) {
+        copy_gm_to_ubuf_align_v2(dst + i * dst_stride1 + j * dst_stride0, src + i * src_stride1 + j * src_stride0, 0,
+                                 op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
+      }
+    }
+  } else {
+    uint32_t coord[6] = {0};
+    uint64_t idx = 0;
+    while (idx < op.loop_depth) {
+      copy_gm_to_ubuf_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
+      for (idx = 0; idx < op.loop_depth; ++idx) {
+        uint64_t loop_size, dst_loop_stride, src_loop_stride;
+        vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET + idx], loop_size, dst_loop_stride, src_loop_stride);
+        if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+          loop_size = op.tail_size;
+        }
+        if (coord[idx] + 1 < loop_size) {
+          coord[idx] += 1;
+          dst += dst_loop_stride;
+          src += src_loop_stride;
+          idx = 0;
+          break;
+        }
+        coord[idx] = 0;
+        dst -= (loop_size - 1) * dst_loop_stride;
+        src -= (loop_size - 1) * src_loop_stride;
+      }
+    }
+  }
+}
+
 __aicore_inline__ void MultiLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
  // Todo
 }
@@ -1309,7 +1388,7 @@ __aicore_inline__ void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       iter_num = op.iter_tail;
     }
   }
-  uint32_t dst_stride = iter_size;
+  uint32_t dst_stride = op.iter_size;
   uint32_t src_stride = op.pad_size + op.iter_size;
   copy_ubuf_to_gm_align_v2(dst, (__ubuf__ uint8_t *)(op.xn), 0, iter_num, iter_size, 0, dst_stride, src_stride);
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + iter_num * iter_size);
@@ -1740,7 +1819,7 @@ DEF_DISP_VISIT(V_VISIT_MIX, VisitMix);
 
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
-DEF_DISP_LOAD(V_LOAD_VIEW, void(0))
+DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
 DEF_DISP_LOAD(V_SLOAD, SLoad(pc, head, tile))
 DEF_DISP_LOAD(V_MULTI_LOAD, MultiLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))

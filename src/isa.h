@@ -34,6 +34,9 @@
 #define bcodeptr_t uint64_t *
 #define __aicore__
 #endif
+#ifndef __force_inline__
+#define __force_inline__ inline __attribute__((always_inline))
+#endif 
 
 #define likely(x) __builtin_expect(!!(x), 1)
 #define unlikely(x) __builtin_expect(!!(x), 0)
@@ -1526,7 +1529,7 @@ struct vStoreAG {
 #define V_CUBE_FLAG_OUT_FP32 (1ul << 8)
 #define V_CUBE_FLAG_ATOMIC_ADD (1ul << 9)
 #define V_CUBE_FLAG_WITH_BIAS (1ul << 10)
-#define V_CUBE_FLAG_BIAS_FP16 (1ul << 11)
+#define V_CUBE_FLAG_BIAS_FP32 (1ul << 11)
 #define V_CUBE_FLAG_PEER_STORE (1ul << 12)
 #define V_CUBE_FLAG_GROUPED_LIST (1ul << 13)
 #define V_CUBE_FLAG_GROUP_K (1ul << 14)

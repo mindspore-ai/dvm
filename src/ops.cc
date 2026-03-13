@@ -2369,7 +2369,7 @@ void CubeOp::InferTactics(Tactics &t) const {
     t.k_stride = std::max(t.k_stride, MIN_SPLIT_K);
   }
 
-  if (bias_ && bias_->type_id_ == kBFloat16) {
+  if (bias_ && bias_->type_id_ == kBFloat16 && g_system.Arch() == kAiCore_C220) {
     t.enable_bias_cast = true;
   }
 }
@@ -2716,9 +2716,8 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
   if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
   if (bias_) {
-    ASSERT(bias_->type_id_ == kFloat32 || bias_->type_id_ == kFloat16);
-    op->flags |= (V_CUBE_FLAG_BIAS_FP16) * (bias_->type_id_ == kFloat16);
     op->flags |= V_CUBE_FLAG_WITH_BIAS;
+    op->flags |= V_CUBE_FLAG_BIAS_FP32 * (bias_->type_id_ == kFloat32);
     op->gm_bias = static_cast<NDAccess *>(bias_)->addr_.data;
   }
   ASSERT(lhs_->type_id_ == dvm::kFloat16 || lhs_->type_id_ == dvm::kBFloat16);

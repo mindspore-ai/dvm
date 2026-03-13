@@ -803,8 +803,12 @@ class CompareScalarOp : public FlexOp {
  public:
   CompareScalarOp(int op_type, NDObject *input, scode_t scalar)
       : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
-    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 1;
-    flags_ |= OBJ_FLAG_FLEX_INPL_WS;
+    if (g_system.Arch() == kAiCore_C220) {
+      ws_num_ = 1;
+      flags_ |= OBJ_FLAG_FLEX_INPL_WS;
+    } else {
+      wss_[0] = 0;
+    }
     cmp_op_ = op_type;
     shape_ref_ = input->shape_ref_;
   }
@@ -847,7 +851,12 @@ class BinaryOp : public NDObject {
 class PowerOp : public FlexOp {
  public:
   PowerOp(NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
-    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 2;
+    if (g_system.Arch() == kAiCore_C220) {
+      ws_num_ = 2;
+    } else {
+      wss_[0] = 0;
+      wss_[1] = 0;
+    }
     shape_ref_ = &norm_.shape_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { norm_.Normalize(this, run_ops); }
@@ -862,8 +871,12 @@ class PowerOp : public FlexOp {
 class CompareOp : public FlexOp {
  public:
   CompareOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
-    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 1;
-    flags_ |= OBJ_FLAG_FLEX_INPL_WS;
+    if (g_system.Arch() == kAiCore_C220) {
+      ws_num_ = 1;
+      flags_ |= OBJ_FLAG_FLEX_INPL_WS;
+    } else {
+      wss_[0] = 0;
+    }
     cmp_op_ = op_type;
     shape_ref_ = &norm_.shape_;
   }
@@ -880,7 +893,11 @@ class CompareOp : public FlexOp {
 class SelectOp : public FlexOp {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
-    ws_num_ = g_system.Arch() == kAiCore_C310 ? 0 : 1;
+    if (g_system.Arch() == kAiCore_C220) {
+      ws_num_ = 1;
+    } else {
+      wss_[0] = 0;
+    }
     shape_ref_ = &shape_;
     SetXhs(cond);
   }

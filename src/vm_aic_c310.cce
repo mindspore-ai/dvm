@@ -101,38 +101,18 @@ class MatMul {
     uint8_t cache_mode = false;
     uint16_t n_value = transpose_a ? k_actual : m_actual;
     uint16_t d_value = transpose_a ? m_actual : k_actual;
-    if (m_actual == 1 && !transpose_a) {
-      // GEMV mode
-      // since it's normal mode by default, burst dst stride is 32B aligned, left and right padding num are unused
-      // since burst num is 1, src strice and dst stride are unnecessary
-      // TODO: figure out how to change mode
-      copy_gm_to_cbuf_align_v2(
-        dst,                                                                  // dst
-        src + offset_a,                                                       // src
-        0,                                                                    // sid
-        1,                                                                    // burst num
-        k_actual * sizeof(T),                                                 // len burst
-        0,                                                                    // left padding num
-        0,                                                                    // right padding num
-        true,                                                                 // constant padding ctl
-        cache_mode,                                                           // l2 cache ctl
-        0,                                                                    // burst src stride
-        0                                                                     // burst dst stride
-      );
-    } else {
-      set_mte2_nz_para(mte2_nz_para);
-      copy_gm_to_cbuf_multi_nd2nz(
-        dst,
-        src + offset_a,
-        0,                                                                    // sid
-        loop1_src_stride,
-        cache_mode,                                                           // cache mode TODO: figure out the meaning of this field, important for further optimization
-        n_value,                                                              // n value
-        d_value,                                                              // d value
-        loop4_src_stride,
-        false                                                                 // enable small c0 // TODO: figure out the meaning of this field, what is small c0? D < 4?
-      );
-    }
+    set_mte2_nz_para(mte2_nz_para);
+    copy_gm_to_cbuf_multi_nd2nz(
+      dst,
+      src + offset_a,
+      0,                                                                    // sid
+      loop1_src_stride,
+      cache_mode,                                                           // cache mode TODO: figure out the meaning of this field, important for further optimization
+      n_value,                                                              // n value
+      d_value,                                                              // d value
+      loop4_src_stride,
+      false                                                                 // enable small c0 // TODO: figure out the meaning of this field, what is small c0? D < 4?
+    );
   }
 
   __force_inline__ __aicore__ void LoadB(__cbuf__ T *__restrict__ dst,
@@ -180,46 +160,32 @@ class MatMul {
     // load L1 to L0A: zN -> zN (Notice: This is DIFFERENT from c220)
     uint64_t m_round = RoundUp(m_actual, BLOCK_SIZE);
     constexpr uint64_t fractal_size = BLOCK_SIZE * BLOCK_SIZE;
-    if ((m_actual == 1 && !(flags & V_CUBE_FLAG_TRANS_A))) {
+    // total fractal : (k0_round / BLOCK_SIZE) * (m_round / BLOCK_SIZE)
+    if (flags & V_CUBE_FLAG_TRANS_A) {
       load_cbuf_to_ca(
-        dst,                                             // dst addr
-        src,                                             // src addr
-        k_part_idx * k0_part_len / fractal_size,         // m start position (unit: fractal)
-        0,                                               // k start position (uint: fractal)
-        (k0_round + fractal_size - 1) / fractal_size,    // m step (num of fractal along m-axis)
-        1,                                               // k step (num of fractal along k-axis)
-        m_round / BLOCK_SIZE,                            // src stride
-        1,                                               // dst stride
-        false                                            // transpose
+        dst,                                            // dst addr
+        src,                                            // src addr
+        k_part_idx * k0_part_len / BLOCK_SIZE,          // m start position (unit: fractal)
+        0,                                              // k start position (uint: fractal)
+        k0_round / BLOCK_SIZE,                          // m step (num of fractal along m-axis)
+        m_round / BLOCK_SIZE,                           // k step (num of fractal along k-axis)
+        k_round / BLOCK_SIZE,                           // src stride
+        m_round / BLOCK_SIZE,                           // dst stride
+        true                                            // transpose
       );
     } else {
-      // total fractal : (k0_round / BLOCK_SIZE) * (m_round / BLOCK_SIZE)
-      if (flags & V_CUBE_FLAG_TRANS_A) {
-        load_cbuf_to_ca(
-          dst,                                            // dst addr
-          src,                                            // src addr
-          k_part_idx * k0_part_len / BLOCK_SIZE,          // m start position (unit: fractal)
-          0,                                              // k start position (uint: fractal)
-          k0_round / BLOCK_SIZE,                          // m step (num of fractal along m-axis)
-          m_round / BLOCK_SIZE,                           // k step (num of fractal along k-axis)
-          k_round / BLOCK_SIZE,                           // src stride
-          m_round / BLOCK_SIZE,                           // dst stride
-          true                                            // transpose
-        );
-      } else {
-        // total fractal: (m_round / BLOCK_SIZE) * (k0_round / BLOCK_SIZE)
-        load_cbuf_to_ca(
-          dst,                                            // dst addr
-          src,                                            // src addr
-          0,                                              // m start position (unit: fractal)
-          k_part_idx * k0_part_len / BLOCK_SIZE,          // k start position (uint: fractal)
-          m_round / BLOCK_SIZE,                           // m step (num of fractal along m-axis)
-          k0_round / BLOCK_SIZE,                          // k step (num of fractal along k-axis)
-          m_round / BLOCK_SIZE,                           // src stride
-          m_round / BLOCK_SIZE,                           // dst stride
-          false                                           // transpose
-        );
-      }
+      // total fractal: (m_round / BLOCK_SIZE) * (k0_round / BLOCK_SIZE)
+      load_cbuf_to_ca(
+        dst,                                            // dst addr
+        src,                                            // src addr
+        0,                                              // m start position (unit: fractal)
+        k_part_idx * k0_part_len / BLOCK_SIZE,          // k start position (uint: fractal)
+        m_round / BLOCK_SIZE,                           // m step (num of fractal along m-axis)
+        k0_round / BLOCK_SIZE,                          // k step (num of fractal along k-axis)
+        m_round / BLOCK_SIZE,                           // src stride
+        m_round / BLOCK_SIZE,                           // dst stride
+        false                                           // transpose
+      );
     }
   }
 
@@ -272,9 +238,6 @@ class MatMul {
                                        uint64_t n_actual,
                                        uint64_t k0_actual) {
     // zN x nZ -> zN
-    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
-      m_actual = 16;
-    }
     mad(
       c,
       a,
@@ -329,9 +292,6 @@ class MatMul {
                                         uint64_t m_actual, 
                                         uint64_t n_actual,
                                         uint64_t k0_actual) {
-    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
-      m_actual = 16;
-    }
     mad(
       c,
       a,

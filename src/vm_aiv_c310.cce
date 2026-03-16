@@ -52,7 +52,8 @@ struct vRegTable {
   uint32_t blockidx;
   uint32_t blocknum;
   uint64_t blockgroup;
-  uint64_t reserved[2];
+  uint8_t *vm_code_base;
+  uint64_t reserved[1];
 };
 
 __aicore_inline__ __ubuf__ vRegTable *__restrict__ RegTable() {
@@ -904,7 +905,100 @@ __aicore_inline__ void ReduceY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 #define V_RED_HEAD_INC_FLAG_OFFSET 31
 
 __aicore_inline__ void ReduceJoin(bcodeptr_t pc, uint64_t head, uint64_t tile) {
- // Todo
+  vReduceJoin op;
+  vReduceJoin ::Decode(pc, head, op);
+  uint32_t red_head = *reinterpret_cast<__bcode__ uint32_t *>(pc + op.seg_tile_rel);
+  uint64_t iter_total = op.iter_num * op.iter_stride;
+  uint64_t lenburst = (iter_total + 7) >> BlockDataShift(float);
+  // RESTRICT: tile in segement is continuously
+  if (IsBeginTile(tile) && !(red_head >> V_RED_HEAD_INC_FLAG_OFFSET)) {
+    copy_ubuf_to_ubuf((__ubuf__ void *)op.xd, (__ubuf__ void *)op.xn, 0, 1, lenburst, 0, 0);
+  } else {
+    vadd_count((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xn, iter_total);
+  }
+  uint32_t loop_repeat = (red_head >> V_RED_HEAD_REPEAT_OFFSET) & V_RED_HEAD_REPEAT_MASK;
+  if (!IsEndTile(tile) || loop_repeat > 0) {
+    return;
+  }
+  uint32_t thread_size = (red_head >> V_RED_HEAD_THREAD_OFFSET) & V_RED_HEAD_THREAD_MASK;
+  if (thread_size == 1) {
+    vStoreCond::EncodeCond(pc + vReduceJoin::STORE_COND_OFFSET, 0, op.iter_num > 1 ? op.iter_num : op.iter_stride);
+    return;
+  }
+  uint64_t blockidx = vBlockIdx();
+  uint64_t ws_stride = lenburst * 32;
+  set_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
+  wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
+  copy_ubuf_to_gm_align_v2((__gm__ uint8_t *)op.ws + blockidx * ws_stride, (__ubuf__ void *)op.xd, 0, 1,
+                           iter_total * sizeof(float), 0, 0, 0);
+  uint64_t iter_offset, iter_range, join_offset, join_count;
+  uint64_t thread_idx = blockidx % thread_size;
+  constexpr uint64_t flag_id = 0;
+  uint64_t sync_flag = vFftsSyncConfig(0, flag_id);
+  if (op.iter_num == 1) {
+    if (thread_idx > 0 || iter_total > 64) {
+      ffts_cross_core_sync(PIPE_MTE3, sync_flag);
+    } else {
+      ffts_cross_core_sync(PIPE_V, sync_flag);
+    }
+    join_count = ((iter_total - 1) / thread_size + 64) & ~0x3ful;
+    join_offset = join_count * thread_idx;
+    if (join_offset + join_count > iter_total) {
+      join_count = iter_total - join_offset;
+    }
+    iter_offset = join_offset;
+    iter_range = join_count;
+  } else {
+    ffts_cross_core_sync(PIPE_MTE3, sync_flag);
+    iter_range = (op.iter_num - 1) / thread_size + 1;
+    iter_offset = iter_range * thread_idx;
+    if (iter_offset + iter_range > op.iter_num) {
+      iter_range = op.iter_num - iter_offset;
+    }
+    join_offset = iter_offset * op.iter_stride;
+    join_count = iter_range * op.iter_stride;
+  }
+  wait_flag_dev(PIPE_S, flag_id);
+  if (join_offset >= iter_total) {
+    return;
+  }
+  vStoreCond::EncodeCond(pc + vReduceJoin::STORE_COND_OFFSET, iter_offset, iter_range);
+  op.xd += join_offset * sizeof(float);
+  op.ws += join_offset * sizeof(float);
+  uint64_t loop_cnt, bidx;
+  if (thread_idx > 0) {
+    loop_cnt = thread_size - 1;
+    bidx = blockidx - thread_idx;
+  } else {
+    loop_cnt = thread_size - 2;
+    bidx = blockidx + 1;
+  }
+  event_t ping = EVENT_ID6;
+  event_t pong = EVENT_ID7;
+  lenburst = (join_count + 7) >> BlockDataShift(float);
+  copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)op.xs, (__gm__ uint8_t *)op.ws + bidx * ws_stride, 0, 1,
+                           join_count * sizeof(float), 0, 0, false, 0, 0, 0);
+  set_flag(PIPE_MTE2, PIPE_V, ping);
+  while (loop_cnt--) {
+    if (++bidx == blockidx) continue;
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)op.xn, (__gm__ uint8_t *)op.ws + bidx * ws_stride, 0, 1,
+                             join_count * sizeof(float), 0, 0, false, 0, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_V, pong);
+    wait_flag(PIPE_MTE2, PIPE_V, ping);
+    vadd_count((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xs, join_count);
+    if (loop_cnt) {
+      set_flag(PIPE_V, PIPE_MTE2, ping);
+      wait_flag(PIPE_V, PIPE_MTE2, ping);
+    }
+    uint64_t xs = op.xs;
+    op.xs = op.xn;
+    op.xn = xs;
+    event_t event = ping;
+    ping = pong;
+    pong = event;
+  }
+  wait_flag(PIPE_MTE2, PIPE_V, ping);
+  vadd_count((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xs, join_count);
 }
 
 template <typename T>
@@ -1588,24 +1682,203 @@ __aicore_inline__ T MakeRedHead(T repeat, T thread_size) {
   return head;
 }
 
+__aicore_inline__ void PadRedSync(uint32_t cnt) {
+  for (uint32_t i = 0; i < cnt; ++i) {
+    ffts_cross_core_sync(PIPE_MTE3, vFftsSyncConfig(0, 0));
+    wait_flag_dev(PIPE_S, 0);
+  }
+}
+
 __aicore_inline__ uint64_t VisitRed_1(bcodeptr_t pc) {
-  // Todo
-  return 0;
+  __bcode__ vVisitRed1 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed1*>(pc);
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t r1 = op->r1;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    op->head = MakeRedHead<uint32_t>(0, 1);
+    uint64_t tile = (e_cur * r1) << V_TILE_CUR_IDX_OFFSET | r1 << V_TILE_COUNT_OFFSET;
+    if (e_cur == e_num - 1) {
+      tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+    }
+    return tile;
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      PadRedSync(op->user_cnt);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t tidx = e_cur * r1 + thread_idx;
+    uint64_t loop = (r1 - thread_idx - 1) / thread_size + 1;
+    op->head = MakeRedHead<uint32_t>(0, thread_size);
+    uint64_t tile = tidx << V_TILE_CUR_IDX_OFFSET | loop << V_TILE_COUNT_OFFSET | 1ul << V_TILE_SKIP_FLAG_OFFSET;
+    if (e_cur == e_num - 1 && thread_size * (loop - 1)  + thread_idx == r1 - 1) {
+      tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+    }
+    PushSkipStride(thread_size);
+    return tile;
+  }
 }
 
 __aicore_inline__ uint64_t VisitRed_2(bcodeptr_t pc) {
-  // Todo
-  return 0;
+  __bcode__ vVisitRed2 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed2*>(pc);
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t tidx, count, stride;
+  uint64_t e1 = op->e1_r1 >> 32;
+  uint64_t r1 = op->e1_r1 & MASK_32;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    op->head = MakeRedHead<uint32_t>(0, 1);
+    tidx = r1 * e1 * (e_cur / e1) + e_cur % e1;
+    count = r1;
+    stride = e1;
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      PadRedSync(op->user_cnt);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t group_tile = r1 * e1 * (e_cur / e1) + e_cur % e1;
+    op->head = MakeRedHead<uint32_t>(0, thread_size);
+    tidx = group_tile + thread_idx * e1;
+    count = (r1 - thread_idx - 1) / thread_size + 1;
+    stride = e1 * thread_size;
+  }
+  PushSkipStride(stride);
+  return tidx << V_TILE_CUR_IDX_OFFSET | count << V_TILE_COUNT_OFFSET | 1ul << V_TILE_SKIP_FLAG_OFFSET;
 }
 
 __aicore_inline__ uint64_t VisitRed_3(bcodeptr_t pc) {
-  // Todo
-  return 0;
+  __bcode__ vVisitRed3 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed3 *>(pc);
+  uint64_t tidx_head = op->tidx_head;
+  uint64_t e1 = op->e1_r2 >> 32;
+  uint64_t r2 = op->e1_r2 & MASK_32;
+  if (tidx_head & V_RED_HEAD_REPEAT_MASK) {
+    uint64_t thread_size = (tidx_head  >> V_RED_HEAD_THREAD_OFFSET) & V_RED_HEAD_THREAD_MASK;
+    tidx_head = (tidx_head | 1ul << V_RED_HEAD_INC_FLAG_OFFSET) + ((r2 * e1 * thread_size) << 32) - 1ul;
+    op->tidx_head = tidx_head;
+    return (tidx_head >> 32) << V_TILE_CUR_IDX_OFFSET | r2 << V_TILE_COUNT_OFFSET;
+  }
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t tidx;
+  uint64_t r1 = op->r1;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    tidx = (r1 * e1 * (e_cur / e1) + e_cur % e1) * r2;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(r1 - 1, 1);
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      PadRedSync(op->user_cnt);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t repeat = (r1 - thread_idx - 1) / thread_size + 1;
+    tidx = (r1 * e1 * (e_cur / e1) + e_cur % e1 + thread_idx * e1) * r2;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(repeat - 1, thread_size);
+  }
+  return tidx << V_TILE_CUR_IDX_OFFSET | r2 << V_TILE_COUNT_OFFSET;
 }
 
 __aicore_inline__ uint64_t VisitRed_4(bcodeptr_t pc) {
-  // Todo
-  return 0;
+  __bcode__ vVisitRed4 *__restrict__ op = reinterpret_cast<__bcode__ vVisitRed4 *>(pc);
+  uint64_t tidx_head = op->tidx_head;
+  uint64_t e1 = op->e1_r1 >> 32;
+  uint64_t r1 = op->e1_r1 & MASK_32;
+  uint64_t e2 = op->e2_r2 >> 32;
+  uint64_t r2 = op->e2_r2 & MASK_32;
+  if (tidx_head & V_RED_HEAD_REPEAT_MASK) {
+    uint64_t thread_size = (tidx_head  >> V_RED_HEAD_THREAD_OFFSET) & V_RED_HEAD_THREAD_MASK;
+    tidx_head = (tidx_head | 1ul << V_RED_HEAD_INC_FLAG_OFFSET) + ((r2 * e1 * e2 * thread_size) << 32) - 1ul;
+    op->tidx_head = tidx_head;
+    PushSkipStride(e2);
+    return (tidx_head >> 32) << V_TILE_CUR_IDX_OFFSET | 1ul << V_TILE_SKIP_FLAG_OFFSET | r2 << V_TILE_COUNT_OFFSET;
+  }
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  uint64_t e_idx = op->e & MASK_32;
+  uint64_t e_num = op->e >> 32;
+  if (e_idx >= e_num) {
+    return 0;
+  }
+  uint64_t tidx;
+  if (e_idx + blocknum / 2 < e_num) {
+    op->e += blocknum;
+    uint64_t e_cur = e_idx + blockidx;
+    if (e_cur >= e_num) {
+      return 0;
+    }
+    uint64_t e0_idx = e_cur / (e1 * e2);
+    uint64_t e0_offset = e_cur % (e1 * e2);
+    uint64_t e1_idx = e0_offset / e2;
+    uint64_t e2_idx = e0_offset % e2;
+    tidx = e0_idx * (r1 * e1 * r2 * e2) + e1_idx * (r2 * e2) + e2_idx;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(r1 - 1, 1);
+  } else {
+    uint64_t group_num = e_num - e_idx;
+    uint64_t thread_size = min(r1, blocknum / group_num);
+    op->e += group_num;
+    if (blockidx >= thread_size * group_num) {
+      PadRedSync(op->user_cnt);
+      return 0;
+    }
+    uint64_t thread_idx = blockidx % thread_size;
+    uint64_t group_idx = blockidx / thread_size;
+    uint64_t e_cur = e_idx + group_idx;
+    uint64_t e0_idx = e_cur / (e1 * e2);
+    uint64_t e0_offset = e_cur % (e1 * e2);
+    uint64_t e1_idx = e0_offset / e2;
+    uint64_t e2_idx = e0_offset % e2;
+    uint64_t group_tile = e0_idx * (r1 * e1 * r2 * e2) + e1_idx * (r2 * e2) + e2_idx;
+    uint64_t repeat = (r1 - thread_idx - 1) / thread_size + 1;
+    tidx = group_tile + r2 * e2 * e1 * thread_idx;
+    op->tidx_head = tidx << 32 | MakeRedHead<uint64_t>(repeat - 1, thread_size);
+  }
+  PushSkipStride(e2);
+  return tidx << V_TILE_CUR_IDX_OFFSET | r2 << V_TILE_COUNT_OFFSET | 1ul << V_TILE_SKIP_FLAG_OFFSET;
 }
 
 __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
@@ -1665,6 +1938,106 @@ __aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
 }
 #endif
 
+__aicore_inline__ uint64_t VisitReorder(bcodeptr_t pc) {
+  vVisitReorder op;
+  vVisitReorder::Decode(pc, op);
+  if (op.wave_block >= op.parallel_extent) {
+    if (op.coord_num == 0) {
+      return 0;
+    }
+    op.wave_tidx -= op.parallel_stride * op.wave_block;
+    op.wave_block = 0;
+    for (uint64_t cidx = 0; cidx < op.coord_num; ++cidx) {
+      uint64_t stride, extent, value;
+      vVisitReorder::DecodeCoord(pc, cidx, stride, extent, value);
+      if (uint64_t n_value = value + 1; n_value < extent) {
+        op.wave_tidx += stride;
+        vVisitReorder::UpdateCoord(pc, cidx, n_value);
+        if (cidx == op.coord_num - 1 && n_value == extent - 1) {
+          vVisitReorder::ClearCoord(pc);
+        }
+        break;
+      }
+      op.wave_tidx -= stride * value;
+      vVisitReorder::UpdateCoord(pc, cidx, 0);
+    }
+  }
+  uint64_t blocknum = vBlockNum();
+  uint64_t blockidx = vBlockIdx();
+  vVisitReorder::UpdateWave(pc, op.wave_block + blocknum, op.wave_tidx + op.parallel_stride * blocknum);
+  uint64_t parallel_idx = op.wave_block + blockidx;
+  if (parallel_idx >= op.parallel_extent) {
+    return 1ul << V_TILE_CUR_IDX_OFFSET;
+  }
+  uint64_t tidx = op.wave_tidx + op.parallel_stride * blockidx;
+  bool last_block = parallel_idx == op.parallel_extent - 1;
+  uint64_t tile = tidx << V_TILE_CUR_IDX_OFFSET | (last_block ? op.loop_tail : op.loop_num) << V_TILE_COUNT_OFFSET;
+  if (last_block && op.coord_num == 0) {
+    tile |= 1ul << V_TILE_TAIL_FLAG_OFFSET;
+  }
+  if (op.loop_stride > 1) {
+    PushSkipStride(op.loop_stride);
+    tile |= 1ul << V_TILE_SKIP_FLAG_OFFSET;
+  }
+  return tile;
+}
+
+__aicore_inline__ uint64_t VisitPipeSet(bcodeptr_t pc) {
+  vVisitPipeSet op;
+  vVisitPipeSet::Decode(pc, op);
+  uint64_t end_cnt = op.idx & 0xfffful;
+  uint64_t set_cnt = (op.idx >> 16) & 0xfffful;
+  if (uint64_t next_set = set_cnt + 1; op.step * next_set == end_cnt) {
+    auto msg = (__gm__ vPipeMsg *)(op.gm + vBlockIdx() * CACHE_LINE_SIZE);
+    set_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    wait_flag(PIPE_MTE3, PIPE_S, EVENT_ID0);
+    msg->pipe_cnt = next_set;
+    if (next_set == 1) {
+      msg->magic_id = vPipeMsg::MagicID(op.uid);
+    }
+    dcci(msg, 0);
+    op.idx += 1ul << 16;
+  }
+  vVisitPipeSet::UpdateIdx(pc, op.idx + 1);
+  VisitFunc nest_func = (VisitFunc)GetFunc(op.visit_id, RegTable()->vm_code_base);
+  return nest_func(pc + vVisitPipeSet::NEST_VISIT_OFFSET);
+}
+
+__aicore_inline__ uint64_t VisitPipeWait(bcodeptr_t pc) {
+  vVisitPipeWait op;
+  vVisitPipeWait::Decode(pc, op);
+  VisitFunc nest_func = (VisitFunc)GetFunc(op.visit_id, RegTable()->vm_code_base);
+  uint64_t tile = nest_func(pc + vVisitPipeWait::NEST_VISIT_OFFSET);
+  if (tile) {
+    uint64_t start_idx = op.idx & 0xfffful;
+    uint64_t wait_cnt = (op.idx >> 16) & 0xfffful;
+    if (start_idx >= op.step * wait_cnt) {
+      uint64_t mask = (1ul << op.prod_num) - 1;
+      uint64_t min_set_cnt = INVALID_INT;
+      while (mask) {
+        uint64_t msg_addr = op.gm;
+        for (uint64_t i = 0; i < op.prod_num; ++i) {
+          if (mask & (1ul << i)) {
+            auto msg = (__gm__ volatile vPipeMsg *)(msg_addr);
+            dcci(msg, 0);
+            uint64_t pipe_cnt = msg->pipe_cnt;
+            if (pipe_cnt > wait_cnt && (wait_cnt > 0 || msg->magic_id == vPipeMsg::MagicID(op.uid))) {
+              mask ^= 1ul << i;
+              if (pipe_cnt < min_set_cnt) {
+                min_set_cnt = pipe_cnt;
+              }
+            }
+          }
+          msg_addr += CACHE_LINE_SIZE;
+        }
+      }
+      op.idx += (min_set_cnt - wait_cnt) << 16;
+    }
+    vVisitPipeWait::UpdateIdx(pc, op.idx + 1);
+  }
+  return tile;
+}
+
 extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
   __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
@@ -1715,6 +2088,7 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
     uint64_t visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);
     uint64_t visit_offset = vGetBitRange(entry, V_ENTRY_VE_VISIT_OFFSET_OFFSET, V_ENTRY_VE_VISIT_OFFSET_BITS);
     bcodeptr_t visit_code = reinterpret_cast<bcodeptr_t>(VA_BCODE_BASE_UB) + visit_offset;
+    RegTable()->vm_code_base = main_addr;
     wait_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
     if (entry & V_ENTRY_FLAG_CUBE_MIX) {
       vVisitMix::UpdateCube(visit_code, body_addr - sizeof(vCubeOp));
@@ -1816,6 +2190,9 @@ DEF_DISP_VISIT(V_VISIT_RED_2, VisitRed_2);
 DEF_DISP_VISIT(V_VISIT_RED_3, VisitRed_3);
 DEF_DISP_VISIT(V_VISIT_RED_4, VisitRed_4);
 DEF_DISP_VISIT(V_VISIT_MIX, VisitMix);
+DEF_DISP_VISIT(V_VISIT_REORDER, VisitReorder);
+DEF_DISP_VISIT(V_VISIT_PIPE_SET, VisitPipeSet);
+DEF_DISP_VISIT(V_VISIT_PIPE_WAIT, VisitPipeWait);
 
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))

@@ -14,26 +14,8 @@
  * limitations under the License.
  */
 #define _CCE_KERNEL_
+#define __VM_ARCH__ 220
 #include "vm_aic.h"
-
-template <typename T>
-__aicore_inline__ void Swap(T &x, T &y) {
-  T t = x;
-  x = y;
-  y = t;
-}
-
-
-constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
-constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
-constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
-constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
-constexpr uint64_t BIAS_ADDR = 0;
-constexpr uint64_t BLOCK_SIZE = 16;
-
-#define V_PINGPONG_FLAG_EVENT  0x1ul
-#define V_PINGPONG_FLAG_STORE  0x2ul
-#define V_PINGPONG_FLAG_GROUP_MSG 0x4ul
 
 template <typename S>
 struct QuantPRE {};
@@ -439,84 +421,6 @@ class MatMul {
   uint64_t flags;
   uint64_t k_actual, shuffle_k;
   __gm__ vCubeOp *__restrict__ op_;
-};
-
-template <typename M>
-class TileVisitor : public TileVisitorBase<M, TileVisitor<M>> {
- public:
-  using Base = TileVisitorBase<M, TileVisitor<M>>;
-  using Base::BlockIdxOffset;
-  using Base::gm_group_list_;
-  using Base::gm_msg_;
-  using Base::group_info_;
-  using Base::HasNext;
-  using Base::pos_;
-  using Base::tile_loop_;
-  using Base::UpdateGmm;
-  using Base::UpdateNext;
-  using Base::vBlockIdx;
-  using Base::vBlockNum;
-  using Base::Base;
-
-  __force_inline__ __aicore__ void PipelineSync(const M &m) {
-    auto op = reinterpret_cast<__gm__ vPipeCubeOp * __restrict__>(m.op_);
-    uint64_t set_step, wait_step, wait_prod_num, uid;
-    vPipeCubeOp::DecodeStep(op->step, set_step, wait_step, wait_prod_num, uid);
-    uint64_t n_tile_idx = vGetBitRange(tile_loop_, 0, 32);
-    uint64_t blocknum = vBlockNum();
-    if (set_step && n_tile_idx >= blocknum) {
-      uint64_t step_idx = (n_tile_idx - blocknum) / set_step;
-      if (n_tile_idx >= (step_idx + 1) * set_step || !HasNext()) {
-        set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
-        wait_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
-        auto msg = (__gm__ vPipeMsg *)(op->set_gm + vBlockIdx() * CACHE_LINE_SIZE);
-        msg->pipe_cnt = step_idx + 1;
-        if (step_idx == 0) {
-          msg->magic_id = vPipeMsg::MagicID(uid);
-        }
-        dcci(msg, 0);
-      }
-    }
-    uint64_t tile_num = tile_loop_ >> 32;
-    if (uint64_t fetch_idx = n_tile_idx + blocknum; wait_step && fetch_idx < tile_num) {
-      uint64_t fetch_step_idx = fetch_idx / wait_step;
-      if (n_tile_idx < blocknum || n_tile_idx < fetch_step_idx * wait_step) {
-        uint64_t mask = (1ul << wait_prod_num) - 1;
-        while (mask) {
-          uint64_t msg_addr = op->wait_gm;
-          for (uint64_t i = 0; i < wait_prod_num; ++i) {
-            if (mask & (1ul << i)) {
-              auto msg = (__gm__ volatile vPipeMsg *)(msg_addr);
-              dcci(msg, 0);
-              if (msg->pipe_cnt > fetch_step_idx && (fetch_step_idx > 0 || msg->magic_id == vPipeMsg::MagicID(uid))) {
-                mask ^= 1ul << i;
-              }
-            }
-            msg_addr += CACHE_LINE_SIZE;
-          }
-        }
-      }
-      set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
-      wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
-    }
-  }
-
-  __force_inline__ __aicore__ void VectorSync(M &m) {
-    uint64_t pos = pos_;
-    if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {  // NOTICE: only for split-k mode
-      pos += (BlockIdxOffset() / (m.m_loop * m.n_loop)) << V_MM_POS_C_OFFSET;
-    }
-    gm_msg_->pos[m.flags & V_PINGPONG_FLAG_GROUP_MSG ? 1 : 0] = pos;
-    m.flags ^= V_PINGPONG_FLAG_GROUP_MSG;
-    dcci(gm_msg_, 0);
-    set_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
-    wait_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
-    ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
-    uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
-    if (tile_idx > vBlockIdx() + vBlockNum()) {
-      wait_flag_dev(1);
-    }
-  }
 };
 
 template <typename T>

@@ -85,12 +85,12 @@ class Tester(Kernel):
 
     @staticmethod
     def fast_random_normal(loc, scale, shape):
-        row_random = np.random.normal(loc, scale, (shape[-1],))
+        row_random = np.random.normal(loc, scale, (shape[-1],)).astype(np.float32)
         return np.broadcast_to(row_random, shape).copy()
 
     @staticmethod
     def bf16_random_normal(loc, scale, shape):
-        x = np.random.normal(loc, scale, shape)
+        x = np.random.normal(loc, scale, shape).astype(np.float32)
         x_int = x.view(np.uint32)
         x_bf16_int = x_int & 0xFFFF0000
         x_bf32 = x_bf16_int.view(np.float32)

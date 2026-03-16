@@ -16,6 +16,17 @@
 #define _CCE_KERNEL_
 #include "isa.h"
 
+constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
+constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
+constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
+constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
+constexpr uint64_t BIAS_ADDR = 0;
+constexpr uint64_t BLOCK_SIZE = 16;
+
+#define V_PINGPONG_FLAG_EVENT 0x1ul
+#define V_PINGPONG_FLAG_STORE 0x2ul
+#define V_PINGPONG_FLAG_GROUP_MSG 0x4ul
+
 #define V_GMM_BLOCK_OFF_OFFSET 32
 #define V_GMM_BLOCK_OFF_BIT 32
 #define V_GMM_LAST_OFFSET 8
@@ -23,13 +34,20 @@
 #define V_GMM_G_SIZE_OFFSET 0
 #define V_GMM_G_SIZE_BITS 8
 
-template <typename M, typename Derived>
-class TileVisitorBase {
+template <typename T>
+__aicore_inline__ void Swap(T &x, T &y) {
+  T t = x;
+  x = y;
+  y = t;
+}
+
+template <typename M>
+class TileVisitor {
  public:
   static constexpr uint64_t INVALID_TILE_POS = uint64_t(-1);
 
-  __force_inline__ __aicore__ TileVisitorBase(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx, uint64_t blocknum,
-                                              uint64_t tile_num, M &m) {
+  __force_inline__ __aicore__ TileVisitor(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx, uint64_t blocknum,
+                                          uint64_t tile_num, M &m) {
     swizzle_ = op->swizzle;
     gm_msg_ = reinterpret_cast<__gm__ vMixGroupMsg *>(op->gm_pos + sizeof(vMixGroupMsg) * blockidx);
     pos_last_ = pos_ = INVALID_TILE_POS;
@@ -82,14 +100,83 @@ class TileVisitorBase {
     tile_loop_ += (m.m_loop * m.n_loop) << 32;
   }
 
-  __force_inline__ __aicore__ void PipelineSync(const M &m) {}
-  __force_inline__ __aicore__ void VectorSync(M &m) {}
+  __force_inline__ __aicore__ void PipelineSync(const M &m) {
+    auto op = reinterpret_cast<__gm__ vPipeCubeOp *__restrict__>(m.op_);
+    uint64_t set_step, wait_step, wait_prod_num, uid;
+    vPipeCubeOp::DecodeStep(op->step, set_step, wait_step, wait_prod_num, uid);
+    uint64_t n_tile_idx = vGetBitRange(tile_loop_, 0, 32);
+    uint64_t blocknum = vBlockNum();
+    if (set_step && n_tile_idx >= blocknum) {
+      uint64_t step_idx = (n_tile_idx - blocknum) / set_step;
+      if (n_tile_idx >= (step_idx + 1) * set_step || !HasNext()) {
+        set_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
+        wait_flag(PIPE_FIX, PIPE_S, EVENT_ID0);
+        auto msg = (__gm__ vPipeMsg *)(op->set_gm + vBlockIdx() * CACHE_LINE_SIZE);
+        msg->pipe_cnt = step_idx + 1;
+        if (step_idx == 0) {
+          msg->magic_id = vPipeMsg::MagicID(uid);
+        }
+        dcci(msg, 0);
+      }
+    }
+    uint64_t tile_num = tile_loop_ >> 32;
+    if (uint64_t fetch_idx = n_tile_idx + blocknum; wait_step && fetch_idx < tile_num) {
+      uint64_t fetch_step_idx = fetch_idx / wait_step;
+      if (n_tile_idx < blocknum || n_tile_idx < fetch_step_idx * wait_step) {
+        uint64_t mask = (1ul << wait_prod_num) - 1;
+        while (mask) {
+          uint64_t msg_addr = op->wait_gm;
+          for (uint64_t i = 0; i < wait_prod_num; ++i) {
+            if (mask & (1ul << i)) {
+              auto msg = (__gm__ volatile vPipeMsg *)(msg_addr);
+              dcci(msg, 0);
+              if (msg->pipe_cnt > fetch_step_idx && (fetch_step_idx > 0 || msg->magic_id == vPipeMsg::MagicID(uid))) {
+                mask ^= 1ul << i;
+              }
+            }
+            msg_addr += CACHE_LINE_SIZE;
+          }
+        }
+      }
+      set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+      wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
+    }
+  }
+
+  __force_inline__ __aicore__ void VectorSync(M &m) {
+#if __VM_ARCH__ == 220
+    uint64_t pos = pos_;
+    if (m.flags & V_CUBE_FLAG_GROUPED_LIST) {
+      pos += (BlockIdxOffset() / (m.m_loop * m.n_loop)) << V_MM_POS_C_OFFSET;
+    }
+    constexpr uint64_t kGroupMsgFlag = 0x4ul;
+    gm_msg_->pos[m.flags & kGroupMsgFlag ? 1 : 0] = pos;
+    m.flags ^= kGroupMsgFlag;
+    dcci(gm_msg_, 0);
+    set_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
+    wait_flag(PIPE_S, PIPE_FIX, EVENT_ID0);
+    ffts_cross_core_sync(PIPE_FIX, vFftsSyncConfig(2, 0));
+    uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
+    if (tile_idx > vBlockIdx() + vBlockNum()) {
+      wait_flag_dev(1);
+    }
+#else
+    set_intra_block(PIPE_FIX, V_INTRA_GM_MIX_FORWARD_ID);
+    set_intra_block(PIPE_FIX, V_INTRA_GM_MIX_FORWARD_ID + V_INTRA_BLOCK_AIV_OFFSET);
+    uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
+    if (tile_idx > vBlockIdx() + vBlockNum()) {
+      wait_intra_block(PIPE_FIX, V_INTRA_GM_MIX_BACKWARD_ID);
+      wait_intra_block(PIPE_FIX, V_INTRA_GM_MIX_BACKWARD_ID + V_INTRA_BLOCK_AIV_OFFSET);
+    }
+#endif
+  }
+
   __force_inline__ __aicore__ bool Forward(M &m) {
     if ((m.flags & V_CUBE_FLAG_GROUP_SET) && pos_ != INVALID_TILE_POS) {
-      static_cast<Derived *>(this)->VectorSync(m);
+      VectorSync(m);
     }
     if (unlikely(m.flags & V_CUBE_FLAG_PIPELINE)) {
-      static_cast<Derived *>(this)->PipelineSync(m);
+      PipelineSync(m);
     }
     while (GroupListSize() > 0 && !HasNext()) {
       UpdateGmm<false>(m);

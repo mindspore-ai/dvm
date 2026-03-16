@@ -14,14 +14,9 @@
  * limitations under the License.
  */
 #define _CCE_KERNEL_
+#define __VM_ARCH__ 310
 #include "vm_aic.h"
 
-template <typename T>
-__aicore_inline__ void Swap(T &x, T &y) {
-  T t = x;
-  x = y;
-  y = t;
-}
 
 template <typename T>
 __aicore_inline__ QuantMode_t GetQuantMode() {
@@ -36,16 +31,6 @@ __aicore_inline__ QuantMode_t GetQuantMode() {
   return type;
 }
 
-constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
-constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
-constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
-constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
-constexpr uint64_t BIAS_ADDR = 0;
-constexpr uint64_t BLOCK_SIZE = 16;
-
-#define V_PINGPONG_FLAG_EVENT  0x1ul
-#define V_PINGPONG_FLAG_STORE  0x2ul
-#define V_PINGPONG_FLAG_GROUP_MSG 0x4ul
 
 template <typename T>
 class MatMul {
@@ -74,6 +59,7 @@ class MatMul {
     k_loop = op->k_loop;
     shuffle_k = blockidx % k_loop;
     k_actual = (shuffle_k == k_loop - 1) ? (k_real - shuffle_k * k0) : k0;
+    op_ = op;
   }
 
   __force_inline__ __aicore__ uint64_t GmOffset(uint64_t cidx, uint64_t midx, uint64_t nidx) {
@@ -246,7 +232,7 @@ class MatMul {
       k0_actual,                              // k
       n_actual,                               // n
       unit_flag,                              // unitFlag
-      0,                                      // kDirectionAlign
+      true,                                   // disableGemv
       0,                                      // cmatrixSource
       init_c                                  // cmatrixInitVal
     );
@@ -301,7 +287,7 @@ class MatMul {
       k0_actual,                              // k
       n_actual,                               // n
       unit_flag,                              // unitFlag
-      0,                                      // kDirectionAlign
+      true,                                   // disableGemv
       1,                                      // cmatrixSource
       0                                       // cmatrixInitVal
     );
@@ -399,30 +385,7 @@ class MatMul {
   uint64_t m0, n0, k0;
   uint64_t flags;
   uint64_t k_actual, shuffle_k;
-};
-
-template <typename M>
-class TileVisitor : public TileVisitorBase<M, TileVisitor<M>> {
- public:
-  using Base = TileVisitorBase<M, TileVisitor<M>>;
-  using Base::gm_group_list_;
-  using Base::group_info_;
-  using Base::tile_loop_;
-  using Base::UpdateGmm;
-  using Base::UpdateNext;
-  using Base::vBlockIdx;
-  using Base::vBlockNum;
-  using Base::Base;
-  __force_inline__ __aicore__ void PipelineSync(const M &m) {}
-  __force_inline__ __aicore__ void VectorSync(M &m) {
-    set_intra_block(PIPE_FIX, V_INTRA_GM_MIX_FORWARD_ID);
-    set_intra_block(PIPE_FIX, V_INTRA_GM_MIX_FORWARD_ID + V_INTRA_BLOCK_AIV_OFFSET);
-    uint64_t tile_idx = vGetBitRange(tile_loop_, 0, 32);
-    if (tile_idx > vBlockIdx() + vBlockNum()) {
-      wait_intra_block(PIPE_FIX, V_INTRA_GM_MIX_BACKWARD_ID);
-      wait_intra_block(PIPE_FIX, V_INTRA_GM_MIX_BACKWARD_ID + V_INTRA_BLOCK_AIV_OFFSET);
-    }
-  }
+  __gm__ vCubeOp *__restrict__ op_;
 };
 
 template <typename T>

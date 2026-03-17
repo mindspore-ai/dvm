@@ -82,7 +82,7 @@ class MatMul {
     uint64_t mte2_nz_para = (static_cast<uint64_t>(loop4_dst_stride) << 48) |
                             (static_cast<uint64_t>(loop3_dst_stride) << 32) |
                             (static_cast<uint64_t>(loop2_dst_stride) << 16) | 1ul;
-    uint16_t loop1_src_stride = (transpose_a ? m_align : k_align) * sizeof(T);
+    uint32_t loop1_src_stride = (transpose_a ? m_align : k_align) * sizeof(T);
     uint16_t loop4_src_stride = 0;
     uint8_t cache_mode = false;
     uint16_t n_value = transpose_a ? k_actual : m_actual;
@@ -116,7 +116,7 @@ class MatMul {
     uint64_t mte2_nz_para = (static_cast<uint64_t>(loop4_dst_stride) << 48) |
                             (static_cast<uint64_t>(loop3_dst_stride) << 32) |
                             (static_cast<uint64_t>(loop2_dst_stride) << 16) | 1ul;
-    uint16_t loop1_src_stride = (transpose_b ? k_align : n_align) * sizeof(T);
+    uint32_t loop1_src_stride = (transpose_b ? k_align : n_align) * sizeof(T);
     uint16_t loop4_src_stride = 0;
     uint8_t cache_mode = false;
     uint16_t n_value = transpose_b ? n_actual : k_actual;

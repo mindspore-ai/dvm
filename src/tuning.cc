@@ -21,6 +21,7 @@
 #include "msprof.h"
 #include "xkernel.h"
 #include "ops.h"
+#include "system.h"
 
 namespace dvm {
 constexpr uint32_t FP32_SIZE = 4;
@@ -150,6 +151,7 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
 }
 
 void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
+  auto stream = g_system.CreateStream();
   ManualCubeTuner tuner(parameter);
   static_cast<MixKernel *>(td.kernel.GetImpl())->SetTuner(&tuner);
   td.kernel.CodeGen();
@@ -157,10 +159,11 @@ void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
   profiler.Reset();
   uint32_t test_num = 10;
   for (uint32_t i = 0; i < test_num; i++) {
-    profiler.RecordStart(nullptr);
-    ERROR_CHECK(td.kernel.Launch(nullptr, 0, nullptr, nullptr));
-    profiler.RecordEnd(nullptr);
+    profiler.RecordStart(stream);
+    ERROR_CHECK(td.kernel.Launch(nullptr, 0, nullptr, stream));
+    profiler.RecordEnd(stream);
   }
+  ERROR_CHECK(aclrtDestroyStream(stream));
   auto mean_time = (profiler.total_us_ - profiler.min_us_ - profiler.max_us_) / (test_num - 2);
   if (mean_time < td.best_time) {
     td.best_time = mean_time;

@@ -199,19 +199,17 @@ class MatMul {
       );
     } else {
       // total fractal: (k0_round / BLOCK_SIZE) * (n_round / BLOCK_SIZE)
-      for (uint64_t i = 0; i < k0_round / BLOCK_SIZE; i++) {
-        load_cbuf_to_cb(
-          dst + i * BLOCK_SIZE * n_round,                 // dst addr
-          src,                                            // src addr
-          k_part_idx * k0_part_len / BLOCK_SIZE + i,      // m start position (unit: fractal)
-          0,                                              // k start position (uint: fractal)
-          1,                                              // m step (num of fractal along m-axis)
-          n_round / BLOCK_SIZE,                           // k step (num of fractal along k-axis)
-          k_round / BLOCK_SIZE,                           // src stride
-          1,                                              // dst stride
-          true                                            // transpose
-        );
-      }
+      load_cbuf_to_cb(
+        dst,                                              // dst addr
+        src,                                              // src addr
+        k_part_idx * k0_part_len / BLOCK_SIZE,            // m start position (unit: fractal)
+        0,                                                // k start position (uint: fractal)
+        k0_round / BLOCK_SIZE,                            // m step (num of fractal along m-axis)
+        n_round / BLOCK_SIZE,                             // k step (num of fractal along k-axis)
+        k_round / BLOCK_SIZE,                             // src stride
+        n_round / BLOCK_SIZE,                             // dst stride
+        true                                              // transpose
+      );
     }
   }
 

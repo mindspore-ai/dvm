@@ -630,9 +630,9 @@ py::object RtKernelPy::Perf() {
   profiler.Reset();
   for (size_t i = 0; i < TEST_NUM; i++) {
     ResetStoreMemory(stores_);
-    profiler.RecordStart(nullptr);
+    profiler.RecordStart(runner_->Stream());
     runner_->Run(kernel_, workspace_, false);
-    profiler.RecordEnd(nullptr);
+    profiler.RecordEnd(runner_->Stream());
   }
   return py::make_tuple(py::float_(profiler.min_us_), py::float_(profiler.max_us_),
                         py::float_(profiler.total_us_ / float(TEST_NUM)));
@@ -670,7 +670,7 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
       ERROR_CHECK(kernel_.Launch(relocs.data(), relocs.size(), workspace_, runner_->Stream()));
     }
   }
-  aclrtSynchronizeStream(nullptr);
+  aclrtSynchronizeStream(runner_->Stream());
   mgr.ProfStop();
   return py::none();
 }

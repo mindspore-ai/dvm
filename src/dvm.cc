@@ -560,7 +560,9 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
     case KernelType::kVector: {
       bool dynamic = flags & KernelFlag::kDynamic;
       if (flags & KernelFlag::kSpeculate) {
-        if (dynamic) {
+        if (flags & KernelFlag::kPrivate1) {
+          kernel = new SpecVecKernel(flags);
+        } else if (dynamic) {
           kernel = new SpecVector<true>();
         } else {
           kernel = new SpecVector<false>();
@@ -1057,7 +1059,11 @@ void Kernel::SequenceAdd(KernelType type, uint32_t flags) {
   static_cast<SequenceKernel *>(kernel_)->AddStage(kernel);
 }
 
-void Kernel::SpecNext() { static_cast<_SpecVector *>(kernel_)->Next(); }
+void Kernel::SpecNext() {
+  if (!(kernel_->Flags() & KernelFlag::kPrivate1)) {
+    static_cast<_SpecVector *>(kernel_)->Next();
+  }
+}
 
 IntArrayRef *Kernel::GetShape(NDObject *op) { return op->shape_ref_; }
 

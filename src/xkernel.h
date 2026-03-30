@@ -199,6 +199,34 @@ class StagesKernel : public VKernel {
   StagesKernel(uint32_t flags = 0) : VKernel(KernelType::kSequence, flags), builder_(this), code_wrap_(this) {}
   ~StagesKernel() override;
 
+  struct Stage {
+    explicit Stage(VKernel *k) : kernel(k) {}
+    VKernel *kernel;
+    int64_t ws_size{-1};
+    int64_t ws_offset{-1};
+    std::vector<std::pair<NDAccess *, NDAccess *>> ios;
+
+    void AddIO(NDAccess *io, NDAccess *store = nullptr) { ios.emplace_back(io, store); }
+    void StageStore(NDAccess *store) {
+      store->SetFlag(OBJ_FLAG_STAGE_IO);
+      ios.emplace_back(store, nullptr);
+    }
+    void StageLoad(NDAccess *load, NDAccess *store) {
+      load->SetFlag(OBJ_FLAG_STAGE_IO);
+      ios.emplace_back(load, store);
+    }
+    void Reset() {
+      ws_size = -1;
+      ws_offset = -1;
+      ios.clear();
+    }
+  };
+  void Reset() {
+    stages_.clear();
+    code_.Clear();
+  }
+  void AppendStage(Stage *stage) { stages_.push_back(stage); }
+
   VKernel *Current() const { return stages_.back()->kernel; }
   VKernel *KernelAt(size_t idx) const { return stages_[idx]->kernel; }
 
@@ -239,22 +267,6 @@ class StagesKernel : public VKernel {
 
   uint64_t AllocWorkspace();
 
-  struct Stage {
-    explicit Stage(VKernel *k) : kernel(k) {}
-    VKernel *kernel;
-    int64_t ws_size{-1};
-    int64_t ws_offset{-1};
-    std::vector<std::pair<NDAccess *, NDAccess *>> ios;
-
-    void StageStore(NDAccess *store) {
-      store->SetFlag(OBJ_FLAG_STAGE_IO);
-      ios.emplace_back(store, nullptr);
-    }
-    void StageLoad(NDAccess *load, NDAccess *store) {
-      load->SetFlag(OBJ_FLAG_STAGE_IO);
-      ios.emplace_back(load, store);
-    }
-  };
   std::vector<Stage *> stages_;
   StageCodeWrap code_wrap_;
   friend StageCodeWrap;

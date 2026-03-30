@@ -1192,7 +1192,10 @@ void VKernelS::BrokerInit() {
 
 class DomainUnifier {
  public:
-  DomainUnifier(std::vector<NDObject *> &objects) : objects_(objects) {
+  DomainUnifier(std::vector<NDObject *> &objects, bool no_stuff = false) : objects_(objects) {
+    if (no_stuff) {
+      return;
+    }
     // TODO: move to stuff ops..
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
       auto op = *it;
@@ -1205,7 +1208,7 @@ class DomainUnifier {
     }
   }
 
-  bool Process(ReshapeOp *op) {
+  bool Process(ReshapeOp *op, bool forward_only = false) {
     ReshapeOp::ChangeRange range;
     DimArray update;
     auto gen_update = [&update](const DimArray &src, int begin, int size) {
@@ -1221,7 +1224,7 @@ class DomainUnifier {
       } else if (range.in_size == 0) {
         ExpandDim(op->lhs_->prop_id_, range.begin, range.size);
         range.begin += range.size;
-      } else if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size)) {
+      } else if (auto prop = op->lhs_->prop_id_; !forward_only && AffineCheck(prop, range.begin, range.in_size)) {
         gen_update(op->nd_.data->dims, range.begin, range.size);
         ReshapeRange(prop, range.begin, range.in_size, update);
         range.begin += range.size;
@@ -1479,7 +1482,7 @@ void VectorKernel::Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tr
 
 VKernelS::~VKernelS() {
   delete stage_kernel_;
-  for (auto &op : build_ops_) {
+  for (auto op : build_ops_) {
     delete op;
   }
 }
@@ -1742,4 +1745,442 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
 
 template class SpecVector<false>;
 template class SpecVector<true>;
+
+struct SpecVecStage : public StagesKernel::Stage {
+  SpecVecStage(uint32_t flags, SpecVecContext &ctx) : StagesKernel::Stage(&spec_k_), spec_k_(flags, ctx) {}
+  SpecVecBase spec_k_;
+};
+
+SpecVecContext::~SpecVecContext() {
+  if (stage_k_) {
+    stage_k_->Reset();
+    delete stage_k_;
+  }
+  for (auto s : stage_pool_) {
+    delete s;
+  }
+  for (auto op : spec_ops_) {
+    delete op;
+  }
+}
+
+uint64_t SpecVecBase::CodeGen() { return DoCodeGenInner(g_system.CoreNum()); }
+
+bool SpecVecBase::SpecBuild() {
+  if (fall_opt_ & FALL_RESHAPE) {
+    fall_opt_ &= ~FALL_RESHAPE;
+    if (ReshapeSpec()) {
+      SplitBuild();
+      return false;
+    }
+  }
+  // TODO: Optimize
+  BuildDomain();
+  PrepareTiling();
+  tile_limit_ = -1;
+  if (fall_opt_ & FALL_REDUCE) {
+    fall_opt_ &= ~FALL_REDUCE;
+    if (ReduceSpec()) {
+      SplitBuild();
+      return false;
+    }
+  }
+  if (fall_opt_ & FALL_BROADCAST) {
+    fall_opt_ &= ~FALL_BROADCAST;
+    if (BroadcastSpec()) {
+      SplitBuild();
+      return false;
+    }
+  }
+  return true;
+}
+
+void SpecVecBase::SplitPlan(size_t cut_begin) {
+  auto &stack = ctx_.spec_ops_;
+  uint64_t cut_area_mask = 0;
+  size_t cut_end = stack.size();
+  for (size_t c = cut_end; c > cut_begin; --c) {
+    auto cut_op = stack[c - 1];
+    auto meta = GetMeta(cut_op);
+    if (meta->aid != -1) {
+      meta->UnCut();
+      continue;
+    }
+    auto aid = ctx_.AssignArea();
+    stack.push_back(cut_op);
+    meta->aid = aid;
+    cut_area_mask |= 1ull << aid;
+    while (stack.size() > cut_end) {
+      auto top = stack.back();
+      stack.pop_back();
+      top->ForInput([this, aid, &stack](NDObject *in) {
+        auto in_meta = GetMeta(in);
+        if (in_meta->aid == -1) {
+          stack.push_back(in);
+          in_meta->aid = aid;
+        } else if (auto in_aid = ctx_.RootArea(in_meta->aid); in_aid != aid) {
+          ctx_.MergeArea(aid, in_aid);
+        }
+      });
+    }
+  }
+  for (size_t store_idx = load_num_; store_idx < static_ops_.size(); ++store_idx) {
+    auto store = static_ops_[store_idx];
+    auto meta = GetMeta(store);
+    ASSERT(meta->aid == -1);
+    if (auto input = GetMeta(store->lhs_); input->IsCut()) {
+      meta->aid = input->aid;
+      continue;
+    }
+    auto aid = ctx_.AssignArea();
+    stack.push_back(store);
+    meta->aid = aid;
+    uint64_t merge_mask = 0;
+    uint64_t unmerge_mask = 0;
+    while (stack.size() > cut_end) {
+      auto top = stack.back();
+      stack.pop_back();
+      top->ForInput([this, aid, cut_area_mask, &unmerge_mask, &merge_mask, &stack](NDObject *in) {
+        auto in_meta = GetMeta(in);
+        if (in_meta->aid == -1) {
+          stack.push_back(in);
+          in_meta->aid = aid;
+        } else if (auto in_aid = ctx_.RootArea(in_meta->aid); in_aid != aid) {
+          if ((cut_area_mask & (1ull << in_aid)) == 0) {
+            ctx_.MergeArea(aid, in_aid);
+          } else if (in_meta->IsCut()) {
+            unmerge_mask |= 1ull << in_aid;
+          } else {
+            merge_mask |= 1ull << in_aid;
+          }
+        }
+      });
+    }
+    merge_mask &= ~unmerge_mask;
+    if (merge_mask) {
+      cut_area_mask |= 1ull << aid;
+      while (merge_mask) {
+        auto cut_aid = 63 - __builtin_clzl(merge_mask);
+        merge_mask &= ~(1ull << cut_aid);
+        ctx_.MergeArea(cut_aid, aid);
+        aid = cut_aid;
+      }
+    }
+  }
+}
+
+bool SpecVecBase::BroadcastSpec() {
+  constexpr int64_t MIN_TILE_NUM = 8192;
+  constexpr int64_t MIN_IO_NUM = 3;
+  ctx_.ResetSpec();
+  size_t broadcast_begin = ctx_.spec_ops_.size();
+  for (auto op : objects_) {
+    InitMeta(op);
+    if (op->obj_id_ == ObjectType::kBroadcastTo && !op->lhs_->IsLoad() && !GetMeta(op->lhs_)->IsCut()) {
+      ctx_.spec_ops_.push_back(op);
+      GetMeta(op->lhs_)->SetCut();
+    }
+  }
+  if (ctx_.spec_ops_.size() == broadcast_begin || LazyTileLimit() * MIN_TILE_NUM < tile_size_) {
+    return false;
+  }
+  size_t cut_begin = ctx_.spec_ops_.size();
+  for (size_t i = broadcast_begin; i < cut_begin; ++i) {
+    ctx_.spec_ops_.push_back(ctx_.spec_ops_[i]->lhs_);
+  }
+  SplitPlan(cut_begin);
+  for (auto op : static_ops_) {
+    if (auto aid = GetMeta(op)->aid; aid >= 0) {
+      ctx_.areas_[ctx_.RootArea(aid)].u32 += 1;
+    }
+  }
+  bool split = false;
+  for (size_t i = broadcast_begin; i < cut_begin; ++i) {
+    auto op = ctx_.spec_ops_[i];
+    auto aid = ctx_.RootArea(GetMeta(op)->aid);
+    auto cut_aid = ctx_.RootArea(GetMeta(op->lhs_)->aid);
+    if (cut_aid != aid) {
+      if (ctx_.areas_[cut_aid].u32 < MIN_IO_NUM) {
+        ctx_.MergeArea(cut_aid, aid);
+      } else {
+        split = true;
+      }
+    }
+  }
+  ctx_.spec_ops_.resize(broadcast_begin);
+  return split;
+}
+
+bool SpecVecBase::ReduceSpec() {
+  ctx_.ResetSpec();
+  const_cast<NDSpaceData *>(dom_->nd_.data)->UpdateStride(lead_align_);
+  size_t cut_begin = ctx_.spec_ops_.size();
+  for (auto op : objects_) {
+    InitMeta(op);
+    if (op->IsSimd() && op->obj_id_ != ObjectType::kReduce) {
+      op->ForInput([this](NDObject *in) {
+        if (in->obj_id_ == ObjectType::kReduce && !GetMeta(in)->IsCut()) {
+          auto size = dom_->nd_.stride(static_cast<ReduceOp *>(in)->EndDim());
+          if (size > LazyTileLimit() || size == dom_->nd_.stride_back()) {
+            ctx_.spec_ops_.push_back(in);
+            GetMeta(in)->SetCut();
+          }
+        }
+      });
+    }
+  }
+  if (ctx_.spec_ops_.size() == cut_begin) {
+    return false;
+  }
+  SplitPlan(cut_begin);
+  for (auto i = cut_begin; i < ctx_.spec_ops_.size(); ++i) {
+    if (auto meta = GetMeta(ctx_.spec_ops_[i]); !meta->IsCut()) {
+      ctx_.areas_[ctx_.RootArea(meta->aid)].ext_opt = FALL_REDUCE;
+    }
+  }
+  ctx_.spec_ops_.resize(cut_begin);
+  return true;
+}
+
+bool SpecVecBase::ReshapeSpec() {
+  ctx_.ResetSpec();
+  auto &spec_ops = ctx_.spec_ops_;
+  size_t reshape_begin = spec_ops.size();
+  for (auto op : objects_) {
+    InitMeta(op);
+    if (auto input = op->lhs_;
+        op->obj_id_ == ObjectType::kReshape && !GetMeta(input)->IsCut() && !(input->nd_.dims() == op->nd_.dims())) {
+      spec_ops.push_back(op);
+      GetMeta(input)->SetCut();
+    }
+  }
+  size_t cut_begin = spec_ops.size();
+  if (cut_begin == reshape_begin) {
+    return false;
+  }
+  for (size_t i = reshape_begin; i < cut_begin; ++i) {
+    spec_ops.push_back(spec_ops[i]->lhs_);
+  }
+  SplitPlan(cut_begin);
+  for (auto op : objects_) {
+    op->prop_id_ = ctx_.RootArea(GetMeta(op)->aid);
+  }
+  DomainUnifier affine(objects_, true);
+  auto &areas = ctx_.areas_;
+  bool fail_touch = false;
+  uint64_t fail_affine = false;
+  for (size_t i = reshape_begin; i < cut_begin; ++i) {
+    auto op = static_cast<ReshapeOp *>(spec_ops[i]);
+    if (op->prop_id_ == op->lhs_->prop_id_) {
+      areas[op->prop_id_].u32 = 1;
+      fail_touch = true;
+    } else if (!affine.Process(op, areas[op->lhs_->prop_id_].u32)) {
+      fail_affine = true;
+    }
+  }
+  if (fail_affine) {
+    for (size_t i = reshape_begin; i < cut_begin; ++i) {
+      auto op = spec_ops[i];
+      auto aid = ctx_.RootArea(GetMeta(op)->aid);
+      if (op->lhs_->nd_.dims() == op->nd_.dims()) {
+        if (auto in_aid = ctx_.RootArea(GetMeta(op->lhs_)->aid); in_aid != aid) {
+          ctx_.MergeArea(in_aid, aid);
+        }
+      } else {
+        ctx_.areas_[aid].ext_opt = FALL_RESHAPE;
+      }
+    }
+    spec_ops.resize(reshape_begin);
+    return true;
+  }
+  spec_ops.resize(reshape_begin);
+  return fail_touch ? ReshapeSpec() : false;
+}
+
+namespace {
+struct _SpecSwapLoad : public NDLoad {
+  _SpecSwapLoad(NDAccess *store) : NDLoad(store->addr_.gm, store->shape_ref_, store->type_id_), store_(store) {}
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    ndd_.dims = store_->nd_.dims();
+    tail_dim_ = -1;
+    tail_size_ = 0;
+    round_tile_.resize(0);
+  }
+  NDAccess *store_;
+};
+
+struct _ReloadCloner : public CloneHelper {
+  IntArrayRef *GetClone(IntArrayRef *shape) override { return shape; }
+  ScalarRef *GetClone(ScalarRef *scalar) override { return scalar; }
+  NDObject *GetClone(NDObject *op) override { return op; }
+  void SetClone(NDObject *op, NDObject *clone) override {}
+};
+}
+
+void SpecVecBase::SplitBuild() {
+  if (ctx_.stage_k_ == nullptr) {
+    ctx_.stage_k_ = new StagesKernel();
+  } else if (ctx_.stage_size_ == 0) {
+    ctx_.stage_k_->Reset();
+  }
+  size_t stage_begin = ctx_.stage_size_;
+  for (int aid = 0; aid < ctx_.area_size_; ++aid) {
+    if (auto &area = ctx_.areas_[aid]; area.parent == aid) {
+      SpecVecStage *stage;
+      if (auto stage_size = ctx_.stage_size_++; stage_size < ctx_.stage_pool_.size()) {
+        stage = ctx_.stage_pool_[stage_size];
+        stage->Reset();
+      } else {
+        stage = new SpecVecStage(flags_, ctx_);
+        ctx_.stage_pool_.push_back(stage);
+      }
+      stage->spec_k_.Reset();
+      stage->spec_k_.fall_opt_ = fall_opt_ | area.ext_opt;
+      area.stage = stage;
+    }
+  }
+  for (auto op : objects_) {
+    auto out_aid = GetMeta(op)->aid;
+    out_aid = ctx_.RootArea(out_aid);
+    auto stage = ctx_.areas_[out_aid].stage;
+    if (op->IsLoad()) {
+      stage->AddIO(static_cast<NDAccess *>(op),
+                   op->CheckFlag(OBJ_FLAG_STAGE_IO) ? static_cast<_SpecSwapLoad *>(op)->store_ : nullptr);
+    } else if (op->IsStore()) {
+      ASSERT(ctx_.RootArea(GetMeta(op->lhs_)->aid) == out_aid);
+      stage->AddIO(static_cast<NDAccess *>(op));
+    } else {
+        op->ForInput([this, out_aid, stage](NDObject *&in) {
+        if (auto in_aid = ctx_.RootArea(GetMeta(in)->aid); in_aid != out_aid) {
+          if (auto recent = GetMeta(in)->recent_load; recent < OpMeta::IO_END) {
+            auto load = static_cast<NDAccess *>(ctx_.spec_ops_[recent]);
+            if (GetMeta(load)->aid == out_aid) {
+              in = load;
+              return;
+            }
+          }
+          if (in->IsLoad()) {
+            _ReloadCloner cloner;
+            auto clone = in->Clone(cloner);
+            GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+            ctx_.spec_ops_.push_back(clone);
+            clone->Normalize(stage->spec_k_.objects_);
+            stage->spec_k_.SplitAppend(clone);
+            stage->StageLoad(static_cast<NDAccess *>(clone), static_cast<NDAccess *>(in));
+            GetMeta(clone)->aid = out_aid;
+            in = clone;
+          } else {
+            auto in_stage = ctx_.areas_[in_aid].stage;
+            auto store_idx = GetMeta(in)->store;
+            auto store = store_idx < OpMeta::IO_END ? static_cast<NDAccess *>(ctx_.spec_ops_[store_idx]) : nullptr;
+            if (store == nullptr) {
+              store = new NDStore(in);
+              GetMeta(in)->store = ctx_.spec_ops_.size();
+              ctx_.spec_ops_.push_back(store);
+              store->Normalize(in_stage->spec_k_.objects_);
+              in_stage->spec_k_.SplitAppend(store);
+              in_stage->StageStore(store);
+            }
+            auto load = new _SpecSwapLoad(store);
+            GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+            ctx_.spec_ops_.push_back(load);
+            load->Normalize(stage->spec_k_.objects_);
+            stage->spec_k_.SplitAppend(load);
+            stage->StageLoad(load, store);
+            ctx_.tracker_.Record(&in);
+            GetMeta(load)->aid = out_aid;
+            in = load;
+          }
+        }
+      });
+    }
+    if (op->SharedNdd() && op->nd_.data != op->lhs_->nd_.data) {
+      ctx_.tracker_.Record((NDObject **)(&op->nd_.data));
+      op->nd_.data = op->lhs_->nd_.data;
+    }
+    stage->spec_k_.SplitAppend(op);
+  }
+  auto stage_end = ctx_.stage_size_;
+  for (size_t i = stage_begin; i < stage_end; ++i) {
+    auto s = ctx_.stage_pool_[i];
+    if (s->spec_k_.SpecBuild()) {
+      ctx_.stage_k_->AppendStage(s);
+    }
+  }
+}
+
+void SpecVecBase::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (!tile_num_) {
+    tile_num_ = 1;
+    VKernelS::Dump(oss, indent);
+    tile_num_ = 0;
+  } else {
+    VKernelS::Dump(oss, indent);
+  }
+}
+
+void SpecVecKernel::Append(NDObject *obj) {
+  if (obj->obj_id_ == ObjectType::kReshape) {
+    fall_opt_init_ |= FALL_RESHAPE;
+  } else if (obj->obj_id_ == ObjectType::kReduce) {
+    obj->insn_ = nullptr;
+  } else if (obj->rhs_ != nullptr || obj->obj_id_ == ObjectType::kBroadcastTo) {
+    fall_opt_init_ |= FALL_BROADCAST;
+  }
+  if (obj->IsSimd()) {
+    obj->ForInput([this](NDObject *&in) {
+      if (in->obj_id_ == ObjectType::kReduce) {
+        fall_opt_init_ |= FALL_REDUCE;
+        if (auto red = static_cast<ReduceOp *>(in); !red->KeepDims()) {
+          if (red->insn_ == nullptr) {
+            in = new ReshapeOp(red, red->shape_ref_);
+            VKernelS::Append(in);
+            red->insn_ = reinterpret_cast<uint64_t *>(in);
+            fall_opt_init_ |= FALL_RESHAPE;
+          } else {
+            in = reinterpret_cast<NDObject *>(red->insn_);
+          }
+        }
+      }
+    });
+  }
+  VKernelS::Append(obj);
+}
+
+uint64_t SpecVecKernel::CodeGen() {
+  context_.Reset();
+  Clear();
+  fall_opt_ = fall_opt_init_;
+  if (static_ops_.empty()) {
+    StaticInit(build_ops_);
+    // TODO: dead code elim
+    if ((fall_opt_init_ & FALL_BROADCAST) && static_ops_.size() < 4) {
+      fall_opt_init_ &= ~FALL_BROADCAST;
+    }
+  }
+  for (auto op : build_ops_) {
+    op->Normalize(objects_);
+    objects_.push_back(op);
+  }
+  if (SpecBuild()) {
+    return SpecVecBase::CodeGen();
+  }
+  auto ws = context_.stage_k_->CodeGen();
+  code_ = std::move(context_.stage_k_->code_);
+  return ws;
+}
+
+void SpecVecKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (context_.stage_size_) {
+    context_.stage_k_->Dump(oss, indent);
+  } else {
+    SpecVecBase::Dump(oss, indent);
+  }
+}
+
+void SpecVecKernel::Clone(VKernel *base, CloneHelper &helper) {
+  context_.tracker_.Recover();
+  static_cast<SpecVecKernel*>(base)->fall_opt_init_ = fall_opt_init_;
+  VKernelS::Clone(base, helper);
+}
 }  // namespace dvm

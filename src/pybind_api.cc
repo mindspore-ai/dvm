@@ -112,6 +112,10 @@ std::pair<KernelType, uint32_t> ParseKernelType(const std::string &ker_type) {
       flags |= KernelFlag::kUnifyWS;
     } else if (flag_name == "spec") {
       flags |= KernelFlag::kSpeculate;
+    } else if (flag_name == "priv1") {
+      flags |= KernelFlag::kPrivate1;
+    } else if (flag_name == "priv2") {
+      flags |= KernelFlag::kPrivate2;
     } else {
       DvmException("kernel flag error");
     }

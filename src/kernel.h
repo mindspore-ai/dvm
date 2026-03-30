@@ -326,6 +326,141 @@ class SpecVector : public _SpecVector {
   uint64_t FallCodeGen();
 };
 
+class StagesKernel;
+class SpecVecStage;
+class SpecVecContext {
+ public:
+  SpecVecContext() = default;
+  ~SpecVecContext();
+
+  void Reset() {
+    stage_size_ = 0;
+    for (auto op : spec_ops_) {
+      delete op;
+    }
+    spec_ops_.clear();
+    tracker_.RecoverClear();
+  }
+  void ResetSpec() { area_size_ = 0; }
+
+  int AssignArea() {
+    if (int size = static_cast<int>(areas_.size()); area_size_ == size) {
+      areas_.resize(size + 8);
+    }
+    auto aid = area_size_++;
+    areas_[aid].parent = aid;
+    areas_[aid].next = -1;
+    areas_[aid].u64 = 0;
+    return aid;
+  }
+  void MergeArea(int aid, int src_aid) {
+    auto next = areas_[aid].next;
+    areas_[aid].next = src_aid;
+    auto tail = &areas_[src_aid];
+    while (tail->next >= 0) {
+      tail->parent = aid;
+      tail = &areas_[tail->next];
+    }
+    tail->parent = aid;
+    tail->next = next;
+  }
+  int RootArea(int aid) const {
+    ASSERT(aid >= 0);
+    return areas_[aid].parent;
+  }
+
+  struct Area {
+    int parent;
+    int next;
+    union {
+      uint64_t u64;
+      struct {
+        uint32_t ext_opt;
+        uint32_t u32;
+      };
+      SpecVecStage *stage;
+    };
+  };
+
+  std::vector<Area> areas_;
+  int area_size_{0};
+  size_t stage_size_{0};
+  StagesKernel *stage_k_{nullptr};
+  std::vector<SpecVecStage *> stage_pool_;
+  std::vector<NDObject *> spec_ops_;
+  GraphTracker tracker_;
+};
+
+class SpecVecBase : public VKernelS {
+ public:
+  using Area = SpecVecContext::Area;
+  SpecVecBase(uint32_t flags, SpecVecContext &ctx) : VKernelS(flags), ctx_(ctx) {}
+  uint64_t CodeGen() override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+
+  void Reset() {
+    min_type_ = kDataTypeEnd;
+    max_type_ = 0;
+    objects_.clear();
+    code_.Clear();
+    load_num_ = 0;
+    static_ops_.clear();
+  }
+
+ protected:
+  bool SpecBuild();
+  bool BroadcastSpec();
+  bool ReduceSpec();
+  bool ReshapeSpec();
+
+  struct OpMeta {
+    void SetCut() { cut_mark = CUT_MARK; }
+    void UnCut() { cut_mark = IO_END; }
+    bool IsCut() const { return cut_mark == CUT_MARK; }
+    int32_t aid;
+    union {
+      uint16_t store;
+      uint16_t cut_mark;
+    };
+    uint16_t recent_load;
+    static constexpr uint16_t IO_END = 0xfffu;
+    static constexpr uint16_t CUT_MARK = IO_END + 1;
+  };
+  void InitMeta(NDObject *op) { op->insn_ = reinterpret_cast<uint64_t *>(-1); }
+  OpMeta *__restrict__ GetMeta(NDObject *op) const { return reinterpret_cast<OpMeta *__restrict__ >(&op->insn_); }
+
+  int64_t LazyTileLimit() { return tile_limit_ >= 0 ? tile_limit_ : tile_limit_ = TileSizeLimit(Analyze()); }
+
+  void SplitPlan(size_t cut_begin);
+  void SplitAppend(NDObject *op) {
+    op->index_ = objects_.size();
+    objects_.push_back(op);
+    StaticAppend(op);
+  }
+  void SplitBuild();
+
+  SpecVecContext &ctx_;
+  int64_t tile_limit_;
+  uint32_t fall_opt_;
+  static constexpr uint32_t FALL_BROADCAST = 1;
+  static constexpr uint32_t FALL_REDUCE = 2;
+  static constexpr uint32_t FALL_RESHAPE = 4;
+};
+
+class SpecVecKernel : public SpecVecBase {
+ public:
+  SpecVecKernel(uint32_t flags) : SpecVecBase(flags, context_) {}
+
+  void Append(NDObject *obj) override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Clone(VKernel *base, CloneHelper &helper) override;
+  uint64_t CodeGen() override;
+
+ protected:
+  uint32_t fall_opt_init_{0};
+  SpecVecContext context_;
+};
+
 class DumpRefHelper {
  public:
   explicit DumpRefHelper(std::ostringstream &oss) : oss_(oss) {}

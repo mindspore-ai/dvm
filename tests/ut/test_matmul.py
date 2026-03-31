@@ -81,6 +81,7 @@ def test_matmul_split_k(m, n, k, trans):
     [[3, 4, 256, 256], [256, 256]],  # differnet dim, broadcast B
     [[1, 4, 256, 256], [3, 1, 256, 256]],  # broadcast both A and B
     [[4, 1, 10, 256], [256, 256]],
+    [[24, 1, 4, 4], [4, 4096]],
 ])
 def test_batchmatmul(shape_a, shape_b):
     t = Tester("mix")

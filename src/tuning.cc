@@ -82,21 +82,21 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
   auto bias_size = mm->bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_max = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[mm->lhs_->type_id_];
   auto core_num = g_system.CoreNum(CoreType::kAIC);
-  uint32_t round_m = RoundUp<uint32_t>(mm->m_align_, BLOCK_SIZE);
-  uint32_t round_n = RoundUp<uint32_t>(mm->n_align_, BLOCK_SIZE);
-  uint32_t round_k = RoundUp<uint32_t>(mm->k_align_, BLOCK_SIZE);
+  uint32_t round_m = RoundUp<uint32_t>(mm->m_real_, BLOCK_SIZE);
+  uint32_t round_n = RoundUp<uint32_t>(mm->n_real_, BLOCK_SIZE);
+  uint32_t round_k = RoundUp<uint32_t>(mm->k_real_, BLOCK_SIZE);
+  uint32_t align_max = 2048 / ITEM_SIZE[mm->lhs_->type_id_];
   uint32_t block_dim = 0;
   auto tile_select = [&](uint32_t x, uint32_t y) {
-    // 1. get m0, n0, k0
     uint32_t m0, n0, k0;
     if (!mm->trans_a_) {
       k0 = x;
       n0 = y;
-      if (k0 > round_k || n0 > round_n) return;
+      if (k0 > round_k || n0 > round_n || l1_max <= k0 * n0) return;
       uint64_t mx = std::min(l0c_max / n0, (l1_max - k0 * n0) / k0);
       m0 = RoundDown<uint32_t>(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * n0 < l1_max) && (m0 > 0));
-      if (m0 > round_m) m0 = round_m;
+      m0 = std::min({m0, align_max, round_m});
     } else if (!mm->trans_b_) {  // trans_a && !trans_b_
       m0 = x;
       n0 = y;
@@ -104,17 +104,22 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
       uint64_t kx = l1_max / (m0 + n0);
       k0 = RoundDown<uint32_t>(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       if (m0 * n0 > l0c_max || k0 == 0) return;
-      if (k0 > round_k) k0 = round_k;
+      k0 = std::min({k0, align_max, round_k});
     } else {  // trans_a && trans_b_
       k0 = x;
       m0 = y;
-      if (k0 > round_k || m0 > round_m) return;
+      if (k0 > round_k || m0 > round_m || l1_max <= k0 * m0) return;
       uint64_t nx = std::min(l0c_max / m0, (l1_max - k0 * m0) / k0);
       n0 = RoundDown<uint32_t>(nx, nx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * m0 < l1_max) && (n0 > 0));
-      if (n0 > round_n) n0 = round_n;
+      n0 = std::min({n0, align_max, round_n});
     }
-    // 2. get core_loop, block_dim
+    if (n0 * k0 + m0 * k0 > l1_max) {
+      return;
+    }
+    if ((n0 > BLOCK_SIZE && n0 / 2 >= mm->n_real_) || (m0 > BLOCK_SIZE && m0 / 2 >= mm->m_real_)) {
+      return;
+    }
     uint32_t m_loop = CeilDiv(op->m_real, m0);
     uint32_t n_loop = CeilDiv(op->n_real, n0);
     uint32_t core_loop = m_loop * n_loop * mm->batch_c0_ * mm->batch_c1_;
@@ -135,7 +140,6 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
       Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
   };
-  uint32_t align_max = 512 / ITEM_SIZE[mm->lhs_->type_id_];
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
     for (uint32_t y = align_max; y >= x; y >>= 1) {
       tile_select(x, y);
@@ -262,16 +266,18 @@ void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<Tuning
   auto bias_size = op->bias_ ? MAX_BIAS_SIZE : 0;
   auto l1_max = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[op->lhs_->type_id_];
   auto core_num = g_system.CoreNum(CoreType::kAIC);
-  uint32_t round_m = RoundUp<uint32_t>(op->m_align_, BLOCK_SIZE);
-  uint32_t round_n = RoundUp<uint32_t>(op->n_align_, BLOCK_SIZE);
-  uint32_t round_k = RoundUp<uint32_t>(op->k_align_, BLOCK_SIZE);
+  uint32_t round_m = RoundUp<uint32_t>(op->m_real_, BLOCK_SIZE);
+  uint32_t round_n = RoundUp<uint32_t>(op->n_real_, BLOCK_SIZE);
+  uint32_t round_k = RoundUp<uint32_t>(op->k_real_, BLOCK_SIZE);
+  uint32_t align_max = 2048 / ITEM_SIZE[op->lhs_->type_id_];
   uint32_t block_dim = 0;
   auto tile_select = [&](uint32_t m0, uint32_t n0) {
     if (m0 > round_m || n0 > round_n) return;
     uint32_t kx = l1_max / (m0 + n0);
     uint32_t k0 = RoundDown<uint32_t>(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
     if (k0 == 0) return;
-    if (k0 > round_k) k0 = round_k;
+    k0 = std::min({k0, align_max, round_k});
+    if (m0 * n0 > l0c_max || n0 * k0 + m0 * k0 > l1_max) return;
     // 2. get core_loop, block_dim
     uint32_t m_loop = CeilDiv(code->m_real, m0);
     uint32_t n_loop = CeilDiv(code->n_real, n0);
@@ -284,10 +290,8 @@ void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<Tuning
     space.push_back(
       new TuningInfo(m0, n0, k0, vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_zN, cnt), core_loop, block_dim));
   };
-  uint32_t align_max = 512 / ITEM_SIZE[op->lhs_->type_id_];
   for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
     for (uint32_t y = align_max; y >= x; y >>= 1) {
-      if (x * y > l0c_max) continue;
       tile_select(x, y);
       if (x != y) {
         tile_select(y, x);

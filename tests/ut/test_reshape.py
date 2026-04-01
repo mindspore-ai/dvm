@@ -316,3 +316,22 @@ def test_matmul_post_fusion_sload(shape_a, shape_b, shape_c):
     f = t.add(e, cc)
     t.store_expect(f, np.reshape(np_c, shape_c) + cx, 2e-3)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b, shape_c, shape_d', [
+    ([512, 1024], [1024, 768], [512, 1, 768], [768]),
+    ([512, 1024], [1024, 768], [4, 128, 768], [768]),
+]) 
+def test_matmul_post_fusion_broadcast(shape_a, shape_b, shape_c, shape_d):
+    t = Tester("mix")
+    ax = Tester.fast_random_normal(0, 0.01, shape_a).astype(np.float16)
+    bx = Tester.fast_random_normal(0, 0.01, shape_b).astype(np.float16)
+    dx = Tester.fast_random_normal(0, 0.01, shape_d).astype(np.float16)
+    x0 = t.matmul(t.load(ax), t.load(bx), False, False)
+    x1 = t.reshape(x0, shape_c)
+    x2 = t.add(x1, t.load(dx))
+    expect = np.reshape(np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16), shape_c) + dx
+    t.store_expect(x2, expect, 2e-3)
+    assert (t.run_check())

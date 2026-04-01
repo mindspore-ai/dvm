@@ -1072,8 +1072,5 @@ const char *Kernel::Das() const {
   return das.c_str();
 }
 
-Config &Config::Instance() {
-  g_system.Init();
-  return g_system;
-}
+Config &Config::Instance() { return g_system; }
 }  // namespace dvm

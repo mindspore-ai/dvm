@@ -1244,17 +1244,26 @@ class DomainUnifier {
     range.depth = range_size;
     range.affine = PropRange::ELEMWISE;
     for (auto op : objects_) {
-      if (op->prop_id_ != prop || op->SharedNdd()) continue;
-      if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
-        return false;
-      }
-      op->FoldProp(range);
-      if (range.depth != range_size) {
-        return false;
-      }
-      if (out_size == 0) {
-        for (auto d = range.base; d < range.base + range_size; ++d) {
-          if (op->nd_[d] != 1) return false;
+      if (op->prop_id_ != prop) continue;
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        int dim_size = ndd->dims.size();
+        if (range_begin >= dim_size) {
+          continue;
+        }
+        if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
+          return false;
+        }
+        if (range_size > 0) {
+          if (out_size > 0) {
+            op->FoldProp(range);
+            if (range.depth != range_size) {
+              return false;
+            }
+          } else {
+            for (auto d = range_begin; d < std::min(range_begin + range_size, dim_size); ++d) {
+              if (ndd->dims[d] != 1) return false;
+            }
+          }
         }
       }
       if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {

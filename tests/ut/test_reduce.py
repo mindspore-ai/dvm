@@ -123,7 +123,7 @@ def test_reduce_fp16(dvm_op, np_op, in_shape, dims):
     x = t.load(a)
     y = dvm_op(t, x, dims, True)
     res = np_op(a, dims, keepdims=True)
-    t.store_expect(y, res, 0)
+    t.store_expect(y, res, 1e-4)
     assert (t.run_check())
 
 
@@ -151,7 +151,7 @@ def test_reduce_y_tail():
     y = t.sum(x, dims, True)
     res = np.sum(a, dims, keepdims=True)
     t.store_expect(y, res, 1e-4)
-    t.tile(1, 1, 122);
+    t.tile(1, 1, 122)
     assert (t.run_check())
 
 

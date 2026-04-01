@@ -1218,17 +1218,11 @@ class DomainUnifier {
       }
     };
     while (op->VisitChangeRange(range)) {
-      if (range.size == 0) {
-        ExpandDim(op->prop_id_, range.begin, range.in_size);
-        range.begin += range.in_size;
-      } else if (range.in_size == 0) {
-        ExpandDim(op->lhs_->prop_id_, range.begin, range.size);
-        range.begin += range.size;
-      } else if (auto prop = op->lhs_->prop_id_; !forward_only && AffineCheck(prop, range.begin, range.in_size)) {
+      if (auto prop = op->lhs_->prop_id_; !forward_only && AffineCheck(prop, range.begin, range.in_size, range.size)) {
         gen_update(op->nd_.data->dims, range.begin, range.size);
         ReshapeRange(prop, range.begin, range.in_size, update);
         range.begin += range.size;
-      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size)) {
+      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size)) {
         gen_update(op->lhs_->nd_.data->dims, range.begin, range.in_size);
         ReshapeRange(prop, range.begin, range.size, update);
         range.begin += range.in_size;
@@ -1245,21 +1239,35 @@ class DomainUnifier {
     return IsBroker(op) && op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) ? dim : -1;
   }
 
-  bool AffineCheck(int prop, int range_begin, int range_size) {
+  bool AffineCheck(int prop, int range_begin, int range_size, int out_size) {
     PropRange range;
     range.base = range_begin + range_size - 1;
     range.depth = range_size;
     range.affine = PropRange::ELEMWISE;
     for (auto op : objects_) {
-      if (op->prop_id_ != prop || op->SharedNdd()) continue;
-      if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
-        return false;
+      if (op->prop_id_ != prop) continue;
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        int dim_size = ndd->dims.size();
+        if (range_begin >= dim_size) {
+          continue;
+        }
+        if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
+          return false;
+        }
+        if (range_size > 0) {
+          if (out_size > 0) {
+            op->FoldProp(range);
+            if (range.depth != range_size) {
+              return false;
+            }
+          } else {
+            for (auto d = range_begin; d < std::min(range_begin + range_size, dim_size); ++d) {
+              if (ndd->dims[d] != 1) return false;
+            }
+          }
+        }
       }
-      op->FoldProp(range);
-      if (range.depth != range_size) {
-        return false;
-      }
-      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size)) {
+      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {
         return false;
       }
     }
@@ -1301,28 +1309,6 @@ class DomainUnifier {
       }
       if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0) {
         ReshapeRange(op->lhs_->prop_id_, rmap, range_size, update);
-      }
-      op->DimChanged();
-    }
-  }
-
-  void ExpandDim(int prop, int idx, int expand_size) {
-    for (auto op : objects_) {
-      if (op->prop_id_ != prop) continue;
-      if (auto ndd = op->Ndd(); ndd != nullptr) {
-        auto &dims = ndd->dims;
-        if (int dim_size = dims.size(); idx < dim_size) {
-          for (int i = dim_size - 1; i >= idx; --i) {
-            dims[i + expand_size] = dims[i];
-          }
-          for (int i = 0; i < expand_size; ++i) {
-            dims[idx + i] = 1;
-          }
-          dims.resize(dim_size + expand_size);
-        }
-      }
-      if (auto rmap = BrokerRemap(op, idx); rmap >= 0) {
-        ExpandDim(op->lhs_->prop_id_, rmap, expand_size);
       }
       op->DimChanged();
     }
@@ -1547,25 +1533,27 @@ _SpecVector::~_SpecVector() {
 }
 
 void _SpecVector::Append(NDObject *obj) {
-  obj->ForInput([this](NDObject *&in) {
-    if (in->obj_id_ == ObjectType::kReduce) {
-      auto red = static_cast<ReduceOp *>(in);
-      if (red->insn_ == nullptr) {
-        post_reduces_.push_back(in);
-        if (!red->KeepDims()) {
-          in = new ReshapeOp(red, red->shape_ref_);
-          VKernelS::Append(in);
-          in->index_ = stage_ids_.size();
-          stage_ids_.push_back(last_stage_);
+  if (obj->IsSimd()) {
+    obj->ForInput([this](NDObject *&in) {
+      if (in->obj_id_ == ObjectType::kReduce) {
+        auto red = static_cast<ReduceOp *>(in);
+        if (red->insn_ == nullptr) {
+          post_reduces_.push_back(in);
+          if (!red->KeepDims()) {
+            in = new ReshapeOp(red, red->shape_ref_);
+            VKernelS::Append(in);
+            in->index_ = stage_ids_.size();
+            stage_ids_.push_back(last_stage_);
+          }
+          red->insn_ = reinterpret_cast<uint64_t *>(in);
+        } else if (!red->KeepDims()) {
+          in = reinterpret_cast<NDObject *>(red->insn_);
         }
-        red->insn_ = reinterpret_cast<uint64_t *>(in);
-      } else if (!red->KeepDims()) {
-        in = reinterpret_cast<NDObject *>(red->insn_);
+      } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
+        stage_ids_[in->index_] = last_stage_;
       }
-    } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
-      stage_ids_[in->index_] = last_stage_;
-    }
-  });
+    });
+  }
   VKernelS::Append(obj);
   obj->index_ = stage_ids_.size();
   int sid;

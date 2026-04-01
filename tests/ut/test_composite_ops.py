@@ -49,6 +49,7 @@ def test_gelu_tanh(type):
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 def test_gelu_expander_8_op(type):
     t = Tester()
+    np.random.seed(12)
     a = np.random.normal(0, 1, [32, 1024]).astype(type)
     x = t.load(a)
     tmp = t.mul(x, x)

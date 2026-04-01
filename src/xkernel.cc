@@ -85,7 +85,6 @@ void CubeKernel::Append(NDObject *obj) {
 
 uint8_t *CubeKernel::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit) {
   ASSERT(cube_op_->output_ != nullptr);
-  ASSERT(cube_op_->bias_ == nullptr);
   vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_ptr);
   cube_op_->CodeGen(cube_code, tuner_);
   static_cast<NDAccess *>(cube_op_->lhs_)->addr_.Update(&cube_code->gm_a);

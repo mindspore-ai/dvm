@@ -274,6 +274,7 @@ void System::DoInit() {
   const unsigned char *g_vkernel_bin = nullptr;
   unsigned int g_vkernel_bin_len = 0;
   if (arch_ == kAiCore_C220) {
+    bt_size_ = 1024;
     ub_workspace_size_ = 512;
     g_access_func_offset_ = g_access_func_offset_c220;
     g_simd_func_offset_ = g_simd_func_offset_c220;
@@ -283,6 +284,7 @@ void System::DoInit() {
     l0c_size_ = 128 * 1024;
     local_mem_size_ = 192 * 1024 - ub_workspace_size_;
   } else if (arch_ == kAiCore_C310) {
+    bt_size_ = 4096;
     ub_workspace_size_ = 256;
     g_access_func_offset_ = g_access_func_offset_c310;
     g_simd_func_offset_ = g_simd_func_offset_c310;

@@ -2610,7 +2610,7 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
   uint32_t round_m = RoundUp<uint32_t>(m_real_, BLOCK_SIZE);
   uint32_t round_n = RoundUp<uint32_t>(n_real_, BLOCK_SIZE);
   uint32_t round_k = RoundUp<uint32_t>(k_real_, BLOCK_SIZE);
-  uint32_t align_max = 2048 / ITEM_SIZE[lhs_->type_id_];
+  uint32_t n_align_max = bias_ != nullptr ? g_system.BtSize() / ITEM_SIZE[bias_->type_id_] : MATMUL_ALIGN_MAX;
   auto tile_select = [&](uint32_t x, uint32_t y) {
     uint32_t m0, n0, k0;
     if (!trans_a_) {
@@ -2620,7 +2620,7 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
       uint64_t mx = std::min(l0c_max / n0, (l1_max - k0 * n0) / k0);
       m0 = RoundDown<uint32_t>(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * n0 < l1_max) && (m0 > 0));
-      m0 = std::min({m0, align_max, round_m});
+      m0 = std::min({m0, MATMUL_ALIGN_MAX, round_m});
     } else if (!trans_b_) {  // trans_a && !trans_b_
       m0 = x;
       n0 = y;
@@ -2628,7 +2628,7 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
       uint64_t kx = l1_max / (m0 + n0);
       k0 = RoundDown<uint32_t>(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       if (m0 * n0 > l0c_max || k0 == 0) return;
-      k0 = std::min({k0, align_max, round_k});
+      k0 = std::min({k0, MATMUL_ALIGN_MAX, round_k});
     } else {  // trans_a && trans_b_
       k0 = x;
       m0 = y;
@@ -2636,8 +2636,9 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
       uint64_t nx = std::min(l0c_max / m0, (l1_max - k0 * m0) / k0);
       n0 = RoundDown<uint32_t>(nx, nx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * m0 < l1_max) && (n0 > 0));
-      n0 = std::min({n0, align_max, round_n});
+      n0 = std::min({n0, MATMUL_ALIGN_MAX, round_n});
     }
+    if (n0 > n_align_max) return;
     if (n0 * k0 + m0 * k0 > l1_max) return;
     uint32_t core_num = g_system.CoreNum(CoreType::kAIC);
     uint32_t m_loop = CeilDiv(op->m_real, m0);
@@ -2660,8 +2661,8 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
     }
   };
   block_dim_ = 0;
-  for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
-    for (uint32_t y = align_max; y >= x; y >>= 1) {
+  for (uint32_t x = MATMUL_ALIGN_MAX; x >= BLOCK_SIZE; x >>= 1) {
+    for (uint32_t y = MATMUL_ALIGN_MAX; y >= x; y >>= 1) {
       tile_select(x, y);
       if (x != y) {
         tile_select(y, x);

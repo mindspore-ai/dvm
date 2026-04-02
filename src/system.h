@@ -135,6 +135,7 @@ class System : public Config {
   }
   uint64_t EventNum() const { return event_num_; }
   SocType SocName() const { return soc_name_; }
+  uint32_t BtSize() const { return bt_size_; }
   void SetCubeStoreType(CubeStoreType type) { cube_store_type_ = type; }
   CubeStoreType GetCubeStoreType() { return Arch() == kAiCore_C310 ? cube_store_type_ : kCubeStoreGM; }
 
@@ -181,6 +182,7 @@ class System : public Config {
   uint64_t event_num_;
   uint64_t vector_core_num_;
   uint64_t cube_core_num_;
+  uint32_t bt_size_;
   AiCoreArch arch_;
   SocType soc_name_{kSocUnknow};
   bool inited_{false};
@@ -198,6 +200,7 @@ extern System g_system;
 constexpr uint64_t SIMD_BLOCK_SIZE = 32;
 constexpr uint64_t SIMD_REPEAT_SIZE = 256;
 constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
+constexpr uint32_t MATMUL_ALIGN_MAX = 1024;
 
 extern const uint64_t ITEM_SIZE[dvm::kDataTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kDataTypeEnd];

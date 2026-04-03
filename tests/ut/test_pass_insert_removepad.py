@@ -129,3 +129,21 @@ def test_remove_pad_reduce_sum_after_cast():
     t.codegen()
     assert (t.das().count("RemovePad") == 1)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_remove_pad_reduce_sum_after_cast_deterministic():
+    t = Tester()
+    a = np.random.normal(0, 1, (32, 1, 4096, 1)).astype(np.float16)
+    b = np.random.normal(0, 1, (32, 1, 1, 24)).astype(np.float16)
+    expect = np.sum((a + b).astype(np.float32), axis=(0,), keepdims=False)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    y0 = t.add(x0, x1)
+    y1 = t.cast(y0, "float32")
+    y2 = t.sum(y1, (0,), False)
+    t.store_expect(y2, expect, 1e-4)
+    t.set_deterministic(True)
+    t.set_passes("InsertRemovePad")
+    assert (t.run_check())
+    t.set_deterministic(False)

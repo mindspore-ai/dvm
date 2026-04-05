@@ -2475,7 +2475,7 @@ void CubeOp::Tile(vCubeOp *op) {
   // k0
   uint32_t cubeBlockSize = CUBE_BLOCK_SIZE;
   uint32_t kBlockSize = BLOCK_SIZE;
-  auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
+  auto bias_size = bias_ ? g_system.BtSize() : 0;
   auto l1_ping_pong_num = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   auto k0_max = l1_ping_pong_num / (op->m0 + op->n0);
   op->k0 =
@@ -2580,23 +2580,23 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
 
 void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
   auto l0c_max = g_system.L0CSize() / sizeof(float);
-  auto bias_size = bias_ ? MAX_BIAS_SIZE : 0;
+  auto bias_size = bias_ ? g_system.BtSize() : 0;
   auto l1_max = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[lhs_->type_id_];
   float mincost = std::numeric_limits<float>::max();
-  uint32_t round_m = RoundUp<uint32_t>(m_align_, BLOCK_SIZE);
-  uint32_t round_n = RoundUp<uint32_t>(n_align_, BLOCK_SIZE);
-  uint32_t round_k = RoundUp<uint32_t>(k_align_, BLOCK_SIZE);
+  uint32_t round_m = RoundUp<uint32_t>(m_real_, BLOCK_SIZE);
+  uint32_t round_n = RoundUp<uint32_t>(n_real_, BLOCK_SIZE);
+  uint32_t round_k = RoundUp<uint32_t>(k_real_, BLOCK_SIZE);
+  uint32_t n_align_max = bias_ != nullptr ? g_system.BtSize() / sizeof(float) : MATMUL_ALIGN_MAX;
   auto tile_select = [&](uint32_t x, uint32_t y) {
-    // 1. get m0, n0, k0
     uint32_t m0, n0, k0;
     if (!trans_a_) {
       k0 = x;
       n0 = y;
-      if (k0 > round_k || n0 > round_n) return;
+      if (k0 > round_k || n0 > round_n || l1_max <= k0 * n0) return;
       uint64_t mx = std::min(l0c_max / n0, (l1_max - k0 * n0) / k0);
       m0 = RoundDown<uint32_t>(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * n0 < l1_max) && (m0 > 0));
-      if (m0 > round_m) m0 = round_m;
+      m0 = std::min({m0, MATMUL_ALIGN_MAX, round_m});
     } else if (!trans_b_) {  // trans_a && !trans_b_
       m0 = x;
       n0 = y;
@@ -2604,17 +2604,17 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
       uint64_t kx = l1_max / (m0 + n0);
       k0 = RoundDown<uint32_t>(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       if (m0 * n0 > l0c_max || k0 == 0) return;
-      if (k0 > round_k) k0 = round_k;
+      k0 = std::min({k0, MATMUL_ALIGN_MAX, round_k});
     } else {  // trans_a && trans_b_
       k0 = x;
       m0 = y;
-      if (k0 > round_k || m0 > round_m) return;
+      if (k0 > round_k || m0 > round_m || l1_max <= k0 * m0) return;
       uint64_t nx = std::min(l0c_max / m0, (l1_max - k0 * m0) / k0);
       n0 = RoundDown<uint32_t>(nx, nx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
       ASSERT((k0 * m0 < l1_max) && (n0 > 0));
-      if (n0 > round_n) n0 = round_n;
+      n0 = std::min({n0, MATMUL_ALIGN_MAX, round_n});
     }
-    // 2. get core_loop, block_dim
+    if (n0 > n_align_max || n0 * k0 + m0 * k0 > l1_max) return;
     uint32_t core_num = g_system.CoreNum(CoreType::kAIC);
     uint32_t m_loop = CeilDiv(op->m_real, m0);
     uint32_t n_loop = CeilDiv(op->n_real, n0);
@@ -2636,9 +2636,8 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
     }
   };
   block_dim_ = 0;
-  uint32_t align_max = 512 / ITEM_SIZE[lhs_->type_id_];
-  for (uint32_t x = align_max; x >= BLOCK_SIZE; x >>= 1) {
-    for (uint32_t y = align_max; y >= x; y >>= 1) {
+  for (uint32_t x = MATMUL_ALIGN_MAX; x >= BLOCK_SIZE; x >>= 1) {
+    for (uint32_t y = MATMUL_ALIGN_MAX; y >= x; y >>= 1) {
       tile_select(x, y);
       if (x != y) {
         tile_select(y, x);

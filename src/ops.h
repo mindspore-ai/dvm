@@ -1086,7 +1086,6 @@ class CubeOp : public NDObject {
  public:
   static constexpr uint32_t BLOCK_SIZE = 16;
   static constexpr uint32_t CUBE_BLOCK_SIZE = 256;
-  static constexpr uint32_t MAX_BIAS_SIZE = 1024;
   static constexpr uint32_t AXES_ALIGN_SIZE = 512;
   static constexpr uint32_t CONST_512 = 512;
   static constexpr uint32_t DEFAULT_SWIZZLE_COUNT = 7;

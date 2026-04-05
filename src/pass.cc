@@ -515,12 +515,14 @@ void ReorderLoad(BasicBlock &block) {
 
 void InsertRemovePad(BasicBlock &block) {
   size_t max_depth = 1;
+  auto min_type_id = kDataTypeEnd;
   for (auto &op : block) {
     auto obj_type = op.GetObjectType();
     if (obj_type == kReshape) {
       return;
     }
     max_depth = std::max(max_depth, op.nd_.size());
+    min_type_id = std::min(min_type_id, op.type_id_);
   }
 
   PropRange range;
@@ -534,18 +536,28 @@ void InsertRemovePad(BasicBlock &block) {
   }
   for (auto iter = block.begin(); iter != block.end(); iter++) {
     if (iter->GetObjectType() == kStore) {
-      if (iter->lhs_->obj_id_ == kElementAny || iter->lhs_->obj_id_ == kReduce ||
-          static_cast<int>(iter->nd_.size()) == range.depth) {
+      auto obj_id = iter->lhs_->obj_id_;
+      if (obj_id == kElementAny || static_cast<int>(iter->nd_.size()) == range.depth) {
         continue;
       }
-      uint64_t iter_size = ITEM_SIZE[iter->type_id_];
+      if (obj_id == kReduce && g_system.deterministic_) {
+        continue;
+      }
+      uint64_t iter_size = ITEM_SIZE[min_type_id];
       if (iter_size == 1) {
         continue;
       }
       for (int i = 0; i < range.depth; i++) {
         iter_size *= iter->nd_[i];
       }
+      const uint64_t store_threshold = g_system.CoreNum() * iter_size;
+      if (static_cast<uint64_t>(iter->Size()) <= store_threshold) {  // Below this threshold, the store can be split without requiring repeat.
+        continue;
+      }
       if (iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE) {
+        if (obj_id == kReduce) {
+          iter->lhs_->SetFlag(OBJ_FLAG_REDUCE_NO_CUM);
+        }
         auto remove_pad = new RemovePadOp(iter->lhs_);
         remove_pad->nd_ = iter->lhs_->nd_;
         if (auto tracker = block.Tracker()) {

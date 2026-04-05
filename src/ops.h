@@ -386,6 +386,7 @@ class VectorKernel;
 #define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
 #define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
+#define OBJ_FLAG_REDUCE_NO_CUM (1u << 30)
 
 class NDObject {
  public:

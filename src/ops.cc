@@ -134,6 +134,16 @@ NDObject *GetBroadcastOp(NDObject *obj, const DimArray &dst_shape, std::vector<N
   return broadcast_op;
 }
 
+inline ReduceOp *GetStoreReduceOp(NDObject *lhs) {
+  if (lhs->obj_id_ == kReduce) {
+    return static_cast<ReduceOp *>(lhs);
+  }
+  if (lhs->obj_id_ == kRemovePad && lhs->lhs_->obj_id_ == kReduce) {
+    return static_cast<ReduceOp *>(lhs->lhs_);
+  }
+  return nullptr;
+}
+
 NDObject *InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject *> &stuff_ops,
                                       size_t &stuff_idx) {
   // output shape is not dst_shape, but the last inbetween shape, which just need only one broadcast op to reach the
@@ -997,6 +1007,7 @@ void NDStore::Tile(const TileParam &tp) {
 uint64_t NDStore::Emit(VectorKernel &k) {
   int64_t lead_align = nd_.lead_stride();
   int64_t lead_dim = nd_.lead_dim();
+  bool no_pad = lhs_->obj_id_ == kRemovePad;
   ASSERT(lead_align == lhs_->nd_.lead_stride());
   uint64_t dst_tile_stride_ = nd_.stride_back() / lead_align * lead_dim;
   if (lhs_->obj_id_ == kElementAny) {
@@ -1035,8 +1046,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
       addr_.Update(insn_ + vStoreRS::RELOC_OFFSET);
       return vStoreRS::Encode(insn_, V_STORE_RS, op, rounds);
     }
-    if (lhs_->obj_id_ == kReduce) {
-      auto red_op = static_cast<ReduceOp *>(lhs_);
+    if (auto red_op = GetStoreReduceOp(lhs_); red_op != nullptr) {
       if (k.GetVisitor<RedVisitCoder>()) {
         ASSERT(tail_dim_ < 0);
         vStoreCond op;
@@ -1049,7 +1059,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
           op.iter_size = 0;
         } else {
           op.iter_size = lead_dim * ITEM_SIZE[type_id_];
-          op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+          op.pad_size = no_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         }
         op.cond_offset = insn_ - red_op->tail_insn_ - vReduceJoin::STORE_COND_OFFSET;
         op.round_rank = round_tile_.size();
@@ -1061,9 +1071,9 @@ uint64_t NDStore::Emit(VectorKernel &k) {
         vStoreAtomic op;
         op.to = addr_.data;
         op.xn = lhs_->xbuf_;
-        op.cum_flag = (round_tile_.size() & 1);
+        op.cum_flag = (!red_op->CheckFlag(OBJ_FLAG_REDUCE_NO_CUM)) && (round_tile_.size() & 1);
         op.iter_size = lead_dim * ITEM_SIZE[type_id_];
-        op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+        op.pad_size = no_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = nd_.stride_back() / lead_align;
         if (tail_dim_ < 0 || red_op->InRange(tail_dim_)) {
           op.iter_tail = op.iter_num;
@@ -1126,7 +1136,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
   }
   vStore op;
   uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
-  uint64_t pad_size = lhs_->obj_id_ == ObjectType::kRemovePad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
+  uint64_t pad_size = no_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
   uint64_t body_iter = nd_.stride_back() / lead_align;
   uint64_t tail_iter;
   if (body_iter == 1) {
@@ -2053,7 +2063,7 @@ uint64_t ReduceOp::Emit(VectorKernel &k) {
   if (ws_num_ == 2) {
     return EmitDeterm(k);
   }
-  if (!(round_tile_.size() & 1)) {
+  if (CheckFlag(OBJ_FLAG_REDUCE_NO_CUM) || !(round_tile_.size() & 1)) {
     return _ReduceOp::Emit(k);
   }
   auto out_xbuf = xbuf_;
@@ -2077,7 +2087,11 @@ uint64_t ReduceOp::Emit(VectorKernel &k) {
 NDObject *ReduceOp::Clone(CloneHelper &h) {
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_.front()->lhs_;
   auto dims_ref = h.GetClone(dims_ref_);
-  return new ReduceOp(h.GetClone(input), red_op_, dims_ref, keepdims_);
+  auto op = new ReduceOp(h.GetClone(input), red_op_, dims_ref, keepdims_);
+  if (CheckFlag(OBJ_FLAG_REDUCE_NO_CUM)) {
+    op->SetFlag(OBJ_FLAG_REDUCE_NO_CUM);
+  }
+  return op;
 }
 
 void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {

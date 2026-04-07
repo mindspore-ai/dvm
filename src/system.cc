@@ -150,11 +150,11 @@ const SocConfig soc_configs[] = {
   {"Ascend950PR_9599", kAscend950PR_9599, kAiCore_C310, 36, 128 * MB},
 };
 
-static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, const unsigned char *bin_data,
-                            unsigned int bin_len, void *func_handles[3]) {
-  auto reg_binary = reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(reg_binary_func);
-  auto reg_function =
-    reinterpret_cast<rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t)>(reg_function_func);
+using RtDevBinaryRegisterFunc = rtError_t (*)(const rtDevBinary_t *, void **);
+using RtFunctionRegisterFunc = rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t);
+
+static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegisterFunc reg_function,
+                            const unsigned char *bin_data, unsigned int bin_len, void *func_handles[3]) {
   func_handles[Code::kTargetVec] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetVec;
   func_handles[Code::kTargetCube] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetCube;
   func_handles[Code::kTargetMix] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetMix;
@@ -279,8 +279,8 @@ void System::DoInit() {
 #ifdef VK_SIM_MODEL
   RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
   code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
-  kernel_launch_func_ = ::rtKernelLaunch;
-  get_ffts_addr_func_ = ::rtGetC2cCtrlAddr;
+  kernel_launch_func_ = reinterpret_cast<void *>(::rtKernelLaunch);
+  get_ffts_addr_func_ = reinterpret_cast<void *>(::rtGetC2cCtrlAddr);
   return;
 #endif
   auto ret = MsprofRegisterCallback(0, ProfCommandHandler);
@@ -291,8 +291,8 @@ void System::DoInit() {
     kernel_launch_func_ = dlsym(rt_handle_, "rtKernelLaunch");
     get_ffts_addr_func_ = dlsym(rt_handle_, "rtGetC2cCtrlAddr");
     if (kernel_launch_func_ && get_ffts_addr_func_) {
-      auto reg_binary = dlsym(rt_handle_, "rtDevBinaryRegister");
-      auto reg_function = dlsym(rt_handle_, "rtFunctionRegister");
+      auto reg_binary = reinterpret_cast<RtDevBinaryRegisterFunc>(dlsym(rt_handle_, "rtDevBinaryRegister"));
+      auto reg_function = reinterpret_cast<RtFunctionRegisterFunc>(dlsym(rt_handle_, "rtFunctionRegister"));
       EXCEPTION_IF(reg_binary == nullptr || reg_function == nullptr, "load rt_binary_register symbol failed");
       RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
       code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;

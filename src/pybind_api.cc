@@ -17,6 +17,7 @@
 #include <sys/wait.h>
 #include <sys/ipc.h>
 #include <sys/shm.h>
+#include <dlfcn.h>
 #include <algorithm>
 #include <cstring>
 #include <unordered_map>
@@ -169,6 +170,11 @@ class KernelRunner : public WsAllocator {
 class DevRunner : public KernelRunner {
  public:
   DevRunner(int dev_id) {
+#ifdef VK_SIM_MODEL
+    // Since CANN 8.5, Python must preload this library before runtime-related code can run correctly.
+    void *handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
+    EXCEPTION_IF(handle == nullptr, dlerror());
+#endif
     uint32_t dev_count = 0;
     ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
     ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
@@ -179,7 +185,6 @@ class DevRunner : public KernelRunner {
   ~DevRunner() override {
     Reset();
     aclrtDestroyStream(stream_);
-    aclrtResetDevice(dev_id_);
   }
 
   void AllocLoad(const py::buffer_info &buf, LoadInfo &load) override {

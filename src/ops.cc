@@ -2610,7 +2610,7 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
   uint32_t round_m = RoundUp<uint32_t>(m_real_, BLOCK_SIZE);
   uint32_t round_n = RoundUp<uint32_t>(n_real_, BLOCK_SIZE);
   uint32_t round_k = RoundUp<uint32_t>(k_real_, BLOCK_SIZE);
-  uint32_t n_align_max = bias_ != nullptr ? g_system.BtSize() / ITEM_SIZE[bias_->type_id_] : MATMUL_ALIGN_MAX;
+  uint32_t n_align_max = bias_ != nullptr ? g_system.BtSize() / sizeof(float) : MATMUL_ALIGN_MAX;
   auto tile_select = [&](uint32_t x, uint32_t y) {
     uint32_t m0, n0, k0;
     if (!trans_a_) {

@@ -107,7 +107,9 @@ class MixKernelBase : public CubeKernel {
   }
   void Clear() {
     CubeKernel::Clear();
-    post_fusion_->Clear();
+    if (post_fusion_) {
+      post_fusion_->Clear();
+    }
   }
  
  protected:
@@ -123,15 +125,12 @@ class MixKernel : public MixKernelBase {
   MixKernel(uint32_t flags = 0) : MixKernelBase(KernelType::kMix, flags) {}
   ~MixKernel() override;
   uint64_t CodeGen() override;
+  void Dump(std::ostringstream &oss, const std::string &indent) override;
 
  protected:
-  void EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node);
-  virtual void Release();
-  uint64_t SplitKCodeGen();
-  uint64_t UnAlignCodeGen();
-  uint64_t BiasBF16CodeGen();
-  CubeOp::Tactics tactics_;
+  uint64_t StageCodeGen(const CubeOp::Tactics &tactics);
   StagesKernel *stage_kernel_{nullptr};
+  std::vector<NDObject *> mng_;
 };
 
 class DynMixKernel : public MixKernel {
@@ -140,8 +139,6 @@ class DynMixKernel : public MixKernel {
   uint64_t CodeGen() override;
 
  protected:
-  void Release() override;
-  void Record();
   GraphTracker tracker_;
 };
 
@@ -196,11 +193,12 @@ class StageCodeWrap : public CodeWrap {
 
 class StagesKernel : public VKernel {
  public:
-  StagesKernel(uint32_t flags = 0) : VKernel(KernelType::kSequence, flags), builder_(this), code_wrap_(this) {}
+  StagesKernel(uint32_t flags = 0) : VKernel(KernelType::kSequence, flags), code_wrap_(this) {}
   ~StagesKernel() override;
 
   struct Stage {
     explicit Stage(VKernel *k) : kernel(k) {}
+    virtual ~Stage() { delete kernel; }
     VKernel *kernel;
     int64_t ws_size{-1};
     int64_t ws_offset{-1};
@@ -245,17 +243,6 @@ class StagesKernel : public VKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
-
-  class _Builder : public KernelBuilder {
-   public:
-    _Builder(StagesKernel *impl) : KernelBuilder(impl) {}
-    void StageSwitch(KernelType type);
-    NDObject *StageLoad(NDObject *stage_store);
-    NDObject *StageStore(NDObject *input);
-    NDObject *StagePadStore(NDObject *input, int64_t pad_size);
-    StagesKernel *_StagesKernel() const { return static_cast<StagesKernel *>(kernel_); }
-  };
-  _Builder builder_;
 
  protected:
   static void SetWorkspace(NDAccess *op, int64_t offset) { op->addr_.ws = offset; }

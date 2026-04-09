@@ -23,14 +23,6 @@
 
 namespace dvm {
 namespace {
-void ReplaceOperands(NDObject *replaced, NDObject *replacing, NDObject *obj) {
-  obj->ForInput([replaced, replacing](NDObject *&op) {
-    if (op && op == replaced) {
-      op = replacing;
-    }
-  });
-}
-
 void TryBatchFold(CubeOp *mm, int dim_size, const std::vector<NDObject *> &objects) {
   PropRange range;
   range.base = dim_size - 1;
@@ -321,222 +313,223 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
   return GenOut(code_end, ws_size, entry);
 }
 
-MixKernel::~MixKernel() { delete stage_kernel_; }
+namespace {
+struct MixStageV : public StagesKernel::Stage {
+  explicit MixStageV(uint32_t flags) : StagesKernel::Stage(&vec_k_), vec_k_(flags) {}
+  ~MixStageV() override {
+    vec_k_.build_ops_.clear();
+    kernel = nullptr;
+  }
+  NDObject *BuildPad(NDObject *load, int64_t pad_size, std::vector<NDObject *> &mng) {
+    auto copy = mng.emplace_back(new CopyOp(load));
+    auto store = mng.emplace_back(new NDPadStore(nullptr, copy, pad_size));
+    vec_k_.Append(load);
+    vec_k_.Append(copy);
+    vec_k_.Append(store);
+    AddIO(static_cast<NDAccess *>(load));
+    StageStore(static_cast<NDAccess *>(store));
+    return store;
+  }
+  NDObject *BuildBiasCast(NDObject *bias_load, std::vector<NDObject *> &mng) {
+    auto cast = mng.emplace_back(new CastOp(bias_load, kFloat32));
+    auto store = mng.emplace_back(new NDStore(cast));
+    vec_k_.Append(bias_load);
+    vec_k_.Append(cast);
+    vec_k_.Append(store);
+    AddIO(static_cast<NDAccess *>(bias_load));
+    StageStore(static_cast<NDAccess *>(store));
+    return store;
+  }
+  VKernelS vec_k_;
+};
 
-void MixKernel::EmplacePostFusion(NDObject *replaced_node, NDObject *replacing_node) {
-  for (auto &op : post_fusion_->build_ops_) {
-    if (op != replaced_node) {
-      ReplaceOperands(replaced_node, replacing_node, op);
-      stage_kernel_->Append(op);
+struct MixStageM : public StagesKernel::Stage {
+  explicit MixStageM(uint32_t flags) : StagesKernel::Stage(&mix_k_), mix_k_(flags) {}
+  ~MixStageM() override { kernel = nullptr; }
+  CubeOp *BuildCube(CubeOp *mm, NDObject *lhs, NDObject *rhs, NDObject *bias, std::vector<NDObject *> &mng) {
+    CubeOp *op;
+    if (mm->obj_id_ == kCubeOp) {
+      op = new CubeOp(lhs, rhs, mm->trans_a_, mm->trans_b_, bias);
+    } else {
+      auto gmm_op = static_cast<GmmOp *>(mm);
+      op = new GmmOp(lhs, rhs, mm->trans_a_, mm->trans_b_, bias, gmm_op->group_list_, gmm_op->group_type_,
+                     gmm_op->group_list_type_);
     }
+    auto output = new NDStore(op);
+    mix_k_.Append(lhs);
+    mix_k_.Append(rhs);
+    mix_k_.Append(op);
+    mix_k_.Append(output);
+    mng.push_back(op);
+    mng.push_back(output);
+    return op;
   }
-}
+  NDAccess *CubeLoad(NDObject *store, std::vector<NDObject *> &mng) {
+    auto load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+    mng.push_back(load);
+    StageLoad(load, static_cast<NDAccess *>(store));
+    return load;
+  }
 
-void MixKernel::Release() {
-  cube_op_->Recover();
-  if (!stage_kernel_) {
-    return;
-  }
-  auto current_kernel = static_cast<MixKernel *>(stage_kernel_->Current());
-  auto target_post_fusion = current_kernel->post_fusion_;
-  if (post_fusion_) {
-    std::unordered_set<NDObject *> post_ops_set(post_fusion_->build_ops_.begin(), post_fusion_->build_ops_.end());
-    for (auto &obj : target_post_fusion->build_ops_) {
-      if (post_ops_set.find(obj) != post_ops_set.end()) {
-        obj = nullptr;
+  struct _Mix : public MixKernelBase {
+    _Mix(uint32_t flags) : MixKernelBase(KernelType::kMix, flags) {}
+    ~_Mix() {
+      if (cube_op_->GetObjectType() == kGmmOp) {
+        static_cast<GmmOp *>(cube_op_)->group_list_ = nullptr;
+      }
+      cube_op_ = nullptr;
+      if (post_fusion_) {
+        if (orig_sload_) {
+          auto cast = post_fusion_->build_ops_[1];
+          ASSERT(cast->obj_id_ == ObjectType::kCast);
+          for (auto op : post_fusion_->build_ops_) {
+            ReplaceInput(op, cast, orig_sload_);
+          }
+        }
+        post_fusion_->build_ops_.clear();
       }
     }
-    for (auto &op : post_fusion_->build_ops_) {
-      ReplaceOperands(current_kernel->sload_, sload_, op);
+    void SetSload(NDObject *sload) {
+      sload->flags_ |= OBJ_FLAG_LOAD_FROM_CUBE;
+      sload_ = static_cast<NDAccess *>(sload);
     }
-  }
+    void ReplaceInput(NDObject *op, NDObject *old_op, NDObject *new_op) {
+      op->ForInput([old_op, new_op](NDObject *&in) {
+        if (in == old_op) {
+          in = new_op;
+        }
+      });
+    }
+    uint64_t CodeGen() override {
+      NormalizeCube();
+      NormalizePost();
+      return DoCodeGen();
+    }
+    NDObject *orig_sload_{nullptr};
+  };
+  _Mix mix_k_;
+};
+}  // namespace
 
-  auto cube_op = current_kernel->cube_op_;
-  if (cube_op->GetObjectType() == kGmmOp) {
-    static_cast<GmmOp *>(cube_op)->group_list_ = nullptr;
-  }
-}
-
-uint64_t MixKernel::UnAlignCodeGen() {
+uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
   stage_kernel_ = new StagesKernel(flags_);
-  auto &builder = stage_kernel_->builder_;
-  int64_t pad_size[2] = {tactics_.lhs_pad_size, tactics_.rhs_pad_size};
-  NDObject *inputs[2], *pad_inputs[2];
-  NDObject *src_inputs[2] = {cube_op_->lhs_, cube_op_->rhs_};
-  for (size_t i = 0; i < 2; i++) {
-    if (pad_size[i]) {
-      builder.StageSwitch(KernelType::kVector);
-      pad_inputs[i] = builder.Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
-      auto load = builder.Copy(pad_inputs[i]);
-      inputs[i] = builder.StagePadStore(load, pad_size[i]);
+  auto main_s = new MixStageM(flags_);
+  auto dom = main_s->BuildCube(cube_op_, cube_op_->lhs_, cube_op_->rhs_, cube_op_->bias_, mng_);
+  if (tactics.enable_pad) {
+    if (tactics.lhs_pad_size) {
+      auto s = new MixStageV(flags_);
+      stage_kernel_->AppendStage(s);
+      auto store = s->BuildPad(dom->lhs_, tactics.lhs_pad_size, mng_);
+      dom->lhs_ = main_s->CubeLoad(store, mng_);
     }
-  }
-  builder.StageSwitch(ktype_);
-  for (size_t i = 0; i < 2; i++) {
-    if (pad_size[i]) {
-      inputs[i] = builder.StageLoad(inputs[i]);
-    } else {
-      inputs[i] = builder.Load(nullptr, src_inputs[i]->shape_ref_, src_inputs[i]->type_id_);
-      pad_inputs[i] = inputs[i];
+    if (tactics.rhs_pad_size) {
+      auto s = new MixStageV(flags_);
+      stage_kernel_->AppendStage(s);
+      auto store = s->BuildPad(dom->rhs_, tactics.rhs_pad_size, mng_);
+      dom->rhs_ = main_s->CubeLoad(store, mng_);
     }
+    dom->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
   }
-  auto src_bias = cube_op_->bias_;
-  NDObject *bias = src_bias ? builder.Load(nullptr, src_bias->shape_ref_, src_bias->type_id_) : nullptr;
-  NDObject *matmul_op;
-  if (cube_op_->GetObjectType() == kCubeOp) {
-    matmul_op = builder.MatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, bias);
+  if (dom->bias_ && g_system.Arch() != kAiCore_C310 && dom->bias_->type_id_ == kBFloat16) {
+    auto s = new MixStageV(flags_);
+    stage_kernel_->AppendStage(s);
+    auto store = s->BuildBiasCast(dom->bias_, mng_);
+    dom->bias_ = main_s->CubeLoad(store, mng_);
+  }
+  if (tactics.enable_splitk) {
+    size_t k_stride = tactics.k_stride;
+    size_t split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride) - 1;
+    size_t k_mng_begin = mng_.size();
+    size_t offset_a = 0;
+    size_t offset_b = 0;
+    size_t stride_a = cube_op_->trans_a_ ? (cube_op_->m_align_ + tactics.lhs_pad_size) * k_stride : k_stride;
+    size_t stride_b = cube_op_->trans_b_ ? k_stride : (cube_op_->n_align_ + tactics.rhs_pad_size) * k_stride;
+    for (size_t i = 0; i < split_num; ++i) {
+      auto s = new MixStageM(flags_);
+      stage_kernel_->AppendStage(s);
+      auto lhs = new NDLoad(nullptr, dom->lhs_->shape_ref_, dom->lhs_->type_id_);
+      auto rhs = new NDLoad(nullptr, dom->rhs_->shape_ref_, dom->rhs_->type_id_);
+      auto op = s->BuildCube(dom, lhs, rhs, nullptr, mng_);
+      op->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, k_stride, offset_a, offset_b);
+      op->SetOutFp32(i > 0);
+      op->output_->type_id_ = DataType::kFloat32;
+      offset_a += stride_a;
+      offset_b += stride_b;
+      mng_.emplace_back(lhs);
+      mng_.emplace_back(rhs);
+    }
+    size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
+    dom->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, k_tail, offset_a, offset_b);
+    dom->SetOutFp32(true);
+    dom->output_->type_id_ = DataType::kFloat32;
+    auto load = mng_.emplace_back(new NDLoad(nullptr, dom->shape_ref_, kFloat32));
+    auto cast = mng_.emplace_back(new CastOp(load, dom->lhs_->type_id_));
+    main_s->mix_k_.SetSload(load);
+    main_s->mix_k_.Append(load);
+    main_s->mix_k_.Append(cast);
+    NDAccess *real_out = nullptr;
+    if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+      real_out = new NDStore(cast);
+      main_s->mix_k_.Append(real_out);
+      mng_.emplace_back(real_out);
+    }
+    if (post_fusion_) {
+      for (auto op : post_fusion_->build_ops_) {
+        if (op != sload_) {
+          main_s->mix_k_.ReplaceInput(op, sload_, cast);
+          main_s->mix_k_.Append(op);
+        }
+      }
+      main_s->mix_k_.orig_sload_ = sload_;
+    }
+    stage_kernel_->AppendStage(main_s);
+    auto ws_size = stage_kernel_->CodeGen();
+    auto &code = stage_kernel_->code_;
+    code.BindWorkspace(dom->output_->addr_, ws_size);
+    for (size_t i = 0; i < split_num; ++i) {
+      auto mm = static_cast<CubeOp *>(mng_[k_mng_begin]);
+      k_mng_begin += 4;
+      code.BindOp(static_cast<NDAccess *>(mm->lhs_)->addr_, static_cast<NDAccess *>(dom->lhs_)->addr_);
+      code.BindOp(static_cast<NDAccess *>(mm->rhs_)->addr_, static_cast<NDAccess *>(dom->rhs_)->addr_);
+      code.BindWorkspace(mm->output_->addr_, ws_size);
+    }
+    if (real_out) {
+      cube_op_->output_->addr_.Update(real_out->addr_);
+    }
+    code_ = std::move(code);
+    return ws_size + dom->output_->Size();
   } else {
-    auto gmm_op = static_cast<GmmOp *>(cube_op_);
-    matmul_op = builder.GroupedMatMul(inputs[0], inputs[1], cube_op_->trans_a_, cube_op_->trans_b_, bias,
-                                      gmm_op->group_list_, gmm_op->group_type_, gmm_op->group_list_type_);
+    if (post_fusion_) {
+      main_s->mix_k_.SetSload(sload_);
+      for (auto op : post_fusion_->build_ops_) {
+        main_s->mix_k_.Append(op);
+      }
+    }
+    stage_kernel_->AppendStage(main_s);
+    if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+      dom->output_->SetFlag(OBJ_FLAG_STAGE_IO);
+    }
+    auto ws_size = stage_kernel_->CodeGen();
+    cube_op_->output_->addr_.Update(dom->output_->addr_);
+    code_ = std::move(stage_kernel_->code_);
+    return ws_size;
   }
-  static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, cube_op_->k_real_, 0, 0);
-  if (post_fusion_) {
-    EmplacePostFusion(sload_, matmul_op);
-  }
-  NDAccess *real_out{nullptr};
-  if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    real_out = static_cast<NDAccess *>(builder.Store(nullptr, matmul_op));
-  }
-  auto stage_workspace_size = stage_kernel_->CodeGen();
-  auto workspace_size = stage_workspace_size;
-  code_ = std::move(stage_kernel_->code_);
-
-  auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
-  auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
-  src_lhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[0])->addr_);
-  src_rhs->addr_.Update(static_cast<NDAccess *>(pad_inputs[1])->addr_);
-  if (bias) {
-    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias)->addr_);
-  }
-  if (real_out) {
-    cube_op_->output_->addr_.Update(real_out->addr_);
-  }
-  return workspace_size;
 }
 
-uint64_t MixKernel::SplitKCodeGen() {
-  size_t k_stride = tactics_.k_stride;
-  auto split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride);
-  size_t k_tail = cube_op_->k_real_ % k_stride ? cube_op_->k_real_ % k_stride : k_stride;
-
-  stage_kernel_ = new StagesKernel(flags_);
-  auto &builder = stage_kernel_->builder_;
-  std::vector<NDAccess *> split_lhs;
-  std::vector<NDAccess *> split_rhs;
-  std::vector<NDAccess *> split_out;
-  NDObject *bias_op = nullptr;
-  for (size_t i = 0; i < split_num; i++) {
-    size_t offset_a = i * k_stride;
-    size_t offset_b = i * k_stride;
-    if (cube_op_->trans_a_) offset_a *= cube_op_->m_align_;
-    if (!cube_op_->trans_b_) offset_b *= cube_op_->n_align_;
-    builder.StageSwitch(ktype_);
-    auto x = builder.Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
-    auto y = builder.Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
-    (void)split_lhs.emplace_back(static_cast<NDAccess *>(x));
-    (void)split_rhs.emplace_back(static_cast<NDAccess *>(y));
-    NDObject *matmul_op;
-    if (i + 1 == split_num && cube_op_->bias_) {
-      bias_op = builder.Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
-    }
-    if (cube_op_->GetObjectType() == kCubeOp) {
-      matmul_op = builder.MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op);
-    } else {
-      auto gmm_op = static_cast<GmmOp *>(cube_op_);
-      matmul_op = builder.GroupedMatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_op, gmm_op->group_list_,
-                                        gmm_op->group_type_, gmm_op->group_list_type_);
-    }
-    static_cast<CubeOp *>(matmul_op)->SetRealShape(cube_op_->m_real_, cube_op_->n_real_,
-                                                   i + 1 == split_num ? k_tail : k_stride, offset_a, offset_b);
-    static_cast<CubeOp *>(matmul_op)->SetOutFp32(i != 0);
-    (void)split_out.emplace_back(static_cast<NDAccess *>(builder.Store(nullptr, matmul_op)));
+MixKernel::~MixKernel() {
+  delete stage_kernel_;
+  for (auto op : mng_) {
+    delete op;
   }
-  auto matmul_fp32 = split_out.back()->lhs_;
-  auto matmul_fp16 = builder.Cast(matmul_fp32, cube_op_->lhs_->type_id_);
-  if (post_fusion_) {
-    EmplacePostFusion(sload_, matmul_fp16);
-  }
-  NDAccess *real_out{nullptr};
-  if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    real_out = static_cast<NDAccess *>(builder.Store(nullptr, matmul_fp16));
-  }
-  auto stage_workspace_size = stage_kernel_->CodeGen();
-  auto workspace_size = stage_workspace_size + split_out.back()->Size();
-  code_ = std::move(stage_kernel_->code_);
-
-  auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
-  auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
-  src_lhs->addr_.Update(split_lhs[0]->addr_);
-  src_rhs->addr_.Update(split_rhs[0]->addr_);
-  code_.BindWorkspace(split_out[0]->addr_, stage_workspace_size);
-  for (size_t i = 1; i < split_num; i++) {
-    code_.BindOpFast(split_lhs[i]->addr_, src_lhs->addr_);
-    code_.BindOpFast(split_rhs[i]->addr_, src_rhs->addr_);
-    code_.BindWorkspace(split_out[i]->addr_, stage_workspace_size);
-  }
-  if (bias_op) {
-    static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_op)->addr_);
-  }
-  if (real_out) {
-    cube_op_->output_->addr_.Update(real_out->addr_);
-  }
-  return workspace_size;
-}
-
-uint64_t MixKernel::BiasBF16CodeGen() {
-  stage_kernel_ = new StagesKernel(flags_);
-  auto &builder = stage_kernel_->builder_;
-  builder.StageSwitch(KernelType::kVector);
-  auto bias_bf16 = builder.Load(nullptr, cube_op_->bias_->shape_ref_, cube_op_->bias_->type_id_);
-  auto bias_fp32 = builder.StageStore(builder.Cast(bias_bf16, kFloat32));
-
-  builder.StageSwitch(ktype_);
-  auto x = builder.Load(nullptr, cube_op_->lhs_->shape_ref_, cube_op_->lhs_->type_id_);
-  auto y = builder.Load(nullptr, cube_op_->rhs_->shape_ref_, cube_op_->rhs_->type_id_);
-  NDObject *matmul_op;
-  auto bias_obj = builder.StageLoad(bias_fp32);
-  if (cube_op_->GetObjectType() == kCubeOp) {
-    matmul_op = builder.MatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_obj);
-  } else {
-    auto gmm_op = static_cast<GmmOp *>(cube_op_);
-    matmul_op = builder.GroupedMatMul(x, y, cube_op_->trans_a_, cube_op_->trans_b_, bias_obj, gmm_op->group_list_,
-                                      gmm_op->group_type_, gmm_op->group_list_type_);
-  }
-  if (post_fusion_) {
-    EmplacePostFusion(sload_, matmul_op);
-  }
-  NDAccess *real_out{nullptr};
-  if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-    real_out = static_cast<NDAccess *>(builder.Store(nullptr, matmul_op));
-  }
-  auto stage_workspace_size = stage_kernel_->CodeGen();
-  auto workspace_size = stage_workspace_size;
-  code_ = std::move(stage_kernel_->code_);
-
-  auto src_lhs = static_cast<NDAccess *>(cube_op_->lhs_);
-  auto src_rhs = static_cast<NDAccess *>(cube_op_->rhs_);
-  src_lhs->addr_.Update(static_cast<NDAccess *>(x)->addr_);
-  src_rhs->addr_.Update(static_cast<NDAccess *>(y)->addr_);
-  static_cast<NDAccess *>(cube_op_->bias_)->addr_.Update(static_cast<NDAccess *>(bias_bf16)->addr_);
-  if (real_out) {
-    cube_op_->output_->addr_.Update(real_out->addr_);
-  }
-  return workspace_size;
 }
 
 uint64_t MixKernel::CodeGen() {
   CubeKernel::NormalizeCube();
-  cube_op_->InferTactics(tactics_);
+  CubeOp::Tactics tactics;
+  cube_op_->InferTactics(tactics);
   uint64_t workspace_size = 0;
-  if (tactics_.enable_bias_cast || tactics_.enable_pad || tactics_.enable_splitk) {
-    if (tactics_.enable_bias_cast) {
-      workspace_size = BiasBF16CodeGen();
-    } else if (tactics_.enable_pad) {
-      workspace_size = UnAlignCodeGen();
-    } else {
-      workspace_size = SplitKCodeGen();
-    }
+  if (tactics.enable_bias_cast || tactics.enable_pad || tactics.enable_splitk) {
+    workspace_size = StageCodeGen(tactics);
     if (reload_rhs_) {
       auto lhs = static_cast<NDAccess *>(cube_op_->lhs_);
       auto rhs = static_cast<NDAccess *>(cube_op_->rhs_);
@@ -551,34 +544,38 @@ uint64_t MixKernel::CodeGen() {
     NormalizePost();
     workspace_size = MixKernelBase::DoCodeGen();
   }
-  Release();
+  cube_op_->Recover();
   return workspace_size;
 }
 
-void DynMixKernel::Record() {
-  if (post_fusion_) {
-    static_cast<VKernelD *>(post_fusion_)->Clear();
-    for (auto op : post_fusion_->build_ops_) {
-      op->ForInput([this](NDObject *&in) { tracker_.Record(&in); });
-    }
+void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+  if (stage_kernel_) {
+    stage_kernel_->Dump(oss, indent);
+  } else {
+    MixKernelBase::Dump(oss, indent);
   }
 }
 
-void DynMixKernel::Release() {
-  tracker_.RecoverClear();
-  MixKernel::Release();
-}
-
 uint64_t DynMixKernel::CodeGen() {
-  delete stage_kernel_;
-  stage_kernel_ = nullptr;
-  code_.~Code();
-  code_.data_ = nullptr;
-  code_ = std::move(Code());
-  Record();
-  auto ws_size = MixKernel::CodeGen();
-  Release();
-  return ws_size;
+  if (stage_kernel_) {
+    delete stage_kernel_;
+    stage_kernel_ = nullptr;
+    for (auto op : mng_) {
+      delete op;
+    }
+    mng_.clear();
+  }
+  if (post_fusion_) {
+    if (tracker_.Empty()) {
+      for (auto op : post_fusion_->build_ops_) {
+        op->ForInput([this](NDObject *&in) { tracker_.Record(&in); });
+      }
+    } else {
+      tracker_.Recover();
+    }
+  }
+  MixKernelBase::Clear();
+  return MixKernel::CodeGen();
 }
 
 int ParallelKernel::_IsolateWrap::LaunchWrap(void *workspace, void *stream) {
@@ -895,7 +892,6 @@ void StageCodeWrap::CollectWrap(std::vector<Code *> &codes) {
 
 StagesKernel::~StagesKernel() {
   for (auto s : stages_) {
-    delete s->kernel;
     delete s;
   }
 }
@@ -1063,11 +1059,12 @@ void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
 
 void StagesKernel::Clone(VKernel *base, CloneHelper &helper) {
   auto k = static_cast<StagesKernel *>(base);
-  _Builder b(this);
   for (auto stage : k->stages_) {
-    b.StageSwitch(stage->kernel->KType());
-    auto to_stage = stages_.back();
-    to_stage->kernel->Clone(stage->kernel, helper);
+    KernelBuilder b1(stage->kernel);
+    KernelBuilder b2(nullptr);
+    b2.Clone(b1, helper);
+    auto to_stage = new Stage(b2.GetImpl());
+    stages_.push_back(to_stage);
     for (auto &[op, prod] : stage->ios) {
       auto clone = static_cast<NDAccess *>(helper.GetClone(op));
       to_stage->ios.emplace_back(clone, prod ? static_cast<NDAccess *>(helper.GetClone(prod)) : nullptr);
@@ -1076,47 +1073,6 @@ void StagesKernel::Clone(VKernel *base, CloneHelper &helper) {
       }
     }
   }
-}
-
-void StagesKernel::_Builder::StageSwitch(KernelType type) {
-  VKernel *kernel = nullptr;
-  auto is_dyn = kernel_->IsDynamic();
-  if (type == KernelType::kVector) {
-    kernel = is_dyn ? new VKernelD() : new VKernelS();
-  } else if (type == KernelType::kMix) {
-    kernel = is_dyn ? new DynMixKernel() : new MixKernel();
-  } else if (type == KernelType::kParallel) {
-    ASSERT(!is_dyn);
-    kernel = new ParallelKernel(0);
-  } else {
-    ASSERT(0);
-  }
-  _StagesKernel()->AddStage(kernel);
-}
-
-NDObject *StagesKernel::_Builder::StageLoad(NDObject *stage_store) {
-  auto store = static_cast<NDAccess *>(stage_store);
-  auto op = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
-  auto current = _StagesKernel()->Current();
-  current->Append(op);
-  _StagesKernel()->StageLoad(current, op, store);
-  return op;
-}
-
-NDObject *StagesKernel::_Builder::StageStore(NDObject *input) {
-  auto op = new NDStore(nullptr, input);
-  auto current = _StagesKernel()->Current();
-  current->Append(op);
-  _StagesKernel()->StageStore(current, op);
-  return op;
-}
-
-NDObject *StagesKernel::_Builder::StagePadStore(NDObject *input, int64_t pad_size) {
-  auto op = new NDPadStore(nullptr, input, pad_size);
-  auto current = _StagesKernel()->Current();
-  current->Append(op);
-  _StagesKernel()->StageStore(current, op);
-  return op;
 }
 
 void SequenceKernel::Append(NDObject *obj) {

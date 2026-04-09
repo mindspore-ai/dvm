@@ -1351,6 +1351,7 @@ class GraphTracker {
       records_.clear();
     }
   }
+  bool Empty() const { return records_.empty(); }
 
  protected:
   struct _Record {

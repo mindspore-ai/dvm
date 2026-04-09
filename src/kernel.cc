@@ -1736,6 +1736,7 @@ template class SpecVector<true>;
 
 struct SpecVecStage : public StagesKernel::Stage {
   SpecVecStage(uint32_t flags, SpecVecContext &ctx) : StagesKernel::Stage(&spec_k_), spec_k_(flags, ctx) {}
+  ~SpecVecStage() override { kernel = nullptr; }
   SpecVecBase spec_k_;
 };
 

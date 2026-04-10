@@ -168,6 +168,7 @@ class System : public Config {
 
  private:
   void DoInit();
+  void GetSocConfig();
 
   uint64_t local_mem_size_;
   uint64_t ub_workspace_size_;
@@ -194,10 +195,10 @@ class System : public Config {
 
 extern System g_system;
 
-constexpr uint64_t SIMD_BLOCK_SIZE = 32;
-constexpr uint64_t SIMD_REPEAT_SIZE = 256;
-constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
-constexpr uint32_t MATMUL_ALIGN_MAX = 1024;
+inline constexpr uint64_t SIMD_BLOCK_SIZE = 32;
+inline constexpr uint64_t SIMD_REPEAT_SIZE = 256;
+inline constexpr uint64_t PARAM_TABLE_LIMIT = 4096;
+inline constexpr uint32_t MATMUL_ALIGN_MAX = 1024;
 
 extern const uint64_t ITEM_SIZE[dvm::kDataTypeEnd];
 extern const char *DTYPE_NAMES[dvm::kDataTypeEnd];

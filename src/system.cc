@@ -79,15 +79,6 @@ const uint64_t ITEM_SIZE[dvm::kDataTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(floa
 const char *DTYPE_NAMES[dvm::kDataTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32", "int64"};
 const uint64_t ITEM_SIMD_WIDTH_MAX[kDataTypeEnd] = {128, 128, 128, 64, 64};
 
-static std::string GetSocName() {
-  const char *soc_name = getenv("DVM_SOC_NAME");
-  if (soc_name == nullptr) {
-    soc_name = aclrtGetSocName();
-    ASSERT(soc_name != nullptr);
-  }
-  return soc_name;
-}
-
 void DvmException(const char *error_str) {
   std::ostringstream oss;
   oss << "DVM EXCEPTION. reason: " << error_str;
@@ -234,24 +225,41 @@ int System::CodeLaunchACL(const System &self, const Code *code, void *extern_ws,
   return launch(func_handle, code->block_dim_, stream, nullptr, args, sizeof(args), nullptr, 0);
 }
 
-void System::DoInit() {
-  inited_ = true;
-  const SocConfig *config = nullptr;
-  auto soc_name = GetSocName();
+void System::GetSocConfig() {
+  std::string soc_name;
+  if (const char *env_config = getenv("DVM_SOC_NAME")) {
+    soc_name = env_config;
+    if (size_t pos1 = soc_name.find(':'); pos1 != std::string::npos) {
+      // vebose format: "CustomAscend:220:25:192"
+      size_t pos2 = soc_name.find(':', pos1 + 1);
+      size_t pos3 = soc_name.find(':', pos2 + 1);
+      EXCEPTION_IF(pos2 == std::string::npos || pos3 == std::string::npos, "Invalid DVM_SOC_NAME config.");
+      soc_name_ = kSocUnknow;
+      arch_ = soc_name.substr(pos1 + 1, pos2 - pos1 - 1) == "220" ? kAiCore_C220 : kAiCore_C220;
+      cube_core_num_ = std::stoull(soc_name.substr(pos2 + 1, pos3 - pos2 - 1));
+      l2_size_ = std::stoull(soc_name.substr(pos3 + 1)) * MB;
+      return;
+    }
+  } else {
+    soc_name = aclrtGetSocName();
+  }
   for (const SocConfig &c : soc_configs) {
     if (soc_name == c.name) {
-      config = &c;
-      break;
+      soc_name_ = c.type;
+      arch_ = c.arch;
+      cube_core_num_ = c.aicore_num;
+      l2_size_ = c.l2_size;
+      return;
     }
   }
-  EXCEPTION_IF(config == nullptr, "Unrecognized SoC Version.");
-  soc_name_ = config->type;
+  DvmException("Unrecognized SoC Version.");
+}
 
-  arch_ = config->arch;
+void System::DoInit() {
+  inited_ = true;
+  GetSocConfig();
   event_num_ = 8;
-  cube_core_num_ = config->aicore_num;
   vector_core_num_ = cube_core_num_ * 2;
-  l2_size_ = config->l2_size;
   l1_size_ = 512 * 1024;
   const unsigned char *g_vkernel_bin = nullptr;
   unsigned int g_vkernel_bin_len = 0;

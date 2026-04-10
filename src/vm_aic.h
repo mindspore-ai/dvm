@@ -16,12 +16,12 @@
 #define _CCE_KERNEL_
 #include "isa.h"
 
-constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
-constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
-constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
-constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
-constexpr uint64_t BIAS_ADDR = 0;
-constexpr uint64_t BLOCK_SIZE = 16;
+inline constexpr uint64_t L0_PINGPONG_BUFFER_LEN = 16384;
+inline constexpr uint64_t L1_PINGPONG_BUFFER_LEN = 131072;
+inline constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
+inline constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
+inline constexpr uint64_t BIAS_ADDR = 0;
+inline constexpr uint64_t BLOCK_SIZE = 16;
 
 #define V_PINGPONG_FLAG_EVENT 0x1ul
 #define V_PINGPONG_FLAG_STORE 0x2ul

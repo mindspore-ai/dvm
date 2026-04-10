@@ -37,8 +37,8 @@ else
 CFLGAS += -O2 -D_FORTIFY_SOURCE=2
 endif
 
-ifneq ($(DVM_SOC_NAME),)
-LD_FLAGS = -L${ASCEND_PATH}/toolkit/tools/simulator/${DVM_SOC_NAME}/lib -lruntime_camodel -L${ASCEND_PATH}/lib64 -lascendcl
+ifneq ($(DVM_SOC_SIMU),)
+LD_FLAGS = -L${ASCEND_PATH}/toolkit/tools/simulator/${DVM_SOC_SIMU}/lib -lruntime_camodel -L${ASCEND_PATH}/lib64 -lascendcl
 CFLGAS += -DVK_SIM_MODEL
 else
 LD_FLAGS = -L${ASCEND_PATH}/lib64 -lascendcl

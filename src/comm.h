@@ -23,9 +23,9 @@
 #include "acl/acl_rt.h"
 
 namespace dvm {
-constexpr size_t MAX_RANK_SIZE = 8;
-constexpr size_t MAX_BUFFER_BYTES = 204 * 1024 * 1024;  // 204MB
-constexpr size_t IPC_NAME_SIZE = 65;
+inline constexpr size_t MAX_RANK_SIZE = 8;
+inline constexpr size_t MAX_BUFFER_BYTES = 204 * 1024 * 1024;  // 204MB
+inline constexpr size_t IPC_NAME_SIZE = 65;
 class SocketChannel;
 
 class Communicator {

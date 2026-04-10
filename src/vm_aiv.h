@@ -28,11 +28,11 @@
 #define ALIGN_UP(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
 
 #if __VM_ARCH__ == 220
-constexpr uint64_t UB_WORKSPACE_SIZE = 512;
-constexpr uint64_t WORKSPACE = 192ul * 1024ul - UB_WORKSPACE_SIZE;
+inline constexpr uint64_t UB_WORKSPACE_SIZE = 512;
+inline constexpr uint64_t WORKSPACE = 192ul * 1024ul - UB_WORKSPACE_SIZE;
 #else
-constexpr uint64_t UB_WORKSPACE_SIZE = 256;
-constexpr uint64_t WORKSPACE = 256ul * 1024ul - UB_WORKSPACE_SIZE;
+inline constexpr uint64_t UB_WORKSPACE_SIZE = 256;
+inline constexpr uint64_t WORKSPACE = 256ul * 1024ul - UB_WORKSPACE_SIZE;
 #endif
 
 #define VREG_TABLE_BASE 0

@@ -1,7 +1,7 @@
 # Device Virtual Machine(DVM)
 
 
-| [用户开发指南](docs/tutorial.md) | [Example示例](examples) | [DVM框架开发](docs/development.md) |
+| [技术论文](https://arxiv.org/abs/2603.24239) | [用户手册](docs/tutorial.md) | [Example示例](examples) | [DVM开发](docs/development.md) |
 
 ---
 

@@ -79,13 +79,13 @@ SIMULATOR_NAMES=("910B1" "910B2" "910B3" "910B4")
 
 if [ -n "${SIMULATOR_NAME}" ]; then
   echo "Enabling simulator mode..."
-  export DVM_SOC_NAME="Ascend${SIMULATOR_NAME}"
+  export DVM_SOC_SIMU="Ascend${SIMULATOR_NAME}"
   export DEVICE_ID=0
-  echo "DVM_SOC_NAME: ${DVM_SOC_NAME}"
+  echo "DVM_SOC_SIMU: ${DVM_SOC_SIMU}"
   echo "Note: For ESL Model mode:"
   echo "      export LD_LIBRARY_PATH=/path/to/your/esl_lib:\$LD_LIBRARY_PATH"
   echo "Note: For regular simulation mode:"
-  echo "      export LD_LIBRARY_PATH=\${ASCEND_PATH}/tools/simulator/\${DVM_SOC_NAME}/lib:\$LD_LIBRARY_PATH"
+  echo "      export LD_LIBRARY_PATH=\${ASCEND_PATH}/tools/simulator/\${DVM_SOC_SIMU}/lib:\$LD_LIBRARY_PATH"
 fi
 
 # ----------------------------

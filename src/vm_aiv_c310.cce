@@ -54,6 +54,8 @@ struct SizeToUint<2> { using type = uint16_t; };
 template <typename T>
 using UintFor = typename SizeToUint<sizeof(T)>::type;
 
+constexpr uint32_t kSimtThreadNum = 2048;
+
 template <typename T>
 __aicore_inline__ MaskReg UpdateMask(uint32_t &scalar) {
   MaskReg reg;
@@ -89,6 +91,69 @@ constexpr __aicore_inline__ DistVST DistSTValue() {
     return DistVST::DIST_NORM_B16;
   }
   return DistVST::DIST_NORM_B32;
+}
+
+template <auto funcPtr, typename... Args>
+__aicore__ inline void VfCall(cce::dim3 thread_nums, Args &&...args) {
+  cce::async_invoke<funcPtr>(thread_nums, args...);
+}
+
+template <typename T>
+__simt_vf__ inline void OneHotSimtX(__ubuf__ T *dst, __ubuf__ int32_t *indices, uint32_t iter_num, uint32_t depth,
+                                    T on_value) {
+  for (uint32_t i = threadIdx.x; i < iter_num; i += blockDim.x) {
+    uint32_t indice = static_cast<uint32_t>(indices[i]);
+    if (indice < depth) {
+      dst[i * depth + indice] = on_value;
+    }
+  }
+}
+
+template <typename T>
+__simt_vf__ inline void OneHotSimtXTile(__ubuf__ T *dst, __ubuf__ int32_t *indices, uint32_t begin, uint32_t depth,
+                                        T on_value) {
+  if (threadIdx.x == 0) {
+    uint32_t indice = static_cast<uint32_t>(indices[0]);
+    if (indice >= begin && indice < begin + depth) {
+      dst[indice - begin] = on_value;
+    }
+  }
+}
+
+template <typename T>
+__simt_vf__ inline void OneHotSimtY(__ubuf__ T *dst, __ubuf__ int32_t *indices, uint32_t dup_round,
+                                    uint32_t iter_num, uint32_t depth, T on_value) {
+  uint32_t total = dup_round * iter_num;
+  for (uint32_t linear = threadIdx.x; linear < total; linear += blockDim.x) {
+    uint32_t dup = linear / iter_num;
+    uint32_t i = linear - dup * iter_num;
+    uint32_t indice = static_cast<uint32_t>(indices[linear]);
+    if (indice < depth) {
+      dst[(depth * dup + indice) * iter_num + i] = on_value;
+    }
+  }
+}
+
+template <typename T>
+__simt_vf__ inline void OneHotSimtYTile(__ubuf__ T *dst, __ubuf__ int32_t *indices, uint32_t iter_num,
+                                        uint32_t begin, uint32_t end, T on_value) {
+  for (uint32_t i = threadIdx.x; i < iter_num; i += blockDim.x) {
+    uint32_t indice = static_cast<uint32_t>(indices[i]);
+    if (indice >= begin && indice < end) {
+      dst[(indice - begin) * iter_num + i] = on_value;
+    }
+  }
+}
+
+template <typename T>
+__simt_vf__ inline void OneHotSimtYTile2(__ubuf__ T *dst, __ubuf__ int32_t *indices, uint32_t iter_num,
+                                         uint32_t begin, T on_value) {
+  for (uint32_t i = threadIdx.x; i < iter_num; i += blockDim.x) {
+    uint32_t indice = static_cast<uint32_t>(indices[i]);
+    if (indice == begin) {
+      dst[i] = on_value;
+    }
+  }
 }
 
 #define DECLARE_BINARY(builtin)                                                                                 \
@@ -983,59 +1048,39 @@ __aicore_inline__ void OneHot(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   T on_value, off_value;
   vOneHot::DecodeValue(pc, on_value, off_value);
   VectorDupCount(xd, off_value, op.data_size);
-  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
   switch (op.mode) {
     case vOneHot::MODE_X: {
-      for (uint64_t i = 0; i < op.iter_num; ++i) {
-        if (uint64_t indice = indices[i]; indice < op.depth) {
-          xd[i * op.depth + indice] = on_value;
-        }
-      }
+      VfCall<OneHotSimtX<T>>(cce::dim3(kSimtThreadNum), xd, indices, static_cast<uint32_t>(op.iter_num),
+                             static_cast<uint32_t>(op.depth), on_value);
       break;
     }
     case vOneHot::MODE_X_TILE: {
-      uint64_t begin = (TileIdx(tile) % op.dup_round) * op.depth;
-      if (uint64_t indice = indices[0]; indice >= begin && indice < begin + op.depth) {
-        xd[indice - begin] = on_value;
-      }
+      uint32_t begin = static_cast<uint32_t>((TileIdx(tile) % op.dup_round) * op.depth);
+      VfCall<OneHotSimtXTile<T>>(cce::dim3(kSimtThreadNum), xd, indices, begin, static_cast<uint32_t>(op.depth),
+                                 on_value);
       break;
     }
     case vOneHot::MODE_Y: {
-      for (uint64_t dup = 0; dup < op.dup_round; ++dup) {
-        for (uint64_t i = 0; i < op.iter_num; ++i) {
-          if (uint64_t indice = indices[op.iter_num * dup + i]; indice < op.depth) {
-            xd[(op.depth * dup + indice) * op.iter_num + i] = on_value;
-          }
-        }
-      }
+      VfCall<OneHotSimtY<T>>(cce::dim3(kSimtThreadNum), xd, indices, static_cast<uint32_t>(op.dup_round),
+                             static_cast<uint32_t>(op.iter_num), static_cast<uint32_t>(op.depth), on_value);
       break;
     }
     case vOneHot::MODE_Y_TILE: {
-      uint64_t begin = (TileIdx(tile) % op.dup_round) * op.depth;
-      uint64_t end = begin + op.depth;
-      for (uint64_t i = 0; i < op.iter_num; ++i) {
-        if (uint64_t indice = indices[i]; indice >= begin && indice < end) {
-          xd[(indice - begin) * op.iter_num + i] = on_value;
-        }
-      }
+      uint32_t begin = static_cast<uint32_t>((TileIdx(tile) % op.dup_round) * op.depth);
+      uint32_t end = begin + static_cast<uint32_t>(op.depth);
+      VfCall<OneHotSimtYTile<T>>(cce::dim3(kSimtThreadNum), xd, indices, static_cast<uint32_t>(op.iter_num),
+                                 begin, end, on_value);
       break;
     }
     case vOneHot::MODE_Y_TILE_2: {
-      uint64_t begin = (TileIdx(tile) % op.dup_round) / op.depth;
-      uint64_t end = begin + 1ul;
-      for (uint64_t i = 0; i < op.iter_num; ++i) {
-        if (uint64_t indice = indices[i]; indice >= begin && indice < end) {
-          xd[i] = on_value;
-        }
-      }
+      uint32_t begin = static_cast<uint32_t>((TileIdx(tile) % op.dup_round) / op.depth);
+      VfCall<OneHotSimtYTile2<T>>(cce::dim3(kSimtThreadNum), xd, indices, static_cast<uint32_t>(op.iter_num),
+                                  begin, on_value);
       break;
     }
     default:
       break;
   }
-  set_flag(PIPE_S, PIPE_V, EVENT_ID0);
-  wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
 }
 
 template <typename T>

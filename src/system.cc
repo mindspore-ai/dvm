@@ -230,12 +230,12 @@ void System::GetSocConfig() {
   if (const char *env_config = getenv("DVM_SOC_NAME")) {
     soc_name = env_config;
     if (size_t pos1 = soc_name.find(':'); pos1 != std::string::npos) {
-      // vebose format: "CustomAscend:220:25:192"
-      size_t pos2 = soc_name.find(':', pos1 + 1);
-      size_t pos3 = soc_name.find(':', pos2 + 1);
+      // verbose format: "CustomAscend:220,25,192"
+      size_t pos2 = soc_name.find(',', pos1 + 1);
+      size_t pos3 = soc_name.find(',', pos2 + 1);
       EXCEPTION_IF(pos2 == std::string::npos || pos3 == std::string::npos, "Invalid DVM_SOC_NAME config.");
       soc_name_ = kSocUnknow;
-      arch_ = soc_name.substr(pos1 + 1, pos2 - pos1 - 1) == "220" ? kAiCore_C220 : kAiCore_C220;
+      arch_ = soc_name.substr(pos1 + 1, pos2 - pos1 - 1) == "220" ? kAiCore_C220 : kAiCore_C310;
       cube_core_num_ = std::stoull(soc_name.substr(pos2 + 1, pos3 - pos2 - 1));
       l2_size_ = std::stoull(soc_name.substr(pos3 + 1)) * MB;
       return;

@@ -720,3 +720,14 @@ def test_eager_kernel_build():
     x4_e = x3_e + x1_e
     t.store_expect(x4, x4_e)
     assert(t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_eager_broadcast_s():
+    t = Tester("eager")
+    x1 = t.full(0.1, [256], "float32")
+    x2 = t.add(x1, 0.2)
+    t.store_expect(x2, 0.3)
+    x3 = t.full(0.4, [512], "float32")
+    t.store_expect(x3, 0.4)
+    assert(t.run_check())

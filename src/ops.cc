@@ -1771,7 +1771,11 @@ void BroadcastScalarOp::Normalize(std::vector<NDObject *> &run_ops) {
   for (size_t i = 0; i < dims; ++i) {
     ndd_.dims[i] = shape_ref_->data[dims - i - 1];
   }
-  if (run_ops.empty()) {
+  if (flags_ & OBJ_FLAG_EAGER) {
+    lhs_ = new NDLoadDummy(type_id_);
+    lhs_->SetFlag(OBJ_FLAG_EAGER);
+    run_ops.push_back(lhs_);
+  } else if (run_ops.empty()) {
     if (dummy_load_ == nullptr) {
       dummy_load_ = new NDLoadDummy(type_id_);
     }

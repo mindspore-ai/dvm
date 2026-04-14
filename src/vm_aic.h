@@ -101,6 +101,7 @@ class TileVisitor {
   }
 
   __force_inline__ __aicore__ void PipelineSync(const M &m) {
+#if __VM_ARCH__ == 220
     auto op = reinterpret_cast<__gm__ vPipeCubeOp *__restrict__>(m.op_);
     uint64_t set_step, wait_step, wait_prod_num, uid;
     vPipeCubeOp::DecodeStep(op->step, set_step, wait_step, wait_prod_num, uid);
@@ -141,6 +142,7 @@ class TileVisitor {
       set_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
       wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID0);
     }
+#endif
   }
 
   __force_inline__ __aicore__ void VectorSync(M &m) {

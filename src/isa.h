@@ -20,10 +20,7 @@
 #include <stdint.h>
 
 #ifdef _CCE_KERNEL_
-#ifndef inline
-#define inline __inline__ __attribute__((always_inline))
-#endif
-#define __aicore_inline__ static[aicore] inline
+#define __aicore_inline__ static[aicore] __attribute__((always_inline))
 #define __bcode__ __gm__
 #define bcodeptr_t __bcode__ uint64_t *__restrict__
 #define __aicore__ [aicore]
@@ -326,7 +323,7 @@ __aicore_inline__ T RoundDown(T num, T rnd) {
 }
 
 template <typename T>
-__aicore__ inline T Gcd(T a, T b) {
+__aicore_inline__ T Gcd(T a, T b) {
   while (b != 0) {
     T c = b;
     b = a % b;
@@ -336,7 +333,7 @@ __aicore__ inline T Gcd(T a, T b) {
 }
 
 template <typename T>
-__aicore__ inline T Lcm(T a, T b) {
+__aicore_inline__ T Lcm(T a, T b) {
   return a * b / Gcd(a, b);
 }
 

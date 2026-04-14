@@ -638,6 +638,7 @@ __aicore_inline__ uint64_t VisitPipeSet(bcodeptr_t pc) {
 }
 
 __aicore_inline__ uint64_t VisitPipeWait(bcodeptr_t pc) {
+#if __VM_ARCH__ == 220
   vVisitPipeWait op;
   vVisitPipeWait::Decode(pc, op);
   VisitFunc nest_func = (VisitFunc)GetFunc(op.visit_id, RegTable()->vm_code_base);
@@ -670,4 +671,6 @@ __aicore_inline__ uint64_t VisitPipeWait(bcodeptr_t pc) {
     vVisitPipeWait::UpdateIdx(pc, op.idx + 1);
   }
   return tile;
+#endif
+  return -1;
 }

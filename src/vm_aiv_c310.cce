@@ -55,7 +55,7 @@ template <typename T>
 using UintFor = typename SizeToUint<sizeof(T)>::type;
 
 template <typename T>
-__aicore__ inline MaskReg UpdateMask(uint32_t &scalar) {
+__aicore_inline__ MaskReg UpdateMask(uint32_t &scalar) {
   MaskReg reg;
   if constexpr (sizeof(T) == 1) {
     reg = plt_b8(scalar, POST_UPDATE);
@@ -68,7 +68,7 @@ __aicore__ inline MaskReg UpdateMask(uint32_t &scalar) {
 }
 
 template <typename T>
-__aicore__ inline MaskReg MoveMask() {
+__aicore_inline__ MaskReg MoveMask() {
   if constexpr (sizeof(T) == 2) {
     return movp_b16();
   } else if constexpr (sizeof(T) == 4) {
@@ -241,19 +241,19 @@ DECLARE_BINARYS_EXT(vsub)
 
 #define DECLARE_CAST(T, U, ...)                                                          \
   template <ROUND R>                                                                     \
-  __aicore__ inline void CastImpl(RegTensor<T> &dst, RegTensor<U> &src, MaskReg &mask) { \
+  __aicore_inline__ void CastImpl(RegTensor<T> &dst, RegTensor<U> &src, MaskReg &mask) { \
     vcvt(dst, src, mask, __VA_ARGS__);                                                   \
   }
 
 template <ROUND R>
-__aicore__ inline void CastImpl(RegTensor<half> &dst, RegTensor<int32_t> &src, MaskReg &mask) {
+__aicore_inline__ void CastImpl(RegTensor<half> &dst, RegTensor<int32_t> &src, MaskReg &mask) {
   vector_f32 vregTmpF32;
   vcvt(vregTmpF32, src, mask, RoundValue<R>());
   vcvt(dst, vregTmpF32, mask, RoundValue<R>(), RS_ENABLE, PART_EVEN);
 }
 
 template <ROUND R>
-__aicore__ inline void CastImpl(RegTensor<float> &dst, RegTensor<float> &src, MaskReg &mask) {
+__aicore_inline__ void CastImpl(RegTensor<float> &dst, RegTensor<float> &src, MaskReg &mask) {
   vtrc(dst, src, RoundValue<R>(), mask);
 }
 
@@ -1283,7 +1283,7 @@ __aicore_inline__ void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     }
   }
   uint32_t dst_stride = op.iter_size;
-  uint32_t src_stride = op.pad_size + op.iter_size;
+  uint32_t src_stride = iter_num == 1 ? 0 : op.pad_size + op.iter_size;
   copy_ubuf_to_gm_align_v2(dst, (__ubuf__ uint8_t *)(op.xn), 0, iter_num, iter_size, 0, dst_stride, src_stride);
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + iter_num * iter_size);
 }

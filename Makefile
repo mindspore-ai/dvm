@@ -57,6 +57,13 @@ ifneq ($(asan),)
 CFLGAS += -fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer
 endif
 
+XXD_FOUND := $(shell which xxd 2>/dev/null)
+ifdef XXD_FOUND
+XXDI = xxd -i
+else
+XXDI = python3 scripts/xxdi.py
+endif
+
 VMAIN_OFFSET=0x$$(llvm-objdump -t vm_aic_c220.o | grep " dvm_mix_aic$$" | awk '{print $$5}')
 VMAIN_C310_OFFSET=0x$$(llvm-objdump -t vm_aic_c310.o | grep " dvm_mix_aic$$" | awk '{print $$5}')
 
@@ -82,8 +89,8 @@ ${OBJ}: %.o: %.cc $(HEADERS)
 
 vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	echo "extern const" > vm.cc
-	xxd -i g_vkernel_c220_bin >> vm.cc
-	xxd -i g_vkernel_c310_bin >> vm.cc
+	$(XXDI) g_vkernel_c220_bin >> vm.cc
+	$(XXDI) g_vkernel_c310_bin >> vm.cc
 	objdump -t g_vkernel_c310_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c310 >> vm.cc
 	objdump -t g_vkernel_c220_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c220 >> vm.cc
 	g++ -c $(CFLGAS) vm.cc -o vm.o

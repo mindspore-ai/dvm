@@ -57,6 +57,13 @@ ifneq ($(asan),)
 CFLGAS += -fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer
 endif
 
+XXD_FOUND := $(shell which xxd 2>/dev/null)
+ifdef XXD_FOUND
+XXDI = xxd -i
+else
+XXDI = python3 scripts/xxdi.py
+endif
+
 VMAIN_OFFSET=0x$$(llvm-objdump -t vm_aic_c220.o | grep " dvm_mix_aic$$" | awk '{print $$5}')
 VMAIN_C310_OFFSET=0x$$(llvm-objdump -t vm_aic_c310.o | grep " dvm_mix_aic$$" | awk '{print $$5}')
 
@@ -82,8 +89,8 @@ ${OBJ}: %.o: %.cc $(HEADERS)
 
 vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	echo "extern const" > vm.cc
-	xxd -i g_vkernel_c220_bin >> vm.cc
-	xxd -i g_vkernel_c310_bin >> vm.cc
+	$(XXDI) g_vkernel_c220_bin >> vm.cc
+	$(XXDI) g_vkernel_c310_bin >> vm.cc
 	objdump -t g_vkernel_c310_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c310 >> vm.cc
 	objdump -t g_vkernel_c220_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c220 >> vm.cc
 	g++ -c $(CFLGAS) vm.cc -o vm.o
@@ -100,16 +107,16 @@ g_vkernel_c310_bin: vm_aiv_c310.o vm_aic_c310.o
 	ld.lld -Ttext=0 vm_aic_c310.o vm_aiv_c310.o -static -o g_vkernel_c310_bin
 endif
 
-vm_aiv_c220.o: vm_aiv.cce isa.h vm_aic_c220.o
+vm_aiv_c220.o: vm_aiv.cce isa.h vm_aiv.h vm_aic_c220.o
 	ccec -c -O2 $(CCE_FLGAS_C220) -D VMAIN_OFFSET=$(VMAIN_OFFSET) --cce-aicore-arch=dav-c220-vec src/vm_aiv.cce -o vm_aiv_c220.o
 
-vm_aic_c220.o: vm_aic.cce isa.h
+vm_aic_c220.o: vm_aic.cce isa.h vm_aic.h
 	ccec -c -O2 $(CCE_FLGAS_C220) --cce-aicore-arch=dav-c220-cube src/vm_aic.cce -o vm_aic_c220.o
 
-vm_aiv_c310.o: vm_aiv_c310.cce isa.h vm_aic_c310.o
+vm_aiv_c310.o: vm_aiv_c310.cce isa.h vm_aiv.h vm_aic_c310.o
 	ccec -c -O2 $(CCE_FLGAS_C310) -D VMAIN_OFFSET=$(VMAIN_C310_OFFSET) --cce-aicore-arch=$(C310_ARCH_VEC) src/vm_aiv_c310.cce -o vm_aiv_c310.o
 
-vm_aic_c310.o: vm_aic_c310.cce isa.h
+vm_aic_c310.o: vm_aic_c310.cce isa.h vm_aic.h
 	ccec -c -O2 $(CCE_FLGAS_C310) --cce-aicore-arch=$(C310_ARCH_CUBE) src/vm_aic_c310.cce -o vm_aic_c310.o
 
 clean:

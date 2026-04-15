@@ -2421,11 +2421,13 @@ void SplitGraphS::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloca
   for (size_t i = 0; i < reloc_size; ++i, ++relocs) {
     static_cast<NDAccess *>(relocs->io)->addr_.Reloc(relocs->addr);
   }
-  if (single_ws_) {
-    CombineAlloc(slot_ws_, ws_alloc);
-  } else {
-    for (auto &slot : slot_ws_) {
-      slot.second->Reloc(ws_alloc->Alloc(slot.first));
+  if (!slot_ws_.empty()) {
+    if (single_ws_) {
+      CombineAlloc(slot_ws_, ws_alloc);
+    } else {
+      for (auto &slot : slot_ws_) {
+        slot.second->Reloc(ws_alloc->Alloc(slot.first));
+      }
     }
   }
   RelocBinds();
@@ -2433,15 +2435,19 @@ void SplitGraphS::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloca
 
 void SplitEagerW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
   SlotCodeGen(relocs, reloc_size);
-  CombineAlloc(ctx_->slot_ws_, ws_alloc);
-  ctx_->slot_ws_.clear();
+  if (!ctx_->slot_ws_.empty()) {
+    CombineAlloc(ctx_->slot_ws_, ws_alloc);
+    ctx_->slot_ws_.clear();
+  }
   RelocBinds();
 }
 
 void SplitGraphDW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
   SlotCodeGen(relocs, reloc_size);
-  CombineAlloc(ctx_->slot_ws_, ws_alloc);
-  ctx_->slot_ws_.clear();
+  if (!ctx_->slot_ws_.empty()) {
+    CombineAlloc(ctx_->slot_ws_, ws_alloc);
+    ctx_->slot_ws_.clear();
+  }
   RelocBinds();
 }
 }  // namespace dvm

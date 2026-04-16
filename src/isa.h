@@ -23,7 +23,9 @@
 #define __aicore_inline__ static[aicore] __attribute__((always_inline))
 #define __bcode__ __gm__
 #define bcodeptr_t __bcode__ uint64_t *__restrict__
+#ifndef __aicore__
 #define __aicore__ [aicore]
+#endif
 #else
 #define __gm__
 #define __bcode__
@@ -41,6 +43,8 @@
 enum vAccInsnID {
   V_LOAD = 0,
   V_LOAD_DUMMY,
+  V_LOAD_GATHER_B16, // [c310]
+  V_LOAD_GATHER_B32, // [c310]
   V_LOAD_VIEW,
   V_LOAD_VIEW_X_B32,
   V_LOAD_VIEW_X_B16,
@@ -215,11 +219,13 @@ enum vAtomicType {
 // head(load/store):
 //  ID(16) << 48 | ext(34) << 14 | wait_event(3) << 11 | set_event(3) << 8 | len(4) << 4 |
 //  wait_flag(1) << 3 | set_flag(1) << 2 | reserved(1) << 1 | SIMD_FLAG(1)
+// c310 stores the dispatch function offset in 4B units.
 
 // common area
 #define V_HEAD_SIMD_FLAG_OFFSET 0
 #define V_HEAD_ID_OFFSET 48
 #define V_HEAD_ID_MASK 0xfffful
+#define V_C310_FUNC_OFFSET_SHIFT 2
 #define V_HEAD_EVENT_MASK 0x7ul
 
 // simd
@@ -1151,7 +1157,7 @@ struct vViewLoadX {
   // pc[3]: from(64)
   // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
   // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
-   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoadX &op) {
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoadX &op) {
     op.iter_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 32);
     uint64_t data1 = pc[1];
     op.offset = vGetBitRange(data1, 0, 32);
@@ -1231,6 +1237,57 @@ struct vViewStore {
     return loop_size << 48 | src_stride << 32 | dst_stride;
   }
   __aicore_inline__ uint64_t EncodeTile(uint64_t space, uint64_t stride) { return space << 32 | stride; }
+};
+
+struct vGatherLoad {
+  enum { ROUND_OFFSET = 5 };
+  enum { RELOC_OFFSET = 1 };
+  enum { INDEX_RELOC_OFFSET = 2 };
+  uint64_t xn;
+  uint64_t from;
+  uint64_t index;
+  uint64_t inner_size;
+  uint64_t gather_size;
+  uint64_t gather_dim_size;
+  uint64_t body_iter;
+  uint64_t tail_iter;
+  uint64_t iter_size;
+  uint64_t pad_size;
+  uint64_t round_rank;
+  // pc[0]: c_xn(13)
+  // pc[1]: from
+  // pc[2]: index
+  // pc[3]: round_rank(4) << 60 | pad_size(8) << 48 | iter_size(16) << 32 | tail_iter(16) << 16 | body_iter(16)
+  // pc[4]: gather_dim_size(16) << 32 | gather_size(16) << 16 | inner_size(16)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vGatherLoad &op) {
+    op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
+    op.from = pc[1];
+    op.index = pc[2];
+    uint64_t data = pc[3];
+    op.round_rank = data >> 60;
+    op.pad_size = (data >> 48) & 0xfful;
+    op.iter_size = (data >> 32) & 0xfffful;
+    op.tail_iter = (data >> 16) & 0xfffful;
+    op.body_iter = data & 0xfffful;
+    data = pc[4];
+    op.inner_size = data & 0xfffful;
+    op.gather_size = (data >> 16) & 0xfffful;
+    op.gather_dim_size = (data >> 32) & 0xfffful;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vGatherLoad &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t size = vGatherLoad::ROUND_OFFSET + round_size;
+    uint64_t ext = vCompactX(op.xn);
+    pc[0] = vMakeAccHead(id, ext, size);
+    pc[1] = op.from;
+    pc[2] = op.index;
+    pc[3] = op.round_rank << 60 | op.pad_size << 48 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
+    pc[4] = op.gather_dim_size << 32 | op.gather_size << 16 | op.inner_size;
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vGatherLoad::ROUND_OFFSET + i] = rounds[i];
+    }
+    return size;
+  }
 };
 
 struct vMultiLoad {

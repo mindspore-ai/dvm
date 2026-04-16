@@ -156,6 +156,49 @@ __simt_vf__ inline void OneHotSimtYTile2(__ubuf__ T *dst, __ubuf__ int32_t *indi
   }
 }
 
+constexpr uint32_t kGatherLoadSimtNoPadThreadNum = 1024;
+constexpr uint32_t kGatherLoadSimtPadThreadNum = 1024;
+
+template <typename T>
+__simt_vf__ inline void GatherLoadSimtNoPad(__ubuf__ T *dst, __gm__ T *src, __gm__ int32_t *index,
+                                            uint32_t tile_base, uint32_t total, uint32_t inner_size,
+                                            uint32_t gather_size, uint32_t gather_dim_size) {
+  for (uint32_t i = threadIdx.x; i < total; i += blockDim.x) {
+    uint32_t out_idx = tile_base + i;
+    uint32_t gather_linear = out_idx / inner_size;
+    uint32_t inner_idx = out_idx - gather_linear * inner_size;
+    uint32_t outer_idx = gather_linear / gather_size;
+    uint32_t gather_idx = gather_linear - outer_idx * gather_size;
+    int32_t src_idx = index[gather_idx];
+    if (src_idx < 0) {
+      src_idx += static_cast<int32_t>(gather_dim_size);
+    }
+    uint32_t src_offset = (outer_idx * gather_dim_size + static_cast<uint32_t>(src_idx)) * inner_size + inner_idx;
+    dst[i] = (src_idx < 0 || static_cast<uint32_t>(src_idx) >= gather_dim_size) ? 0 : src[src_offset];
+  }
+}
+
+template <typename T>
+__simt_vf__ inline void GatherLoadSimtPad(__ubuf__ T *dst, __gm__ T *src, __gm__ int32_t *index,
+                                          uint32_t tile_base, uint32_t total, uint32_t iter_size, uint32_t pad_size,
+                                          uint32_t inner_size, uint32_t gather_size, uint32_t gather_dim_size) {
+  for (uint32_t i = threadIdx.x; i < total; i += blockDim.x) {
+    uint32_t row = i / iter_size;
+    uint32_t dst_idx = i + row * pad_size;
+    uint32_t out_idx = tile_base + i;
+    uint32_t gather_linear = out_idx / inner_size;
+    uint32_t inner_idx = out_idx - gather_linear * inner_size;
+    uint32_t outer_idx = gather_linear / gather_size;
+    uint32_t gather_idx = gather_linear - outer_idx * gather_size;
+    int32_t src_idx = index[gather_idx];
+    if (src_idx < 0) {
+      src_idx += static_cast<int32_t>(gather_dim_size);
+    }
+    uint32_t src_offset = (outer_idx * gather_dim_size + static_cast<uint32_t>(src_idx)) * inner_size + inner_idx;
+    dst[dst_idx] = (src_idx < 0 || static_cast<uint32_t>(src_idx) >= gather_dim_size) ? 0 : src[src_offset];
+  }
+}
+
 #define DECLARE_BINARY(builtin)                                                                                 \
   template <typename T>                                                                                         \
   __aicore_inline__ void builtin##_count(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint32_t count) { \
@@ -1394,6 +1437,42 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+template <typename T>
+__aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vGatherLoad op;
+  vGatherLoad::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  if (op.round_rank > 0) {
+    tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vGatherLoad::ROUND_OFFSET);
+    if (tile_idx == INVALID_INT) {
+      return;
+    }
+  }
+  uint32_t body_iter = static_cast<uint32_t>(op.body_iter);
+  uint32_t iter_size = static_cast<uint32_t>(op.iter_size);
+  if (IsLastTile(tile)) {
+    if (body_iter == 1) {
+      iter_size = static_cast<uint32_t>(op.tail_iter);
+    } else {
+      body_iter = static_cast<uint32_t>(op.tail_iter);
+    }
+  }
+  uint32_t total = body_iter * iter_size;
+  uint32_t dup_num = static_cast<uint32_t>(op.body_iter * op.iter_size);
+  uint32_t tile_base = dup_num * static_cast<uint32_t>(tile_idx);
+  if (op.pad_size == 0) {
+    VfCall<GatherLoadSimtNoPad<T>>(cce::dim3(kGatherLoadSimtNoPadThreadNum), (__ubuf__ T *)(op.xn),
+                                   (__gm__ T *)(op.from), (__gm__ int32_t *)(op.index), tile_base, total,
+                                   static_cast<uint32_t>(op.inner_size), static_cast<uint32_t>(op.gather_size),
+                                   static_cast<uint32_t>(op.gather_dim_size));
+  } else {
+    VfCall<GatherLoadSimtPad<T>>(cce::dim3(kGatherLoadSimtPadThreadNum), (__ubuf__ T *)(op.xn),
+                                 (__gm__ T *)(op.from), (__gm__ int32_t *)(op.index), tile_base, total, iter_size,
+                                 static_cast<uint32_t>(op.pad_size), static_cast<uint32_t>(op.inner_size),
+                                 static_cast<uint32_t>(op.gather_size), static_cast<uint32_t>(op.gather_dim_size));
+  }
+}
+
 __aicore_inline__ void ViewStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewStore op;
   vViewStore::Decode(pc, head, op);
@@ -1809,6 +1888,8 @@ DEF_DISP_VISIT(V_VISIT_PIPE_WAIT, VisitPipeWait);
 
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
+DEF_DISP_LOAD(V_LOAD_GATHER_B16, GatherLoad<uint16_t>(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_GATHER_B32, GatherLoad<uint32_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_X_B32, ViewLoadX<uint32_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_X_B16, ViewLoadX<uint16_t>(pc, head, tile))

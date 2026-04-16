@@ -31,7 +31,9 @@ class RtKernelPy : public KernelPy {
   ~RtKernelPy();
 
   py::object Load(py::object shape, DataTypePy type) override;
+  py::object GlobalAccess(py::object shape, DataTypePy type) override;
   py::object ViewLoad(py::object shape, py::object stride, DataTypePy type) override;
+  py::object GatherLoad(py::object shape, py::object index, DataTypePy type, int axis) override;
   py::object Store(py::object obj, DataTypePy type) override;
   py::object ViewStore(py::object obj, py::object stride, DataTypePy type) override;
 

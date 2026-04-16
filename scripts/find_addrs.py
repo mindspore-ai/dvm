@@ -17,9 +17,14 @@ import sys
 import re
 import warnings
 
-def process_address(ins_name, address):
+C310_FUNC_OFFSET_SHIFT = 2
+FUNC_OFFSET_MASK = 0xffff
+C310_FUNC_ADDR_LIMIT = 1 << (16 + C310_FUNC_OFFSET_SHIFT)
+
+
+def process_address(ins_name, address, arch):
     """
-    Processes a hexadecimal address, ensuring it's within a valid range.
+    Processes a hexadecimal address into the function offset for the target arch.
 
     Parameters:
         address (str): The address to process.
@@ -28,8 +33,16 @@ def process_address(ins_name, address):
         str: Processed address in hexadecimal format.
 
     Raises:
-        ValueError: If the address exceeds the valid range.
+        ValueError: If the address is not aligned to the offset unit.
     """
+    addr = int(address, 16)
+    if arch == "c310":
+        if addr >= C310_FUNC_ADDR_LIMIT:
+            warnings.warn(f"{ins_name}, Address exceeds 18-bit range.")
+        if addr & ((1 << C310_FUNC_OFFSET_SHIFT) - 1):
+            raise ValueError(f"{ins_name}, Address is not 4-byte aligned.")
+        return hex((addr >> C310_FUNC_OFFSET_SHIFT) & FUNC_OFFSET_MASK)
+
     head = int(address[:-4], 16)
     if head != 0:
         warnings.warn(f"{ins_name}, Address exceeds 0xFFFF.")
@@ -71,7 +84,7 @@ if __name__ == '__main__':
             match = re.search(pattern, line)
             if match:
                 address, ins_name = match.groups()
-                function_address_map[ins_name] = process_address(ins_name, address)
+                function_address_map[ins_name] = process_address(ins_name, address, arch)
     except EOFError:
         pass
 

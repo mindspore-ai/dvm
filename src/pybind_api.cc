@@ -433,12 +433,32 @@ py::object RtKernelPy::Load(py::object shape, DataTypePy type) {
   return ObjToPy(op);
 }
 
+py::object RtKernelPy::GlobalAccess(py::object shape, DataTypePy type) {
+  auto &info = loads_.emplace_back();
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
+  auto op = kernel_.GlobalAccess(nullptr, shape_ref, type);
+  info.op = op;
+  return ObjToPy(op);
+}
+
 py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, DataTypePy type) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto stride_ref = GetShapeRef(stride);
   auto op = kernel_.Load(nullptr, shape_ref, stride_ref, type);
+  info.op = op;
+  return ObjToPy(op);
+}
+
+py::object RtKernelPy::GatherLoad(py::object shape, py::object index, DataTypePy type, int axis) {
+  auto &info = loads_.emplace_back();
+  info.shape = GetVector(shape);
+  auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
+  auto index_op = PyToObj(index);
+  ASSERT(index_op->GetObjectType() == ObjectType::kGlobalAccess);
+  auto op = kernel_.GatherLoad(nullptr, shape_ref, index_op, axis, type);
   info.op = op;
   return ObjToPy(op);
 }
@@ -909,6 +929,8 @@ PYBIND11_MODULE(_dvm_py, m) {
   RegDvmPy(m);
   py::class_<RtKernelPy, KernelPy, std::shared_ptr<RtKernelPy>>(m, "PyKernel")
     .def(py::init<const std::string &, const std::string &, int>())
+    .def("global_access", &RtKernelPy::GlobalAccess, "create global access")
+    .def("gather_load", &RtKernelPy::GatherLoad, "gather load array")
     .def("slice_load", &RtKernelPy::SliceLoad, "load array")
     .def("stridedslice_load", &RtKernelPy::StridedSliceLoad, "load array")
     .def("multi_load", &RtKernelPy::MultiLoad, "load array(for reducescatter)")

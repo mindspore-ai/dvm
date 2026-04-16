@@ -270,6 +270,15 @@ class Kernel {
   NDObject *Load(void *addr, IntArrayRef *shape, DataType type);
 
   /**
+   * @brief Create a global memory access handle without emitting a load op.
+   * @param addr memory address of tensor in global memory.
+   * @param shape shape reference of tensor.
+   * @param type data type of tensor.
+   * @return the global access handle.
+   */
+  NDObject *GlobalAccess(void *addr, IntArrayRef *shape, DataType type);
+
+  /**
    * @brief Emit a incontinuous load operation from input tensor.
    * @param addr memory address of input tensor. also can be relocated at codegen stage.
    * @param shape shape reference of input tensor.
@@ -278,6 +287,17 @@ class Kernel {
    * @return the result load operation.
    */
   NDObject *Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, DataType type);
+
+  /**
+   * @brief Emit a gather load operation from input tensor and index tensor.
+   * index should be created by GlobalAccess.
+   * @param addr memory address of input tensor.
+   * @param shape input tensor shape.
+   * @param index global access object of index tensor.
+   * @param type data type of input tensor.
+   * @return the result gather load operation.
+   */
+  NDObject *GatherLoad(void *addr, IntArrayRef *shape, NDObject *index, int axis, DataType type);
 
   /**
    * @brief [DEPRECATED] Emit a slice load operation from input tensor. please use incontinuous load.

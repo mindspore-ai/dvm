@@ -129,6 +129,25 @@ class Tester(Kernel):
         self.input(op, arr_dtype, offset)
         return op
 
+    def global_access(self, shape_arr, dtype=None):
+        dtype = DataType.int32 if dtype is None else dtype
+        if not isinstance(shape_arr, np.ndarray):
+            return Kernel.global_access(self, shape_arr, _normalize_dtype(dtype))
+        shape_arr, dtype_id, shape = self._prepare_array_input(shape_arr, dtype)
+        op = Kernel.global_access(self, shape, dtype_id)
+        self.input(op, shape_arr)
+        return op
+
+    def gather_load(self, data_arr, index_op, axis=0, dtype=None):
+        if not isinstance(data_arr, np.ndarray):
+            return Kernel.gather_load(
+                self, data_arr, index_op, _normalize_dtype(dtype), axis
+            )
+        data_arr, dtype_id, shape = self._prepare_array_input(data_arr, dtype)
+        op = Kernel.gather_load(self, shape, index_op, dtype_id, axis)
+        self.input(op, data_arr)
+        return op
+
     def slice_load(self, shape_arr, start, size, dtype=None):
         if not isinstance(shape_arr, np.ndarray):
             # dynamic shape scenario

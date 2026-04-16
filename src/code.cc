@@ -288,6 +288,38 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
 
+void _DumpGatherLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vGatherLoad op;
+  vGatherLoad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << op.iter_size << "x" << op.body_iter;
+  oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from) << ", "
+      << reinterpret_cast<void *>(op.index);
+  oss << " //";
+  DumpVal("inner_size", op.inner_size, oss);
+  oss << ", ";
+  DumpVal("gather_size", op.gather_size, oss);
+  oss << ", ";
+  DumpVal("gather_dim_size", op.gather_dim_size, oss);
+  oss << ", ";
+  DumpVal("tail_iter", op.tail_iter, oss);
+  oss << ", ";
+  DumpVal("pad_size", op.pad_size, oss);
+  if (op.round_rank > 0) {
+    oss << ", ";
+    DumpRounds(op.round_rank, dump_info.insn + vGatherLoad::ROUND_OFFSET, oss);
+  }
+}
+
+void DumpGatherLoadB16(const DumpInfo &dump_info, std::ostringstream &oss) {
+  oss << "gather_load.b16.";
+  _DumpGatherLoad(dump_info, oss);
+}
+
+void DumpGatherLoadB32(const DumpInfo &dump_info, std::ostringstream &oss) {
+  oss << "gather_load.b32.";
+  _DumpGatherLoad(dump_info, oss);
+}
+
 void DumpLoadView(const DumpInfo &dump_info, std::ostringstream &oss) {
   vViewLoad op;
   vViewLoad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -711,6 +743,8 @@ using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_LOAD, &DumpLoad},
   {V_LOAD_DUMMY, &DumpLoadDummy},
+  {V_LOAD_GATHER_B16, &DumpGatherLoadB16},
+  {V_LOAD_GATHER_B32, &DumpGatherLoadB32},
   {V_LOAD_VIEW, &DumpLoadView},
   {V_LOAD_VIEW_X_B32, &DumpLoadViewX_B32},
   {V_LOAD_VIEW_X_B16, &DumpLoadViewX_B16},

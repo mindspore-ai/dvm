@@ -30,6 +30,8 @@ enum ObjectType {
   // Load
   kLoadDummy = 0,
   kMultiLoad,
+  kGlobalAccess,
+  kGatherLoad,
   kViewLoad,
   kLoad,
 
@@ -513,6 +515,16 @@ class NDAccess : public NDObject {
   RelocAddr addr_;
 };
 
+class NDGlobalAccess : public NDAccess {
+ public:
+  NDGlobalAccess(void *src, IntArrayRef *shape_ref, DataType type_id) : NDAccess(src, nullptr, type_id, ObjectType::kGlobalAccess) {
+    shape_ref_ = shape_ref;
+  }
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+};
+
 class NDLoadDummy : public NDAccess {
  public:
   NDLoadDummy(DataType type_id) : NDAccess(nullptr, nullptr, type_id, ObjectType::kLoadDummy) {
@@ -552,6 +564,41 @@ class NDLoad : public NDAccess {
   int tail_size_;
   DimArray round_tile_;
   NDSpaceData ndd_;
+};
+
+class NDSimtLoad : public NDLoad {
+ public:
+  NDSimtLoad(void *src, IntArrayRef *shape_ref, DataType type_id, ObjectType obj_id)
+      : NDLoad(src, shape_ref, type_id) {
+    obj_id_ = obj_id;
+  }
+  static void TileCollect(NDObject *op, TileInfo &info) { info.flags |= ObjectMeta::kSimt; }
+};
+
+class NDGatherLoad : public NDSimtLoad {
+ public:
+  NDGatherLoad(void *src, IntArrayRef *src_shape_ref, NDAccess *index, int axis, DataType type_id,
+               bool own_index = true)
+      : NDSimtLoad(src, &shape_, type_id, ObjectType::kGatherLoad),
+        src_shape_ref_(src_shape_ref),
+        index_(index),
+        axis_(axis),
+        own_index_(own_index) {}
+  ~NDGatherLoad() override;
+
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  IntArrayRef *src_shape_ref_;
+  NDAccess *index_;
+  ShapeWithRef shape_;
+  uint64_t inner_size_{1};
+  uint64_t gather_size_{1};
+  uint64_t gather_dim_size_{0};
+  int axis_;
+  bool own_index_;
 };
 
 class NDViewLoad : public NDAccess {

@@ -446,6 +446,8 @@ static constexpr ObjectMeta GenObjectMeta() {
   BaseData data[] = {
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // LoadDummy
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // MultiLoad
+    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // GlobalAccess
+    {kGenLoad, F_IP, nullptr, nullptr, NDSimtLoad::TileCollect},                                     // GatherLoad
     {kGenLoad, 0, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::TileCollect},              // ViewLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // Load
     {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::TileCollect},                  // PadStore
@@ -574,6 +576,12 @@ uint64_t NDLoadDummy::Emit(VectorKernel &k) {
   return 1;
 }
 
+uint64_t NDGlobalAccess::Emit(VectorKernel &k) { return 0; }
+
+NDObject *NDGlobalAccess::Clone(CloneHelper &h) { return new NDGlobalAccess(addr_.gm, h.GetClone(shape_ref_), type_id_); }
+
+void NDGlobalAccess::Dump(bool verbose, std::ostringstream &oss) { oss << "GlobalAccess"; }
+
 NDObject *NDLoadDummy::Clone(CloneHelper &h) { return new NDLoadDummy(type_id_); }
 
 void NDLoadDummy::Dump(bool verbose, std::ostringstream &oss) { oss << "LoadDummy"; }
@@ -696,6 +704,84 @@ NDObject *NDLoad::Clone(CloneHelper &h) {
 }
 
 void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
+
+NDGatherLoad::~NDGatherLoad() {
+  if (own_index_) {
+    delete index_;
+  }
+}
+
+void NDGatherLoad::Normalize(std::vector<NDObject *> &run_ops) {
+  ASSERT(src_shape_ref_->size >= 1);
+  ASSERT(index_ && index_->shape_ref_);
+  axis_ = axis_ >= 0 ? axis_ : static_cast<int>(src_shape_ref_->size) + axis_;
+  auto *index_shape_ref = index_->shape_ref_;
+  shape_.Resize(src_shape_ref_->size - 1 + index_shape_ref->size);
+  size_t out_idx = 0;
+  gather_size_ = 1;
+  inner_size_ = 1;
+  for (int i = 0; i < axis_; ++i) {
+    shape_[out_idx++] = src_shape_ref_->data[i];
+  }
+  gather_dim_size_ = static_cast<uint64_t>(src_shape_ref_->data[axis_]);
+  for (size_t i = 0; i < index_shape_ref->size; ++i) {
+    shape_[out_idx++] = index_shape_ref->data[i];
+    gather_size_ *= static_cast<uint64_t>(index_shape_ref->data[i]);
+  }
+  for (size_t i = axis_ + 1; i < src_shape_ref_->size; ++i) {
+    shape_[out_idx++] = src_shape_ref_->data[i];
+    inner_size_ *= static_cast<uint64_t>(src_shape_ref_->data[i]);
+  }
+  NDLoad::Normalize(run_ops);
+}
+
+uint64_t NDGatherLoad::Emit(VectorKernel &k) {
+  ASSERT(k.shard_ == nullptr);
+  ndd_.UpdateStride(k.LeadAlign());
+  uint64_t rounds[2];
+  if (!round_tile_.empty()) {
+    BuildDimRounds(round_tile_, rounds);
+  }
+  const uint64_t lead_align = static_cast<uint64_t>(ndd_.lead_stride());
+  const uint64_t lead_dim = static_cast<uint64_t>(ndd_.lead_dim());
+  vGatherLoad op;
+  op.xn = xbuf_;
+  op.from = reinterpret_cast<uint64_t>(addr_.gm);
+  op.index = reinterpret_cast<uint64_t>(index_->addr_.gm);
+  op.inner_size = inner_size_;
+  op.gather_size = gather_size_;
+  op.gather_dim_size = gather_dim_size_;
+  op.body_iter = static_cast<uint64_t>(ndd_.stride_back()) / lead_align;
+  op.iter_size = lead_dim;
+  op.pad_size = lead_align - lead_dim;
+  op.round_rank = round_tile_.size();
+  op.tail_iter = tail_dim_ < 0 ? (op.body_iter == 1 ? op.iter_size : op.body_iter)
+                               : (op.body_iter == 1 ? static_cast<uint64_t>(tail_size_)
+                                                    : op.body_iter / static_cast<uint64_t>(ndd_[tail_dim_]) *
+                                                        static_cast<uint64_t>(tail_size_));
+  addr_.Update(insn_ + vGatherLoad::RELOC_OFFSET);
+  index_->addr_.Update(insn_ + vGatherLoad::INDEX_RELOC_OFFSET);
+  const auto insn_id = ITEM_SIZE[type_id_] == 2 ? vAccInsnID::V_LOAD_GATHER_B16 : vAccInsnID::V_LOAD_GATHER_B32;
+  return vGatherLoad::Encode(insn_, insn_id, op, rounds);
+}
+
+NDObject *NDGatherLoad::Clone(CloneHelper &h) {
+  auto src_shape_ref = h.GetClone(src_shape_ref_);
+  auto index = static_cast<NDAccess *>(h.GetClone(index_));
+  bool own_index = false;
+  if (index == nullptr) {
+    index = static_cast<NDAccess *>(index_->CloneUpdate(h));
+    own_index = true;
+  }
+  return new NDGatherLoad(addr_.gm, src_shape_ref, index, axis_, type_id_, own_index);
+}
+
+void NDGatherLoad::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "GatherLoad";
+  if (verbose) {
+    oss << "<axis=" << axis_ << ">";
+  }
+}
 
 void NDViewLoad::DimChanged(NDObject *op) {
   auto view = static_cast<NDViewLoad *>(op);

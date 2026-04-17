@@ -1689,19 +1689,36 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       if (out_sid == -1) continue; // load only
       auto src_op = build_ops_[i];
       src_op->index_ = i;
+      if (src_op->obj_id_ == ObjectType::kStore) {
+        if (auto sstore = GET_SSTORE(helper.GetClone(src_op->lhs_))) {
+          stage_kernel->Remap(static_cast<NDAccess *>(sstore), static_cast<NDAccess *>(src_op));
+          helper.clones_.push_back(sstore);
+          auto stage = stage_kernel->StageAt(out_sid);
+          for (auto &io : stage->ios) {
+            if (io.first == sstore) {
+              io.first->flags_ &= ~OBJ_FLAG_STAGE_IO;
+              break;
+            }
+          }
+          continue;
+        }
+      }
       auto clone_op = src_op->Clone(helper);
       INIT_SSTORE(clone_op);
       clone_op->index_ = i;
       helper.clones_.push_back(clone_op);
       if (!clone_op->IsSimd()) {
         stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
+        if (clone_op->obj_id_ == ObjectType::kStore) {
+          SET_SSTORE(clone_op->lhs_, clone_op);
+        }
       }
       clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
         auto in_sid = stage_ids_[in->index_];
         if (in_sid == out_sid) {
           return;
         }
-        auto out_stage = stage_kernel->KernelAt(out_sid);
+        auto out_stage = stage_kernel->StageAt(out_sid);
         NDAccess *load;
         if (in->IsLoad()) {
           load = static_cast<NDAccess *>(in->Clone(helper));
@@ -1711,17 +1728,17 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
           if (store == nullptr) {
             store = new NDStore(in);
             SET_SSTORE(in, store);
-            auto in_stage = stage_kernel->KernelAt(in_sid);
-            in_stage->Append(store);
-            stage_kernel->StageStore(in_stage, store);
+            auto in_stage = stage_kernel->StageAt(in_sid);
+            in_stage->kernel->Append(store);
+            in_stage->StageStore(store);
           }
           load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
-          stage_kernel->StageLoad(out_stage, load, store);
+          out_stage->StageLoad(load, store);
         }
-        out_stage->Append(load);
+        out_stage->kernel->Append(load);
         in = load;
       });
-      stage_kernel->KernelAt(out_sid)->Append(clone_op);
+      stage_kernel->StageAt(out_sid)->kernel->Append(clone_op);
     }
     fall_kernel_ = stage_kernel;
   }
@@ -2028,17 +2045,26 @@ void SpecVecBase::SplitBuild() {
       area.stage = stage;
     }
   }
-  for (auto op : objects_) {
-    auto out_aid = GetMeta(op)->aid;
-    out_aid = ctx_.RootArea(out_aid);
+  for (size_t i = 0; i < load_num_; ++i) {
+    auto load = static_ops_[i];
+    auto stage = ctx_.areas_[ctx_.RootArea(GetMeta(load)->aid)].stage;
+    stage->AddIO(static_cast<NDAccess *>(load),
+                 load->CheckFlag(OBJ_FLAG_STAGE_IO) ? static_cast<_SpecSwapLoad *>(load)->store_ : nullptr);
+  }
+  for (size_t i = load_num_; i < static_ops_.size(); ++i) {
+    auto store = static_ops_[i];
+    auto out_aid = ctx_.RootArea(GetMeta(store)->aid);
+    ASSERT(ctx_.RootArea(GetMeta(store->lhs_)->aid) == out_aid);
     auto stage = ctx_.areas_[out_aid].stage;
-    if (op->IsLoad()) {
-      stage->AddIO(static_cast<NDAccess *>(op),
-                   op->CheckFlag(OBJ_FLAG_STAGE_IO) ? static_cast<_SpecSwapLoad *>(op)->store_ : nullptr);
-    } else if (op->IsStore()) {
-      ASSERT(ctx_.RootArea(GetMeta(op->lhs_)->aid) == out_aid);
-      stage->AddIO(static_cast<NDAccess *>(op));
-    } else {
+    if (store->obj_id_ == ObjectType::kStore) {
+      GetMeta(store->lhs_)->store = stage->ios.size();
+    }
+    stage->AddIO(static_cast<NDAccess *>(store));
+  }
+  for (auto op : objects_) {
+    auto out_aid = ctx_.RootArea(GetMeta(op)->aid);
+    auto stage = ctx_.areas_[out_aid].stage;
+    if (op->IsSimd()) {
         op->ForInput([this, out_aid, stage](NDObject *&in) {
         if (auto in_aid = ctx_.RootArea(GetMeta(in)->aid); in_aid != out_aid) {
           if (auto recent = GetMeta(in)->recent_load; recent < OpMeta::IO_END) {
@@ -2061,10 +2087,10 @@ void SpecVecBase::SplitBuild() {
           } else {
             auto in_stage = ctx_.areas_[in_aid].stage;
             auto store_idx = GetMeta(in)->store;
-            auto store = store_idx < OpMeta::IO_END ? static_cast<NDAccess *>(ctx_.spec_ops_[store_idx]) : nullptr;
+            auto store = store_idx < OpMeta::IO_END ? in_stage->ios[store_idx].first : nullptr;
             if (store == nullptr) {
               store = new NDStore(in);
-              GetMeta(in)->store = ctx_.spec_ops_.size();
+              GetMeta(in)->store = in_stage->ios.size();
               ctx_.spec_ops_.push_back(store);
               store->Normalize(in_stage->spec_k_.objects_);
               in_stage->spec_k_.SplitAppend(store);

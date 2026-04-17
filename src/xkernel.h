@@ -225,8 +225,7 @@ class StagesKernel : public VKernel {
   }
   void AppendStage(Stage *stage) { stages_.push_back(stage); }
 
-  VKernel *Current() const { return stages_.back()->kernel; }
-  VKernel *KernelAt(size_t idx) const { return stages_[idx]->kernel; }
+  Stage *StageAt(size_t idx) const { return stages_[idx]; }
 
   void AddStage(VKernel *k) {
     SetStageIndex(k, stages_.size());

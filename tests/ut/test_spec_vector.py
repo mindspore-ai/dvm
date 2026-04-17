@@ -260,3 +260,21 @@ def test_auto_spec_dyn_shape():
         t.run()
         assert(t.check(x4, (d1 + d2) * 1.2))
         assert(t.check(x7, np.sum(d1 + d2, axis=dims_shape, keepdims=True) * 0.01, 1e-4))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ["vector:spec", "vector:spec,priv1"])
+def test_spec_swap_with_store(mode):
+    t = Tester(mode)
+    shape_a, dims =  [2, 30, 8000], (1,)
+    a = np.random.normal(0.0, 0.03, shape_a).astype(np.float32)
+    x1 = t.load(a)
+    x2 = t.add(x1, 0.01)
+    x3 = t.sum(x2, dims, True)
+    x3_expect = np.sum(a + 0.01, axis=dims, keepdims=True)
+    t.store_expect(x3, x3_expect, 1e-4)
+    t.spec_next()
+    b = np.random.normal(0.0, 0.3, x3_expect.shape[:-1] + (1,)).astype(np.float32)
+    x4 = t.mul(x3, t.load(b))
+    t.store_expect(x4, x3_expect * b, 1e-4)
+    assert (t.run_check())

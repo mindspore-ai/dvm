@@ -1722,12 +1722,30 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       if (out_sid == -1) continue; // load only
       auto src_op = build_ops_[i];
       src_op->index_ = i;
+
+      if (src_op->obj_id_ == ObjectType::kStore) {
+        if (auto sstore = GET_SSTORE(helper.GetClone(src_op->lhs_))) {
+          stage_kernel->Remap(static_cast<NDAccess *>(sstore), static_cast<NDAccess *>(src_op));
+          helper.clones_.push_back(sstore);
+          auto &ios = stage_kernel->GetIOS(out_sid);
+          for (auto &io : ios) {
+            if (io.first == sstore) {
+              io.first->flags_ &= ~OBJ_FLAG_STAGE_IO;
+              break;
+            }
+          }
+          continue;
+        }
+      }
       auto clone_op = src_op->Clone(helper);
       INIT_SSTORE(clone_op);
       clone_op->index_ = i;
       helper.clones_.push_back(clone_op);
       if (!clone_op->IsSimd()) {
         stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
+        if (clone_op->obj_id_ == ObjectType::kStore) {
+          SET_SSTORE(clone_op->lhs_, clone_op);
+        }
       }
       clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
         auto in_sid = stage_ids_[in->index_];

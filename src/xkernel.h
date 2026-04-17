@@ -212,6 +212,7 @@ class StagesKernel : public VKernel {
   void StageLoad(VKernel *k, NDAccess *load, NDAccess *store) {
     stages_[GetStageIndex(k)]->StageLoad(load, store);
   }
+  std::vector<std::pair<NDAccess *, NDAccess *>> &GetIOS(int idx) { return stages_[idx]->ios; }
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;

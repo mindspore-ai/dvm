@@ -886,10 +886,11 @@ class DisAssembler {
   }
 
   void DasCubeBody(vCubeOp *op, const std::string &indent) {
-    oss << indent << "MatMul." << op->m_real << "x" << op->k_real << "x" << op->n_real << " " << op->m_align << "x"
-        << op->k_align << "x" << op->n_align << " " << reinterpret_cast<void *>(op->gm_c) << " "
-        << reinterpret_cast<void *>(op->gm_a) << " " << reinterpret_cast<void *>(op->gm_b);
-    oss << " //";
+    oss << indent << "MatMul." << op->m_real << "x" << op->k_real << "x" << op->n_real << " "
+        << reinterpret_cast<void *>(op->gm_c) << " " << reinterpret_cast<void *>(op->gm_a) << " "
+        << reinterpret_cast<void *>(op->gm_b);
+    oss << "// align(" << op->m_align << "," << op->k_align << "," << op->n_align << "), loop(" << op->m_loop << ","
+        << op->k_loop << "," << op->n_loop << "), offset=(" << op->offset_a << "," << op->offset_b << "), ";
     DumpVal("m0", op->m0, oss);
     oss << ", ";
     DumpVal("k0", op->k0, oss);
@@ -903,6 +904,8 @@ class DisAssembler {
     DumpVal("swizzle", op->swizzle, oss);
     oss << ", ";
     DumpVal("group_num", op->group_num, oss);
+    oss << ", ";
+    DumpVal("batch_cast", op->batch_cast, oss);
 
     if (op->flags & V_CUBE_FLAG_GROUPED_LIST) {
       oss << ", ";

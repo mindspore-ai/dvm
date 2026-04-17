@@ -1130,6 +1130,8 @@ class CubeOp : public NDObject {
     atomic_add_ = false;
     batch_fold_ = false;
     set_real_ = false;
+    type_id_ = lhs_->type_id_;
+    offset_a_ = offset_b_ = 0;
   }
 
   NDAccess *output_{nullptr};

@@ -947,7 +947,7 @@ uint64_t NDPadStore::Emit(VectorKernel &k) {
   op.xn = lhs_->xbuf_;
   op.tile_stride = src_tile_stride_;
   op.pad_size = lead_align - nd_.lead_dim();
-  op.slice_k = op.slice_m = 1;
+  op.slice_m = 1;
   op.src_m = 1;
   op.src_n = shape_ref_->data[size - 1];
   for (size_t i = 0; i + 1 < size; i++) {

@@ -2174,9 +2174,9 @@ void _SplitKernel::SlotCodeGen(const RelocEntry *relocs, size_t reloc_size) {
       }
     }
     if (auto wss = kernel->code_.bind_wss_) {
-      uint64_t slot_id = *wss->reloc_ - wss->ws - 1;
-      ASSERT(slot_id < ctx_->slot_ws_.size());
-      slot_bind(slot_id, add_reloc(kernel->GetWsReloc()));
+      auto &ws_reloc = kernel->GetWsReloc();
+      ws_reloc = *wss->reloc_ - wss->ws;
+      add_reloc(ws_reloc);
     }
   }
   auto &ws = ctx_->slot_ws_;

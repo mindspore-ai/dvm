@@ -107,6 +107,21 @@ def test_seq_inplace_stage():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_seq_inplace_multi():
+    ax = np.full([1024], 0.05, np.float32)
+    t = Tester("seq")
+    t.seq_add(Tester.K_VEC)
+    a0 = t.load(ax)
+    a1 = t.add(a0, 0.1)
+    a2 = t.mul(a0, 0.5)
+    t.seq_add(Tester.K_VEC)
+    b1 = t.div(a1, 0.8)
+    b2 = t.add(b1, a2)
+    t.store_expect(b2, np.divide(ax + 0.1, 0.8) + ax * 0.5)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 def test_seq_workspace_reuse():
     t = Tester("seq")

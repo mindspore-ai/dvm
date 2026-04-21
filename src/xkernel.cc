@@ -970,13 +970,17 @@ uint64_t StagesKernel::AllocWorkspace() {
   for (auto it = stages_.rbegin(); it != stages_.rend(); ++it) {
     auto stage = *it;
     // stage buffer gen
+    uint64_t inplaced_mask = 0;
     for (auto &[io, store] : stage->ios) {
       if (store != nullptr) {
         if (!store->CheckFlag(OBJ_FLAG_STAGE_IO) || lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == KernelType::kVector && !stage->kernel->IsDynamic()) {  // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
           auto inplace_out = static_cast<VectorKernel *>(stage->kernel)
-                               ->FindInplaceStore(io, [&lives, &inplace_stage](NDAccess *op) -> bool {
+                               ->FindInplaceStore(io, [inplaced_mask, &lives, &inplace_stage](NDAccess *op) -> bool {
+                                 if (uint64_t mask = 1ull << (op->index_ & 63); mask & inplaced_mask) {
+                                  return false;
+                                 }
                                  if (!op->CheckFlag(OBJ_FLAG_STAGE_IO) || op->xbuf_ == STAGE_FLAG_REUSE) {
                                    return true;
                                  }
@@ -986,6 +990,7 @@ uint64_t StagesKernel::AllocWorkspace() {
                                  return false;
                                });
           if (inplace_out) {
+            inplaced_mask |= 1ull << (inplace_out->index_ & 63);
             store->xbuf_ = STAGE_FLAG_REUSE;
             SetOutputReuse(store,
                            inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO) ? GetOutputReuse(inplace_out) : inplace_out);
@@ -993,6 +998,7 @@ uint64_t StagesKernel::AllocWorkspace() {
             continue;
           }
           if (inplace_stage) {
+            inplaced_mask |= 1ull << (inplace_stage->index_ & 63);
             auto inplace_it = lives.find(inplace_stage);
             groups[inplace_it->second].ops.push_back(store);
             lives[store] = inplace_it->second;
@@ -1164,8 +1170,6 @@ class CubeOptimizer {
     if (!tactics_.enable_splitk) {
       return false;
     }
-    auto load = new NDLoad(nullptr, dom_->shape_ref_, kFloat32);
-    auto cast = new CastOp(load, dom_->type_id_);
     size_t k_stride = tactics_.k_stride;
     auto split_num = CeilDiv(static_cast<size_t>(dom_->k_real_), k_stride);
     size_t k_tail = dom_->k_real_ % k_stride ? dom_->k_real_ % k_stride : k_stride;
@@ -1191,11 +1195,11 @@ class CubeOptimizer {
       op->batch_fold_ = dom_->batch_fold_;
     }
     dom_->SetRealShape(dom_->m_real_, dom_->n_real_, k_tail, offset_a, offset_b);
+    auto orig_type = dom_->type_id_;
     dom_->SetOutFp32(true);
     dom_->NormalizeOutput();
-    load->Normalize(ops);
+    auto cast = new CastOp(dom_, orig_type);
     cast->Normalize(ops);
-    ops.push_back(load);
     ops.push_back(cast);
     return true;
   }
@@ -1762,21 +1766,20 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
   mm->output_ = output;
   NDObject *ret = mm;
   if (opt.SplitK(temp_ops)) {
-    for (auto op : temp_ops) {
-      if (op->IsCube()) {
-        int aid = area_used_++;
-        auto area = EagerArea::Assign(this, aid);
-        area->ResetMix(op, EagerArea::kSubmitted);
-        area->depend_mask_ |= dep_mask;
-        dep_mask |= 1ul << aid;
-        pv_black_mask_ |= 1ul << aid;
-      } else {
-        InitObjInfo(op);
-      }
+    for (size_t i = 0; i < temp_ops.size() - 1; ++i) {
+      auto op = temp_ops[i];
+      ASSERT(op->IsCube());
+      int aid = area_used_++;
+      auto area = EagerArea::Assign(this, aid);
+      area->ResetMix(op, EagerArea::kSubmitted);
+      area->depend_mask_ |= dep_mask;
+      dep_mask |= 1ul << aid;
+      pv_black_mask_ |= 1ul << aid;
       objects_.push_back(op);
     }
-    SetStore(temp_ops[temp_ops.size() - 2], output);
     ret = temp_ops.back();
+    InitObjInfo(ret);
+    objects_.push_back(ret);
     temp_ops.clear();
   }
   int aid = area_used_++;

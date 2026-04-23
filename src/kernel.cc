@@ -1398,39 +1398,19 @@ uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
   return ws_size;
 }
 
-NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const {
-  auto update_flag = [](int input_flag, bool elem_type, int &flag) {
-    // undetermined -> elemwise -> no-elemwise
-    //          |___________________|
-    if (input_flag != 0 && flag != -1) {
-      if (flag == 0) {
-        flag = input_flag == 1 && elem_type ? 1 : -1;
-      } else if (input_flag == -1 || !elem_type) {  // 1
-        flag = -1;
-      }
-    }
-  };
-  std::vector<int> elem_flags(objects_.size(), 0);  // 1: elemwise, 0: undetermined, -1: no-elemwise
-  elem_flags[load->index_] = 1;
+void VectorKernel::InOutReusePlan() {
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
-    auto &flag = elem_flags[op->index_];
-    if (op->lhs_) {
-      auto elem_type = op->InplaceProp();
-      update_flag(elem_flags[op->lhs_->index_], elem_type, flag);
-      if (op->rhs_) {
-        update_flag(elem_flags[op->rhs_->index_], elem_type, flag);
-        if (op->flags_ & OBJ_FLAG_XHS) {
-          update_flag(elem_flags[static_cast<FlexOp *>(op)->xhs_->index_], elem_type, flag);
-        }
-      }
-    }
-    if (op->IsStore() && flag == 1 && op->type_id_ == load->type_id_ &&
-        (check == nullptr || check(static_cast<NDAccess *>(op)))) {
-      return static_cast<NDAccess *>(op);
+    if (!op->InplaceProp()) {
+      op->io_reuse_mask_ = 0;
+    } else if (op->IsLoad()) {
+      op->io_reuse_mask_ = i < 64 ? 1ull << i : 0;
+    } else {
+      uint64_t mask = 0;
+      op->ForInput([&mask](NDObject *in) { mask |= in->io_reuse_mask_; });
+      op->io_reuse_mask_ = mask;
     }
   }
-  return nullptr;
 }
 
 void VectorKernel::CollectIdle(std::vector<NDObject *> &cleans) {

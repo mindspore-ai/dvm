@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <iostream>
+#include <functional>
 #include "acl/acl_rt.h"
 #include "tuning.h"
 #include "msprof.h"

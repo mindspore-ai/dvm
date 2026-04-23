@@ -19,7 +19,6 @@
 
 #include <string>
 #include <vector>
-#include <functional>
 #include "code.h"
 #include "ops.h"
 #include "pass.h"
@@ -142,7 +141,20 @@ class VectorKernel : public VKernel {
     return (tile_num_ + tile_per_block - 1) / tile_per_block;
   }
 
-  NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
+  void InOutReusePlan();
+  template <typename T>
+  NDAccess *InOutReuseFind(NDAccess *load, const T &check) {
+    if (auto index = load->index_; index < 64) {
+      for (size_t i = load_num_; i < static_ops_.size(); ++i) {
+        auto store = static_cast<NDAccess *>(static_ops_[i]);
+        if ((store->io_reuse_mask_ & (1ull << index)) && store->type_id_ == load->type_id_ && check(store)) {
+          return store;
+        }
+      }
+    }
+    return nullptr;
+  }
+
   void CollectIdle(std::vector<NDObject *> &cleans);
   void ProcessIdle();
 

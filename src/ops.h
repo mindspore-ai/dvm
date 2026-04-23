@@ -482,8 +482,10 @@ class NDObject {
   };
   uint32_t flags_{0};
   uint64_t *insn_;       // when in optimization passes, used to point to the next NDObject
-  uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
-
+  union {
+    uint64_t *tail_insn_;  // when in optimization passes, used to point to the prev NDObject
+    uint64_t io_reuse_mask_;
+  };
   static MemPool<512, 8192> mem_pool_;
   static const ObjectMeta meta_;
 };

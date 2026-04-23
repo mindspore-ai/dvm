@@ -16,6 +16,7 @@
 
 #include <cstdlib>
 #include <queue>
+#include <functional>
 #include "xkernel.h"
 #include "comm.h"
 #include "tuning.h"
@@ -255,16 +256,19 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
     } else if (sync_type == kCubeStoreUB) {
       static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC;
       cube_code->flags |= V_CUBE_FLAG_STORE_UB;
-    } else if (auto inplace_store = post_fusion_->FindInplaceStore(sload_, nullptr)) {
-      code_.BindOpFast(cube_op_->output_->addr_, inplace_store->addr_);
-      code_.BindOpFast(sload_->addr_, inplace_store->addr_);
     } else {
-      cube_op_->pingpong_store_ = true;
-      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
-      cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
-      code_.BindWorkspace(cube_op_->output_->addr_, ws_size);
-      code_.BindWorkspace(sload_->addr_, ws_size);
-      ws_size += cube_op_->PostFusionWorkSpace();
+      post_fusion_->InOutReusePlan();
+      if (auto inplace_store = post_fusion_->InOutReuseFind(sload_, [](NDAccess *) { return true; })) {
+        code_.BindOpFast(cube_op_->output_->addr_, inplace_store->addr_);
+        code_.BindOpFast(sload_->addr_, inplace_store->addr_);
+      } else {
+        cube_op_->pingpong_store_ = true;
+        static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
+        cube_code->flags |= V_CUBE_FLAG_PINGPONG_STORE;
+        code_.BindWorkspace(cube_op_->output_->addr_, ws_size);
+        code_.BindWorkspace(sload_->addr_, ws_size);
+        ws_size += cube_op_->PostFusionWorkSpace();
+      }
     }
   } else {
     code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
@@ -970,17 +974,18 @@ uint64_t StagesKernel::AllocWorkspace() {
   for (auto it = stages_.rbegin(); it != stages_.rend(); ++it) {
     auto stage = *it;
     // stage buffer gen
-    uint64_t inplaced_mask = 0;
+    bool reuse_plan = false;
     for (auto &[io, store] : stage->ios) {
       if (store != nullptr) {
         if (!store->CheckFlag(OBJ_FLAG_STAGE_IO) || lives.find(store) != lives.end()) continue;
         if (stage->kernel->KType() == KernelType::kVector && !stage->kernel->IsDynamic()) {  // TODO: parallel fusion
+          auto vector = static_cast<VectorKernel *>(stage->kernel);
+          if (!reuse_plan) {
+            reuse_plan = true;
+            vector->InOutReusePlan();
+          }
           NDAccess *inplace_stage = nullptr;
-          auto inplace_out = static_cast<VectorKernel *>(stage->kernel)
-                               ->FindInplaceStore(io, [inplaced_mask, &lives, &inplace_stage](NDAccess *op) -> bool {
-                                 if (uint64_t mask = 1ull << (op->index_ & 63); mask & inplaced_mask) {
-                                  return false;
-                                 }
+          auto inplace_out = vector->InOutReuseFind(io, [&lives, &inplace_stage](NDAccess *op) -> bool {
                                  if (!op->CheckFlag(OBJ_FLAG_STAGE_IO) || op->xbuf_ == STAGE_FLAG_REUSE) {
                                    return true;
                                  }
@@ -990,7 +995,7 @@ uint64_t StagesKernel::AllocWorkspace() {
                                  return false;
                                });
           if (inplace_out) {
-            inplaced_mask |= 1ull << (inplace_out->index_ & 63);
+            inplace_out->io_reuse_mask_ = 0;
             store->xbuf_ = STAGE_FLAG_REUSE;
             SetOutputReuse(store,
                            inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO) ? GetOutputReuse(inplace_out) : inplace_out);
@@ -998,7 +1003,7 @@ uint64_t StagesKernel::AllocWorkspace() {
             continue;
           }
           if (inplace_stage) {
-            inplaced_mask |= 1ull << (inplace_stage->index_ & 63);
+            inplace_stage->io_reuse_mask_ = 0;
             auto inplace_it = lives.find(inplace_stage);
             groups[inplace_it->second].ops.push_back(store);
             lives[store] = inplace_it->second;
@@ -1855,17 +1860,23 @@ void _SplitKernel::BuildKernel(EagerVector *kernel, const EagerArea *area, WsAll
       build_op(op);
     }
   } while (cur != area);
+  bool reuse_plan = false;
   for (auto gen : ctx_->gen_) {
     auto store = GetStore(gen);
     if (store->addr_.gm == nullptr) {
       bool inplaced = false;
-      auto store_size = GetStoreSize(store);
-      for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
-        if (it->first != nullptr && store_size == it->second && gen->nd_.dims() == it->first->nd_.dims()) {
-          store->addr_.gm = it->first->addr_.gm;
-          it->first = nullptr;
-          inplaced = true;
-          break;
+      if (auto gen_idx = gen->index_; gen_idx < 64) {
+        if (!reuse_plan) {
+          reuse_plan = true;
+          kernel->InOutReusePlan();
+        }
+        for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
+          if (auto r = it->first; r != nullptr && (r->io_reuse_mask_ & (1ull << gen_idx)) && r->type_id_ == gen->type_id_) {
+            store->addr_.gm = r->addr_.gm;
+            it->first = nullptr;
+            inplaced = true;
+            break;
+          }
         }
       }
       if (!inplaced) {

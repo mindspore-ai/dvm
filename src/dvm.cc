@@ -17,6 +17,7 @@
 #include <unordered_map>
 #include <cmath>
 #include <vector>
+#include <functional>
 #include "dvm.h"
 #include "kernel.h"
 #include "xkernel.h"

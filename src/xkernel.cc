@@ -1909,17 +1909,23 @@ void _SplitKernel::BuildKernel(EagerVector *kernel, const EagerArea *area, WsAll
       build_op(op);
     }
   } while (cur != area);
+  bool reuse_plan = false;
   for (auto gen : ctx_->gen_) {
     auto store = GetStore(gen);
     if (store->addr_.gm == nullptr) {
       bool inplaced = false;
-      auto store_size = GetStoreSize(store);
-      for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
-        if (it->first != nullptr && store_size == it->second && gen->nd_.dims() == it->first->nd_.dims()) {
-          store->addr_.gm = it->first->addr_.gm;
-          it->first = nullptr;
-          inplaced = true;
-          break;
+      if (auto gen_idx = gen->index_; gen_idx < 64) {
+        if (!reuse_plan) {
+          reuse_plan = true;
+          kernel->InOutReusePlan();
+        }
+        for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
+          if (auto r = it->first; r != nullptr && (r->io_reuse_mask_ & (1ull << gen_idx)) && r->type_id_ == gen->type_id_) {
+            store->addr_.gm = r->addr_.gm;
+            it->first = nullptr;
+            inplaced = true;
+            break;
+          }
         }
       }
       if (!inplaced) {

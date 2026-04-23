@@ -143,6 +143,7 @@ class VectorKernel : public VKernel {
   }
 
   NDAccess *FindInplaceStore(NDAccess *load, const std::function<bool(NDAccess *)> &check) const;
+  void InOutReusePlan();
   void CollectIdle(std::vector<NDObject *> &cleans);
   void ProcessIdle();
 

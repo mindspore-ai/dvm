@@ -1468,6 +1468,21 @@ NDAccess *VectorKernel::FindInplaceStore(NDAccess *load, const std::function<boo
   return nullptr;
 }
 
+void VectorKernel::InOutReusePlan() {
+  for (size_t i = 0; i < objects_.size(); ++i) {
+    auto op = objects_[i];
+    if (!op->InplaceProp()) {
+      op->io_reuse_mask_ = 0;
+    } else if (op->IsLoad()) {
+      op->io_reuse_mask_ = i < 64 ? 1ull << i : 0;
+    } else {
+      uint64_t mask = 0;
+      op->ForInput([&mask](NDObject *in) { mask |= in->io_reuse_mask_; });
+      op->io_reuse_mask_ = mask;
+    }
+  }
+}
+
 void VectorKernel::CollectIdle(std::vector<NDObject *> &cleans) {
   for (auto op : objects_) {
     if (op->IsStore()) {

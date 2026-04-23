@@ -438,16 +438,16 @@ static constexpr ObjectMeta GenObjectMeta() {
   constexpr uint32_t F_LD = ObjectMeta::kLhsDom;
   constexpr uint32_t F_DM = ObjectMeta::kDom;
   BaseData data[] = {
-    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // LoadDummy
-    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // MultiLoad
-    {kGenLoad, F_IP, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::AlignProp},           // ViewLoad
+    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // LoadDummy
+    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // MultiLoad
+    {kGenLoad, 0, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::AlignProp},              // ViewLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // Load
     {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::AlignProp},                  // PadStore
     {kGenStore, F_IP | F_NS | F_LD, NDStore::DimChanged, nullptr, nullptr},                          // Store
-    {kGenComm, F_IP | F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::AlignProp},  // ReduceScatter
-    {kGenComm, F_IP, nullptr, AllGatherOp::FoldProp, AllGatherOp::AlignProp},                        // AllGather
-    {kGenComm, F_IP, nullptr, nullptr, nullptr},                                                     // AllGatherV2
-    {kGenComm, F_IP | F_LR, nullptr, nullptr, nullptr},                                              // AllReduce
+    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::AlignProp},         // ReduceScatter
+    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::AlignProp},                           // AllGather
+    {kGenComm, 0, nullptr, nullptr, nullptr},                                                        // AllGatherV2
+    {kGenComm, F_LR, nullptr, nullptr, nullptr},                                                     // AllReduce
     {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr},                                             // Reshape
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Copy
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Unary

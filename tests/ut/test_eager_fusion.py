@@ -731,3 +731,20 @@ def test_eager_broadcast_s():
     x3 = t.full(0.4, [512], "float32")
     t.store_expect(x3, 0.4)
     assert(t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_eager_broadcast_reduce_reuse():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.1, [1, 2000]).astype(np.float32)
+    b = np.random.normal(0, 0.1, [10, 2000]).astype(np.float32)
+    x1 = t.load(a)
+    x2 = t.load(b)
+    x3 = t.mul(x1, x2)
+    x4 = t.sum(x3, (0,), True)
+    x5 = t.add(x4, x2)
+    x6 = t.sum(x5, (0,), True)
+    e4 = np.sum(a * b, axis=(0,), keepdims=True)
+    e6 = np.sum(e4 + b, axis=(0,), keepdims=True)
+    t.store_expect(x6, e6, 1e-4)
+    assert(t.run_check())

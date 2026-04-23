@@ -997,9 +997,15 @@ uint64_t StagesKernel::AllocWorkspace() {
           if (inplace_out) {
             inplace_out->io_reuse_mask_ = 0;
             store->xbuf_ = STAGE_FLAG_REUSE;
-            SetOutputReuse(store,
-                           inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO) ? GetOutputReuse(inplace_out) : inplace_out);
-            lives[store] = -1;
+            if (inplace_out->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+              auto inplace_it = lives.find(inplace_out);
+              lives[store] = inplace_it->second;
+              inplace_it->second = -1;
+              SetOutputReuse(store, GetOutputReuse(inplace_out));
+            } else {
+              lives[store] = -1;
+              SetOutputReuse(store, inplace_out);
+            }
             continue;
           }
           if (inplace_stage) {
@@ -1016,6 +1022,8 @@ uint64_t StagesKernel::AllocWorkspace() {
         if (index == -1) {
           index = groups.size();
           groups.emplace_back(size, true);
+        } else {
+          groups[index].live = true;
         }
         groups[index].ops.emplace_back(store);
         lives[store] = index;

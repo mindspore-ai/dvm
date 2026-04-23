@@ -2312,7 +2312,7 @@ uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
   } else {
     AddTileVisit(round_tile_.size(), coder);
     ws_offset = coder->ws_size_;
-    coder->ws_size_ += ndd_.stride_back() * sizeof(float) * visit_->block_num_;
+    coder->ws_size_ += ndd_.stride_back() * sizeof(float) * coder->block_num_;
   }
   auto out_xbuf = xbuf_;
   xbuf_ = wss_[0];

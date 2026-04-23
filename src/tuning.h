@@ -24,6 +24,21 @@
 #include "code.h"
 
 namespace dvm {
+template <typename Visit, typename Stop>
+inline void ForEachCubeTilePair(Visit &&visit, Stop &&stop) {
+  for (uint32_t x = MATMUL_ALIGN_MAX; x >= CubeOp::BLOCK_SIZE; x >>= 1) {
+    for (uint32_t y = MATMUL_ALIGN_MAX; y >= x; y >>= 1) {
+      visit(x, y);
+      if (x != y) {
+        visit(y, x);
+      }
+      if (stop()) {
+        return;
+      }
+    }
+  }
+}
+
 struct TuningInfo {
   TuningInfo() = default;
   TuningInfo(int64_t m0_, int64_t n0_, int64_t k0_, uint32_t swizzle_, uint32_t core_loop_, uint32_t block_dim_)

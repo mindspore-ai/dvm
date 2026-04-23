@@ -79,52 +79,14 @@ void OnlineCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
 }
 
 void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
-  auto l0c_max = g_system.L0CSize() / FP32_SIZE;
-  auto bias_size = mm->bias_ ? g_system.BtSize() : 0;
-  auto l1_max = (g_system.L1Size() / 2 - bias_size) / ITEM_SIZE[mm->lhs_->type_id_];
   auto core_num = g_system.CoreNum(CoreType::kAIC);
-  uint32_t round_m = RoundUp<uint32_t>(mm->m_real_, BLOCK_SIZE);
-  uint32_t round_n = RoundUp<uint32_t>(mm->n_real_, BLOCK_SIZE);
-  uint32_t round_k = RoundUp<uint32_t>(mm->k_real_, BLOCK_SIZE);
-  uint32_t n_align_max = mm->bias_ != nullptr ? g_system.BtSize() / sizeof(float) : MATMUL_ALIGN_MAX;
   uint32_t block_dim = 0;
+  CubeOp::TileHelper tile_helper(mm, op);
   auto tile_select = [&](uint32_t x, uint32_t y) {
-    uint32_t m0, n0, k0;
-    if (!mm->trans_a_) {
-      k0 = x;
-      n0 = y;
-      if (k0 > round_k || n0 > round_n || l1_max <= k0 * n0) return;
-      uint64_t mx = std::min(l0c_max / n0, (l1_max - k0 * n0) / k0);
-      m0 = RoundDown<uint32_t>(mx, mx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
-      ASSERT((k0 * n0 < l1_max) && (m0 > 0));
-      m0 = std::min({m0, MATMUL_ALIGN_MAX, round_m});
-    } else if (!mm->trans_b_) {  // trans_a && !trans_b_
-      m0 = x;
-      n0 = y;
-      if (m0 > round_m || n0 > round_n) return;
-      uint64_t kx = l1_max / (m0 + n0);
-      k0 = RoundDown<uint32_t>(kx, kx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
-      if (m0 * n0 > l0c_max || k0 == 0) return;
-      k0 = std::min({k0, MATMUL_ALIGN_MAX, round_k});
-    } else {  // trans_a && trans_b_
-      k0 = x;
-      m0 = y;
-      if (k0 > round_k || m0 > round_m || l1_max <= k0 * m0) return;
-      uint64_t nx = std::min(l0c_max / m0, (l1_max - k0 * m0) / k0);
-      n0 = RoundDown<uint32_t>(nx, nx > CUBE_BLOCK_SIZE ? CUBE_BLOCK_SIZE : BLOCK_SIZE);
-      ASSERT((k0 * m0 < l1_max) && (n0 > 0));
-      n0 = std::min({n0, MATMUL_ALIGN_MAX, round_n});
-    }
-    if (n0 > n_align_max || n0 * k0 + m0 * k0 > l1_max) {
-      return;
-    }
-    if ((n0 > BLOCK_SIZE && n0 / 2 >= mm->n_real_) || (m0 > BLOCK_SIZE && m0 / 2 >= mm->m_real_)) {
-      return;
-    }
-    uint32_t m_loop = CeilDiv(op->m_real, m0);
-    uint32_t n_loop = CeilDiv(op->n_real, n0);
-    uint32_t core_loop = m_loop * n_loop * mm->batch_c0_ * mm->batch_c1_;
-    block_dim = core_loop < core_num ? core_loop : core_num;
+    CubeOp::TileCand candidate;
+    if (!tile_helper.GetCandidate(x, y, &candidate)) return;
+    auto [m0, n0, k0, m_loop, n_loop, core_loop, candidate_block_dim] = candidate;
+    block_dim = candidate_block_dim;
     // 3. select swizzle
     for (uint32_t cnt = std::min(block_dim, m_loop); cnt >= 1; --cnt) {
       auto swizzle = vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_nZ, cnt);
@@ -141,17 +103,7 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
       Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
   };
-  for (uint32_t x = MATMUL_ALIGN_MAX; x >= BLOCK_SIZE; x >>= 1) {
-    for (uint32_t y = MATMUL_ALIGN_MAX; y >= x; y >>= 1) {
-      tile_select(x, y);
-      if (x != y) {
-        tile_select(y, x);
-      }
-      if (block_dim == core_num) {
-        return;
-      }
-    }
-  }
+  ForEachCubeTilePair(tile_select, [&] { return block_dim == core_num; });
 }
 
 void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
@@ -292,17 +244,7 @@ void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<Tuning
     space.push_back(
       new TuningInfo(m0, n0, k0, vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_zN, cnt), core_loop, block_dim));
   };
-  for (uint32_t x = MATMUL_ALIGN_MAX; x >= BLOCK_SIZE; x >>= 1) {
-    for (uint32_t y = MATMUL_ALIGN_MAX; y >= x; y >>= 1) {
-      tile_select(x, y);
-      if (x != y) {
-        tile_select(y, x);
-      }
-      if (block_dim == core_num) {
-        return;
-      }
-    }
-  }
+  ForEachCubeTilePair(tile_select, [&] { return block_dim == core_num; });
 }
 
 void LazyCubeTuner::BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std::vector<TuningInfo *> &space) {

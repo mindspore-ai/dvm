@@ -1126,6 +1126,31 @@ class CubeOp : public NDObject {
     int64_t lhs_pad_size;
     int64_t rhs_pad_size;
   };
+  struct TileCand {
+    uint32_t m0{0};
+    uint32_t n0{0};
+    uint32_t k0{0};
+    uint32_t m_loop{0};
+    uint32_t n_loop{0};
+    uint32_t core_loop{0};
+    uint32_t block_dim{0};
+  };
+  class TileHelper {
+   public:
+    TileHelper(const CubeOp *mm, const vCubeOp *op);
+    bool GetCandidate(uint32_t x, uint32_t y, TileCand *candidate) const;
+
+   private:
+    const CubeOp *mm_;
+    const vCubeOp *op_;
+    uint64_t l0c_max_;
+    uint64_t l1_max_;
+    uint32_t core_num_;
+    uint32_t round_m_;
+    uint32_t round_n_;
+    uint32_t round_k_;
+    uint32_t n_align_max_;
+  };
 
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b);
   CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObject *bias);

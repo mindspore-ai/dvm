@@ -62,17 +62,15 @@ __aicore_inline__ void repeat_vcmin(__ubuf__ T *dst, __ubuf__ T *src, uint16_t r
 }
 
 template <typename T>
-__aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint16_t repeat,
-                                   uint8_t repeatStride, uint64_t cond_addr) {
-  __ubuf__ uint32_t *wk = (__ubuf__ uint32_t *)(WORKSPACE);
-  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
-  *wk = cond_addr;
-  set_flag(PIPE_S, PIPE_V, EVENT_ID0);
-  wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
+__aicore_inline__ void SelectMode2(__ubuf__ T *dst, __ubuf__ T *src0, __ubuf__ T *src1, uint64_t count,
+                                   __ubuf__ uint8_t *cond_addr) {
+  set_vector_mask(0, BlockNum(uint32_t));
+  vector_dup((__ubuf__ uint32_t *)(WORKSPACE), static_cast<uint32_t>(reinterpret_cast<uint64_t>(cond_addr)), 1, 1, 1, 0, 0);
+  pipe_barrier(PIPE_V);
   set_cmpmask((__ubuf__ void *)(WORKSPACE));
   pipe_barrier(PIPE_V);
-  vsel(dst, src0, src1, repeat, 1, 1, 1, repeatStride, repeatStride, repeatStride, 2);
+  set_vector_mask(0, count);
+  vsel(dst, src0, src1, 1, 1, 1, 1, 8, 8, 8, 2);
 }
 
 template <vReduceOpType RED_TYPE, typename T>
@@ -473,7 +471,8 @@ __aicore_inline__ void Power(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vector_dup((__ubuf__ float *)(WORKSPACE + 256), 0.0f / 0.0f, 1, 1, 1, 0, 0);
   set_vector_mask(0, op.count);
   _PowerProc(xd, xm, xn, ws0, ws1, 1, MaxRepeat(op.count, float), 8);
-  SelectMode2(xd, ws0, xd, 1, 8, op.ws1);
+  pipe_barrier(PIPE_V);
+  SelectMode2(xd, ws0, xd, op.count, ws1);
 }
 
 template <typename T>
@@ -737,7 +736,8 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ uint8_t *ws = (__ubuf__ uint8_t*)(op.ws);
   set_vector_mask(0, op.count);
   repeat_vcmpvs_ne(ws, cond, (T)0, MaxRepeat(op.count, T));
-  SelectMode2(xd, xn, xm, 1, 8, op.ws);
+  pipe_barrier(PIPE_V);
+  SelectMode2(xd, xn, xm, op.count, ws);
 }
 
 __aicore_inline__ void Copy(bcodeptr_t pc, uint64_t head) {

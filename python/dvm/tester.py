@@ -115,7 +115,7 @@ class Tester(Kernel):
         self.input(op, shape_arr)
         return op
 
-    def view_load(self, shape, stride, arr_dtype, real_dtype=None):
+    def view_load(self, shape, stride, arr_dtype, offset = 0, real_dtype=None):
         if not isinstance(arr_dtype, np.ndarray):
             # dynamic shape scenario
             return Kernel.view_load(self, shape, stride, _normalize_dtype(arr_dtype))
@@ -126,7 +126,7 @@ class Tester(Kernel):
             arr_dtype = Kernel.convert_to_bf16(self, arr_dtype)
             dtype_id = real_dtype_id
         op = Kernel.view_load(self, shape, stride, dtype_id)
-        self.input(op, arr_dtype)
+        self.input(op, arr_dtype, offset)
         return op
 
     def slice_load(self, shape_arr, start, size, dtype=None):

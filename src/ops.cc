@@ -843,7 +843,10 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);
     dst_stride *= fold_dim[i];
   }
-  op.tail_size = tail_size_ ? tail_size_ : fold_dim[tile_start - 1];
+  op.tail_size = fold_dim[tile_start - 1];
+  if (tail_size_) {
+    op.tail_size = op.tail_size / ndd_[tail_dim_] * tail_size_;
+  }
   if (op.loop_depth == 0 && loop_start == 1) {
     op.tail_size *= ITEM_SIZE[type_id_];
   }

@@ -50,6 +50,7 @@ def test_slice_2d(in_shape, slice_shape, tile_depth, tile_tail):
     ([24, 20, 1000], [20, 20, 600], 3, 3),  # tile continuous
     ([24, 20, 64], [20, 15, 64], 1, 20),  # loop continuous
     ([24, 15, 64], [20, 15, 64], 1, 20),  #
+    ([200, 20, 100], [200, 20, 30], 1, 11),  # tail fold
 ])
 def test_slice_3d(in_shape, slice_shape, tile_depth, tile_tail):
     t = Tester()
@@ -165,4 +166,26 @@ def test_broadcast_tiling():
     t.tile(4, 4, 6)
     t.tile(3, 3, 8)
     t.tile(2, 2, 9)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape, split_dim, split_num, split_idx", [
+    ([40, 100, 64], 1, 5, 3),
+    ([40, 1000], 1, 5, 0),
+])
+def test_split(shape, split_dim, split_num, split_idx):
+    t = Tester()
+    a = np.random.normal(0, 1, shape).astype(np.float32)
+    new_shape = [1] * len(shape)
+    split_size = int(shape[split_dim] // split_num)
+    for i in range(len(shape) - 1, -1, -1):
+        new_shape[i] = shape[i] if i != split_dim else split_size
+    stride = [1] * len(shape)
+    for i in range(len(shape) - 1, 0, -1):
+        stride[i - 1] = shape[i] * stride[i]
+    offset = split_idx * split_size * stride[split_dim]
+    x = t.view_load(new_shape, stride, a, offset)
+    y = t.add(x, 0.1)
+    t.store_expect(y, np.split(a, split_num, split_dim)[split_idx] + 0.1)
     assert (t.run_check())

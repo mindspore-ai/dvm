@@ -51,7 +51,7 @@ class RtKernelPy : public KernelPy {
   IntArrayRef *GetShapeRef(py::object shape) override;
   py::object Clone(py::object base, py::object remap);
 
-  void Input(py::object obj, py::object val);
+  void Input(py::object obj, py::object val, size_t offset);
   py::object Output(py::object store);
   void ClearStoreMemory(py::object store);
   void Tile(int start, int end, int64_t num, int64_t factor);
@@ -90,6 +90,7 @@ class RtKernelPy : public KernelPy {
   struct LoadInfo {
     NDObject *op;
     void *dev{nullptr};
+    size_t offset{0};
     std::vector<int64_t> shape;
   };
 

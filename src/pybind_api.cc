@@ -567,7 +567,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
     std::vector<RelocEntry> relocs;
     relocs.reserve(loads_.size() + stores_.size());
     for (auto &info : loads_) {
-      relocs.emplace_back(info.op, info.dev);
+      relocs.emplace_back(info.op, reinterpret_cast<uint8_t *>(info.dev) + info.offset);
     }
     kernel_.Normalize();
     for (auto &info : stores_) {
@@ -669,7 +669,7 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
     std::vector<NDObject *> inputs;
     std::vector<NDObject *> outputs;
     for (auto &info : loads_) {
-      relocs.emplace_back(info.op, info.dev);
+      relocs.emplace_back(info.op, reinterpret_cast<uint8_t *>(info.dev) + info.offset);
     }
     for (auto &info : stores_) {
       relocs.emplace_back(info.op, info.dev);
@@ -684,13 +684,14 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
   return py::none();
 }
 
-void RtKernelPy::Input(py::object obj, py::object val) {
+void RtKernelPy::Input(py::object obj, py::object val, size_t offset) {
   if (py::isinstance<NDObjectPy>(obj)) {
     auto op = static_cast<NDAccess *>(PyToObj(obj));
     auto &info = FindVectorInfo(loads_, op);
     auto input = py::array(val);
     py::buffer_info buf = input.request();
     runner_->AllocLoad(buf, info);
+    info.offset = offset * ITEM_SIZE[op->type_id_];
     if (kernel_.GetImpl()->IsDynamic()) {
       info.shape.resize(buf.ndim);
       for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
@@ -740,7 +741,7 @@ void RtKernelPy::ClearStoreMemory(py::object store) {
 
 void RtKernelPy::PrepareIO() {
   for (auto &info : loads_) {
-    static_cast<NDAccess *>(info.op)->addr_.Reloc(info.dev);
+    static_cast<NDAccess *>(info.op)->addr_.Reloc(reinterpret_cast<uint8_t *>(info.dev) + info.offset);
   }
   for (auto &info : stores_) {
     auto op = info.op;
@@ -922,7 +923,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("reset", &RtKernelPy::Reset, "reset eager")
     .def("clone", &RtKernelPy::Clone, "clone kernel")
-    .def("input", &RtKernelPy::Input, "get ouput array")
+    .def("input", &RtKernelPy::Input, "get ouput array", py::arg("op"), py::arg("val"), py::arg("offset") = 0)
     .def("output", &RtKernelPy::Output, "get ouput array")
     .def("clear_store_memory", &RtKernelPy::ClearStoreMemory, "clear store memory")
     .def("tile", &RtKernelPy::Tile, "set tiling", py::arg("start"), py::arg("end"), py::arg("num"),

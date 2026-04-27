@@ -1360,32 +1360,34 @@ uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
   auto get_sstore = [](NDObject *op) { return reinterpret_cast<NDStore *>(op->tail_insn_); };
   StagesKernel *stage = new StagesKernel(0);
   GraphTracker tracker;
-  std::vector<SplitVector *> children;
+  std::vector<StagesKernel::Stage *> children;
   children.resize(broker_num_ * 2, nullptr);
   for (auto op : objects_) {
     set_sstore(op, nullptr);
-    auto k = children[op->prop_id_];
-    if (k == nullptr) {
-      k = new SplitVector();
-      stage->AddStage(k);
-      children[op->prop_id_] = k;
+    auto s = children[op->prop_id_];
+    if (s == nullptr) {
+      s = new StagesKernel::Stage(new SplitVector());
+      stage->AppendStage(s);
+      children[op->prop_id_] = s;
     }
+    auto k = static_cast<SplitVector *>(s->kernel);
     if (IsBroker(op)) {
-      auto input_k = children[op->lhs_->prop_id_];
       auto store = get_sstore(op->lhs_);
       if (store == nullptr) {
+        auto input_s = children[op->lhs_->prop_id_];
+        auto input_k = static_cast<SplitVector *>(input_s->kernel);
         store = new NDStore(op->lhs_);
         set_sstore(op->lhs_, store);
         store->Normalize(input_k->objects_);
+        input_s->StageStore(store);
         input_k->objects_.push_back(store);
-        stage->StageStore(input_k, store);
         input_k->build_ops_.push_back(store);
       }
       auto load = new NDLoad(nullptr, op->shape_ref_, op->type_id_);
       load->Normalize(k->objects_);
       k->objects_.push_back(load);
       k->build_ops_.push_back(load);
-      stage->StageLoad(k, load, store);
+      s->StageLoad(load, store);
       tracker.Record(&op->lhs_);
       op->lhs_ = load;
     }
@@ -1674,9 +1676,9 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
           stage_kernel->Remap(static_cast<NDAccess *>(sstore), static_cast<NDAccess *>(src_op));
           helper.clones_.push_back(sstore);
           auto stage = stage_kernel->StageAt(out_sid);
-          for (auto &io : stage->ios) {
-            if (io.first == sstore) {
-              io.first->flags_ &= ~OBJ_FLAG_STAGE_IO;
+          for (auto &ss : stage->sstores_) {
+            if (ss.store == sstore) {
+              ss.is_out = true;
               break;
             }
           }
@@ -1985,7 +1987,8 @@ bool SpecVecBase::ReshapeSpec() {
 
 namespace {
 struct _SpecSwapLoad : public NDLoad {
-  _SpecSwapLoad(NDAccess *store) : NDLoad(store->addr_.gm, store->shape_ref_, store->type_id_), store_(store) {}
+  _SpecSwapLoad(NDAccess *store)
+      : NDLoad(store->addr_.gm, store->shape_ref_, store->type_id_), store_(store) {}
   void Normalize(std::vector<NDObject *> &run_ops) override {
     ndd_.dims = store_->nd_.dims();
     tail_dim_ = -1;
@@ -2026,10 +2029,11 @@ void SpecVecBase::SplitBuild() {
     }
   }
   for (size_t i = 0; i < load_num_; ++i) {
-    auto load = static_ops_[i];
+    auto load = static_cast<NDAccess *>(static_ops_[i]);
     auto stage = ctx_.areas_[ctx_.RootArea(GetMeta(load)->aid)].stage;
-    stage->AddIO(static_cast<NDAccess *>(load),
-                 load->CheckFlag(OBJ_FLAG_STAGE_IO) ? static_cast<_SpecSwapLoad *>(load)->store_ : nullptr);
+    if (load->CheckFlag(OBJ_FLAG_STAGE_IO)) {
+      stage->StageLoad(load, static_cast<_SpecSwapLoad *>(load)->store_);
+    }
   }
   for (size_t i = load_num_; i < static_ops_.size(); ++i) {
     auto store = static_ops_[i];
@@ -2037,9 +2041,9 @@ void SpecVecBase::SplitBuild() {
     ASSERT(ctx_.RootArea(GetMeta(store->lhs_)->aid) == out_aid);
     auto stage = ctx_.areas_[out_aid].stage;
     if (store->obj_id_ == ObjectType::kStore) {
-      GetMeta(store->lhs_)->store = stage->ios.size();
+      GetMeta(store->lhs_)->store = static_cast<uint16_t>(stage->sstores_.size());
     }
-    stage->AddIO(static_cast<NDAccess *>(store));
+    stage->StageStore(static_cast<NDAccess *>(store), !store->CheckFlag(OBJ_FLAG_STAGE_IO));
   }
   for (auto op : objects_) {
     auto out_aid = ctx_.RootArea(GetMeta(op)->aid);
@@ -2067,16 +2071,18 @@ void SpecVecBase::SplitBuild() {
           } else {
             auto in_stage = ctx_.areas_[in_aid].stage;
             auto store_idx = GetMeta(in)->store;
-            auto store = store_idx < OpMeta::IO_END ? in_stage->ios[store_idx].first : nullptr;
+            auto store = store_idx < OpMeta::IO_END ? in_stage->sstores_[store_idx].store : nullptr;
             if (store == nullptr) {
               store = new NDStore(in);
-              GetMeta(in)->store = in_stage->ios.size();
+              store->SetFlag(OBJ_FLAG_STAGE_IO);
+              GetMeta(in)->store = static_cast<uint16_t>(in_stage->sstores_.size());
               ctx_.spec_ops_.push_back(store);
               store->Normalize(in_stage->spec_k_.objects_);
               in_stage->spec_k_.SplitAppend(store);
               in_stage->StageStore(store);
             }
             auto load = new _SpecSwapLoad(store);
+            load->SetFlag(OBJ_FLAG_STAGE_IO);
             GetMeta(in)->recent_load = ctx_.spec_ops_.size();
             ctx_.spec_ops_.push_back(load);
             load->Normalize(stage->spec_k_.objects_);

@@ -196,27 +196,37 @@ class StagesKernel : public VKernel {
   StagesKernel(uint32_t flags = 0) : VKernel(KernelType::kSequence, flags), code_wrap_(this) {}
   ~StagesKernel() override;
 
+  struct SLoadInfo {
+    SLoadInfo(NDAccess *l, NDAccess *s) : load(l), store(s) {}
+    NDAccess *load;
+    NDAccess *store;
+  };
+
+  struct SStoreInfo {
+    SStoreInfo(NDAccess *s, bool o) : store(s), is_out(o) {}
+    NDAccess *store;
+    bool is_out;
+  };
+
   struct Stage {
     explicit Stage(VKernel *k) : kernel(k) {}
     virtual ~Stage() { delete kernel; }
     VKernel *kernel;
     int64_t ws_size{-1};
-    int64_t ws_offset{-1};
-    std::vector<std::pair<NDAccess *, NDAccess *>> ios;
+    union {
+      int64_t ws_offset{-1};
+      Stage *group_next;
+    };
+    std::vector<SLoadInfo> sloads_;
+    std::vector<SStoreInfo> sstores_;
 
-    void AddIO(NDAccess *io, NDAccess *store = nullptr) { ios.emplace_back(io, store); }
-    void StageStore(NDAccess *store) {
-      store->SetFlag(OBJ_FLAG_STAGE_IO);
-      ios.emplace_back(store, nullptr);
-    }
-    void StageLoad(NDAccess *load, NDAccess *store) {
-      load->SetFlag(OBJ_FLAG_STAGE_IO);
-      ios.emplace_back(load, store);
-    }
+    void StageStore(NDAccess *store, bool is_out = false) { sstores_.emplace_back(store, is_out); }
+    void StageLoad(NDAccess *load, NDAccess *store) { sloads_.emplace_back(load, store); }
     void Reset() {
       ws_size = -1;
       ws_offset = -1;
-      ios.clear();
+      sloads_.clear();
+      sstores_.clear();
     }
   };
   void Reset() {
@@ -224,19 +234,8 @@ class StagesKernel : public VKernel {
     code_.Clear();
   }
   void AppendStage(Stage *stage) { stages_.push_back(stage); }
-
   Stage *StageAt(size_t idx) const { return stages_[idx]; }
-
-  void AddStage(VKernel *k) {
-    SetStageIndex(k, stages_.size());
-    stages_.push_back(new Stage(k));
-  }
-  void StageStore(VKernel *k, NDAccess *store) {
-    stages_[GetStageIndex(k)]->StageStore(store);
-  }
-  void StageLoad(VKernel *k, NDAccess *load, NDAccess *store) {
-    stages_[GetStageIndex(k)]->StageLoad(load, store);
-  }
+  void AddStage(VKernel *k) { stages_.push_back(new Stage(k)); }
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
@@ -248,8 +247,6 @@ class StagesKernel : public VKernel {
   static int64_t GetWorkspace(NDAccess *op) { return op->addr_.ws; }
   static void SetOutputReuse(NDAccess *op, NDAccess *store) { op->addr_.gm = static_cast<void *>(store); }
   static NDAccess *GetOutputReuse(NDAccess *op) { return static_cast<NDAccess *>(op->addr_.gm); }
-  static void SetStageIndex(VKernel *k, int idx) { k->code_.target_ = idx; }
-  static int GetStageIndex(VKernel *k) { return k->code_.target_; }
 
   uint64_t AllocWorkspace();
 

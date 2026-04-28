@@ -430,6 +430,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     void (*dim_changed)(NDObject *);
     void (*fold_prop)(NDObject *, PropRange &);
     void (*align_prop)(NDObject *, PropRange &);
+    void (*shape_prop)(NDObject *, int64_t &);
   };
   constexpr uint32_t F_NS = ObjectMeta::kNddShared;
   constexpr uint32_t F_IP = ObjectMeta::kInplaceProp;
@@ -444,26 +445,26 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // Load
     {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::AlignProp},                  // PadStore
     {kGenStore, F_IP | F_NS | F_LD, NDStore::DimChanged, nullptr, nullptr},                          // Store
-    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::AlignProp},         // ReduceScatter
-    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::AlignProp},                           // AllGather
+    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::AlignProp, ReduceScatterOp::ShapeProp},         // ReduceScatter
+    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::AlignProp, AllGatherOp::ShapeProp},                           // AllGather
     {kGenComm, 0, nullptr, nullptr, nullptr},                                                        // AllGatherV2
     {kGenComm, F_LR, nullptr, nullptr, nullptr},                                                     // AllReduce
-    {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr},                                             // Reshape
+    {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr, ReshapeOp::ShapeProp},                                             // Reshape
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Copy
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Unary
-    {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                               // Binary
+    {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},                               // Binary
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // Cast
     {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                               // BinaryS
-    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::AlignProp},                     // BroadcastTo
+    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::AlignProp, BroadcastOp::ShapeProp},                     // BroadcastTo
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},                                                    // BroadcastS
-    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::AlignProp},       // Reduce
+    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::AlignProp, ReduceOp::ShapeProp},       // Reduce
     {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                               // Select
     {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                                    // ElemAny
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // RemovePad
-    {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr},                                              // Power
-    {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                                // Compare
+    {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, PowerOp::ShapeProp},                                              // Power
+    {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},                                // Compare
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // CompareS
-    {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::AlignProp},                // OneHot
+    {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::AlignProp, OneHotOp::ShapeProp},                // OneHot
   };
 
   ObjectMeta meta;
@@ -473,6 +474,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     meta.dim_changed[i] = data[i].dim_changed;
     meta.fold_prop[i] = data[i].fold_prop;
     meta.align_prop[i] = data[i].align_prop;
+    meta.shape_prop[i] = data[i].shape_prop;
   }
   return meta;
 }
@@ -1256,6 +1258,16 @@ bool ReshapeOp::VisitChangeRange(ChangeRange &range) {
   return range.size || range.in_size;
 }
 
+void ReshapeOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<ReshapeOp *>(op);
+  auto &shape = self->shape_;
+  auto dst_shape = self->dst_shape_ref_;
+  shape.Resize(dst_shape->size);
+  for (size_t i = 0; i < dst_shape->size; ++i) {
+    shape[i] = dst_shape->data[i];
+  }
+}
+
 uint64_t UnaryOp::Emit(VectorKernel &k) {
   vUnary op;
   op.xd = xbuf_;
@@ -1513,6 +1525,36 @@ NDObject *BinaryOp::Clone(CloneHelper &h) {
 
 void BinaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << binary_id_list[op_type_].name; }
 
+static void BinaryShapeProp(const IntArrayRef *lhs, const IntArrayRef *rhs, ShapeWithRef &shape,
+                            int64_t &sym_dim_next) {
+  if (lhs->size < rhs->size) {
+    auto tmp = lhs;
+    lhs = rhs;
+    rhs = tmp;
+  }
+  shape.Resize(lhs->size);
+  auto diff = lhs->size - rhs->size;
+  for (size_t i = 0; i < diff; ++i) {
+    shape[i] = lhs->data[i];
+  }
+  for (size_t i = diff; i < lhs->size; ++i) {
+    auto l_dim = lhs->data[i];
+    auto r_dim = rhs->data[i - diff];
+    if (l_dim == r_dim || r_dim == 1) {
+      shape[i] = l_dim;
+    } else if (l_dim == 1) {
+      shape[i] = r_dim;
+    } else {
+      shape[i] = sym_dim_next--;
+    }
+  }
+}
+
+void BinaryOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  return BinaryShapeProp(op->lhs_->shape_ref_, op->rhs_->shape_ref_, static_cast<BinaryOp *>(op)->norm_.shape_,
+                         sym_dim_next);
+}
+
 uint64_t CompareOp::Emit(VectorKernel &k) {
   vCompare op;
   op.xd = xbuf_;
@@ -1539,6 +1581,11 @@ NDObject *CompareOp::Clone(CloneHelper &h) {
   return new CompareOp(cmp_op_, h.GetClone(lhs), h.GetClone(rhs));
 }
 
+void CompareOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  return BinaryShapeProp(op->lhs_->shape_ref_, op->rhs_->shape_ref_, static_cast<CompareOp *>(op)->norm_.shape_,
+                         sym_dim_next);
+}
+
 uint64_t PowerOp::Emit(VectorKernel &k) {
   ASSERT(type_id_ == dvm::kFloat32);
   vBinaryWS op;
@@ -1558,6 +1605,11 @@ NDObject *PowerOp::Clone(CloneHelper &h) {
 }
 
 void PowerOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Power"; }
+
+void PowerOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  return BinaryShapeProp(op->lhs_->shape_ref_, op->rhs_->shape_ref_, static_cast<PowerOp *>(op)->norm_.shape_,
+                         sym_dim_next);
+}
 
 void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   // recover original input
@@ -1759,6 +1811,16 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
 NDObject *BroadcastOp::Clone(CloneHelper &h) {
   auto lhs = stuff_ops_.empty() ? lhs_ : stuff_ops_.front()->lhs_;
   return new BroadcastOp(h.GetClone(lhs), dst_shape_ref_);
+}
+
+void BroadcastOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<BroadcastOp *>(op);
+  auto &shape = self->shape_;
+  auto dst_shape = self->dst_shape_ref_;
+  shape.Resize(dst_shape->size);
+  for (size_t i = 0; i < dst_shape->size; ++i) {
+    shape[i] = dst_shape->data[i];
+  }
 }
 
 BroadcastScalarOp::~BroadcastScalarOp() {
@@ -2101,6 +2163,45 @@ NDObject *ReduceOp::Clone(CloneHelper &h) {
   return op;
 }
 
+void ReduceOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<ReduceOp *>(op);
+  auto &shape = self->shape_;
+  auto input_shape = self->lhs_->shape_ref_;
+  auto keepdims = self->keepdims_;
+  if (auto dims_ref = self->dims_ref_; dims_ref->size) {
+    auto in_size = input_shape->size;
+    for (size_t i = 0; i < in_size; ++i) {
+      shape[i] = input_shape->data[i];
+    }
+    int64_t red_dim = keepdims ? 1 : 0;
+    for (size_t i = 0; i < dims_ref->size; i++) {
+      auto dim = dims_ref->data[i];
+      if (dim < 0) {
+        dim += in_size;
+      }
+      shape[dim] = red_dim;
+    }
+    if (keepdims) {
+      shape.Resize(in_size);
+    } else {
+      size_t out_size = 0;
+      for (size_t i = 0; i < in_size; ++i) {
+        if (shape[i] != 0) {
+          shape[out_size++] = shape[i];
+        }
+      }
+      shape.Resize(out_size);
+    }
+  } else if (keepdims) {
+    for (size_t i = 0; i < input_shape->size; ++i) {
+      shape[i] = 1;
+    }
+    shape.Resize(input_shape->size);
+  } else {
+    shape.Resize(0);
+  }
+}
+
 void OneHotOp::Normalize(std::vector<NDObject *> &run_ops) {
   // update shape_ref
   shape_.Resize(lhs_->shape_ref_->size);
@@ -2211,6 +2312,21 @@ void OneHotOp::DimChanged(NDObject *op) {
       static_cast<OneHotOp *>(op)->depth_dim_ = i;
       break;
     }
+  }
+}
+
+void OneHotOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<OneHotOp *>(op);
+  auto &shape = self->shape_;
+  auto depth = self->depth_->data[0];
+  auto in_shape = op->lhs_->shape_ref_;
+  auto axis = self->axis_;
+  if (axis < 0) {
+    axis += in_shape->size;
+  }
+  shape.Resize(in_shape->size);
+  for (int i = 0; i < static_cast<int>(shape.size); ++i) {
+    shape[i] = i == axis ? depth : in_shape->data[i];
   }
 }
 
@@ -3084,6 +3200,27 @@ uint64_t ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
   return code_size;
 }
 
+void ReduceScatterOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<ReduceScatterOp *>(op);
+  auto &shape = self->shape_;
+  auto input_shape = op->lhs_->shape_ref_;
+  auto rank_size = self->comm_->GetRankSize();
+  shape.Resize(input_shape->size);
+  for (size_t i = 0; i < input_shape->size; ++i) {
+    if (i == 0) {
+      auto dim = input_shape->data[i];
+      if (dim < 0) {
+        shape[i] = dim;
+      } else {
+        ASSERT(dim % rank_size == 0);
+        shape[i] = dim / rank_size;
+      }
+    } else {
+      shape[i] = input_shape->data[i];
+    }
+  }
+}
+
 AllReduceOpBase::AllReduceOpBase(int op_type, NDObject *input, const Communicator *comm)
     : CommOp(input, comm, ObjectType::kAllReduce) {
   if (op_type == ReduceType::kSum) {
@@ -3850,6 +3987,26 @@ uint64_t AllGatherOp::Emit(VectorKernel &k) {
 NDObject *AllGatherOp::Clone(CloneHelper &h) { return new AllGatherOp(h.GetClone(lhs_), comm_); }
 
 void AllGatherOp::Dump(bool verbose, std::ostringstream &oss) { oss << "AllGather"; }
+
+void AllGatherOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<AllGatherOp *>(op);
+  auto &shape = self->shape_;
+  auto input_shape = op->lhs_->shape_ref_;
+  auto rank_size = self->comm_->GetRankSize();
+  shape.Resize(input_shape->size);
+  for (size_t i = 0; i < input_shape->size; ++i) {
+    if (i == 0) {
+      auto dim = input_shape->data[i];
+      if (dim < 0) {
+        shape[i] = dim;
+      } else {
+        shape[i] = dim * rank_size;
+      }
+    } else {
+      shape[i] = input_shape->data[i];
+    }
+  }
+}
 
 AllGatherV2Op::AllGatherV2Op(NDObject *input, const Communicator *comm)
     : CommOp(input, comm, ObjectType::kAllGatherV2) {

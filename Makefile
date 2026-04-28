@@ -1,5 +1,5 @@
 VPATH = ./src:./include
-OBJ = ops.o kernel.o xkernel.o code.o dvm.o pass.o msprof.o system.o tuning.o comm.o
+OBJ = ops.o kernel.o xkernel.o gkernel.o code.o dvm.o pass.o msprof.o system.o tuning.o comm.o
 
 CFLGAS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include -fPIC -fvisibility=hidden
 CFLGAS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all

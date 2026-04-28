@@ -21,6 +21,7 @@
 #include "dvm.h"
 #include "kernel.h"
 #include "xkernel.h"
+#include "gkernel.h"
 #include "comm.h"
 
 namespace dvm {
@@ -587,7 +588,9 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
       break;
     }
     case KernelType::kSplit: {
-      if (flags & KernelFlag::kDynamic) {
+      if (flags & KernelFlag::kPrivate1) {
+        kernel = new GraphKernel(flags);
+      } else if (flags & KernelFlag::kDynamic) {
         kernel = flags & KernelFlag::kUnifyWS ? new SplitGraphDW() : new SplitGraphD();
       } else {
         kernel = new SplitGraphS(flags);

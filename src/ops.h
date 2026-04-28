@@ -340,7 +340,7 @@ enum CodeGenTmpl {
 };
 
 struct ObjectMeta {
-  constexpr ObjectMeta() : flags(), tmpl(), dim_changed(), fold_prop(), align_prop() {}
+  constexpr ObjectMeta() : flags(), tmpl(), dim_changed(), fold_prop(), align_prop(), shape_prop() {}
 
   static constexpr uint32_t kNddShared = 1;
   static constexpr uint32_t kInplaceProp = 1u << 1;
@@ -354,6 +354,7 @@ struct ObjectMeta {
   void (*dim_changed[kObjectBulk])(NDObject *);
   void (*fold_prop[kObjectBulk])(NDObject *, PropRange &);
   void (*align_prop[kObjectBulk])(NDObject *, PropRange &);
+  void (*shape_prop[kObjectBulk])(NDObject *, int64_t &);
 };
 
 class VectorKernel;
@@ -447,6 +448,12 @@ class NDObject {
   void AlignProp(PropRange &range) {
     if (auto func = meta_.align_prop[obj_id_]) {
       func(this, range);
+    }
+  }
+  // shape propagation from input shapes
+  void ShapeProp(int64_t &sym_dim_next) {
+    if (auto func = meta_.shape_prop[obj_id_]) {
+      func(this, sym_dim_next);
     }
   }
 
@@ -699,6 +706,7 @@ class ReshapeOp : public CopyOp {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
   bool VisitChangeRange(ChangeRange &range);
 
  protected:
@@ -846,6 +854,8 @@ class BinaryOp : public NDObject {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
  protected:
   int op_type_;
   _BinaryNormalizer norm_;
@@ -867,6 +877,8 @@ class PowerOp : public FlexOp {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
  protected:
   _BinaryNormalizer norm_;
 };
@@ -887,6 +899,8 @@ class CompareOp : public FlexOp {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
  protected:
   int cmp_op_;
@@ -944,6 +958,8 @@ class BroadcastOp : public _BroadcastOp {
   ~BroadcastOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   NDObject *Clone(CloneHelper &h) override;
+
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
  private:
   std::vector<NDObject *> stuff_ops_;
@@ -1031,6 +1047,8 @@ class ReduceOp : public _ReduceOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
   bool KeepDims() const { return keepdims_; }
 
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
   RedVisitCoder *visit_;
   AtomicCleanWrap *clean_wrap_{nullptr};
 
@@ -1071,6 +1089,7 @@ class OneHotOp : public NDObject {
   static void AlignProp(NDObject *op, PropRange &range);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
  private:
   scode_t on_value_;
@@ -1264,6 +1283,7 @@ class ReduceScatterOp : public CommOp {
 
   static void AlignProp(NDObject *op, PropRange &range);
   static void FoldProp(NDObject *op, PropRange &range);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
   bool multi_load_;
 
  private:
@@ -1311,6 +1331,7 @@ class AllGatherOp : public CommOp {
 
   static void AlignProp(NDObject *op, PropRange &range);
   static void FoldProp(NDObject *op, PropRange &range);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
   DimArray round_tile_;
 

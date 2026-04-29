@@ -88,6 +88,11 @@ enum SocType {
   kAscend950PR_9579,
   kAscend950PR_9589,
   kAscend950PR_9599,
+  kAscend950PR_958b,
+  kAscend950PR_957b,
+  kAscend950PR_957c,
+  kAscend950PR_957d,
+  kAscend950PR_950z,
   kSocUnknow,
 };
 

@@ -136,9 +136,14 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9382", kAscend910_9382, kAiCore_C220, 24, 192 * MB},
   {"Ascend910_9372", kAscend910_9372, kAiCore_C220, 20, 192 * MB},
   {"Ascend910_9361", kAscend910_9361, kAiCore_C220, 20, 96 * MB},
-  {"Ascend950PR_9579", kAscend950PR_9579, kAiCore_C310, 24, 128 * MB},
+  {"Ascend950PR_9579", kAscend950PR_9579, kAiCore_C310, 28, 128 * MB},
   {"Ascend950PR_9589", kAscend950PR_9589, kAiCore_C310, 32, 128 * MB},
   {"Ascend950PR_9599", kAscend950PR_9599, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950PR_958b", kAscend950PR_958b, kAiCore_C310, 32, 112 * MB},
+  {"Ascend950PR_957b", kAscend950PR_957b, kAiCore_C310, 28, 112 * MB},
+  {"Ascend950PR_957c", kAscend950PR_957c, kAiCore_C310, 28, 112 * MB},
+  {"Ascend950PR_957d", kAscend950PR_957d, kAiCore_C310, 28, 96 * MB},
+  {"Ascend950PR_950z", kAscend950PR_950z, kAiCore_C310, 4, 16 * MB},
 };
 
 using RtDevBinaryRegisterFunc = rtError_t (*)(const rtDevBinary_t *, void **);
@@ -252,7 +257,8 @@ void System::GetSocConfig() {
       return;
     }
   }
-  DvmException("Unrecognized SoC Version.");
+  std::string soc_err = std::string("Unrecognized SoC Version: ") + soc_name;
+  DvmException(soc_err.c_str());
 }
 
 void System::DoInit() {

@@ -20,7 +20,7 @@
 #include "acl/acl_rt.h"
 #include "system.h"
 #include "code.h"
-#include "tuning.h"
+#include "ops_m.h"
 #ifdef __CANN_85__
 #include "profiling/prof_api.h"
 #else

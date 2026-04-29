@@ -47,6 +47,7 @@ class CommIdWrap : public CodeWrap {
   static std::atomic<uint32_t> unique_id_;  // each kernel has a unique id
 };
 
+class CubeOp;
 class CommOp : public NDObject {
  public:
   CommOp(NDObject *input, const Communicator *comm, ObjectType obj_id)

@@ -16,6 +16,7 @@
 
 #include "kernel.h"
 #include "comm.h"
+#include "ops_m.h"
 #include "ops_c.h"
 
 namespace dvm {

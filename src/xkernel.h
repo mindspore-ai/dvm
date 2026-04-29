@@ -19,6 +19,7 @@
 
 #include <string>
 #include <vector>
+#include "ops_m.h"
 #include "kernel.h"
 
 namespace dvm {

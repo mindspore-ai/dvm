@@ -19,7 +19,6 @@
 #include <functional>
 #include "xkernel.h"
 #include "comm.h"
-#include "tuning.h"
 #include "msprof.h"
 
 namespace dvm {

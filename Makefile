@@ -1,8 +1,8 @@
 VPATH = ./src:./include
 OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o pass.o msprof.o system.o comm.o
 
-CFLGAS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
-CFLGAS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
+CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
+CFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
 
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\
 				 --cce-aicore-only\
@@ -30,22 +30,22 @@ CCE_FLGAS_C310 = --std=c++17 -Wno-int-to-pointer-cast\
 
 
 ifneq ($(dbg),)
-CFLGAS += -g -O0 -DDEBUG
+CFLAGS += -g -O0 -DDEBUG
 CCE_FLGAS_C220 += -DDEBUG
 CCE_FLGAS_C310 += -DDEBUG
 else
-CFLGAS += -O2 -D_FORTIFY_SOURCE=2
+CFLAGS += -O2 -D_FORTIFY_SOURCE=2
 endif
 
 ifneq ($(DVM_SOC_SIMU),)
 LD_FLAGS = -L${ASCEND_PATH}/toolkit/tools/simulator/${DVM_SOC_SIMU}/lib -lruntime_camodel -L${ASCEND_PATH}/lib64 -lascendcl
-CFLGAS += -DVK_SIM_MODEL
+CFLAGS += -DVK_SIM_MODEL
 else
 LD_FLAGS = -L${ASCEND_PATH}/lib64 -lascendcl
 endif
 
 ifneq ($(CANN_VER_85),)  # TODO: remove me..
-CFLGAS += -D__CANN_85__ -I${ASCEND_PATH}/pkg_inc
+CFLAGS += -D__CANN_85__ -I${ASCEND_PATH}/pkg_inc
 C310_ARCH_CUBE=dav-c310-cube
 C310_ARCH_VEC=dav-c310-vec
 else
@@ -54,7 +54,7 @@ C310_ARCH_VEC=dav-c310
 endif
 
 ifneq ($(asan),)
-CFLGAS += -fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer
+CFLAGS += -fsanitize=address -fsanitize-recover=address -fno-omit-frame-pointer
 endif
 
 XXD_FOUND := $(shell which xxd 2>/dev/null)
@@ -79,13 +79,13 @@ libdvm.a: $(OBJ) vm.o
 	ar crv $@ $^
 
 pybind_api.o: pybind_api.cc pybind_api.h dvm_py.h $(HEADERS)
-	g++ -c $(CFLGAS) $(PYBIND11_INCLUDES) $< -o $@
+	g++ -c $(CFLAGS) $(PYBIND11_INCLUDES) $< -o $@
 
 dry_run.o: dry_run.cc isa.h vm_aiv.cce vm_aic.cce
-	g++ -c $(CFLGAS) $< -o $@
+	g++ -c $(CFLAGS) $< -o $@
 
 ${OBJ}: %.o: %.cc $(HEADERS)
-	g++ -c $(CFLGAS) $< -o $@
+	g++ -c $(CFLAGS) $< -o $@
 
 vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	echo "extern const" > vm.cc
@@ -93,7 +93,7 @@ vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	$(XXDI) g_vkernel_c310_bin >> vm.cc
 	objdump -t g_vkernel_c310_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c310 >> vm.cc
 	objdump -t g_vkernel_c220_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c220 >> vm.cc
-	g++ -c $(CFLGAS) vm.cc -o vm.o
+	g++ -c $(CFLAGS) vm.cc -o vm.o
 
 ifneq ($(PRE_ASCEND),)
 g_vkernel_c220_bin: prebuild/g_vkernel_c220_bin

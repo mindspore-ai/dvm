@@ -21,6 +21,7 @@
 #include <vector>
 #include "code.h"
 #include "ops.h"
+#include "ops_c.h"
 #include "pass.h"
 
 namespace dvm {

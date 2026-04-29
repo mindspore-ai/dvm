@@ -1,7 +1,7 @@
 VPATH = ./src:./include
 OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o pass.o msprof.o system.o comm.o
 
-CFLGAS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include -fPIC -fvisibility=hidden
+CFLGAS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
 CFLGAS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
 
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\

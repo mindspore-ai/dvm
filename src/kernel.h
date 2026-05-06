@@ -189,6 +189,9 @@ class VectorKernel : public VKernel {
   int forward_event_num_;
   int backward_event_num_;
 
+  size_t load_num_{0};
+  std::vector<NDObject *> static_ops_;
+
  protected:
   int64_t Analyze();
   void ShapeTiling(int64_t size_limit, int64_t core_limit);
@@ -255,9 +258,6 @@ class VectorKernel : public VKernel {
 
   int max_type_;
   int min_type_;
-
-  size_t load_num_{0};
-  std::vector<NDObject *> static_ops_;
 
   struct DimTile {
     int start;

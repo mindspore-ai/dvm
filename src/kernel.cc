@@ -907,25 +907,24 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
     ManualTiling();
   }
   // simd_width
-  uint64_t tile_size = tile_size_;
   if (align_.simd_dim >= 0) {
     int64_t lead_dim = DimSpace()[0];
     int64_t block_sw = block_align_;
     int64_t block_lead = RoundUp(lead_dim, block_sw);
-    int64_t tile_outer = tile_size / block_lead;
+    int64_t tile_outer = tile_size_ / block_lead;
     int64_t lead_limit = tile_size_limit / tile_outer;
     int64_t simd_width = std::min(static_cast<int64_t>(ITEM_SIMD_WIDTH_MAX[max_type_]), block_lead);
     while (simd_width > block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
       simd_width -= block_sw;
     }
     lead_align_ = simd_width;
-    tile_size = RoundUp(lead_dim, simd_width) * tile_outer;
+    tile_size_ = RoundUp(lead_dim, simd_width) * tile_outer;
   }
   // codegen
   code_.block_dim_ = core_limit;
   forward_event_num_ = backward_event_num_ = g_system.EventNum();
-  CodeGenHelper helper(*this, tile_size * ITEM_SIZE[max_type_], live_peak);
-  auto code_end = helper.Generate(code_ptr, code_reserve, tile_size);
+  CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
+  auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
   return code_end;
 }

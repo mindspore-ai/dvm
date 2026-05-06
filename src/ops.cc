@@ -757,7 +757,6 @@ void NDViewLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ndd_.dims.resize(dim_size);
   src_stride_.resize(dim_size);
   tile_.resize(dim_size);
-  ASSERT(src_stride_ref_->data[dim_size - 1] == 1);
   for (size_t i = 0; i < dim_size; i++) {
     ndd_.dims[i] = shape_ref_->data[dim_size - i - 1];
     src_stride_[i] = src_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
@@ -823,48 +822,96 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
   }
   fold_dim.resize(fold_idx + 1);
   fold_stride.resize(fold_idx + 1);
-  vViewLoad op;
-  uint64_t *var_insn = insn_ + vViewLoad::VAR_OFFSET;
-  op.xd = xbuf_;
-  op.from = addr_.data;
-  op.offset = offset_bytes_;
-  op.iter_size = fold_dim[0] * ITEM_SIZE[type_id_];
-  // loop space
-  int loop_start;
-  uint64_t dst_stride = ndd_.lead_stride() * ITEM_SIZE[type_id_];
-  if (tile_start > 1 && fold_stride[0] * fold_dim[0] <= fold_stride[1]) {
-    op.src_gap = fold_stride[1] - fold_stride[0] * fold_dim[0];
-    op.dst_gap = (ndd_.lead_stride() * ITEM_SIZE[type_id_] - op.iter_size) >> 5;
-    op.iter_num = fold_dim[1];
-    loop_start = 2;
-    dst_stride *= fold_dim[1];
+  int64_t item_size = ITEM_SIZE[type_id_];
+  if (fold_stride[0]  > item_size) {
+    vViewLoadX op;
+    op.xd = xbuf_;
+    op.from = addr_.data;
+    op.offset = offset_bytes_;
+    auto last_store = k.static_ops_.back();
+    ASSERT(last_store->IsStore());
+    op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
+    auto ws_block_num = (g_system.UbWorkspaceSize() + g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
+    op.iter_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
+    op.iter_body = (fold_dim[0] - 1) / op.iter_size;
+    op.iter_tail = fold_dim[0] - op.iter_body * op.iter_size;
+    op.iter_stride= fold_stride[0];
+    op.loop_depth = tile_start - 1;
+    op.tile_depth = fold_dim.size() - tile_start;
+    uint64_t tail_size  = fold_dim[tile_start - 1];
+    if (tail_size_) {
+      tail_size = tail_size / ndd_[tail_dim_] * tail_size_;
+    }
+    if (op.loop_depth == 0) {
+      op.tail_size = (tail_size - 1) / op.iter_size;
+      op.iter_tail2 = tail_size - op.tail_size * op.iter_size;
+    } else {
+      op.tail_size = tail_size;
+      op.iter_tail2 = 0;
+    }
+    uint64_t *var_insn = insn_ + vViewLoadX::VAR_OFFSET;
+    uint64_t dst_stride = ndd_.lead_stride();
+    for (int i = 1; i < tile_start; ++i, ++var_insn) {
+      *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);
+      dst_stride *= fold_dim[i];
+    }
+    uint64_t space = 1;
+    for (size_t i = tile_start; i < fold_dim.size(); ++i, ++var_insn) {
+      *var_insn = vViewLoad::EncodeTile(space, fold_stride[i]);
+      space *= fold_dim[i];
+    }
+    addr_.Update(insn_ + vViewLoadX::RELOC_OFFSET);
+    if (k.forward_event_num_ > 6) {
+      k.forward_event_num_ = 6;
+    }
+    if (k.backward_event_num_ > 6) {
+      k.backward_event_num_ = 6;
+    }
+    return vViewLoadX::Encode(insn_, item_size == 2 ?  V_LOAD_VIEW_X_B16 : V_LOAD_VIEW_X_B32 , op);
   } else {
-    op.src_gap = 0;
-    op.dst_gap = 0;
-    op.iter_num = 1;
-    loop_start = 1;
+    vViewLoad op;
+    uint64_t *var_insn = insn_ + vViewLoad::VAR_OFFSET;
+    op.xd = xbuf_;
+    op.from = addr_.data;
+    op.offset = offset_bytes_;
+    op.iter_size = fold_dim[0] * item_size;
+    // loop space
+    int loop_start;
+    uint64_t dst_stride = ndd_.lead_stride() * item_size;
+    if (tile_start > 1 && fold_stride[0] * fold_dim[0] <= fold_stride[1]) {
+      op.src_gap = fold_stride[1] - fold_stride[0] * fold_dim[0];
+      op.dst_gap = (ndd_.lead_stride() * item_size - op.iter_size) >> 5;
+      op.iter_num = fold_dim[1];
+      loop_start = 2;
+      dst_stride *= fold_dim[1];
+    } else {
+      op.src_gap = 0;
+      op.dst_gap = 0;
+      op.iter_num = 1;
+      loop_start = 1;
+    }
+    op.loop_depth = tile_start - loop_start;
+    for (int i = loop_start; i < tile_start; ++i, ++var_insn) {
+      *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);
+      dst_stride *= fold_dim[i];
+    }
+    op.tail_size = fold_dim[tile_start - 1];
+    if (tail_size_) {
+      op.tail_size = op.tail_size / ndd_[tail_dim_] * tail_size_;
+    }
+    if (op.loop_depth == 0 && loop_start == 1) {
+      op.tail_size *= item_size;
+    }
+    // tile space
+    op.tile_depth = fold_dim.size() - tile_start;
+    uint64_t space = 1;
+    for (size_t i = tile_start; i < fold_dim.size(); ++i, ++var_insn) {
+      *var_insn = vViewLoad::EncodeTile(space, fold_stride[i]);
+      space *= fold_dim[i];
+    }
+    addr_.Update(insn_ + vViewLoad::RELOC_OFFSET);
+    return vViewLoad::Encode(insn_, V_LOAD_VIEW, op);
   }
-  op.loop_depth = tile_start - loop_start;
-  for (int i = loop_start; i < tile_start; ++i, ++var_insn) {
-    *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);
-    dst_stride *= fold_dim[i];
-  }
-  op.tail_size = fold_dim[tile_start - 1];
-  if (tail_size_) {
-    op.tail_size = op.tail_size / ndd_[tail_dim_] * tail_size_;
-  }
-  if (op.loop_depth == 0 && loop_start == 1) {
-    op.tail_size *= ITEM_SIZE[type_id_];
-  }
-  // tile space
-  op.tile_depth = fold_dim.size() - tile_start;
-  uint64_t space = 1;
-  for (size_t i = tile_start; i < fold_dim.size(); ++i, ++var_insn) {
-    *var_insn = vViewLoad::EncodeTile(space, fold_stride[i]);
-    space *= fold_dim[i];
-  }
-  addr_.Update(insn_ + vViewLoad::RELOC_OFFSET);
-  return vViewLoad::Encode(insn_, V_LOAD_VIEW, op);
 }
 
 NDObject *NDViewLoad::Clone(CloneHelper &h) {

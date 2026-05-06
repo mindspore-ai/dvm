@@ -42,6 +42,8 @@ enum vAccInsnID {
   V_LOAD = 0,
   V_LOAD_DUMMY,
   V_LOAD_VIEW,
+  V_LOAD_VIEW_X_B32, // [c220]
+  V_LOAD_VIEW_X_B16, // [c220]
   V_SLOAD,
   V_LOAD_CC, // [c310]
   V_MULTI_LOAD,
@@ -1086,9 +1088,11 @@ struct vViewLoad {
   uint64_t tile_depth;
   // pc[0]: reserved(16) << 18 | xd(18)
   // pc[1]: dst_gap(4) << 60 | loop_depth(4) << 56 | tile_depth(4) << 52 | tail_size(18) << 34 | iter_size(18) << 16 |
-  // iter_num(16)
-  // pc[2]: src_gap(32) << 32 | offset(32) pc[3]: from(64) pc[VAR::loop_depth]: loop_size(16) << 48 |
-  // dst_stride(16) << 32 | src_stride(32) pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
+  //        iter_num(16)
+  // pc[2]: src_gap(32) << 32 | offset(32)
+  // pc[3]: from(64)
+  // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
+  // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoad &op) {
     op.xd = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data1 = pc[1];
@@ -1125,6 +1129,56 @@ struct vViewLoad {
     return loop_size << 48 | dst_stride << 32 | src_stride;
   }
   __aicore_inline__ uint64_t EncodeTile(uint64_t space, uint64_t stride) { return space << 32 | stride; }
+};
+
+struct vViewLoadX {
+  enum { RELOC_OFFSET = 4 };
+  enum { VAR_OFFSET = 5 };
+  uint64_t xd;
+  uint64_t from;
+  uint64_t offset;
+  uint64_t ws;
+  uint64_t iter_size;
+  uint64_t iter_body;
+  uint64_t iter_tail;
+  uint64_t iter_stride;
+  uint64_t tail_size;
+  uint64_t iter_tail2;
+  uint64_t loop_depth;
+  uint64_t tile_depth;
+  // pc[0]: reserved(18)
+  // pc[1]: tail_size(16) << 48 | iter_tail(16) << 32 | iter_size(16) << 16 | iter_body(16)
+  // pc[2]: iter_tail2(16) << 48 | reserved(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xd(18) << 18 | ws(18)
+  // pc[3]: iter_stride(32) << 32 | offset(32) << 32
+  // pc[4]: from(64)
+  // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
+  // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
+   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoadX &op) {
+    uint64_t data1 = pc[1];
+    op.iter_body = data1 & 0xfffful;
+    op.iter_size = (data1 >> 16) & 0xfffful;
+    op.iter_tail = (data1 >> 32) & 0xfffful;
+    op.tail_size = (data1 >> 48);
+    uint64_t data2 = pc[2];
+    op.ws = data2 & 0x3fffful;
+    op.xd = (data2 >> 18) & 0x3fffful;
+    op.tile_depth = (data2 >> 36) & 0xful;
+    op.loop_depth = (data2 >> 40) & 0xful;
+    op.iter_tail2 = data2 >> 48;
+    uint64_t data3 = pc[3];
+    op.iter_stride = data3 >> 32;
+    op.offset = vGetBitRange(data3, 0, 32);
+    op.from = pc[4];
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewLoadX &op) {
+    uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
+    pc[0] = vMakeAccHead(id, op.iter_tail2 << 18 | op.xd, size);
+    pc[1] = op.tail_size << 48 | op.iter_tail << 32 | op.iter_size << 16 | op.iter_body;
+    pc[2] = op.iter_tail2 << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xd << 18 | op.ws;
+    pc[3] = op.iter_stride << 32 | op.offset;
+    pc[4] = op.from;
+    return size;
+  }
 };
 
 struct vMultiLoad {

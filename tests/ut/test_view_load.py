@@ -109,11 +109,33 @@ def test_slice_dim_fold():
     t.tile(3, 3, 4)
     assert (t.run_check())
 
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_slice_dim_x():
+    t = Tester()
+    a = np.random.normal(0, 1, [100, 2048]).astype(np.float32)
+    x = t.view_load([100, 200], [2048, 10], a)
+    y = t.add(x, 0.1)
+    t.store_expect(y, a[:, 0:2000:10] + 0.1)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_slice_dim_x_lead_1():
+    t = Tester()
+    a = np.random.normal(0, 1, [100, 2048, 1]).astype(np.float16)
+    x = t.view_load([100, 199, 1], [2048, 10, 1], a)
+    y = t.add(x, 0.1)
+    t.store_expect(y, a[:, 0:1990:10, :] + 0.1)
+    assert (t.run_check())
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("shape, dim0, dim1", [
     ([8, 30, 512], 0, 1),
     ([8, 6, 20, 64], 1, 2),
     ([8, 6, 20, 64], 0, 2),
+    ([1024, 512], 0, 1),
 ])
 def test_transpose(shape, dim0, dim1):
     t = Tester()

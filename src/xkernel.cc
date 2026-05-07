@@ -1887,7 +1887,7 @@ void _SplitKernel::BuildKernel(EagerVector *kernel, const EagerArea *area, WsAll
       if (auto gen_idx = gen->index_; gen_idx < 64) {
         if (!reuse_plan) {
           reuse_plan = true;
-          kernel->InOutReusePlan();
+          kernel->InOutReusePlan(&area->dom_->nd_.dims());
         }
         for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
           if (auto r = it->first; r != nullptr && (r->io_reuse_mask_ & (1ull << gen_idx)) && r->type_id_ == gen->type_id_) {

@@ -1399,13 +1399,14 @@ uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
   return ws_size;
 }
 
-void VectorKernel::InOutReusePlan() {
+void VectorKernel::InOutReusePlan(const DimArray *dom) {
   for (size_t i = 0; i < objects_.size(); ++i) {
     auto op = objects_[i];
     if (!op->InplaceProp()) {
       op->io_reuse_mask_ = 0;
-    } else if (op->IsLoad()) {
-      op->io_reuse_mask_ = i < 64 ? 1ull << i : 0;
+    } else if (op->obj_id_ == ObjectType::kLoad) {
+      bool flatten = dom != nullptr ? *dom == op->nd_.dims() : static_cast<NDLoad *>(op)->round_tile_.empty();
+      op->io_reuse_mask_ = i < 64 && flatten ? 1ull << i : 0;
     } else {
       uint64_t mask = 0;
       op->ForInput([&mask](NDObject *in) { mask |= in->io_reuse_mask_; });

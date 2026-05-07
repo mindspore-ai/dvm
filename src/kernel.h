@@ -142,7 +142,7 @@ class VectorKernel : public VKernel {
     return (tile_num_ + tile_per_block - 1) / tile_per_block;
   }
 
-  void InOutReusePlan();
+  void InOutReusePlan(const DimArray *dom = nullptr);
   template <typename T>
   NDAccess *InOutReuseFind(NDAccess *load, const T &check) {
     if (auto index = load->index_; index < 64) {

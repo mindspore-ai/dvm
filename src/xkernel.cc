@@ -1479,6 +1479,10 @@ class EagerVector : public VectorKernel {
 class EagerArea {
  public:
   enum { kFree = 0, kPending, kSubmitted };
+
+  static constexpr uint64_t kPatReduce = 1;
+  static constexpr uint64_t kPatView = 2;
+
   EagerArea() {
     objects_.reserve(64);
     fused_.reserve(8);
@@ -1489,9 +1493,11 @@ class EagerArea {
     if (dom->obj_id_ != kReduce) {
       dom_ = dom;
       state_ = kPending;
+      pattern_ = 0;
     } else {
       dom_ = dom->lhs_;
       state_ = kSubmitted;
+      pattern_ = kPatReduce;
     }
     objects_.clear();
     fused_.clear();
@@ -1500,6 +1506,7 @@ class EagerArea {
   void ResetMix(NDObject *dom, int state) {
     dom_ = dom;
     state_ = state;
+    pattern_ = 0;
     objects_.clear();
     fused_.clear();
   }
@@ -1536,6 +1543,7 @@ class EagerArea {
   int state_;
   int area_id_;
   NDObject *dom_;
+  uint64_t pattern_;
   std::vector<NDObject *> objects_;
   std::vector<EagerArea *> fused_;
   uint64_t depend_mask_;
@@ -1657,75 +1665,6 @@ NDObject *_SplitKernel::Exchange(NDObject *input, int to_aid) {
   return load;
 }
 
-NDObject *_SplitKernel::SplitPush(EagerArea *area, NDObject *input) {
-  auto cube_check = [this, &input](EagerArea *c, EagerArea *v) -> bool {
-    if (v->state_ == EagerArea::kSubmitted) { // reduce
-      return false;
-    }
-    if (input == c->dom_) {
-      input = Exchange(input, v->area_id_);
-      SetArea(input, v->area_id_);
-      temp_vec_.push_back(input);
-    }
-    v->dom_ = c->dom_;
-    pv_black_mask_ |= 1ul << v->area_id_;
-    return true;
-  };
-  if (auto idx = GetArea(input); idx >= 0) {
-    auto a = areas_[idx].second;
-    if (a == area) return input;
-    if (a->state_ == EagerArea::kPending) {
-      if (area->FuseCheck(a) && (!a->dom_->IsCube() || cube_check(a, area))) {
-        area->fused_.push_back(a);
-        areas_[a->area_id_].second = area;
-        if (!a->fused_.empty()) {
-          for (auto x : a->fused_) {
-            area->fused_.push_back(x);
-            areas_[x->area_id_].second = area;
-          }
-        }
-        kernel_used_--;
-        pv_black_mask_ |= 1ul << a->area_id_;
-        area->depend_mask_ |= a->depend_mask_;
-        return input;
-      }
-      if (!input->IsLoad()) {
-        a->state_ = EagerArea::kSubmitted;
-      }
-    }
-    if (input->IsLoad()) {
-      auto ac = static_cast<NDAccess *>(input);
-      auto load = new NDLoad(nullptr, ac->shape_ref_, ac->type_id_);
-      if (input->CheckFlag(OBJ_FLAG_EAGER)) {
-        SetStore(load, input);  // TRICK: force load entry wss alloc as swap load to update its gm
-        SetStoreSize(ac, 0);
-      } else {
-        auto store = GetStore(input);
-        ASSERT(store != nullptr && store->IsStore());
-        SetStore(load, store);
-        auto a = areas_[GetArea(store)].second;
-        area->depend_mask_ |= a->depend_mask_;
-        a->state_ = EagerArea::kSubmitted;
-      }
-      load->Normalize(a->objects_);
-      objects_.push_back(load);
-      input = load;
-    } else {
-      area->depend_mask_ |= a->depend_mask_;
-      input = Exchange(input, area->area_id_);
-    }
-  } else if (input->IsLoad()) {
-    if (auto store = GetStore(input); store != nullptr && store->IsStore()) {
-      auto a = areas_[GetArea(store)].second;
-      area->depend_mask_ |= a->depend_mask_;
-      a->state_ = EagerArea::kSubmitted;
-    }
-  }
-  SetArea(input, area->area_id_);
-  temp_vec_.push_back(input);
-  return input;
-}
-
 void _SplitKernel::Split(NDObject *root) {
   int kidx = area_used_++;
   EagerArea *area = EagerArea::Assign(this, kidx);
@@ -1737,7 +1676,90 @@ void _SplitKernel::Split(NDObject *root) {
     auto op = stack.back();
     stack.pop_back();
     area->objects_.push_back(op);
-    op->ForInput([this, area](NDObject *&in) { in = SplitPush(area, in); });
+    if (op->IsLoad()) {
+      if (auto store = GetStore(op); store != nullptr && store->IsStore()) { // reduce pre-split
+        auto a = areas_[GetArea(store)].second;
+        area->depend_mask_ |= a->depend_mask_;
+        a->state_ = EagerArea::kSubmitted;
+      }
+      if (op->obj_id_ == ObjectType::kViewLoad) {
+        area->pattern_ |= EagerArea::kPatView; 
+      }
+    } else {
+      op->ForInput([this, kidx, &stack](NDObject *&input) {
+        auto idx = GetArea(input);
+        if (idx < 0) {
+          SetArea(input, kidx);
+          stack.push_back(input);
+        } else if (idx != kidx) {
+          exchange_cache_.push_back(&input);
+        }
+      });
+    }
+  }
+  if (!exchange_cache_.empty()) {
+    auto cube_check = [this](EagerArea *c, EagerArea *v, NDObject *&input) -> bool {
+      if (v->pattern_) { // reduce, view..
+        return false;
+      }
+      if (input == c->dom_) {
+        input = Exchange(input, v->area_id_);
+        SetArea(input, v->area_id_);
+        v->objects_.push_back(input);
+      }
+      v->dom_ = c->dom_;
+      pv_black_mask_ |= 1ul << v->area_id_;
+      return true;
+    };
+    for (auto exchange: exchange_cache_) {
+      NDObject *&input = *exchange;
+      auto a = areas_[GetArea(input)].second;
+      if (a == area) continue;
+      if (a->state_ == EagerArea::kPending) {
+        if (area->FuseCheck(a) && (!a->dom_->IsCube() || cube_check(a, area, input))) {
+          area->fused_.push_back(a);
+          areas_[a->area_id_].second = area;
+          if (!a->fused_.empty()) {
+            for (auto x : a->fused_) {
+              area->fused_.push_back(x);
+              areas_[x->area_id_].second = area;
+            }
+          }
+          kernel_used_--;
+          pv_black_mask_ |= 1ul << a->area_id_;
+          area->depend_mask_ |= a->depend_mask_;
+          continue;
+        }
+        if (!input->IsLoad()) {
+          a->state_ = EagerArea::kSubmitted;
+        }
+      }
+      NDObject *load;
+      if (input->IsLoad()) {
+        auto ac = static_cast<NDAccess *>(input);
+        load = new NDLoad(nullptr, ac->shape_ref_, ac->type_id_);
+        if (input->CheckFlag(OBJ_FLAG_EAGER)) {
+          SetStore(load, input);  // TRICK: force load entry wss alloc as swap load to update its gm
+          SetStoreSize(ac, 0);
+        } else {
+          auto store = GetStore(input);
+          ASSERT(store != nullptr && store->IsStore());
+          SetStore(load, store);
+          auto a = areas_[GetArea(store)].second;
+          area->depend_mask_ |= a->depend_mask_;
+          a->state_ = EagerArea::kSubmitted;
+        }
+        load->Normalize(a->objects_);
+        objects_.push_back(load);
+      } else {
+        area->depend_mask_ |= a->depend_mask_;
+        load = Exchange(input, area->area_id_);
+      }
+      input = load;
+      SetArea(load, area->area_id_);
+      area->objects_.push_back(load);
+    }
+    exchange_cache_.clear();
   }
 }
 
@@ -1903,7 +1925,7 @@ void _SplitKernel::BuildKernel(EagerVector *kernel, const EagerArea *area, WsAll
     cur = fused_size ? area->fused_[--fused_size] : area;
     for (auto it = cur->objects_.rbegin(); it != cur->objects_.rend(); ++it) {
       auto op = *it;
-      if (GetArea(op) < 0) continue;
+      if (GetArea(op) < 0 || op->IsLoad()) continue; // reorder load by user order
       if (push_input(stack, op)) {
         while (!stack.empty()) {
           auto top = stack.back();

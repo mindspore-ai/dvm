@@ -369,7 +369,6 @@ class _SplitKernel : public VKernel {
   }
 
   void Split(NDObject *root);
-  NDObject *SplitPush(EagerArea *area, NDObject *input);
   NDObject *Exchange(NDObject *input, int to_aid);
   void BuildKernel(EagerVector *kernel, const EagerArea *area, WsAllocator *alloc);
   void RelocBinds();
@@ -387,6 +386,7 @@ class _SplitKernel : public VKernel {
   };
   std::vector<NDObject *> objects_;
   std::vector<NDObject *> temp_vec_;
+  std::vector<NDObject **> exchange_cache_;
   SplitContext *__restrict__ ctx_;
   friend EagerArea;
 };

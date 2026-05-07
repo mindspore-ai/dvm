@@ -979,7 +979,8 @@ uint64_t StagesKernel::AllocWorkspace() {
     for (auto &[io, store] : stage->ios) {
       if (store != nullptr) {
         if (!store->CheckFlag(OBJ_FLAG_STAGE_IO) || lives.find(store) != lives.end()) continue;
-        if (stage->kernel->KType() == KernelType::kVector && !stage->kernel->IsDynamic()) {  // TODO: parallel fusion
+        if (stage->kernel->KType() == KernelType::kVector && !stage->kernel->IsDynamic() &&
+            static_cast<NDLoad *>(io)->round_tile_.empty()) {  // TODO: parallel fusion
           NDAccess *inplace_stage = nullptr;
           auto inplace_out = static_cast<VectorKernel *>(stage->kernel)
                                ->FindInplaceStore(io, [inplaced_mask, &lives, &inplace_stage](NDAccess *op) -> bool {
@@ -1925,7 +1926,7 @@ void _SplitKernel::BuildKernel(EagerVector *kernel, const EagerArea *area, WsAll
       if (auto gen_idx = gen->index_; gen_idx < 64) {
         if (!reuse_plan) {
           reuse_plan = true;
-          kernel->InOutReusePlan();
+          kernel->InOutReusePlan(&area->dom_->nd_.dims());
         }
         for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
           if (auto r = it->first; r != nullptr && (r->io_reuse_mask_ & (1ull << gen_idx)) && r->type_id_ == gen->type_id_) {

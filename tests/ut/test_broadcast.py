@@ -67,7 +67,7 @@ def test_broadcast_multi(type):
     z = t.broadcast(z, [10, 33, 64])
     x = t.load(a)
     s = t.add(x, z)
-    t.store_expect(s, a + b + 0.1)
+    t.store_expect(s, a + (b + 0.1))
     assert (t.run_check())
 
 

@@ -764,3 +764,19 @@ def test_eager_broadcast_store_reuse():
     t.store_expect(y2, e1 + a1)
     t.store_expect(y1, e1)
     assert (t.run_check())
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_eager_cv_with_view_load():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [1024, 512]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    c = np.random.normal(0, 1, [1024, 1000]).astype(np.float16)
+    x3 = t.view_load([1024, 512], [1000, 1], c)
+    x4 = t.add(x2, x3)
+    expect = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16) + c[:, :512]
+    t.store_expect(x4, expect)
+    assert (t.run_check())

@@ -338,25 +338,43 @@ void System::DoInit() {
   auto ret = MsprofRegisterCallback(0, ProfCommandHandler);
   EXCEPTION_IF(ret != MSPROF_ERROR_NONE, "MsprofRegisterCallBack failed.");
 
-  rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
-  if (rt_handle_) {
-    kernel_launch_func_ = dlsym(rt_handle_, "rtKernelLaunch");
-    get_ffts_addr_func_ = dlsym(rt_handle_, "rtGetC2cCtrlAddr");
-    if (kernel_launch_func_ && get_ffts_addr_func_) {
-      auto reg_binary = reinterpret_cast<RtDevBinaryRegisterFunc>(dlsym(rt_handle_, "rtDevBinaryRegister"));
-      auto reg_function = reinterpret_cast<RtFunctionRegisterFunc>(dlsym(rt_handle_, "rtFunctionRegister"));
-      EXCEPTION_IF(reg_binary == nullptr || reg_function == nullptr, "load rt_binary_register symbol failed");
-      RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
-      code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
-      return;
+  auto acl_handle = dlopen("libascendcl.so", RTLD_LAZY | RTLD_LOCAL);
+  bool try_reg_rt = true;
+  if (acl_handle) {
+    typedef aclError (*GetVersionFunc)(aclCANNPackageName, aclCANNPackageVersion *);
+    if (auto get_version = reinterpret_cast<GetVersionFunc>(dlsym(acl_handle, "aclsysGetCANNVersion"))) {
+      aclCANNPackageVersion ver;
+      if (get_version(ACL_PKG_NAME_CANN, &ver) == ACL_SUCCESS) {
+        int major = std::stoi(ver.majorVersion);
+        int minor = std::stoi(ver.minorVersion);
+        if (major > 9 || (major == 9 && minor >= 1)) {  // CANN 9.1+ use acl only
+          try_reg_rt = false;
+        }
+      }
     }
-    dlclose(rt_handle_);
-    rt_handle_ = nullptr;
+  }
+  if (try_reg_rt) {
+    rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
+    if (rt_handle_) {
+      kernel_launch_func_ = dlsym(rt_handle_, "rtKernelLaunch");
+      get_ffts_addr_func_ = dlsym(rt_handle_, "rtGetC2cCtrlAddr");
+      if (kernel_launch_func_ && get_ffts_addr_func_) {
+        auto reg_binary = reinterpret_cast<RtDevBinaryRegisterFunc>(dlsym(rt_handle_, "rtDevBinaryRegister"));
+        auto reg_function = reinterpret_cast<RtFunctionRegisterFunc>(dlsym(rt_handle_, "rtFunctionRegister"));
+        if (reg_binary && reg_function) {
+          RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
+          code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
+        }
+        dlclose(acl_handle);
+        return;
+      }
+      dlclose(rt_handle_);
+      rt_handle_ = nullptr;
+    }
   }
 
 #ifdef __CANN_85__
-  rt_handle_ = dlopen("libascendcl.so", RTLD_LAZY | RTLD_LOCAL);
-  EXCEPTION_IF(rt_handle_ == nullptr, "dlopen libascendcl failed");
+  rt_handle_ = acl_handle;
   typedef aclError (*LoadBinaryFunc)(const void *data, size_t len, const aclrtBinaryLoadOptions *opt,
                                      aclrtBinHandle *handle);
   typedef aclError (*GetFunctionFunc)(aclrtBinHandle handle, const char *name, void **funchandle);

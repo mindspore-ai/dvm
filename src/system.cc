@@ -174,7 +174,7 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9599", kAscend910_9599, kAiCore_C310, 36, 128 * MB},
 };
 
-static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, const unsigned char *bin_data,
+static bool RegKernelWithRT(void *reg_binary_func, void *reg_function_func, const unsigned char *bin_data,
                             unsigned int bin_len, void *func_handles[3]) {
   auto reg_binary = reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(reg_binary_func);
   auto reg_function =
@@ -190,21 +190,21 @@ static void RegKernelWithRT(void *reg_binary_func, void *reg_function_func, cons
   dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AIVEC;
   dev_bin.length = bin_len;
   err = reg_binary(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec binary failed");
+  if (err != RT_ERROR_NONE) return false;
   err = reg_function(module, func_handles[Code::kTargetVec], "dvm_mix_aiv", "dvm_mix_aiv", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg vec function failed");
+  if (err != RT_ERROR_NONE) return false;
 
   dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF_AICUBE;
   err = reg_binary(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore binary failed");
+  if (err != RT_ERROR_NONE) return false;
   err = reg_function(module, func_handles[Code::kTargetCube], "dvm_mix_aic", "dvm_mix_aic", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg aicore function failed");
+  if (err != RT_ERROR_NONE) return false;
 
   dev_bin.magic = RT_DEV_BINARY_MAGIC_ELF;
   err = reg_binary(&dev_bin, &module);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix binary failed");
+  if (err != RT_ERROR_NONE) return false;
   err = reg_function(module, func_handles[Code::kTargetMix], "dvm", "dvm", 0);
-  EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
+  return err == RT_ERROR_NONE;
 }
 
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
@@ -332,9 +332,9 @@ void System::DoInit() {
     if (kernel_launch_func_ && get_ffts_addr_func_) {
       auto reg_binary = dlsym(rt_handle_, "rtDevBinaryRegister");
       auto reg_function = dlsym(rt_handle_, "rtFunctionRegister");
-      EXCEPTION_IF(reg_binary == nullptr || reg_function == nullptr, "load rt_binary_register symbol failed");
-      RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
-      code_launch_ = CodeLaunchRT;
+      if (reg_binary && reg_function && RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_)) {
+        code_launch_ = CodeLaunchRT;
+      }
       return;
     }
     dlclose(rt_handle_);

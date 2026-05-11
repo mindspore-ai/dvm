@@ -17,6 +17,7 @@
 #ifndef _DVM_PYBIND_API_H_
 #define _DVM_PYBIND_API_H_
 #include <vector>
+#include "pybind11/numpy.h"
 #include "code.h"
 #include "dvm_py.h"
 
@@ -32,6 +33,7 @@ class RtKernelPy : public KernelPy {
   py::object Load(py::object shape, DataTypePy type) override;
   py::object ViewLoad(py::object shape, py::object stride, DataTypePy type) override;
   py::object Store(py::object obj, DataTypePy type) override;
+  py::object ViewStore(py::object obj, py::object stride, DataTypePy type) override;
 
 
   py::object SliceLoad(py::object shape, py::object start, py::object size, DataTypePy type);
@@ -53,7 +55,9 @@ class RtKernelPy : public KernelPy {
 
   void Input(py::object obj, py::object val, size_t offset);
   py::object Output(py::object store);
+  void SetOutput(py::object store, py::object val);
   void ClearStoreMemory(py::object store);
+
   void Tile(int start, int end, int64_t num, int64_t factor);
   void CodeGen(py::object pass_names);
   void Run();
@@ -96,14 +100,16 @@ class RtKernelPy : public KernelPy {
 
   struct StoreInfo {
     NDObject *op;
-    void *host{nullptr};
+    py::array host;
     void *dev{nullptr};
     size_t size{0};
     bool clear_mem{false};
+    bool set_host{false};
   };
 
  protected:
   void PrepareIO();
+  void PrepareStore(StoreInfo &info);
   std::vector<std::vector<int64_t>> shape_vec_;
   std::vector<IntArrayRef *> shape_;
   std::vector<LoadInfo> loads_;

@@ -303,6 +303,15 @@ class Kernel {
   NDObject *Store(void *addr, NDObject *input);
 
   /**
+   * @brief Emit a incontinuous store operation to output tensor.
+   * @param addr memory address of output tensor. also can be relocated at codegen stage.
+   * @param input source operation to store.
+   * @param stride stride reference of output tensor.
+   * @return the result store operation.
+   */
+  NDObject *Store(void *addr, NDObject *input, IntArrayRef *stride);
+
+  /**
    * @brief [PRIVITE]
    */
   NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);

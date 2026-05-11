@@ -90,7 +90,8 @@ std::vector<int64_t> GetVector(py::object shape) {
 
 inline void ResetStoreMemory(const std::vector<RtKernelPy::StoreInfo> &stores) {
   for (auto &info : stores) {
-    ERROR_CHECK(aclrtMemcpy(info.dev, info.size, info.host, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
+    auto buf = info.host.request();
+    ERROR_CHECK(aclrtMemcpy(info.dev, info.size, buf.ptr, info.size, ACL_MEMCPY_HOST_TO_DEVICE));
   }
 }
 
@@ -197,14 +198,13 @@ class DevRunner : public KernelRunner {
 
   void AllocStore(StoreInfo &store) override {
     if (store.size == 0) return;
-    store.host = std::malloc(store.size);
+    auto buf = store.host.request();
     const uint64_t reserve_mem = 512;
     ERROR_CHECK(aclrtMalloc(&store.dev, store.size + reserve_mem, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
-    if (store.clear_mem) {
-      std::memset(store.host, 0, store.size);
-      ERROR_CHECK(aclrtMemcpy(store.dev, store.size, store.host, store.size, ACL_MEMCPY_HOST_TO_DEVICE));
+    if (store.clear_mem || store.set_host) {
+      std::memset(buf.ptr, 0, store.size);
+      ERROR_CHECK(aclrtMemcpy(store.dev, store.size, buf.ptr, store.size, ACL_MEMCPY_HOST_TO_DEVICE));
     }
-    host_mem_.push_back(store.host);
     dev_mem_.push_back(store.dev);
   }
 
@@ -227,17 +227,12 @@ class DevRunner : public KernelRunner {
   }
 
   void Reset() override {
-    for (auto mem : host_mem_) {
-      std::free(mem);
-    }
-    host_mem_.clear();
     for (auto mem : dev_mem_) {
       ERROR_CHECK(aclrtFree(mem));
     }
     dev_mem_.clear();
   }
 
-  std::vector<void *> host_mem_;
   std::vector<void *> dev_mem_;
   int dev_id_{0};
 };
@@ -249,12 +244,11 @@ class DryRunner : public KernelRunner {
   DryRunner(int core_id) : core_id_(core_id) {}
   void AllocLoad(const py::buffer_info &buf, LoadInfo &load) override { load.dev = buf.ptr; }
   void AllocStore(StoreInfo &store) override {
-    store.host = std::malloc(store.size);
+    auto buf = store.host.request();
     if (store.clear_mem) {
-      std::memset(store.host, 0, store.size);
+      std::memset(buf.ptr, 0, store.size);
     }
-    host_mem_.push_back(store.host);
-    store.dev = store.host;
+    store.dev = buf.ptr;
   }
   void *Alloc(size_t size) override {
     void *ws = nullptr;
@@ -308,8 +302,6 @@ class DasRunner : public KernelRunner {
     addr_ += buf.itemsize * buf.size;
   }
   void AllocStore(StoreInfo &store) override {
-    store.host = std::malloc(store.size);
-    host_mem_.push_back(store.host);
     store.dev = addr_;
     addr_ += store.size;
   }
@@ -323,10 +315,6 @@ class DasRunner : public KernelRunner {
   }
   void Reset() override {
     addr_ = reinterpret_cast<uint8_t *>(0x10);
-    for (auto mem : host_mem_) {
-      std::free(mem);
-    }
-    host_mem_.clear();
   }
   int Run(Kernel &kernel, void *workspace, bool sync) override {
     auto &code = kernel.GetImpl()->code_;
@@ -335,7 +323,6 @@ class DasRunner : public KernelRunner {
   }
 
  private:
-  std::vector<void *> host_mem_;
   uint8_t *addr_;
 };
 
@@ -498,6 +485,18 @@ py::object RtKernelPy::Store(py::object obj, DataTypePy type) {
   return ObjToPy(op);
 }
 
+py::object RtKernelPy::ViewStore(py::object obj, py::object stride, DataTypePy type) {
+  auto in_obj = PyToObj(obj);
+  if (type != kDataTypeEnd) {
+    in_obj = kernel_.Cast(in_obj, type);
+  }
+  auto stride_ref = GetShapeRef(stride);
+  auto op = kernel_.Store(nullptr, in_obj, stride_ref);
+  auto &store = stores_.emplace_back();
+  store.op = op;
+  return ObjToPy(op);
+}
+
 py::object RtKernelPy::PadStore(py::object obj, int64_t pad_size) {
   auto op = kernel_.PadStore(nullptr, PyToObj(obj), pad_size);
   auto &store = stores_.emplace_back();
@@ -571,13 +570,8 @@ void RtKernelPy::CodeGen(py::object pass_names) {
     }
     kernel_.Normalize();
     for (auto &info : stores_) {
-      auto op = info.op;
-      info.size = ITEM_SIZE[op->type_id_];
-      for (size_t i = 0; i < op->shape_ref_->size; i++) {
-        info.size *= op->shape_ref_->data[i];
-      }
-      runner_->AllocStore(info);
-      relocs.emplace_back(op, info.dev);
+      PrepareStore(info);
+      relocs.emplace_back(info.op, info.dev);
     }
     kernel_.CodeGen(relocs.data(), relocs.size(), runner_);
     return;
@@ -712,26 +706,19 @@ void RtKernelPy::Input(py::object obj, py::object val, size_t offset) {
 py::object RtKernelPy::Output(py::object store) {
   auto op = PyToObj(store);
   auto &info = FindVectorInfo(stores_, op);
-  std::vector<ssize_t> shape;
-  std::vector<ssize_t> strides;
-  ssize_t itemsize = ITEM_SIZE[op->type_id_];
-  ssize_t ndim = op->shape_ref_->size;
-  size_t size = itemsize;
-  for (size_t i = 0; i < static_cast<size_t>(ndim); ++i) {
-    size *= op->shape_ref_->data[i];
-    shape.push_back(op->shape_ref_->data[i]);
-    auto stride = itemsize;
-    for (size_t j = i + 1; j < static_cast<size_t>(ndim); ++j) {
-      stride *= op->shape_ref_->data[j];
-    }
-    strides.push_back(stride);
-  }
-  if (size > 0) {
+  if (info.size > 0) {
     ASSERT(info.dev);
-    ERROR_CHECK(aclrtMemcpy(info.host, size, info.dev, size, ACL_MEMCPY_DEVICE_TO_HOST));
+    auto buf = info.host.request();
+    ERROR_CHECK(aclrtMemcpy(buf.ptr, info.size, info.dev, info.size, ACL_MEMCPY_DEVICE_TO_HOST));
   }
-  py::buffer_info buf(info.host, itemsize, GetBufferFormat(op->type_id_), ndim, shape, strides);
-  return py::array(py::dtype(buf), buf.shape, buf.strides, buf.ptr, store);
+  return info.host;
+}
+
+void RtKernelPy::SetOutput(py::object store, py::object val) {
+  auto &info = FindVectorInfo(stores_, PyToObj(store));
+  info.host = py::array(val);
+  info.size = info.host.nbytes();
+  info.set_host = true;
 }
 
 void RtKernelPy::ClearStoreMemory(py::object store) {
@@ -739,18 +726,30 @@ void RtKernelPy::ClearStoreMemory(py::object store) {
   info.clear_mem = true;
 }
 
+void RtKernelPy::PrepareStore(StoreInfo &info) {
+  auto op = info.op;
+  if (!info.set_host) {
+    size_t size = ITEM_SIZE[op->type_id_];
+    for (size_t i = 0; i < op->shape_ref_->size; i++) {
+      size *= op->shape_ref_->data[i];
+    }
+    std::vector<ssize_t> shape(op->shape_ref_->size);
+    for (size_t i = 0; i < op->shape_ref_->size; i++) {
+      shape[i] = op->shape_ref_->data[i];
+    }
+    info.size = size;
+    info.host = py::array(py::dtype(GetBufferFormat(op->type_id_)), shape);
+  }
+  runner_->AllocStore(info);
+}
+
 void RtKernelPy::PrepareIO() {
   for (auto &info : loads_) {
     static_cast<NDAccess *>(info.op)->addr_.Reloc(reinterpret_cast<uint8_t *>(info.dev) + info.offset);
   }
   for (auto &info : stores_) {
-    auto op = info.op;
-    info.size = ITEM_SIZE[op->type_id_];
-    for (size_t i = 0; i < op->shape_ref_->size; i++) {
-      info.size *= op->shape_ref_->data[i];
-    }
-    runner_->AllocStore(info);
-    static_cast<NDAccess *>(op)->addr_.Reloc(info.dev);
+    PrepareStore(info);
+    static_cast<NDAccess *>(info.op)->addr_.Reloc(info.dev);
   }
 }
 
@@ -925,6 +924,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("clone", &RtKernelPy::Clone, "clone kernel")
     .def("input", &RtKernelPy::Input, "get ouput array", py::arg("op"), py::arg("val"), py::arg("offset") = 0)
     .def("output", &RtKernelPy::Output, "get ouput array")
+    .def("set_output", &RtKernelPy::SetOutput, "set ouput array")
     .def("clear_store_memory", &RtKernelPy::ClearStoreMemory, "clear store memory")
     .def("tile", &RtKernelPy::Tile, "set tiling", py::arg("start"), py::arg("end"), py::arg("num"),
          py::arg("factor") = 0)

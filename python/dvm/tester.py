@@ -183,6 +183,12 @@ class Tester(Kernel):
         self.expects.append([op, e, eps])
         return op
 
+    def view_store_expect(self, x, stride, e, eps=None):
+        op = Kernel.view_store(self, x, stride)
+        self.expects.append([op, e, eps])
+        self.set_output(op, np.zeros_like(e))
+        return op
+
     def codegen(self, verbose=False):
         if self.is_codegen:
             return

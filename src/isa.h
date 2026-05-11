@@ -54,6 +54,7 @@ enum vAccInsnID {
   V_STORE,
   V_STORE_ATOMIC,
   V_STORE_COND,
+  V_STORE_VIEW,  // [c220]
   V_SSTORE,
   V_SLICE_STORE,
   V_STORE_AG,  // For AllGather
@@ -1132,53 +1133,104 @@ struct vViewLoad {
 };
 
 struct vViewLoadX {
-  enum { RELOC_OFFSET = 4 };
-  enum { VAR_OFFSET = 5 };
+  enum { RELOC_OFFSET = 3 };
+  enum { VAR_OFFSET = 4 };
   uint64_t xd;
   uint64_t from;
   uint64_t offset;
   uint64_t ws;
+  uint64_t ws_size;
   uint64_t iter_size;
-  uint64_t iter_body;
-  uint64_t iter_tail;
   uint64_t iter_stride;
   uint64_t tail_size;
-  uint64_t iter_tail2;
   uint64_t loop_depth;
   uint64_t tile_depth;
-  // pc[0]: reserved(18)
-  // pc[1]: tail_size(16) << 48 | iter_tail(16) << 32 | iter_size(16) << 16 | iter_body(16)
-  // pc[2]: iter_tail2(16) << 48 | reserved(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xd(18) << 18 | ws(18)
-  // pc[3]: iter_stride(32) << 32 | offset(32) << 32
-  // pc[4]: from(64)
+  // pc[0]: iter_stride(32)
+  // pc[1]: tail_size(16) << 48 | iter_size(16) << 32 | offset(32)
+  // pc[2]: ws_size(16) << 48 | reserved(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xd(18) << 18 | ws(18)
+  // pc[3]: from(64)
   // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
   // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
    __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoadX &op) {
+    op.iter_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 32);
     uint64_t data1 = pc[1];
-    op.iter_body = data1 & 0xfffful;
-    op.iter_size = (data1 >> 16) & 0xfffful;
-    op.iter_tail = (data1 >> 32) & 0xfffful;
+    op.offset = vGetBitRange(data1, 0, 32);
+    op.iter_size = (data1 >> 32) & 0xfffful;
     op.tail_size = (data1 >> 48);
     uint64_t data2 = pc[2];
     op.ws = data2 & 0x3fffful;
     op.xd = (data2 >> 18) & 0x3fffful;
     op.tile_depth = (data2 >> 36) & 0xful;
     op.loop_depth = (data2 >> 40) & 0xful;
-    op.iter_tail2 = data2 >> 48;
-    uint64_t data3 = pc[3];
-    op.iter_stride = data3 >> 32;
-    op.offset = vGetBitRange(data3, 0, 32);
-    op.from = pc[4];
+    op.ws_size = data2 >> 48;
+    op.from = pc[3];
   }
   __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewLoadX &op) {
     uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
-    pc[0] = vMakeAccHead(id, op.iter_tail2 << 18 | op.xd, size);
-    pc[1] = op.tail_size << 48 | op.iter_tail << 32 | op.iter_size << 16 | op.iter_body;
-    pc[2] = op.iter_tail2 << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xd << 18 | op.ws;
-    pc[3] = op.iter_stride << 32 | op.offset;
-    pc[4] = op.from;
+    pc[0] = vMakeAccHead(id, op.iter_stride, size);
+    pc[1] = op.tail_size << 48 | op.iter_size << 32 | op.offset;
+    pc[2] = op.ws_size << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xd << 18 | op.ws;
+    pc[3] = op.from;
     return size;
   }
+};
+
+struct vViewStore {
+  enum { RELOC_OFFSET = 3 };
+  enum { VAR_OFFSET = 4 };
+  uint64_t xn;
+  uint64_t to;
+  uint64_t offset;
+  uint64_t iter_size;
+  uint64_t iter_num;
+  uint64_t dst_gap;
+  uint64_t src_gap;
+  uint64_t tail_size;
+  uint64_t loop_depth;
+  uint64_t tile_depth;
+  // pc[0]: reserved(16) << 18 | xn(18)
+  // pc[1]: src_gap(4) << 60 | loop_depth(4) << 56 | tile_depth(4) << 52 | tail_size(18) << 34 | iter_size(18) << 16 |
+  //        iter_num(16)
+  // pc[2]: dst_gap(32) << 32 | offset(32)
+  // pc[3]: to(64)
+  // pc[VAR::loop_depth]: loop_size(16) << 48 | src_stride(16) << 32 | dst_stride(32)
+  // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewStore &op) {
+    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data1 = pc[1];
+    op.iter_num = data1 & 0xfffful;
+    op.iter_size = vGetBitRange(data1, 16, 18);
+    op.tail_size = vGetBitRange(data1, 34, 18);
+    op.tile_depth = vGetBitRange(data1, 52, 4);
+    op.loop_depth = vGetBitRange(data1, 56, 4);
+    op.src_gap = data1 >> 60;
+    uint64_t data2 = pc[2];
+    op.dst_gap = data2 >> 32;
+    op.offset = vGetBitRange(data2, 0, 32);
+    op.to = pc[3];
+  }
+  __aicore_inline__ void DecodeLoop(uint64_t data, uint64_t &loop_size, uint64_t &dst_stride, uint64_t &src_stride) {
+    loop_size = data >> 48;
+    dst_stride = vGetBitRange(data, 0, 32);
+    src_stride = (data >> 32) & 0xfffful;
+  }
+  __aicore_inline__ void DecodeTile(uint64_t data, uint64_t &tile_space, uint64_t &tile_stride) {
+    tile_space = data >> 32;
+    tile_stride = vGetBitRange(data, 0, 32);
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewStore &op) {
+    uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
+    pc[0] = vMakeAccHead(id, op.xn, size);
+    pc[1] = op.src_gap << 60 | op.loop_depth << 56 | op.tile_depth << 52 | op.tail_size << 34 | op.iter_size << 16 |
+            op.iter_num;
+    pc[2] = op.dst_gap << 32 | op.offset;
+    pc[3] = op.to;
+    return size;
+  }
+  __aicore_inline__ uint64_t EncodeLoop(uint64_t loop_size, uint64_t dst_stride, uint64_t src_stride) {
+    return loop_size << 48 | src_stride << 32 | dst_stride;
+  }
+  __aicore_inline__ uint64_t EncodeTile(uint64_t space, uint64_t stride) { return space << 32 | stride; }
 };
 
 struct vMultiLoad {

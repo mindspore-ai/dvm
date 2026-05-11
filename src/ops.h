@@ -35,6 +35,7 @@ enum ObjectType {
 
   // Store
   kPadStore,
+  kViewStore,
   kStore,
 
   // Comm
@@ -604,6 +605,31 @@ class NDStore : public NDAccess {
   int tail_size_;
   uint32_t elem_dim_mask_;
   DimArray round_tile_;
+};
+
+class NDViewStore : public NDAccess {
+ public:
+  NDViewStore(void *dst, NDObject *src, IntArrayRef *stride)
+      : NDAccess(dst, src, src->type_id_, ObjectType::kViewStore), dst_stride_ref_(stride) {
+    shape_ref_ = src->shape_ref_;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  void Tile(const TileParam &tp) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void AlignProp(NDObject *op, PropRange &range);
+  static void FoldProp(NDObject *op, PropRange &range);
+  static void DimChanged(NDObject *op);
+
+ protected:
+  IntArrayRef *dst_stride_ref_;
+  DimArray dst_stride_;
+  DimArray tile_;
+  int tail_dim_;
+  int tail_size_;
+  uint64_t offset_bytes_{0};
 };
 
 class NDPadStore : public NDAccess {

@@ -103,6 +103,7 @@ class KernelPy {
   virtual py::object Load(py::object shape, DataTypePy type) = 0;
   virtual py::object ViewLoad(py::object shape, py::object stride, DataTypePy type) = 0;
   virtual py::object Store(py::object obj, DataTypePy type) = 0;
+  virtual py::object ViewStore(py::object obj, py::object stride, DataTypePy type) = 0;
 
   template <UnaryOpType op_type>
   py::object Unary(py::object input) {
@@ -253,6 +254,8 @@ static inline void RegDvmPy(const py::module &m) {
     .def("load", &KernelPy::Load, "load array")
     .def("view_load", &KernelPy::ViewLoad, "load array")
     .def("store", &KernelPy::Store, "store array", py::arg("obj"), py::arg("type") = DataTypePy(kDataTypeEnd))
+    .def("view_store", &KernelPy::ViewStore, "store array with stride", py::arg("obj"), py::arg("stride"),
+         py::arg("type") = DataTypePy(kDataTypeEnd))
     .def("set_store_inplace", &KernelPy::SetStoreInplace, "store inplace")
     .def("scalar", &KernelPy::MakeScalar, "create scalar", py::arg("dtype") = DataTypePy(kDataTypeEnd))
     .def("int_array", &KernelPy::MakeIntArray, "create int array")
@@ -303,7 +306,8 @@ static inline void RegDvmPy(const py::module &m) {
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
     .def("spec_next", &KernelPy::SpecNext, "spec next")
-    .def("parallel_add", &KernelPy::ParallelAdd, "add new parallel Kernel", py::arg("ktype"), py::arg("flags") = 0, py::arg("core_limit") = 0)
+    .def("parallel_add", &KernelPy::ParallelAdd, "add new parallel Kernel", py::arg("ktype"), py::arg("flags") = 0,
+         py::arg("core_limit") = 0)
     .def("seq_add", &KernelPy::SequenceAdd, "add new sequence Kernel", py::arg("ktype"), py::arg("flags") = 0)
     .def_readonly_static("K_VEC", &KernelPy::K_VEC)
     .def_readonly_static("K_CUBE", &KernelPy::K_CUBE)

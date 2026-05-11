@@ -336,7 +336,7 @@ void DumpLoadView(const DumpInfo &dump_info, std::ostringstream &oss) {
 void _DumpLoadViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vViewLoadX op;
   vViewLoadX::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << '[' << op.iter_size << 'x' << op.iter_body << '+' << op.iter_tail << ']';
+  oss << op.iter_size;
   std::vector<uint64_t> dst_strides, src_strides;
   bcodeptr_t var_pc = dump_info.insn + vViewLoadX::VAR_OFFSET;
   if (op.loop_depth > 0) {
@@ -373,9 +373,9 @@ void _DumpLoadViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << ", ";
   DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
   oss << ", ";
-  DumpVal("tail_size", op.tail_size, oss);
+  DumpVal("ws_size", op.ws_size, oss);
   oss << ", ";
-  DumpVal("iter_tail2", op.iter_tail2, oss);
+  DumpVal("tail_size", op.tail_size, oss);
   oss << ", ";
   DumpVal("offset", op.offset, oss);
 }
@@ -388,6 +388,51 @@ void DumpLoadViewX_B16(const DumpInfo &dump_info, std::ostringstream &oss) {
 void DumpLoadViewX_B32(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << "view_load_x.b32.";
   _DumpLoadViewX(dump_info, oss);
+}
+
+void DumpStoreView(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vViewStore op;
+  vViewStore::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "view_store.u8." << op.iter_size << "x" << op.iter_num;
+  std::vector<uint64_t> src_strides, dst_strides;
+  bcodeptr_t var_pc = dump_info.insn + vViewStore::VAR_OFFSET;
+  if (op.loop_depth > 0) {
+    oss << ".";
+    for (uint64_t i = 0; i < op.loop_depth; ++i) {
+      uint64_t loop_size, src_stride, dst_stride;
+      vViewStore::DecodeLoop(*var_pc++, loop_size, dst_stride, src_stride);
+      src_strides.push_back(src_stride);
+      dst_strides.push_back(dst_stride);
+      oss << loop_size;
+      if (i + 1 < op.loop_depth) {
+        oss << "x";
+      }
+    }
+  }
+  std::vector<uint64_t> tile_spaces;
+  std::vector<uint64_t> tile_strides;
+  for (uint64_t i = 0; i < op.tile_depth; ++i) {
+    uint64_t space, stride;
+    vViewStore::DecodeTile(*var_pc++, space, stride);
+    tile_spaces.push_back(space);
+    tile_strides.push_back(stride);
+  }
+  oss << " " << reinterpret_cast<void *>(op.to) << ", " << reinterpret_cast<void *>(op.xn) << " // ";
+  DumpValues("src_stride", src_strides, oss);
+  oss << ", ";
+  DumpValues("dst_stride", dst_strides, oss);
+  oss << ", ";
+  DumpValues("tile_stride", tile_strides, oss);
+  oss << ", ";
+  DumpValues("tile_space", tile_spaces, oss);
+  oss << ", ";
+  DumpVal("src_gap", op.src_gap, oss);
+  oss << ", ";
+  DumpVal("dst_gap", op.dst_gap, oss);
+  oss << ", ";
+  DumpVal("tail_size", op.tail_size, oss);
+  oss << ", ";
+  DumpVal("offset", op.offset, oss);
 }
 
 void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -682,6 +727,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_SSTORE, &DumpSStore},
   {V_STORE_AG, &DumpStoreAG},
   {V_STORE_RS, &DumpStoreRS},
+  {V_STORE_VIEW, &DumpStoreView},
   {V_PEER_STORE, &DumpPeerDMA<name_peer_store>},
   {V_PEER_STORE_MIX, &DumpPeerDMA<name_peer_store_mix>},
   {V_SLICE_STORE, &DumpSliceStore},

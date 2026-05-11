@@ -1209,8 +1209,7 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewLoadX op;
   vViewLoadX::Decode(pc, head, op);
   if (op.loop_depth == 0 && IsLastTile(tile)) {
-    op.iter_body = op.tail_size;
-    op.iter_tail = op.iter_tail2;
+    op.iter_size = op.tail_size;
   }
   uint64_t tile_idx = TileIdx(tile);
   uint64_t tile_offset = op.offset;
@@ -1229,8 +1228,7 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
   set_vector_mask(0, 1);
   do {
-    uint64_t iter_offset = 0;
-    for (uint64_t i = 0; i <= op.iter_body; ++i) {
+    for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
       __ubuf__ T *ws;
       if (pingpong) {
         pingpong = false;
@@ -1241,14 +1239,13 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         pingpong = true;
         set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-        ws = (__ubuf__ T *)(op.ws + op.iter_size * 32);
+        ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
       }
-      uint64_t iter_size = i < op.iter_body ? op.iter_size : op.iter_tail;
+      uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
       copy_gm_to_ubuf_align_b8(ws, src + iter_offset * op.iter_stride, 0, iter_size, sizeof(T), 0, 0, op.iter_stride - sizeof(T), 0);
       set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
       wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
       vreducev2(dst + iter_offset, ws, ws, iter_size, 1, 7, 1, 0);
-      iter_offset += iter_size;
     }
     for (idx = 0; idx < op.loop_depth; ++idx) {
       uint64_t loop_size, dst_stride, src_stride;
@@ -1270,6 +1267,80 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   } while (idx < op.loop_depth);
   wait_flag(PIPE_V, PIPE_MTE2, pingpong ? EVENT_ID6 : EVENT_ID7);
   pipe_barrier(PIPE_V);
+}
+
+__aicore_inline__ void ViewStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewStore op;
+  vViewStore::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  for (uint64_t i = op.tile_depth; i > 0 && tile_idx > 0; --i) {
+    uint64_t space, stride;
+    vViewStore::DecodeTile(pc[vViewStore::VAR_OFFSET - 1 + op.loop_depth + i], space, stride);
+    uint64_t factor = tile_idx / space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * space;
+  }
+  __ubuf__ uint8_t* src = (__ubuf__ uint8_t*)(op.xn);
+  __gm__ uint8_t* dst = (__gm__ uint8_t*)op.to + tile_offset;
+  if (op.loop_depth == 0) {
+    if (IsLastTile(tile)) {
+      if (op.iter_num == 1) {
+        op.iter_size = op.tail_size;
+      } else {
+        op.iter_num = op.tail_size;
+      }
+    }
+    copy_ubuf_to_gm_align_b8(dst, src, 0, op.iter_num, op.iter_size, 0, 0, op.src_gap, op.dst_gap);
+  } else if (op.loop_depth == 1) {
+    uint64_t loop_size, dst_stride, src_stride;
+    vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET], loop_size, dst_stride, src_stride);
+    if (IsLastTile(tile)) {
+      loop_size = op.tail_size;
+    }
+    for (uint64_t i = 0; i < loop_size; ++i) {
+      copy_ubuf_to_gm_align_b8(dst + i * dst_stride, src + i * src_stride, 0, op.iter_num, op.iter_size, 0, 0,
+                               op.src_gap, op.dst_gap);
+    }
+  } else if (op.loop_depth == 2) {
+    uint64_t loop_size0, dst_stride0, src_stride0;
+    uint64_t loop_size1, dst_stride1, src_stride1;
+    vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET], loop_size0, dst_stride0, src_stride0);
+    vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET + 1], loop_size1, dst_stride1, src_stride1);
+    if (IsLastTile(tile)) {
+      loop_size1 = op.tail_size;
+    }
+    for (uint64_t i = 0; i < loop_size1; ++i) {
+      for (uint64_t j = 0; j < loop_size0; ++j) {
+        copy_ubuf_to_gm_align_b8(dst + i * dst_stride1 + j * dst_stride0,
+                                 src + i * src_stride1 + j * src_stride0,
+                                 0, op.iter_num, op.iter_size, 0, 0, op.src_gap, op.dst_gap);
+      }
+    }
+  } else {
+    uint32_t coord[6] = {0};
+    uint64_t idx = 0;
+    while (idx < op.loop_depth) {
+      copy_ubuf_to_gm_align_b8(dst, src, 0, op.iter_num, op.iter_size, 0, 0, op.src_gap, op.dst_gap);
+      for (idx = 0; idx < op.loop_depth; ++idx) {
+        uint64_t loop_size, dst_stride, src_stride;
+        vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET + idx], loop_size, dst_stride, src_stride);
+        if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+          loop_size = op.tail_size;
+        }
+        if (coord[idx] + 1 < loop_size) {
+          coord[idx] += 1;
+          dst += dst_stride;
+          src += src_stride;
+          idx = 0;
+          break;
+        }
+        coord[idx] = 0;
+        dst -= (loop_size - 1) * dst_stride;
+        src -= (loop_size - 1) * src_stride;
+      }
+    }
+  }
 }
 
 __aicore_inline__ void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1719,6 +1790,7 @@ DEF_DISP_STORE(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
 DEF_DISP_STORE(V_STORE_AG, StoreAG(pc, head, tile))
 DEF_DISP_STORE(V_STORE_RS, StoreRS(pc, head, tile))
+DEF_DISP_STORE(V_STORE_VIEW, ViewStore(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE, PeerStore<false>(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))
 

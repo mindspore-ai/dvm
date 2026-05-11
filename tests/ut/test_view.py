@@ -211,3 +211,125 @@ def test_split(shape, split_dim, split_num, split_idx):
     y = t.add(x, 0.1)
     t.store_expect(y, np.split(a, split_num, split_dim)[split_idx] + 0.1)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("out_shape, slice_shape, tile_depth, tile_tail", [
+    ([30, 1000], [20, 500], 0, 0),
+    ([30, 500], [20, 200], 1, 7),  # tile 1 with tail
+    ([30, 4000], [20, 3000], 2, 3),  # tile 2
+    ([43, 1000], [40, 500], 1, 40),  # tile 1 not tail
+])
+def test_view_store_2d(out_shape, slice_shape, tile_depth, tile_tail):
+    t = Tester()
+    a = np.random.normal(0, 1, slice_shape).astype(np.float32)
+    x = t.load(a)
+    y = t.add(x, 0.1)
+    e = np.full(out_shape, 0.0, np.float32)
+    e[:slice_shape[0], :slice_shape[1]] = a + 0.1
+    t.view_store_expect(y, [out_shape[1], 1], e)
+    if tile_depth == 1:
+        t.tile(1, 1, tile_tail)
+    elif tile_depth == 2:
+        t.tile(1, 1, slice_shape[0])
+        t.tile(0, 0, tile_tail)
+    else:
+        pass
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("out_shape, slice_shape, tile_depth, tile_tail", [
+    ([24, 20, 100], [20, 10, 60], 1, 10),  # tile 1
+    ([24, 20, 1000], [20, 10, 600], 2, 5),  # tile 2
+    ([24, 20, 1000], [20, 10, 600], 3, 3),  # tile 3
+    ([24, 20, 1000], [20, 20, 600], 3, 3),  # tile continuous
+    ([24, 20, 64], [20, 15, 64], 1, 20),  # loop continuous
+    ([24, 15, 64], [20, 15, 64], 1, 20),  #
+    ([200, 20, 100], [200, 20, 30], 1, 11),  # tail fold
+    ([200, 20, 60], [200, 10, 30], 0, 0),  # fold prop
+    ([200, 20, 20], [200, 10, 20], 0, 0),  # align prop
+])
+def test_view_store_3d(out_shape, slice_shape, tile_depth, tile_tail):
+    t = Tester()
+    a = np.random.normal(0, 1, slice_shape).astype(np.float32)
+    x = t.load(a)
+    y = t.add(x, 0.1)
+    e = np.full(out_shape, 0.0, np.float32)
+    e[:slice_shape[0], :slice_shape[1], :slice_shape[2]] = a + 0.1
+    t.view_store_expect(y, [out_shape[1] * out_shape[2], out_shape[2], 1], e)
+    if tile_depth == 1:
+        t.tile(2, 2, tile_tail)
+    elif tile_depth == 2:
+        t.tile(2, 2, slice_shape[0])
+        t.tile(1, 1, tile_tail)
+    elif tile_depth == 3:
+        t.tile(2, 2, slice_shape[0])
+        t.tile(1, 1, slice_shape[1])
+        t.tile(0, 0, tile_tail)
+    else:
+        pass
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_store_loop_2d():
+    t = Tester()
+    out_shape = [4, 4, 5, 3, 16]
+    slice_shape = [3, 2, 3, 2, 12]
+    a = np.random.normal(0, 1, slice_shape).astype(np.float32)
+    x = t.load(a)
+    y = t.add(x, 0.1)
+    e = np.full(out_shape, 0.0, np.float32)
+    e[:slice_shape[0], :slice_shape[1], :slice_shape[2], :slice_shape[3], :slice_shape[4]] = a + 0.1
+    t.view_store_expect(y, [16 * 3 * 5 * 4, 16 * 3 * 5, 16 * 3, 16, 1], e)
+    t.tile(4, 4, 3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_store_loop_3d():
+    t = Tester()
+    out_shape = [4, 4, 4, 5, 6, 16]
+    slice_shape = [3, 2, 3, 4, 5, 12]
+    a = np.random.normal(0, 1, slice_shape).astype(np.float32)
+    x = t.load(a)
+    y = t.add(x, 0.1)
+    e = np.full(out_shape, 0.0, np.float32)
+    e[:slice_shape[0], :slice_shape[1], :slice_shape[2], :slice_shape[3], :slice_shape[4], :slice_shape[5]] = a + 0.1
+    t.view_store_expect(y, [16 * 6 * 5 * 4 * 4, 16 * 6 * 5 * 4, 16 * 6 * 5, 16 * 6, 16, 1], e)
+    t.tile(5, 5, 3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_store_dim_fold():
+    t = Tester()
+    out_shape = [4, 2, 64, 96]
+    s_shape = [4, 2, 64, 64]
+    a = np.random.normal(0, 1, s_shape).astype(np.float32)
+    x = t.load(a)
+    y = t.add(x, 0.1)
+    e = np.full(out_shape, 0.0, np.float32)
+    e[:, :, :, :64] = a + 0.1
+    t.view_store_expect(y, [12288, 6144, 96, 1], e)
+    t.tile(3, 3, 4)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("slice_shape, out_shape, broadcast_shape", [
+    ([3, 30, 100], [3, 60, 200], [4, 3, 30, 100]),  # ext broadcast
+    ([4, 1, 512], [6, 2, 512], [4, 8, 512]),  # inner broadcat
+])
+def test_view_store_broadcast_3d(slice_shape, out_shape, broadcast_shape):
+    t = Tester()
+    a = np.random.normal(0, 1, slice_shape).astype(np.float32)
+    x0 = t.add(t.load(a), 0.1)
+    e = np.full(out_shape, 0.0, np.float32)
+    e[:slice_shape[0], :slice_shape[1], :slice_shape[2]] = a + 0.1
+    t.view_store_expect(x0, [out_shape[1] * out_shape[2], out_shape[2], 1], e)
+    b = np.random.normal(0, 1, broadcast_shape).astype(np.float32)
+    x2 = t.add(x0, t.load(b))
+    t.store_expect(x2, a + 0.1 + b)
+    assert (t.run_check())

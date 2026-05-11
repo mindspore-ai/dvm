@@ -983,6 +983,15 @@ NDObject *Kernel::Store(void *addr, NDObject *input) {
   return obj;
 }
 
+NDObject *Kernel::Store(void *addr, NDObject *input, IntArrayRef *stride) {
+  if (input->IsLoad()) {
+    input = Copy(input);
+  }
+  NDObject *obj = new NDViewStore(addr, input, stride);
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
   NDObject *obj = new NDPadStore(addr, input, pad_size);
   kernel_->Append(obj);

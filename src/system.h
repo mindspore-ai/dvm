@@ -84,7 +84,7 @@ enum SocType {
   kAscend910_9382,
   kAscend910_9372,
   kAscend910_9361,
-  // C310
+  // C310(PR)
   kAscend950PR_9579,
   kAscend950PR_9589,
   kAscend950PR_9599,
@@ -93,8 +93,36 @@ enum SocType {
   kAscend950PR_957c,
   kAscend950PR_957d,
   kAscend950PR_950z,
+  // C310(DT)
+  kAscend950DT_950x,
+  kAscend950DT_950y,
+  kAscend950DT_9571,
+  kAscend950DT_9572,
+  kAscend950DT_9573,
+  kAscend950DT_9574,
+  kAscend950DT_9575,
+  kAscend950DT_9576,
+  kAscend950DT_9577,
+  kAscend950DT_9578,
+  kAscend950DT_9581,
+  kAscend950DT_9582,
+  kAscend950DT_9583,
+  kAscend950DT_9584,
+  kAscend950DT_9585,
+  kAscend950DT_9586,
+  kAscend950DT_9587,
+  kAscend950DT_9588,
+  kAscend950DT_9591,
+  kAscend950DT_9592,
+  kAscend950DT_9595,
+  kAscend950DT_9596,
+  kAscend950DT_95A1,
+  kAscend950DT_95A2,
   kSocUnknow,
 };
+
+const char *AiCoreArchName(AiCoreArch arch);
+const char *SocTypeName(SocType type);
 
 enum CubeStoreType {
   kCubeStoreGM = 0,

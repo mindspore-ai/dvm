@@ -81,16 +81,6 @@ class RtKernelPy : public KernelPy {
   static int RankId();
   static int RankSize();
 
-  static std::string Arch() {
-    static const char *soc_names[] = {"AscendC220"};
-    return soc_names[g_system.Arch()];
-  }
-  static int CoreNum() { return g_system.CoreNum(); }
-  static std::string SocName() {
-    static const char *soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
-    return soc_names[g_system.SocName()];
-  }
-
   struct LoadInfo {
     NDObject *op;
     void *dev{nullptr};

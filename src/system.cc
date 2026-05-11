@@ -144,7 +144,45 @@ const SocConfig soc_configs[] = {
   {"Ascend950PR_957c", kAscend950PR_957c, kAiCore_C310, 28, 112 * MB},
   {"Ascend950PR_957d", kAscend950PR_957d, kAiCore_C310, 28, 96 * MB},
   {"Ascend950PR_950z", kAscend950PR_950z, kAiCore_C310, 4, 16 * MB},
+  {"Ascend950DT_950x", kAscend950DT_950x, kAiCore_C310, 8, 32 * MB},
+  {"Ascend950DT_950y", kAscend950DT_950y, kAiCore_C310, 8, 32 * MB},
+  {"Ascend950DT_9571", kAscend950DT_9571, kAiCore_C310, 28, 128 * MB},
+  {"Ascend950DT_9572", kAscend950DT_9572, kAiCore_C310, 28, 128 * MB},
+  {"Ascend950DT_9573", kAscend950DT_9573, kAiCore_C310, 28, 112 * MB},
+  {"Ascend950DT_9574", kAscend950DT_9574, kAiCore_C310, 28, 112 * MB},
+  {"Ascend950DT_9575", kAscend950DT_9575, kAiCore_C310, 28, 128 * MB},
+  {"Ascend950DT_9576", kAscend950DT_9576, kAiCore_C310, 28, 128 * MB},
+  {"Ascend950DT_9577", kAscend950DT_9577, kAiCore_C310, 28, 112 * MB},
+  {"Ascend950DT_9578", kAscend950DT_9578, kAiCore_C310, 28, 112 * MB},
+  {"Ascend950DT_9581", kAscend950DT_9581, kAiCore_C310, 32, 128 * MB},
+  {"Ascend950DT_9582", kAscend950DT_9582, kAiCore_C310, 32, 128 * MB},
+  {"Ascend950DT_9583", kAscend950DT_9583, kAiCore_C310, 32, 112 * MB},
+  {"Ascend950DT_9584", kAscend950DT_9584, kAiCore_C310, 32, 112 * MB},
+  {"Ascend950DT_9585", kAscend950DT_9585, kAiCore_C310, 32, 128 * MB},
+  {"Ascend950DT_9586", kAscend950DT_9586, kAiCore_C310, 32, 128 * MB},
+  {"Ascend950DT_9587", kAscend950DT_9587, kAiCore_C310, 32, 112 * MB},
+  {"Ascend950DT_9588", kAscend950DT_9588, kAiCore_C310, 32, 112 * MB},
+  {"Ascend950DT_9591", kAscend950DT_9591, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950DT_9592", kAscend950DT_9592, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950DT_9595", kAscend950DT_9595, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950DT_9596", kAscend950DT_9596, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950DT_95A1", kAscend950DT_95A1, kAiCore_C310, 36, 128 * MB},
+  {"Ascend950DT_95A2", kAscend950DT_95A2, kAiCore_C310, 36, 128 * MB},
 };
+
+const char *AiCoreArchName(AiCoreArch arch) {
+  static const char *arch_names[] = {"AscendC220", "AscendC310"};
+  return arch_names[arch];
+}
+
+const char *SocTypeName(SocType type) {
+  for (const auto &config : soc_configs) {
+    if (config.type == type) {
+      return config.name;
+    }
+  }
+  return "Unknow";
+}
 
 using RtDevBinaryRegisterFunc = rtError_t (*)(const rtDevBinary_t *, void **);
 using RtFunctionRegisterFunc = rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t);

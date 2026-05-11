@@ -891,8 +891,7 @@ class DevicePy {
  public:
   static std::string Arch() {
     g_system.Init();
-    static const char *soc_names[] = {"AscendC220", "AscendC310"};
-    return soc_names[g_system.Arch()];
+    return AiCoreArchName(g_system.Arch());
   }
   static int CoreNum() {
     g_system.Init();
@@ -900,8 +899,7 @@ class DevicePy {
   }
   static std::string SocName() {
     g_system.Init();
-    static const char *soc_names[] = {"Ascend910B1", "Ascend910B2", "Ascend910B3", "Ascend910B4", "Unknow"};
-    return soc_names[g_system.SocName()];
+    return SocTypeName(g_system.SocName());
   }
 };
 

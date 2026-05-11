@@ -1207,12 +1207,18 @@ class DomainUnifier {
       }
     };
     while (op->VisitChangeRange(range)) {
+      visited_mask_ = 0;
       if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size, range.size)) {
         gen_update(op->nd_.data->dims, range.begin, range.size);
+        visited_mask_ = 0;
         ReshapeRange(prop, range.begin, range.in_size, update);
         range.begin += range.size;
-      } else if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size)) {
+        continue;
+      }
+      visited_mask_ = 0;
+      if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size)) {
         gen_update(op->lhs_->nd_.data->dims, range.begin, range.in_size);
+        visited_mask_ = 0;
         ReshapeRange(prop, range.begin, range.size, update);
         range.begin += range.in_size;
       } else {
@@ -1237,14 +1243,24 @@ class DomainUnifier {
     }
     return -1;
   }
+  bool IsVisited(int prop) const { return (visited_mask_ >> prop) & 0x1ul; }
+  void SetVisited(int prop) { visited_mask_ |= 1ul << prop; }
 
   bool AffineCheck(int prop, int range_begin, int range_size, int out_size) {
+    SetVisited(prop);
     PropRange range;
     range.base = range_begin + range_size - 1;
     range.depth = range_size;
     range.affine = PropRange::ELEMWISE;
     for (auto op : objects_) {
-      if (op->prop_id_ != prop) continue;
+      if (op->prop_id_ != prop) {
+        auto rmap = BrokerRemap(op, range_begin);
+        if (rmap >= 0 && op->lhs_->prop_id_ == prop && !IsVisited(op->prop_id_) &&
+            !AffineCheck(op->prop_id_, rmap, range_size, out_size)) {
+          return false;
+        }
+        continue;
+      }
       if (auto ndd = op->Ndd(); ndd != nullptr) {
         int dim_size = ndd->dims.size();
         if (range_begin >= dim_size) {
@@ -1266,7 +1282,8 @@ class DomainUnifier {
           }
         }
       }
-      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {
+      if (auto rmap = BrokerRemap(op, range_begin);
+          rmap >= 0 && !IsVisited(op->lhs_->prop_id_) && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {
         return false;
       }
     }
@@ -1274,8 +1291,15 @@ class DomainUnifier {
   }
 
   void ReshapeRange(int prop, int range_begin, int range_size, const DimArray &update) {
+    SetVisited(prop);
     for (auto op : objects_) {
-      if (op->prop_id_ != prop) continue;
+      if (op->prop_id_ != prop) {
+        auto rmap = BrokerRemap(op, range_begin);
+        if (rmap >= 0 && op->lhs_->prop_id_ == prop && !IsVisited(op->prop_id_)) {
+          ReshapeRange(op->prop_id_, rmap, range_size, update);
+        }
+        continue;
+      }
       if (auto ndd = op->Ndd(); ndd != nullptr) {
         auto &dims = ndd->dims;
         int dim_size = static_cast<int>(dims.size());
@@ -1306,7 +1330,7 @@ class DomainUnifier {
           }
         }
       }
-      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0) {
+      if (auto rmap = BrokerRemap(op, range_begin); rmap >= 0 && !IsVisited(op->lhs_->prop_id_)) {
         ReshapeRange(op->lhs_->prop_id_, rmap, range_size, update);
       }
       op->DimChanged();
@@ -1335,6 +1359,7 @@ class DomainUnifier {
 
  private:
   std::vector<NDObject *> &objects_;
+  uint64_t visited_mask_;
 };
 
 bool VKernelS::BrokerAffine() {

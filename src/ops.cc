@@ -691,24 +691,30 @@ void NDViewLoad::DimChanged(NDObject *op) {
   auto view = static_cast<NDViewLoad *>(op);
   auto ref_stride = view->src_stride_ref_->data;
   auto ref_shape = view->shape_ref_->data;
-  size_t ref_idx = view->shape_ref_->size - 1;
+  int ref_idx = view->shape_ref_->size - 1;
   auto &stride = view->src_stride_;
   auto &dims = view->ndd_.dims;
   size_t dim_size = dims.size();
   view->tile_.resize(dim_size);
   stride.resize(dim_size);
+  view->tail_dim_ = dim_size;
   int64_t acc_nd = 0;
   int64_t acc_ref = 0;
+  int64_t acc_stride = 1;
   for (size_t i = 0; i < dim_size; ++i) {
-    if (!acc_nd) {
-      stride[i] = ref_stride[ref_idx] * ITEM_SIZE[view->type_id_];
+    if (dims[i] == 1) {
+      stride[i] = 0;
+    } else if (!acc_nd) {
+      acc_stride = ref_stride[ref_idx];
+      stride[i] = acc_stride * ITEM_SIZE[view->type_id_];
       if (dims[i] != ref_shape[ref_idx]) {
         acc_nd = dims[i];
         acc_ref = ref_shape[ref_idx];
       }
       ref_idx--;
     } else {
-      stride[i] = stride[i - 1] * dims[i - 1];
+      acc_stride *= dims[i - 1];
+      stride[i] = acc_stride * ITEM_SIZE[view->type_id_];
       acc_nd *= dims[i];
       while (acc_ref < acc_nd) {
         acc_ref *= ref_shape[ref_idx--];
@@ -723,9 +729,11 @@ void NDViewLoad::DimChanged(NDObject *op) {
 void NDViewLoad::AlignProp(NDObject *op, PropRange &range) {
   auto view = static_cast<NDViewLoad *>(op);
   auto &stride = view->src_stride_;
+  if (int max_depth = stride.size(); range.depth > max_depth) {
+    range.depth = max_depth;
+  }
   auto &dims = view->ndd_.dims;
-  int depth_size = std::min<int>(range.depth, dims.size());
-  for (int d = 1; d < depth_size; ++d) {
+  for (int d = 1; d < range.depth; ++d) {
     if (stride[d - 1] * dims[d - 1] != stride[d]) {
       range.depth = d;
       break;
@@ -735,13 +743,18 @@ void NDViewLoad::AlignProp(NDObject *op, PropRange &range) {
 
 void NDViewLoad::FoldProp(NDObject *op, PropRange &range) {
   auto &stride = static_cast<NDViewLoad *>(op)->src_stride_;
-  auto &dims = static_cast<NDViewLoad *>(op)->ndd_.dims;
-  int dim_size = dims.size();
-  int depth_begin = range.base < dim_size ? 1 : range.base + 2 - dim_size;
-  for (int d = depth_begin; d < range.depth; ++d) {
-    if (stride[range.base - d] * dims[range.base - d] != stride[range.base - d + 1]) {
-      range.depth = d;
-      break;
+  int stride_size = stride.size();
+  if (range.base >= stride_size) {
+    if (int max_depth = range.base - stride_size + 1; range.depth > max_depth) {
+      range.depth = max_depth;
+    }
+  } else {
+    auto &dims = static_cast<NDViewLoad *>(op)->ndd_.dims;
+    for (int d = 1; d < range.depth; ++d) {
+      if (stride[range.base - d] * dims[range.base - d] != stride[range.base - d + 1]) {
+        range.depth = d;
+        break;
+      }
     }
   }
 }
@@ -754,7 +767,7 @@ void NDViewLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(src_stride_ref_->data[dim_size - 1] == 1);
   for (size_t i = 0; i < dim_size; i++) {
     ndd_.dims[i] = shape_ref_->data[dim_size - i - 1];
-    src_stride_[i] = src_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
+    src_stride_[i] = ndd_.dims[i] == 1 ? 0 : src_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
   }
   tail_dim_ = dim_size;
   tail_size_ = 0;
@@ -763,14 +776,17 @@ void NDViewLoad::Normalize(std::vector<NDObject *> &run_ops) {
 
 void NDViewLoad::Tile(const TileParam &tp) {
   if (tp.num > 1) {
+    if (auto tile_size = static_cast<size_t>(tp.start) + 1; tile_size >= tile_.size()) {
+      for (size_t i = tile_.size(); i < tile_size; ++i) {
+        src_stride_[i] = 0;
+      }
+      src_stride_.resize(tile_size);
+      tile_.resize(tile_size);
+      tail_dim_ = tile_size;
+    }
     tile_[tp.start] = tp.num;
-    bool pointwise = ndd_.dims[tp.start] != 1;
     for (int i = tp.start + 1; i < tail_dim_; ++i) {
       tile_[i] = 0;
-      pointwise = pointwise || ndd_.dims[i] != 1;
-    }
-    if (!pointwise) {
-      src_stride_[tp.start] = 0;
     }
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;

@@ -40,3 +40,23 @@ def test_elim_reshape_load_store():
     t.store_expect(x2, a.reshape([25, 256, 2]))
     t.set_passes("EliminateReshape")
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_continuous_reshape_with_view():
+    t = Tester()
+    np.random.seed(12)
+    physical_shape = [8, 10, 204, 64]
+    view_shape = [10, 204, 8, 64]
+    view_stride = [13056, 64, 130560, 1]
+    out_shape = [2040, 512]
+    a = np.random.normal(0, 1, physical_shape).astype(np.float32)
+    expect = np.transpose(a, (1, 2, 0, 3)).copy().reshape(out_shape)
+    x = t.view_load(view_shape, view_stride, a)
+    x = t.copy(x)
+    x = t.copy(x)
+    x = t.reshape(x, [10, 204, 512])
+    x = t.reshape(x, out_shape)
+    t.store_expect(x, expect)
+    t.set_passes("EliminateReshape")
+    assert (t.run_check())

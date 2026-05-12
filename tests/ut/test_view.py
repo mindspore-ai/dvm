@@ -232,6 +232,24 @@ def test_view_load_broadcast_3d(slice_shape, in_shape, broadcast_shape):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_load_broadcast_data_cache():
+    t = Tester()
+    a = np.random.normal(0, 1, [4, 512]).astype(np.float32)
+    x0 = t.view_load([4, 5, 500, 512], [512, 0, 0, 1], a)
+    t.store_expect(x0, a[:, None, None, :])
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_load_x_broadcast_data_cache():
+    t = Tester()
+    a = np.random.normal(0, 1, [4, 512]).astype(np.float32)
+    x0 = t.view_load([4, 5, 500, 128], [512, 0, 0, 4], a)
+    t.store_expect(x0, a[:, None, None, :512:4])
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("out_shape, slice_shape, tile_depth, tile_tail", [
     ([30, 1000], [20, 500], 0, 0),
     ([30, 500], [20, 200], 1, 7),  # tile 1 with tail

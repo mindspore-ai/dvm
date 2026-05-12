@@ -853,7 +853,6 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     op.iter_size = fold_dim[0];
     op.iter_stride= fold_stride[0];
     op.loop_depth = tile_start - 1;
-    op.tile_depth = fold_dim.size() - tile_start;
     op.tail_size = fold_dim[tile_start - 1];
     if (tail_size_) {
       op.tail_size = op.tail_size / ndd_[tail_dim_] * tail_size_;
@@ -865,6 +864,10 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       dst_stride *= fold_dim[i];
     }
     uint64_t space = 1;
+    while (fold_stride[tile_start] == 0) {
+      space *= fold_dim[tile_start++];
+    }
+    op.tile_depth = fold_dim.size() - tile_start;
     for (size_t i = tile_start; i < fold_dim.size(); ++i, ++var_insn) {
       *var_insn = vViewLoad::EncodeTile(space, fold_stride[i]);
       space *= fold_dim[i];
@@ -912,8 +915,11 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       op.tail_size *= item_size;
     }
     // tile space
-    op.tile_depth = fold_dim.size() - tile_start;
     uint64_t space = 1;
+    while (fold_stride[tile_start] == 0) {
+      space *= fold_dim[tile_start++];
+    }
+    op.tile_depth = fold_dim.size() - tile_start;
     for (size_t i = tile_start; i < fold_dim.size(); ++i, ++var_insn) {
       *var_insn = vViewLoad::EncodeTile(space, fold_stride[i]);
       space *= fold_dim[i];

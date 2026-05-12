@@ -1134,12 +1134,17 @@ __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewLoad::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   uint64_t tile_offset = op.offset;
-  for (uint64_t i = op.tile_depth; i > 0 && tile_idx > 0; --i) {
-    uint64_t space, stride;
-    vViewLoad::DecodeTile(pc[vViewLoad::VAR_OFFSET - 1 + op.loop_depth + i], space, stride);
-    uint64_t factor = tile_idx / space;
+  uint64_t tile_space = 0;
+  uint64_t tile_depth = op.tile_depth;
+  for (; tile_depth > 0 && tile_idx > 0; --tile_depth) {
+    uint64_t stride;
+    vViewLoad::DecodeTile(pc[vViewLoad::VAR_OFFSET - 1 + op.loop_depth + tile_depth], tile_space, stride);
+    uint64_t factor = tile_idx / tile_space;
     tile_offset += stride * factor;
-    tile_idx -= factor * space;
+    tile_idx -= factor * tile_space;
+  }
+  if (tile_space > 1 && tile_depth == 0 && tile_idx > 0 && !IsBeginTile(tile) && !IsSkipTile(tile)) {
+    return;
   }
   __gm__ uint8_t* src = (__gm__ uint8_t*)op.from + tile_offset;
   __ubuf__ uint8_t* dst = (__ubuf__ uint8_t*)(op.xd);
@@ -1213,12 +1218,17 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   uint64_t tile_idx = TileIdx(tile);
   uint64_t tile_offset = op.offset;
-  for (uint64_t i = op.tile_depth; i > 0 && tile_idx > 0; --i) {
-    uint64_t space, stride;
-    vViewLoad::DecodeTile(pc[vViewLoadX::VAR_OFFSET - 1 + op.loop_depth + i], space, stride);
-    uint64_t factor = tile_idx / space;
+  uint64_t tile_space = 0;
+  uint64_t tile_depth = op.tile_depth;
+  for (; tile_depth > 0 && tile_idx > 0; --tile_depth) {
+    uint64_t stride;
+    vViewLoad::DecodeTile(pc[vViewLoadX::VAR_OFFSET - 1 + op.loop_depth + tile_depth], tile_space, stride);
+    uint64_t factor = tile_idx / tile_space;
     tile_offset += stride * factor;
-    tile_idx -= factor * space;
+    tile_idx -= factor * tile_space;
+  }
+  if (tile_space > 1 && tile_depth == 0 && tile_idx > 0 && !IsBeginTile(tile) && !IsSkipTile(tile)) {
+    return;
   }
   __gm__ uint8_t *src = (__gm__ uint8_t *)(op.from + tile_offset);
   __ubuf__ T *dst = (__ubuf__ T *)(op.xd);

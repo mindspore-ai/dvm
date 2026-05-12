@@ -123,6 +123,16 @@ def test_slice_dim_x():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_slice_dim_x_fp16_ws_reserve():
+    t = Tester()
+    a = np.random.normal(0, 1, [4096, 20000]).astype(np.float16)
+    x = t.view_load([4096, 10000], [20000, 2], a)
+    y = t.add(x, 0.1)
+    t.store_expect(y, a[:, 0:20000:2] + 0.1)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_slice_dim_x_lead_1():
     t = Tester()
     a = np.random.normal(0, 1, [100, 2048, 1]).astype(np.float16)

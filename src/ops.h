@@ -559,6 +559,8 @@ class NDViewLoad : public NDAccess {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  bool IsLeadContinuous() const { return src_stride_[0] == 1; }
+
   static void AlignProp(NDObject *op, PropRange &range);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);

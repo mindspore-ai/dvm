@@ -1,7 +1,7 @@
 VPATH = ./src:./include
 OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o pass.o msprof.o system.o comm.o
 
-CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
+CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include -I${ASCEND_PATH}/pkg_inc ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
 CFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all
 
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\
@@ -42,15 +42,6 @@ LD_FLAGS = -L${ASCEND_PATH}/toolkit/tools/simulator/${DVM_SOC_SIMU}/lib -lruntim
 CFLAGS += -DVK_SIM_MODEL
 else
 LD_FLAGS = -L${ASCEND_PATH}/lib64 -lascendcl
-endif
-
-ifneq ($(CANN_VER_85),)  # TODO: remove me..
-CFLAGS += -D__CANN_85__ -I${ASCEND_PATH}/pkg_inc
-C310_ARCH_CUBE=dav-c310-cube
-C310_ARCH_VEC=dav-c310-vec
-else
-C310_ARCH_CUBE=dav-c310
-C310_ARCH_VEC=dav-c310
 endif
 
 ifneq ($(asan),)
@@ -114,10 +105,10 @@ vm_aic_c220.o: vm_aic.cce isa.h vm_aic.h
 	ccec -c -O2 $(CCE_FLGAS_C220) --cce-aicore-arch=dav-c220-cube src/vm_aic.cce -o vm_aic_c220.o
 
 vm_aiv_c310.o: vm_aiv_c310.cce isa.h vm_aiv.h vm_aic_c310.o
-	ccec -c -O2 $(CCE_FLGAS_C310) -D VMAIN_OFFSET=$(VMAIN_C310_OFFSET) --cce-aicore-arch=$(C310_ARCH_VEC) src/vm_aiv_c310.cce -o vm_aiv_c310.o
+	ccec -c -O2 $(CCE_FLGAS_C310) -D VMAIN_OFFSET=$(VMAIN_C310_OFFSET) --cce-aicore-arch=dav-c310-vec src/vm_aiv_c310.cce -o vm_aiv_c310.o
 
 vm_aic_c310.o: vm_aic_c310.cce isa.h vm_aic.h
-	ccec -c -O2 $(CCE_FLGAS_C310) --cce-aicore-arch=$(C310_ARCH_CUBE) src/vm_aic_c310.cce -o vm_aic_c310.o
+	ccec -c -O2 $(CCE_FLGAS_C310) --cce-aicore-arch=dav-c310-cube src/vm_aic_c310.cce -o vm_aic_c310.o
 
 clean:
 	rm -f *.o *.so *.a *bin vm.cc

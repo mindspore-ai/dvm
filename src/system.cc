@@ -21,12 +21,7 @@
 #include "system.h"
 #include "code.h"
 #include "ops_m.h"
-#ifdef __CANN_85__
 #include "profiling/prof_api.h"
-#else
-#include "experiment/msprof/toolchain/prof_api.h"
-#include "experiment/msprof/toolchain/prof_data_config.h"
-#endif
 
 // rts_runtime
 #if defined(__cplusplus)
@@ -373,7 +368,6 @@ void System::DoInit() {
     }
   }
 
-#ifdef __CANN_85__
   rt_handle_ = acl_handle;
   typedef aclError (*LoadBinaryFunc)(const void *data, size_t len, const aclrtBinaryLoadOptions *opt,
                                      aclrtBinHandle *handle);
@@ -421,9 +415,6 @@ void System::DoInit() {
   err |= get_function(bin_handle, "dvm", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
   code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchACL<kAiCore_C220> : CodeLaunchACL<kAiCore_C310>;
-#else
-  EXCEPTION_IF(rt_handle_ == nullptr, "dlopen libruntime failed");
-#endif
 }
 
 System::~System() {

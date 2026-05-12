@@ -89,19 +89,6 @@ if [ -n "${SIMULATOR_NAME}" ]; then
 fi
 
 # ----------------------------
-# CANN version detect (check ccec exists first)
-# ----------------------------
-if command -v ccec >/dev/null 2>&1; then
-  CCEC_BUILD_DATE=$(ccec --version | head -n 1)
-  if [[ ${CCEC_BUILD_DATE:0:10} > "2025-12-00" ]]; then
-    export CANN_VER_85=1
-    echo "CANN version is 8.5+"
-  fi
-else
-  echo "NOTE: ccec not found, skip CANN version detection"
-fi
-
-# ----------------------------
 # Optional: Print environment summary
 # ----------------------------
 echo "Environment summary:"

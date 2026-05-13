@@ -21,12 +21,7 @@
 #include "dvm.h"
 #include "system.h"
 #include "acl/acl_rt.h"
-#ifdef __CANN_85__
 #include "profiling/prof_api.h"
-#else
-#include "experiment/msprof/toolchain/prof_api.h"
-#include "experiment/msprof/toolchain/prof_data_config.h"
-#endif
 
 namespace dvm {
 struct TensorInfoWrapper {

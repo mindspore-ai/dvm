@@ -1738,8 +1738,11 @@ void _SplitKernel::Append(NDObject *obj) {
     InitStoreInfo(obj, area_id);
   } else {
     obj->ForInput([this](NDObject *&op) {
-      if (op->obj_id_ == ObjectType::kReduce) {
+      if (op->obj_id_ == ObjectType::kReduce || op->obj_id_ == ObjectType::kReshape) {
         if (GetArea(op) == -1) {
+          if (op->obj_id_ == ObjectType::kReshape) {
+            op->Ndd()->dims = op->lhs_->nd_.dims();
+          }
           Split(op);
         }
         op = Exchange(op, -1);

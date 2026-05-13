@@ -780,3 +780,29 @@ def test_eager_cv_with_view_load():
     expect = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16) + c[:, :512]
     t.store_expect(x4, expect)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_eager_reshape():
+    t = Tester("eager")
+    a0 = np.random.normal(-1, 1, [600, 512]).astype(np.float16)
+    x0 = t.load(a0)
+    x1 = t.add(x0, 0.01)
+    x2 = t.reshape(x1, [100, 48, 64])
+    x3 = t.mul(x2, 0.8)
+    t.store_expect(x3, np.reshape(a0 + 0.01, [100, 48, 64]) * 0.8)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_eager_reshape_with_store():
+    t = Tester("eager")
+    a0 = np.random.normal(-1, 1, [1, 60, 512]).astype(np.float16)
+    x0 = t.load(a0)
+    x1 = t.add(x0, 0.01)
+    x2 = t.reshape(x1, [60, 1, 512])
+    x3 = t.mul(x2, x1)
+    e2 = np.reshape(a0 + 0.01, [60, 1, 512])
+    t.store_expect(x2, e2)
+    t.store_expect(x3, e2 * (a0 + 0.01))
+    assert (t.run_check())

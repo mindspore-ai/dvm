@@ -1256,6 +1256,9 @@ bool ReshapeOp::VisitChangeRange(ChangeRange &range) {
       }
     }
   }
+  if (in_idx == range.begin || out_idx == range.begin) {
+    return false;
+  }
   int in_one = 0;
   int out_one = 0;
   while ((in_idx + in_one) < in_size && lhs_->nd_[in_idx + in_one] == 1) in_one++;

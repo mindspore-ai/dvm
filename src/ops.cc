@@ -864,7 +864,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       dst_stride *= fold_dim[i];
     }
     uint64_t space = 1;
-    while (fold_stride[tile_start] == 0) {
+    while (static_cast<size_t>(tile_start) < fold_dim.size() && fold_stride[tile_start] == 0) {
       space *= fold_dim[tile_start++];
     }
     op.tile_depth = fold_dim.size() - tile_start;
@@ -916,7 +916,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     }
     // tile space
     uint64_t space = 1;
-    while (fold_stride[tile_start] == 0) {
+    while (static_cast<size_t>(tile_start) < fold_dim.size() && fold_stride[tile_start] == 0) {
       space *= fold_dim[tile_start++];
     }
     op.tile_depth = fold_dim.size() - tile_start;

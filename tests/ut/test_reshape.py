@@ -335,3 +335,27 @@ def test_matmul_post_fusion_broadcast(shape_a, shape_b, shape_c, shape_d):
     expect = np.reshape(np.matmul(ax.astype(np.float32), bx.astype(np.float32)).astype(np.float16), shape_c) + dx
     t.store_expect(x2, expect, 2e-3)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reshape_expand_dims():
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [128]).astype(np.float32)
+    x = t.load(a)
+    x = t.reshape(x, [1, 128])
+    b = np.random.normal(-0.5, 0.5, [100, 128]).astype(np.float32)
+    y = t.add(x, t.load(b))
+    t.store_expect(y, np.reshape(a, [1, 128]) + b)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reshape_share_domain():
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [128]).astype(np.float32)
+    x0 = t.reshape(t.load(a), [1, 128])
+    b = np.random.normal(-0.5, 0.5, [100 * 128]).astype(np.float32)
+    x1 = t.reshape(t.load(b), [100, 128])
+    x2 = t.mul(x0, x1)
+    t.store_expect(x2, np.reshape(a, [1, 128]) * np.reshape(b, [100, 128]))
+    assert (t.run_check())

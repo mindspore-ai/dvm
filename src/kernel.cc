@@ -1609,25 +1609,27 @@ _SpecVector::~_SpecVector() {
 }
 
 void _SpecVector::Append(NDObject *obj) {
-  obj->ForInput([this](NDObject *&in) {
-    if (in->obj_id_ == ObjectType::kReduce) {
-      auto red = static_cast<ReduceOp *>(in);
-      if (red->insn_ == nullptr) {
-        post_reduces_.push_back(in);
-        if (!red->KeepDims()) {
-          in = new ReshapeOp(red, red->shape_ref_);
-          VKernelS::Append(in);
-          in->index_ = stage_ids_.size();
-          stage_ids_.push_back(last_stage_);
+  if (obj->IsSimd()) {
+    obj->ForInput([this](NDObject *&in) {
+      if (in->obj_id_ == ObjectType::kReduce) {
+        auto red = static_cast<ReduceOp *>(in);
+        if (red->insn_ == nullptr) {
+          post_reduces_.push_back(in);
+          if (!red->KeepDims()) {
+            in = new ReshapeOp(red, red->shape_ref_);
+            VKernelS::Append(in);
+            in->index_ = stage_ids_.size();
+            stage_ids_.push_back(last_stage_);
+          }
+          red->insn_ = reinterpret_cast<uint64_t *>(in);
+        } else if (!red->KeepDims()) {
+          in = reinterpret_cast<NDObject *>(red->insn_);
         }
-        red->insn_ = reinterpret_cast<uint64_t *>(in);
-      } else if (!red->KeepDims()) {
-        in = reinterpret_cast<NDObject *>(red->insn_);
+      } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
+        stage_ids_[in->index_] = last_stage_;
       }
-    } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
-      stage_ids_[in->index_] = last_stage_;
-    }
-  });
+    });
+  }
   VKernelS::Append(obj);
   obj->index_ = stage_ids_.size();
   int sid;

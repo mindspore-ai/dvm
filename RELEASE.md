@@ -2,7 +2,16 @@
 
 ---
 
-### r2.9(2026.1.28)
+### r2.10(2026.5.14: 76d7c4a1)
++ new kernel support: auto speculation vector kernel. symbolic graph kernel. stagekernel support nested use.
++ view ops: new support of view store. new support of view load x. view load support ub broadcast reuse.
++ c310 enhance: support determinstic. cube adapt. lots of bugifx.
++ performance: support removepad for reduce. optimize scalar pipe of broadcastx.
++ api: remove offset parameter of viewload.
++ refactor: flatten mix kernel stagekernel construct. CodeGenHelper compile optimie. split big file of ops. extract vm_aiv.h/vm_aic.h.
++ support DVM_CUSTOM_FLAGS. CANN 8.5- out of support.
+
+### r2.9(2026.1.28: 3a0dd9c0)
 + vm backend: support c310
 + ops: add ViewLoad, ReduceMax, ReduceMin, AllReduce(Max)
 + cube: default tiling to V2+diagonal_z, support DynMix Broadcast

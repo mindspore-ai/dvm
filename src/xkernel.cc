@@ -2332,14 +2332,7 @@ void _SplitGraph::Dump(std::ostringstream &oss, const std::string &indent) {
     return;
   }
   DumpRefHelper helper(oss);
-  oss << indent << "rgraph.split() {" << std::endl;
-  std::string body_indent = indent + "  ";
-  for (auto op : build_ops_) {
-    oss << body_indent;
-    helper.Dump(op);
-    oss << std::endl;
-  }
-  oss << indent << "}";
+  helper.DumpGraph(indent, "split", build_ops_);
 }
 
 void SplitGraphD::Append(NDObject *op) {

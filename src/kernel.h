@@ -393,6 +393,9 @@ class SpecVecContext {
       };
       SpecVecStage *stage;
     };
+    uint32_t &MergeMask() { return ext_opt; }
+    uint32_t &UnMergeMask() { return u32; }
+    void ClearMask() { u64 = 0; }
   };
 
   std::vector<Area> areas_;
@@ -480,6 +483,7 @@ class DumpRefHelper {
   virtual ~DumpRefHelper() = default;
   void Dump(NDObject *op);
   virtual NDObject *GetInput(NDObject *input);
+  void DumpGraph(const std::string &indent, const std::string &name, const std::vector<NDObject *> &build_ops);
 
  protected:
   std::ostringstream &oss_;

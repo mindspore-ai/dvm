@@ -222,7 +222,6 @@ def test_auto_spec_reshape_seq():
     t.store_expect(x5, ((a + 0.01).reshape([10000]) * 0.7).reshape([20, 500]) + 0.2)
     assert (t.run_check())
 
-
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_auto_spec_nest_reshape():
     t = Tester("vector:spec,priv1")
@@ -233,6 +232,18 @@ def test_auto_spec_nest_reshape():
     x4 = t.reshape(x3, [50, 200])
     x5 = t.sub(x4, 0.01)
     t.store_expect(x5, ((a + 0.01).reshape([10000]) * 0.7).reshape([50, 200]) - 0.01)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_auto_spec_reshape_elim():
+    t = Tester("vector:spec,priv1")
+    a = np.random.normal(0.0, 0.03, [10, 1000]).astype(np.float32)
+    x1 = t.add(t.load(a), 0.01)
+    x2 = t.reshape(x1, [10000])
+    x3 = t.reshape(x2, [20, 500])
+    x4 = t.add(x3, 0.2)
+    t.store_expect(x4, (a + 0.01).reshape([20, 500]) + 0.2)
     assert (t.run_check())
 
 
@@ -277,4 +288,20 @@ def test_spec_swap_with_store(mode):
     b = np.random.normal(0.0, 0.3, x3_expect.shape[:-1] + (1,)).astype(np.float32)
     x4 = t.mul(x3, t.load(b))
     t.store_expect(x4, x3_expect * b, 1e-4)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_auto_spec_indirect_cut_depend():
+    t = Tester("vector:spec,priv1")
+    a = np.random.normal(0.0, 0.03, [4, 3, 20, 1]).astype(np.float32)
+    b = np.random.normal(0.0, 0.03, [4, 3, 20, 6000]).astype(np.float32)
+    x1 = t.add(t.load(a), t.load(b))
+    x2 = t.sum(x1, (0,), True)
+    x3 = t.mul(x2, 0.5)
+    x4 = t.add(x3, x1)
+    e1 = a + b
+    e3 = np.sum(e1, axis=(0,), keepdims=True) * 0.5
+    t.store_expect(x3, e3)
+    t.store_expect(x4, e3 + e1)
     assert (t.run_check())

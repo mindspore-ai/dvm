@@ -468,14 +468,7 @@ void GraphKernel::Dump(std::ostringstream &oss, const std::string &indent) {
     StagesKernel::Dump(oss, indent);
   } else {
     DumpRefHelper helper(oss);
-    oss << indent << "rgraph.sym() {" << std::endl;
-    std::string body_indent = indent + "  ";
-    for (auto op : build_ops_) {
-      oss << body_indent;
-      helper.Dump(op);
-      oss << std::endl;
-    }
-    oss << indent << "}";
+    helper.DumpGraph(indent, "sym", build_ops_);
   }
 }
 }  // namespace dvm

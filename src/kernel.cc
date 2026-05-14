@@ -887,6 +887,17 @@ NDObject *DumpRefHelper::GetInput(NDObject *input) {
   return input;
 }
 
+void DumpRefHelper::DumpGraph(const std::string &indent, const std::string &name, const std::vector<NDObject *> &build_ops) {
+  oss_ << indent << "rgraph." << name << "() {" << std::endl;
+  std::string body_indent = indent + "  ";
+  for (auto op : build_ops) {
+    oss_ << body_indent;
+    Dump(op);
+    oss_ << std::endl;
+  }
+  oss_ << indent << "}";
+}
+
 void VKernel::Append(NDObject *obj) {}
 uint64_t VKernel::CodeGen() { return 0; }
 
@@ -1528,14 +1539,7 @@ void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
     return VectorKernel::Dump(oss, indent);
   }
   DumpRefHelper helper(oss);
-  oss << indent << "rgraph.vec() {" << std::endl;
-  std::string body_indent = indent + "  ";
-  for (auto op : build_ops_) {
-    oss << body_indent;
-    helper.Dump(op);
-    oss << std::endl;
-  }
-  oss << indent << "}";
+  helper.DumpGraph(indent, "vec", build_ops_);
 }
 
 _SpecVector::~_SpecVector() {
@@ -1815,7 +1819,6 @@ bool SpecVecBase::SpecBuild() {
 
 void SpecVecBase::SplitPlan(size_t cut_begin) {
   auto &stack = ctx_.spec_ops_;
-  uint64_t cut_area_mask = 0;
   size_t cut_end = stack.size();
   for (size_t c = cut_end; c > cut_begin; --c) {
     auto cut_op = stack[c - 1];
@@ -1827,7 +1830,6 @@ void SpecVecBase::SplitPlan(size_t cut_begin) {
     auto aid = ctx_.AssignArea();
     stack.push_back(cut_op);
     meta->aid = aid;
-    cut_area_mask |= 1ull << aid;
     while (stack.size() > cut_end) {
       auto top = stack.back();
       stack.pop_back();
@@ -1842,6 +1844,7 @@ void SpecVecBase::SplitPlan(size_t cut_begin) {
       });
     }
   }
+  int cut_area_end = ctx_.area_size_;
   for (size_t store_idx = load_num_; store_idx < static_ops_.size(); ++store_idx) {
     auto store = static_ops_[store_idx];
     auto meta = GetMeta(store);
@@ -1853,36 +1856,45 @@ void SpecVecBase::SplitPlan(size_t cut_begin) {
     auto aid = ctx_.AssignArea();
     stack.push_back(store);
     meta->aid = aid;
-    uint64_t merge_mask = 0;
-    uint64_t unmerge_mask = 0;
     while (stack.size() > cut_end) {
       auto top = stack.back();
       stack.pop_back();
-      top->ForInput([this, aid, cut_area_mask, &unmerge_mask, &merge_mask, &stack](NDObject *in) {
+      top->ForInput([this, aid, cut_area_end, &stack](NDObject *in) {
         auto in_meta = GetMeta(in);
         if (in_meta->aid == -1) {
           stack.push_back(in);
           in_meta->aid = aid;
         } else if (auto in_aid = ctx_.RootArea(in_meta->aid); in_aid != aid) {
-          if ((cut_area_mask & (1ull << in_aid)) == 0) {
+          auto &area = ctx_.areas_[aid];
+          if (in_aid >= cut_area_end) {
             ctx_.MergeArea(aid, in_aid);
+            area.MergeMask() |= ctx_.areas_[in_aid].MergeMask();
+            area.UnMergeMask() |= ctx_.areas_[in_aid].UnMergeMask();
           } else if (in_meta->IsCut()) {
-            unmerge_mask |= 1ull << in_aid;
+            area.UnMergeMask() |= 1ul << in_aid;
           } else {
-            merge_mask |= 1ull << in_aid;
+            area.MergeMask() |= 1ul << in_aid;
           }
         }
       });
     }
-    merge_mask &= ~unmerge_mask;
-    if (merge_mask) {
-      cut_area_mask |= 1ull << aid;
+  }
+  for (int aid = cut_area_end; aid < ctx_.area_size_; ++aid) {
+    if (auto &area = ctx_.areas_[aid]; area.parent == aid) {
+      uint32_t merge_mask = area.MergeMask() & ~area.UnMergeMask();
+      int rid = aid;
       while (merge_mask) {
-        auto cut_aid = 63 - __builtin_clzl(merge_mask);
-        merge_mask &= ~(1ull << cut_aid);
-        ctx_.MergeArea(cut_aid, aid);
-        aid = cut_aid;
+        auto cut_aid = 31 - __builtin_clz(merge_mask);
+        merge_mask &= ~(1ul << cut_aid);
+        auto cut_rid = ctx_.RootArea(cut_aid);
+        if (cut_rid < rid) {
+          ctx_.MergeArea(cut_rid, rid);
+          rid = cut_rid;
+        } else {
+          ctx_.MergeArea(rid, cut_rid);
+        }
       }
+      area.ClearMask();
     }
   }
 }
@@ -1894,9 +1906,12 @@ bool SpecVecBase::BroadcastSpec() {
   size_t broadcast_begin = ctx_.spec_ops_.size();
   for (auto op : objects_) {
     InitMeta(op);
-    if (op->obj_id_ == ObjectType::kBroadcastTo && !op->lhs_->IsLoad() && !GetMeta(op->lhs_)->IsCut()) {
-      ctx_.spec_ops_.push_back(op);
-      GetMeta(op->lhs_)->SetCut();
+    if (op->obj_id_ == ObjectType::kBroadcastTo) {
+      auto in = op->lhs_;
+      if (in->obj_id_ != ObjectType::kBroadcastTo && in->IsLoad() && !GetMeta(in)->IsCut()) {
+        ctx_.spec_ops_.push_back(op);
+        GetMeta(in)->SetCut();
+      }
     }
   }
   if (ctx_.spec_ops_.size() == broadcast_begin || LazyTileLimit() * MIN_TILE_NUM < tile_size_) {
@@ -2153,6 +2168,9 @@ void SpecVecBase::Dump(std::ostringstream &oss, const std::string &indent) {
 void SpecVecKernel::Append(NDObject *obj) {
   if (obj->obj_id_ == ObjectType::kReshape) {
     fall_opt_init_ |= FALL_RESHAPE;
+    if (obj->lhs_->obj_id_ == ObjectType::kReshape) {
+      obj->lhs_ = obj->lhs_->lhs_;
+    }
   } else if (obj->obj_id_ == ObjectType::kReduce) {
     obj->insn_ = nullptr;
   } else if (obj->rhs_ != nullptr || obj->obj_id_ == ObjectType::kBroadcastTo) {
@@ -2183,8 +2201,25 @@ uint64_t SpecVecKernel::CodeGen() {
   Clear();
   fall_opt_ = fall_opt_init_;
   if (static_ops_.empty()) {
+    // dead code elim
+    for (auto op : build_ops_) {
+      op->reuse_dep_ = op->IsStore() ?  1 : 0;
+    }
+    for (auto it = build_ops_.rbegin(); it != build_ops_.rend(); ++it) {
+      if (auto op = *it; op->reuse_dep_) {
+        op->ForInput([](NDObject *in) { in->reuse_dep_ = 1;});
+      }
+    }
+    size_t index = 0;
+    for (auto op : build_ops_) {
+      if (!op->reuse_dep_) {
+        delete op;
+      } else {
+        build_ops_[index++] = op;
+      }
+    }
+    build_ops_.resize(index);
     StaticInit(build_ops_);
-    // TODO: dead code elim
     if ((fall_opt_init_ & FALL_BROADCAST) && static_ops_.size() < 4) {
       fall_opt_init_ &= ~FALL_BROADCAST;
     }
@@ -2204,6 +2239,9 @@ uint64_t SpecVecKernel::CodeGen() {
 void SpecVecKernel::Dump(std::ostringstream &oss, const std::string &indent) {
   if (context_.stage_size_) {
     context_.stage_k_->Dump(oss, indent);
+  } else if (objects_.empty()) {
+    DumpRefHelper helper(oss);
+    helper.DumpGraph(indent, "spec", build_ops_);
   } else {
     SpecVecBase::Dump(oss, indent);
   }

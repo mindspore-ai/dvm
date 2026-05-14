@@ -1209,6 +1209,64 @@ __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+__aicore_inline__ void InitViewLoadXPattern(__ubuf__ uint64_t *pattern, uint64_t stride_elem, uint64_t mask) {
+  constexpr uint64_t bits_per_word = sizeof(uint64_t) * 8;
+  pipe_barrier(PIPE_V);
+  set_vector_mask(0, stride_elem);
+  vector_dup((__ubuf__ uint32_t *)pattern, 0u, 1, 1, 1, 0, 0);
+  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  for (uint64_t bit = 0; bit < mask; bit += stride_elem) {
+    uint64_t idx = bit / bits_per_word;
+    uint64_t shift = bit - idx * bits_per_word;
+    pattern[idx] = pattern[idx] | (1ul << shift);
+  }
+}
+
+template <typename T>
+__aicore_inline__ void ViewLoadXNormal(__ubuf__ T *dst, __ubuf__ T *ws, __gm__ uint8_t *src, uint64_t iter_offset,
+                                       uint64_t iter_size, uint64_t iter_stride) {
+  copy_gm_to_ubuf_align_b8(ws, src + iter_offset * iter_stride, 0, iter_size, sizeof(T), 0, 0,
+                           iter_stride - sizeof(T), 0);
+  set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+  wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+  set_vector_mask(0, 1);
+  vreducev2(dst + iter_offset, ws, ws, iter_size, 1, 7, 1, 0);
+}
+
+template <typename T>
+__aicore_inline__ void ViewLoadXFixedGather(__ubuf__ T *dst, __ubuf__ T *ws, __gm__ uint8_t *src,
+                                            uint64_t iter_offset, uint64_t iter_size, uint64_t iter_stride,
+                                            uint64_t stride_elem, uint8_t pattern_mode) {
+  copy_gm_to_ubuf_align_b8(ws, src + iter_offset * iter_stride, 0, 1, sizeof(T) * iter_size * stride_elem, 0, 0,
+                           0, 0);
+  set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+  wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+  set_vector_mask(0, iter_size * stride_elem);
+  vreducev2(dst + iter_offset, ws, ws, 1, 1, pattern_mode, 0, 0);
+}
+
+template <typename T>
+__aicore_inline__ void ViewLoadXCustomGather(__ubuf__ T *dst, __ubuf__ T *ws, __gm__ uint8_t *src,
+                                             uint64_t iter_offset, uint64_t iter_size, uint64_t iter_stride,
+                                             uint64_t stride_elem) {
+  copy_gm_to_ubuf_align_b8(ws, src + iter_offset * iter_stride, 0, 1, sizeof(T) * iter_size * stride_elem, 0, 0,
+                           0, 0);
+  set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+  wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+  uint64_t repeat = iter_size / 32;
+  uint64_t tail = (iter_size - repeat * 32) * stride_elem;
+  __ubuf__ T *pattern = (__ubuf__ T *)WORKSPACE;
+  if (repeat) {
+    set_vector_mask(0, 32 * stride_elem);
+    vreducev2(dst + iter_offset, ws, pattern, repeat, 1, 0, stride_elem * sizeof(T), 0);
+  }
+  if (tail) {
+    set_vector_mask(0, tail);
+    vreducev2(dst + iter_offset + repeat * 32, ws + repeat * 32 * stride_elem, pattern, 1, 1, 0, 0, 0);
+  }
+}
+
 template <typename T>
 __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewLoadX op;
@@ -1236,7 +1294,13 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t idx = 0;
   bool pingpong = false;
   set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-  set_vector_mask(0, 1);
+  uint64_t item_stride = op.iter_stride / sizeof(T);
+  constexpr uint64_t custom_pattern_mask = (1ul << 3) | (1ul << 5) | (1ul << 6) | (1ul << 7);
+  bool custom_gather = item_stride < 8 && ((1ul << item_stride) & custom_pattern_mask);
+  if (custom_gather) {
+    InitViewLoadXPattern((__ubuf__ uint64_t *)WORKSPACE, item_stride, 32 * item_stride);
+    op.ws_size -= UB_WORKSPACE_SIZE / 32;
+  }
   do {
     for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
       __ubuf__ T *ws;
@@ -1252,10 +1316,14 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
       }
       uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
-      copy_gm_to_ubuf_align_b8(ws, src + iter_offset * op.iter_stride, 0, iter_size, sizeof(T), 0, 0, op.iter_stride - sizeof(T), 0);
-      set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
-      wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
-      vreducev2(dst + iter_offset, ws, ws, iter_size, 1, 7, 1, 0);
+      if (custom_gather) {
+        ViewLoadXCustomGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride);
+      } else if (item_stride == 2 || item_stride == 4) {
+        uint8_t pattern_mode = item_stride == 2 ? 1 : 3;
+        ViewLoadXFixedGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride, pattern_mode);
+      } else {
+        ViewLoadXNormal(dst, ws, src, iter_offset, iter_size, op.iter_stride);
+      }
     }
     for (idx = 0; idx < op.loop_depth; ++idx) {
       uint64_t loop_size, dst_stride, src_stride;

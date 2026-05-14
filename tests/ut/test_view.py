@@ -143,6 +143,21 @@ def test_slice_dim_x_lead_1():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("stride_elem", [2, 3, 4, 5, 6, 7, 8])
+def test_slice_dim_x_stride(stride_elem):
+    t = Tester()
+    shape = [8, 64]
+    in_shape = [shape[0], shape[1] * stride_elem]
+    row = ((np.arange(in_shape[0], dtype=np.float32) % 251) * 0.01).astype(np.float16)
+    col = ((np.arange(in_shape[1], dtype=np.float32) % 257) * 0.001).astype(np.float16)
+    a = (row[:, None] + col[None, :]).astype(np.float16, copy=False)
+    x = t.view_load(shape, [in_shape[1], stride_elem], a)
+    y = t.add(x, 0.5)
+    t.store_expect(y, a[:, 0:shape[1] * stride_elem:stride_elem] + 0.5)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("shape, dim0, dim1", [
     ([8, 30, 512], 0, 1),
     ([8, 6, 20, 64], 1, 2),

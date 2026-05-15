@@ -1171,9 +1171,6 @@ void VKernelS::BrokerInit() {
       SetPdHead(op, head);
     }
     if (IsBroker(op)) {
-      if (GetPdHead(op->lhs_) == nullptr) {
-        SetPdHead(op->lhs_, op->lhs_);
-      }
       if (!last_broker_) last_broker_ = op->index_;
     } else {
       op->ForInput([head, op](NDObject *input) {

@@ -27,6 +27,12 @@
 namespace dvm {
 class MsprofHelper;
 class IdleCleanWrap;
+
+enum KernelFlagEx {
+  kExtBegin = KernelFlag::kSpeculate,
+  kKernelSimt = kExtBegin << 1,
+};
+
 class VKernel {
  public:
   VKernel(KernelType ktype, uint32_t flags) : ktype_(ktype), flags_(flags) {}
@@ -100,7 +106,7 @@ class VectorKernel : public VKernel {
       return visit->ws_size_;
     }
     code_.block_dim_ = CompactBlockDim(core_limit);
-    code_.UpdateV(tile_num_);
+    code_.UpdateV(tile_num_, flags_ & kKernelSimt);
     return 0;
   }
   uint64_t DoCodeGen(uint64_t core_limit) {
@@ -183,6 +189,7 @@ class VectorKernel : public VKernel {
 
   VisitCoder *visit_;
 
+  uint64_t local_mem_size_;
   union {
     uint64_t block_align_;  // tiling
     uint64_t lead_align_;   // codegen
@@ -235,7 +242,7 @@ class VectorKernel : public VKernel {
         peak_size -= ITEM_SIZE[max_type_] - ITEM_SIZE[op->type_id_];
       }
     }
-    return (g_system.LocalMemSize() - ReserveCodeSize()) / peak_size;
+    return (local_mem_size_ - ReserveCodeSize()) / peak_size;
   }
 
   void StaticAppend(NDObject *obj) {

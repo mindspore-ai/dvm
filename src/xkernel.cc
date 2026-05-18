@@ -288,9 +288,8 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
   post_fusion_->AddVisitor(&visit);
   size_t post_reserve = code_reserve - CubeKernel::ReserveCodeSize();
   if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-    g_system.SetLocalMemSize(g_system.LocalMemSize() - cube_op_->BaseSize());
+    post_fusion_->local_mem_size_ -= cube_op_->BaseSize();
     code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
-    g_system.SetLocalMemSize(g_system.LocalMemSize() + cube_op_->BaseSize());
   } else {
     code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
   }
@@ -302,7 +301,7 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
     }
     cube_code->ub_c = vCubeOp::UbInfoEncode(sload_->xbuf_, subtile0, subtile1);
   } else if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-    cube_code->ub_c = vCubeOp::UbInfoEncode(g_system.LocalMemSize() - cube_op_->BaseSize(), subtile0, subtile1);
+    cube_code->ub_c = vCubeOp::UbInfoEncode(post_fusion_->local_mem_size_, subtile0, subtile1);
   } else {
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   }
@@ -723,7 +722,7 @@ uint64_t ParallelKernel::CodeGen() {
       code_reserve += n.code_reserve;
     }
     max_prog_num += cubes_.size();
-    target = target == Code::kTargetVec ? Code::kTargetMix : Code::kTargetCube;
+    target = Code::IsVector(target) ? Code::kTargetMix : Code::kTargetCube;
   }
   if (!mixes_.empty()) {
     if (uint64_t vec_align = CeilDiv(aiv.core_reserve, 2ul); vec_align > aic.core_reserve) {
@@ -746,7 +745,7 @@ uint64_t ParallelKernel::CodeGen() {
   if (target != Code::kTargetCube) {
     aiv.UpdateDynCore(g_system.CoreNum(CoreType::kAIV));
   }
-  if (target != Code::kTargetVec) {
+  if (!Code::IsVector(target)) {
     aic.UpdateDynCore(g_system.CoreNum(CoreType::kAIC));
   }
   PCodeEncoder encoder;
@@ -796,7 +795,7 @@ uint64_t ParallelKernel::CodeGen() {
     aiv.Submit(n, block_num);
   }
   uint64_t block_dim =
-    target == Code::kTargetVec ? aiv.core_begin : std::max(aic.core_begin, (aiv.core_begin + 1) >> 1);
+    Code::IsVector(target) ? aiv.core_begin : std::max(aic.core_begin, (aiv.core_begin + 1) >> 1);
   encoder.Submit(block_dim);
   if (!block_dim) {
     wrap_->term_ = true;
@@ -2130,7 +2129,7 @@ int _SplitKernel::Launch(void *stream) {
     oss << "Dvm";
     std::vector<NDObject *> inputs;
     std::vector<NDObject *> outputs;
-    if (target > Code::kTargetVec) {
+    if (!Code::IsVector(vector_kernel->code_.target_)) {
       auto cube_op = GetCubeOp(kernels_[i]);
       if (cube_op) {
         cube_op->Dump(false, oss);

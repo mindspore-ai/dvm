@@ -618,7 +618,7 @@ uint64_t NDLoad::Emit(VectorKernel &k) {
       *insn_ = vMakeAccHead(V_LOAD_DUMMY, 0, 1);
       vCopy op;
       op.xd = xbuf_;
-      op.xn = g_system.LocalMemSize();
+      op.xn = k.local_mem_size_;
       op.lenburst = GetBlocks(src_tile_stride_);
       return vCopy::Encode(insn_ + 1, V_COPY_CUBE_TILE, op) + 1;
     } else if (flags_ & OBJ_FLAG_LOAD_FROM_CC) {
@@ -848,7 +848,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     auto last_store = k.static_ops_.back();
     ASSERT(last_store->IsStore());
     op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
-    auto ws_block_num = (g_system.UbWorkspaceSize() + g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
+    auto ws_block_num = (g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
     op.ws_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
     op.iter_size = fold_dim[0];
     op.iter_stride= fold_stride[0];

@@ -134,10 +134,10 @@ void MsprofHelper::Update(uint32_t kernel_target) {
   auto &prof_node_basic_info = addition_info_.node_basic_info.data.nodeBasicInfo;
   if (kernel_target == Code::kTargetCube) {
     prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AI_CORE);
-  } else if (kernel_target == Code::kTargetVec) {
-    prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AIV);
-  } else {
+  } else if (kernel_target == Code::kTargetMix) {
     prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_MIX_AIC);
+  } else {
+    prof_node_basic_info.taskType = static_cast<uint32_t>(TaskInfoTaskType::TASK_TYPE_AIV);
   }
 }
 

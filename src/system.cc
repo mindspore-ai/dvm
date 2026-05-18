@@ -68,6 +68,8 @@ extern unsigned int g_vkernel_c220_bin_len;
 extern const uint64_t g_mix_symbols_c220[];
 extern const unsigned int g_mix_symbol_len_c220;
 
+extern const unsigned int g_meta_aiv_type_value_offset_c310;
+
 namespace dvm {
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kDataTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t), sizeof(int64_t)};
@@ -185,6 +187,7 @@ using RtFunctionRegisterFunc = rtError_t (*)(void *, const void *, const char_t 
 static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegisterFunc reg_function,
                             const unsigned char *bin_data, unsigned int bin_len, void *func_handles[3]) {
   func_handles[Code::kTargetVec] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetVec;
+  func_handles[Code::kTargetSimtVec] = func_handles[Code::kTargetVec];
   func_handles[Code::kTargetCube] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetCube;
   func_handles[Code::kTargetMix] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetMix;
   rtError_t err;
@@ -214,18 +217,15 @@ static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegist
 
 static int CodeLaunchNone(const System &self, const Code *code, void *extern_ws, void *stream) { return 0; }
 
-template <AiCoreArch arch>
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
   typedef rtError_t (*LaunchKernelFunc)(const void *func, uint32_t blockdim, void *args, uint32_t argssize,
                                         rtSmDesc_t *, rtStream_t);
-  if constexpr (arch == kAiCore_C220) {
-    if (code->target_ == Code::kTargetMix) {
-      auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
-      uint32_t len = 0;
-      auto err = get_ffts(reinterpret_cast<uint64_t *>(code->data_), &len);
-      EXCEPTION_IF(err != 0, "get_ffts failed");
-    }
+  if (code->target_ == Code::kTargetMix) {
+    auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
+    uint32_t len = 0;
+    auto err = get_ffts(reinterpret_cast<uint64_t *>(code->data_), &len);
+    EXCEPTION_IF(err != 0, "get_ffts failed");
   }
   auto func_handle = static_cast<const void *>(reinterpret_cast<const uint8_t *>(&self) + code->target_);
   auto launch = reinterpret_cast<LaunchKernelFunc>(self.kernel_launch_func_);
@@ -240,17 +240,14 @@ int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, 
   return launch(func_handle, code->block_dim_, args, sizeof(args), nullptr, stream);
 }
 
-template <AiCoreArch arch>
-int System::CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream) {
+int System::CodeLaunchACL_C220(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef int (*GetFftsFunc)(void **addr);
   typedef int (*LaunchHostArgFunc)(const void *func_handle, uint32_t blockdim, void *stream, void *cfg, void *hostargs,
                                    size_t argssize, void *placeHolder, size_t placehoderNum);
-  if constexpr (arch == kAiCore_C220) {
-    if (code->target_ == Code::kTargetMix) {
-      auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
-      auto err = get_ffts(reinterpret_cast<void **>(code->data_));
-      EXCEPTION_IF(err != 0, "get_ffts failed");
-    }
+  if (code->target_ == Code::kTargetMix) {
+    auto get_ffts = reinterpret_cast<GetFftsFunc>(self.get_ffts_addr_func_);
+    auto err = get_ffts(reinterpret_cast<void **>(code->data_));
+    EXCEPTION_IF(err != 0, "get_ffts failed");
   }
   auto func_handle = self.func_handles_[code->target_];
   auto launch = reinterpret_cast<LaunchHostArgFunc>(self.kernel_launch_func_);
@@ -263,6 +260,32 @@ int System::CodeLaunchACL(const System &self, const Code *code, void *extern_ws,
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(code->data_) + 1)};
   return launch(func_handle, code->block_dim_, stream, nullptr, args, sizeof(args), nullptr, 0);
+}
+
+int System::CodeLaunchACL_C310(const System &self, const Code *code, void *extern_ws, void *stream) {
+  typedef int (*LaunchHostArgFunc)(const void *func_handle, uint32_t blockdim, void *stream, void *cfg, void *hostargs,
+                                   size_t argssize, void *placeHolder, size_t placehoderNum);
+  auto func_handle = self.func_handles_[code->target_];
+  auto launch = reinterpret_cast<LaunchHostArgFunc>(self.kernel_launch_func_);
+  aclrtLaunchKernelAttr attr;
+  aclrtLaunchKernelCfg cfg;
+  if (code->target_ == Code::kTargetSimtVec) {
+    attr.id = ACL_RT_LAUNCH_KERNEL_ATTR_DYN_UBUF_SIZE;
+    attr.value.dynUBufSize = self.local_mem_size_ - self.SimtWorkspace();
+    cfg.attrs = &attr;
+    cfg.numAttrs = 1;
+  } else {
+    cfg.numAttrs = 0;
+  }
+  if (likely(code->data_size_ <= PARAM_TABLE_LIMIT)) {
+    return launch(func_handle, code->block_dim_, stream, &cfg, code->data_, code->data_size_, nullptr, 0);
+  }
+  auto data_dev = reinterpret_cast<uint8_t *>(extern_ws);
+  auto ret =
+    aclrtMemcpyAsync(data_dev, code->data_size_, code->data_, code->data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
+  EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
+  uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(code->data_) + 1)};
+  return launch(func_handle, code->block_dim_, stream, &cfg, args, sizeof(args), nullptr, 0);
 }
 
 void System::GetSocConfig() {
@@ -312,7 +335,7 @@ void System::DoInit() {
     g_vkernel_bin = g_vkernel_c220_bin;
     g_vkernel_bin_len = g_vkernel_c220_bin_len;
     l0c_size_ = 128 * 1024;
-    local_mem_size_ = 192 * 1024 - ub_workspace_size_;
+    local_mem_size_ = 192 * 1024;
   } else if (arch_ == kAiCore_C310) {
     bt_size_ = 4096;
     ub_workspace_size_ = 256;
@@ -322,7 +345,7 @@ void System::DoInit() {
     g_vkernel_bin = g_vkernel_c310_bin;
     g_vkernel_bin_len = g_vkernel_c310_bin_len;
     l0c_size_ = 256 * 1024;
-    local_mem_size_ = 256 * 1024 - ub_workspace_size_;
+    local_mem_size_ = 256 * 1024;
   }
   int device_id = 0;
   if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
@@ -355,7 +378,7 @@ void System::DoInit() {
       }
     }
   }
-  if (try_reg_rt) {
+  if (try_reg_rt && arch_ == kAiCore_C220) {
     rt_handle_ = dlopen("libruntime.so", RTLD_LAZY | RTLD_LOCAL);
     if (rt_handle_) {
       kernel_launch_func_ = dlsym(rt_handle_, "rtKernelLaunch");
@@ -365,7 +388,7 @@ void System::DoInit() {
         auto reg_function = reinterpret_cast<RtFunctionRegisterFunc>(dlsym(rt_handle_, "rtFunctionRegister"));
         if (reg_binary && reg_function) {
           RegKernelWithRT(reg_binary, reg_function, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
-          code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
+          code_launch_ = CodeLaunchRT;
         }
         dlclose(acl_handle);
         return;
@@ -411,6 +434,19 @@ void System::DoInit() {
   auto err = load_binary(renamed_bin_, g_vkernel_bin_len, &bin_opt, &bin_handle);
   err |= get_function(bin_handle, "dvm_aix_aiv", &func_handles_[Code::kTargetVec]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg vec failed");
+  if (arch_ == kAiCore_C220) {
+    func_handles_[Code::kTargetSimtVec] = func_handles_[Code::kTargetVec];
+  } else {
+    simt_bin_ = std::malloc(g_vkernel_bin_len);
+    std::memcpy(simt_bin_, g_vkernel_bin, g_vkernel_bin_len);
+    for (uint32_t pos = 0; pos < g_mix_symbol_len; ++pos) {
+      *(static_cast<char *>(simt_bin_) + g_mix_symbols[pos]) = 's';  // mix -> six
+    }
+    *reinterpret_cast<uint32_t *>(static_cast<char *>(simt_bin_) + g_meta_aiv_type_value_offset_c310) = 4;
+    err = load_binary(simt_bin_, g_vkernel_bin_len, &bin_opt, &bin_handle);
+    err |= get_function(bin_handle, "dvm_six_aiv", &func_handles_[Code::kTargetSimtVec]);
+    EXCEPTION_IF(err != ACL_SUCCESS, "reg simt vec failed");
+  }
 
   opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_CUBE_CORE;
   err = load_binary(renamed_bin_, g_vkernel_bin_len, &bin_opt, &bin_handle);
@@ -421,7 +457,7 @@ void System::DoInit() {
   err = load_binary(g_vkernel_bin, g_vkernel_bin_len, &bin_opt, &bin_handle);
   err |= get_function(bin_handle, "dvm", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
-  code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchACL<kAiCore_C220> : CodeLaunchACL<kAiCore_C310>;
+  code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchACL_C220 : CodeLaunchACL_C310;
 }
 
 System::~System() {
@@ -439,6 +475,9 @@ System::~System() {
   }
   if (renamed_bin_) {
     std::free(renamed_bin_);
+  }
+  if (simt_bin_) {
+    std::free(simt_bin_);
   }
 }
 

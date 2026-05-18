@@ -86,7 +86,9 @@ class CodeWrap {
 
 class Code : public CodeWrap {
  public:
-  enum { kTargetVec = 0, kTargetCube, kTargetMix };
+  enum { kTargetVec = 0, kTargetSimtVec, kTargetCube, kTargetMix };
+  static bool IsVector(int target) { return target <= kTargetSimtVec; }
+
   Code() = default;
   Code(const Code &obj) = delete;
   Code &operator=(const Code &) = delete;
@@ -136,8 +138,8 @@ class Code : public CodeWrap {
     head[1] = entry;
   }
 
-  void UpdateV(uint64_t tile_num) {
-    target_ = kTargetVec;
+  void UpdateV(uint64_t tile_num, bool simt) {
+    target_ = simt ? kTargetSimtVec : kTargetVec;
     UpdateHead(GenEntryV(tile_num, block_dim_, data_size_ - HeadSize()));
   }
 

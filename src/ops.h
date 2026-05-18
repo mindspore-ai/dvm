@@ -84,8 +84,14 @@ struct PropRange {
   int base;
   int depth;
   int affine;
-  int simd_dim;
+  int reserved;
   int64_t space;
+};
+
+struct TileInfo {
+  int lead_depth;
+  int lead_affine;
+  uint32_t flags;
 };
 
 // shard map(low axis left): [a0, a1,.. s0, s1, s2, ...] -> [a0, a1,...tile[0], tile[1], 1, 1, ..]
@@ -341,7 +347,7 @@ enum CodeGenTmpl {
 };
 
 struct ObjectMeta {
-  constexpr ObjectMeta() : flags(), tmpl(), dim_changed(), fold_prop(), align_prop(), shape_prop() {}
+  constexpr ObjectMeta() : flags(), tmpl(), dim_changed(), fold_prop(), tile_collect(), shape_prop() {}
 
   static constexpr uint32_t kNddShared = 1;
   static constexpr uint32_t kInplaceProp = 1u << 1;
@@ -349,12 +355,13 @@ struct ObjectMeta {
   static constexpr uint32_t kRhsReuse = 1u << 3;
   static constexpr uint32_t kLhsDom = 1u << 4;
   static constexpr uint32_t kDom = 1u << 5;
+  static constexpr uint32_t kSimdDim = 1u << 6;
 
   uint32_t flags[kObjectBulk];
   CodeGenTmpl tmpl[kObjectBulk];
   void (*dim_changed[kObjectBulk])(NDObject *);
   void (*fold_prop[kObjectBulk])(NDObject *, PropRange &);
-  void (*align_prop[kObjectBulk])(NDObject *, PropRange &);
+  void (*tile_collect[kObjectBulk])(NDObject *, TileInfo &);
   void (*shape_prop[kObjectBulk])(NDObject *, int64_t &);
 };
 
@@ -446,9 +453,9 @@ class NDObject {
     }
   }
   // fold axis left alignment:  [0, depth-1]
-  void AlignProp(PropRange &range) {
-    if (auto func = meta_.align_prop[obj_id_]) {
-      func(this, range);
+  void TileCollect(TileInfo &info) {
+    if (auto func = meta_.tile_collect[obj_id_]) {
+      func(this, info);
     }
   }
   // shape propagation from input shapes
@@ -561,7 +568,7 @@ class NDViewLoad : public NDAccess {
 
   bool IsLeadContinuous() const { return src_stride_[0] == 1; }
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
@@ -621,7 +628,7 @@ class NDViewStore : public NDAccess {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
@@ -647,7 +654,7 @@ class NDPadStore : public NDAccess {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
 
  private:
@@ -947,7 +954,7 @@ class _BroadcastOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
 
   NDSpaceData ndd_;
@@ -1009,7 +1016,7 @@ class _ReduceOp : public FlexOp {
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
 
   void SetRange(int start, int end) {
@@ -1095,7 +1102,7 @@ class OneHotOp : public NDObject {
 
   int DepthDim() const { return depth_dim_; }
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
@@ -1142,7 +1149,7 @@ class GraphTracker {
 template <int AFFINE>
 void BroadReduceFoldProp(const DimArray &small_dim, const DimArray &big_dim, PropRange &range);
 template <int AFFINE>
-void BroadReduceAlignProp(const DimArray &small_dim, const DimArray &big_dim, PropRange &range);
+void BroadReduceTileCollect(const DimArray &small_dim, const DimArray &big_dim, TileInfo &info);
 
 bool CollectRoundTile(const DimArray &nd, const TileParam &tp, DimArray &round_tile);
 void BuildDimRounds(const DimArray &round_tile, uint64_t rounds[]);

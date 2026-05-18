@@ -176,7 +176,8 @@ class VectorKernel : public VKernel {
 
   int64_t tile_num_{0};
   int64_t tile_size_;  // shape size of object tile size
-  PropRange align_;
+  int64_t align_space_;  // space of align depth [0, lead_depth-1]
+  TileInfo tile_info_;
   NDObject *dom_;
   const ShardParam *shard_{nullptr};
 
@@ -215,7 +216,7 @@ class VectorKernel : public VKernel {
   int64_t TileLead(const TileParam tp, int64_t lead_align) {
     TileProp(tp);
     tile_size_ = RoundUp<int64_t>(tp.tile, lead_align);
-    align_.space = tile_size_;
+    align_space_ = tile_size_;
     tile_num_ *= tp.num;
     return tile_size_;
   }

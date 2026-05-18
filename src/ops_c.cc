@@ -138,14 +138,14 @@ void ReduceScatterOp::FoldProp(NDObject *op, PropRange &range) {
   BroadReduceFoldProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
 }
 
-void ReduceScatterOp::AlignProp(NDObject *op, PropRange &range) {
+void ReduceScatterOp::TileCollect(NDObject *op, TileInfo &info) {
   auto self = static_cast<ReduceScatterOp *>(op);
   if (self->multi_load_) {
     return;
   }
   auto &lhs_nd = self->lhs_->nd_;
   auto &ndd = self->ndd_;
-  BroadReduceAlignProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
+  BroadReduceTileCollect<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, info);
 }
 
 NDObject *ReduceScatterOp::Clone(CloneHelper &h) { return new ReduceScatterOp(h.GetClone(lhs_), comm_); }
@@ -1003,10 +1003,10 @@ void AllGatherOp::FoldProp(NDObject *op, PropRange &range) {
   BroadReduceFoldProp<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, range);
 }
 
-void AllGatherOp::AlignProp(NDObject *op, PropRange &range) {
+void AllGatherOp::TileCollect(NDObject *op, TileInfo &info) {
   auto &lhs_nd = op->lhs_->nd_;
   auto &ndd = static_cast<AllGatherOp *>(op)->ndd_;
-  BroadReduceAlignProp<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, range);
+  BroadReduceTileCollect<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, info);
 }
 
 uint64_t AllGatherOp::Emit(VectorKernel &k) {

@@ -356,6 +356,7 @@ struct ObjectMeta {
   static constexpr uint32_t kLhsDom = 1u << 4;
   static constexpr uint32_t kDom = 1u << 5;
   static constexpr uint32_t kSimdDim = 1u << 6;
+  static constexpr uint32_t kSimt = 1u << 7;
 
   uint32_t flags[kObjectBulk];
   CodeGenTmpl tmpl[kObjectBulk];

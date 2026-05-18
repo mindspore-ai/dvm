@@ -161,6 +161,7 @@ class System : public Config {
   void SetLocalMemSize(uint64_t size) { local_mem_size_ = size; }
   uint64_t LocalMemSize() const { return local_mem_size_; }
   uint64_t UbWorkspaceSize() const { return ub_workspace_size_; }
+  uint64_t SimtWorkspace() const { return 32 * 1024; }
   uint64_t L2Size() const { return l2_size_; }
   uint64_t L1Size() const { return l1_size_; }
   uint64_t L0CSize() const { return l0c_size_; }
@@ -190,7 +191,7 @@ class System : public Config {
 
   // runtime api
   int (*code_launch_)(const System &self, const Code *code, void *extern_ws, void *stream){nullptr};
-  void *func_handles_[3];
+  void *func_handles_[4];
   void *get_ffts_addr_func_{nullptr};
   void *kernel_launch_func_{nullptr};
 
@@ -218,12 +219,12 @@ class System : public Config {
   CubeStoreType cube_store_type_{kCubeStoreGM};
   void *comm_stream_{nullptr};
   void *renamed_bin_{nullptr};
+  void *simt_bin_{nullptr};
   void *rt_handle_{nullptr};
 
-  template <AiCoreArch arch>
   static int CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream);
-  template <AiCoreArch arch>
-  static int CodeLaunchACL(const System &self, const Code *code, void *extern_ws, void *stream);
+  static int CodeLaunchACL_C220(const System &self, const Code *code, void *extern_ws, void *stream);
+  static int CodeLaunchACL_C310(const System &self, const Code *code, void *extern_ws, void *stream);
 };
 
 extern System g_system;

@@ -453,7 +453,7 @@ class CodeGenHelper {
     if (!free_xbuf_.Empty() && free_xbuf_.Front().second->index_ < vector_vector_sync) {
       // roughly reuse for simplify: ignore inputs barrier to be inserted
       xbuf = free_xbuf_.Pop().first;
-    } else if (static_xbuf_ + xbuf_size_ <= g_system.LocalMemSize()) {
+    } else if (static_xbuf_ + xbuf_size_ <= kernel_.local_mem_size_) {
       xbuf = static_xbuf_;
       static_xbuf_ += xbuf_size_;
     } else {
@@ -610,6 +610,17 @@ void VectorKernel::PrepareTiling() {
   tile_info_.flags = 0;
   for (auto op : objects_) {
     op->TileCollect(tile_info_);
+  }
+  local_mem_size_ = g_system.LocalMemSize();
+  if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
+    local_mem_size_ -= g_system.UbWorkspaceSize();
+  } else {
+    if (tile_info_.flags & ObjectMeta::kSimt) {
+      flags_ |= kKernelSimt;
+      local_mem_size_ -= g_system.SimtWorkspace();
+    } else {
+      flags_ &= ~kKernelSimt;
+    }
   }
   align_space_ = 1;
   for (int i = 0; i < tile_info_.lead_depth; ++i) {

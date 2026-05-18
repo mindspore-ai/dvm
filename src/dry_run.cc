@@ -253,7 +253,7 @@ void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_
 
 void DryLaunch(Code *code, void *workspace, void *stream, uint64_t core_idx, bool is_cube) {
   g_cube_core = is_cube;
-  g_subblocknum = code->target_ > 0 ? 2 : 1;
+  g_subblocknum = Code::IsVector(code->target_) ? 1 : 2;
   if (is_cube) {
     block_idx = core_idx;
   } else {

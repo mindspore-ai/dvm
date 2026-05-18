@@ -84,6 +84,7 @@ vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	$(XXDI) g_vkernel_c310_bin >> vm.cc
 	objdump -t g_vkernel_c310_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c310 >> vm.cc
 	objdump -t g_vkernel_c220_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c220 >> vm.cc
+	python3 scripts/find_meta.py g_vkernel_c310_bin >> vm.cc
 	g++ -c $(CFLAGS) vm.cc -o vm.o
 
 ifneq ($(PRE_ASCEND),)

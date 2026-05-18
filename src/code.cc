@@ -1212,7 +1212,7 @@ class DisAssembler {
       }
     };
     std::vector<ProgInfo> aic_programs, aiv_programs;
-    if (target != Code::kTargetVec) {
+    if (!Code::IsVector(target)) {
       auto lookup = (entry >> V_ENTRY_P_AIC_LKUP_OFFSET) & V_ENTRY_P_LKUP_MASK;
       get_programs(g_system.CoreNum(CoreType::kAIC), lookup, aic_programs);
     }
@@ -1464,7 +1464,7 @@ void PCodeEncoder::Reset(Code *code, int target, int max_prog_num, uint64_t code
   auto code_body = code->data_ + Code::HeadSize();
   prog_data_ = code_body;
   uint64_t head_data = 0;
-  if (target != Code::kTargetVec) {
+  if (!Code::IsVector(target)) {
     aic_lookup_ = prog_data_;
     prog_data_ += g_system.CoreNum(CoreType::kAIC);
     head_data |= (aic_lookup_ - code_body) << V_ENTRY_P_AIC_LKUP_OFFSET;

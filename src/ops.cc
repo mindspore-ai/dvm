@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <limits>
 #include "ops.h"
+#include "ops_m.h"
 #include "kernel.h"
 #include "comm.h"
 
@@ -470,6 +471,8 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},                                // Compare
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // CompareS
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::AlignProp, OneHotOp::ShapeProp},                // OneHot
+    {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                                         // CubeOp
+    {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                                          // GmmOp
   };
 
   ObjectMeta meta;

@@ -15,6 +15,7 @@
  */
 
 #include <map>
+#include <queue>
 #include <algorithm>
 #include <functional>
 #include "gkernel.h"
@@ -165,28 +166,68 @@ class GraphSpliter {
 
   void BuildStage(GraphKernel *graph_kernel) {
     auto flags = graph_kernel->Flags() & ~static_cast<uint32_t>(KernelFlag::kPrivate1);
-    for (auto it = areas_.rbegin(); it != areas_.rend(); ++it) {
-      if (auto area = *it; area->pattern != kPatNone) {
-        VKernel *kernel;
-        if (area->pattern & kPatCube) {
-          kernel = new MixKernel(flags);
-        } else if (area->pattern & (kPatReducePost | kPatReshape)) {
-          kernel = new SpecVecKernel(flags);
-        } else {
-          kernel = new VKernelS(flags);
+    std::vector<int> active_ids;
+    active_ids.reserve(areas_.size());
+    std::vector<int> indegrees(areas_.size(), 0);
+    std::vector<std::vector<int>> consumers(areas_.size());
+    // Materialize every live area first so later store/load wiring can always find the producer stage.
+    for (auto area : areas_) {
+      if (area->pattern == kPatNone) {
+        area->stage = nullptr;
+        continue;
+      }
+      VKernel *kernel;
+      if (area->pattern & kPatCube) {
+        kernel = new MixKernel(flags);
+      } else if (area->pattern & (kPatReducePost | kPatReshape)) {
+        kernel = new SpecVecKernel(flags);
+      } else {
+        kernel = new VKernelS(flags);
+      }
+      area->stage = new GraphKernel::Stage(kernel);
+      active_ids.push_back(area->id);
+    }
+    // borders records "this area depends on producer area"; invert it into producer->consumer edges.
+    for (auto area : areas_) {
+      if (area->pattern == kPatNone) continue;
+      for (const auto &bt : area->borders) {
+        auto prod_id = bt.first;
+        if (areas_[prod_id]->pattern == kPatNone) continue;
+        consumers[prod_id].push_back(area->id);
+        indegrees[area->id]++;
+      }
+    }
+    std::priority_queue<int> ready;
+    for (auto area_id : active_ids) {
+      if (indegrees[area_id] == 0) {
+        ready.push(area_id);
+      }
+    }
+    // Append stages in topological order so every cross-stage producer runs before its consumers.
+    size_t ordered_num = 0;
+    while (!ready.empty()) {
+      auto area_id = ready.top();
+      ready.pop();
+      graph_kernel->AppendStage(areas_[area_id]->stage);
+      ordered_num++;
+      for (auto cons_id : consumers[area_id]) {
+        if (--indegrees[cons_id] == 0) {
+          ready.push(cons_id);
         }
-        auto stage = new GraphKernel::Stage(kernel);
-        for (const auto &bt : area->borders) {
-          for (auto op : bt.second) {
-            if (auto st = stores_.find(op); st == stores_.end()) {
-              auto store = new NDStore(op);
-              areas_[op->prop_id_]->stage->StageStore(store);
-              stores_[op] = store;
-            }
+      }
+    }
+    ASSERT(ordered_num == active_ids.size());
+    // Each cross-stage value is materialized once on the producer side and then reused by all consumers.
+    for (auto area : areas_) {
+      if (area->pattern == kPatNone) continue;
+      for (const auto &bt : area->borders) {
+        for (auto op : bt.second) {
+          if (auto st = stores_.find(op); st == stores_.end()) {
+            auto store = new NDStore(op);
+            areas_[op->prop_id_]->stage->StageStore(store);
+            stores_[op] = store;
           }
         }
-        area->stage = stage;
-        graph_kernel->AppendStage(stage);
       }
     }
     for (auto area : areas_) {
@@ -210,6 +251,7 @@ class GraphSpliter {
                 }
               }
               if (load == nullptr || load->prop_id_ != area->id) {
+                // Consumers read foreign values through an explicit stage-local load bound to the producer store.
                 load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
                 load->prop_id_ = area->id;
                 area->stage->StageLoad(load, store);

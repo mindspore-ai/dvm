@@ -66,6 +66,37 @@ def test_split_static_reshape():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_static_matmul_reduce_shared_rhs():
+    t = Tester("split:priv1")
+    k, n, m = 1024, 1280, 640
+    a_data = np.random.normal(0, 0.02, (k, n)).astype(np.float16)
+    b_data = np.random.normal(0, 0.02, (k, m)).astype(np.float16)
+    c_data = np.random.normal(0, 0.02, (k, n)).astype(np.float16)
+    d_data = np.random.normal(0, 0.02, (k, m)).astype(np.float16)
+
+    a = t.load(a_data)
+    b = t.load(b_data)
+    c = t.load(c_data)
+    d = t.load(d_data)
+
+    lhs = t.maximum(t.add(a, c), 0.0)
+    rhs = t.mul(b, d)
+    mm = t.cast(t.matmul(lhs, rhs, True, False), "float32")
+    bias = t.cast(t.sum(t.cast(rhs, "float32"), (0,), True), "float16")
+    out = t.mul(t.maximum(t.add(mm, t.cast(bias, "float32")), 0.0), 0.5)
+
+    lhs_expect = np.maximum(a_data + c_data, 0.0)
+    rhs_expect = b_data * d_data
+    mm_expect = np.matmul(lhs_expect.T.astype(np.float32), rhs_expect.astype(np.float32))
+    bias_expect = np.sum(rhs_expect.astype(np.float32), axis=0, keepdims=True)
+    bias_expect = bias_expect.astype(np.float16).astype(np.float32)
+    out_expect = np.maximum(mm_expect + bias_expect, 0.0) * 0.5
+
+    t.store_expect(out, out_expect, 1e-3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_split_dyn_shape():
     t = Tester("split:dyn,priv1")
     x0 = t.load([-1, -2], "float32")

@@ -60,6 +60,7 @@ class CubeOp : public NDObject {
   virtual void CodeGen(vCubeOp *code, CubeTuner *tuner);
   virtual void NormalizeOutput();
   virtual void GenTiling(vCubeOp *code);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
   uint64_t PostFusionWorkSpace() const {
     uint64_t pingpong_size = m0_ * n0_ * ITEM_SIZE[type_id_];
@@ -144,6 +145,7 @@ class GmmOp : public CubeOp {
   void NormalizeOutput() override;
   void CodeGen(vCubeOp *code, CubeTuner *tuner) override;
   void GenTiling(vCubeOp *code) override;
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
   NDObject *group_list_;
   GmmSplitType group_type_;

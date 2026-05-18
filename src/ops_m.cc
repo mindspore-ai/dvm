@@ -23,6 +23,25 @@
 
 namespace dvm {
 namespace {
+void MatMulBatchShapeProp(const IntArrayRef *lhs, const IntArrayRef *rhs, ShapeWithRef &shape, int64_t &sym_dim_next) {
+  ASSERT(lhs != nullptr && rhs != nullptr && lhs->size >= 2 && rhs->size >= 2);
+  auto rank = std::max(lhs->size, rhs->size);
+  shape.Resize(rank);
+  auto lhs_offset = rank - lhs->size;
+  auto rhs_offset = rank - rhs->size;
+  for (size_t i = 0; i + 2 < rank; ++i) {
+    auto lhs_dim = i < lhs_offset ? 1 : lhs->data[i - lhs_offset];
+    auto rhs_dim = i < rhs_offset ? 1 : rhs->data[i - rhs_offset];
+    if (lhs_dim == rhs_dim || rhs_dim == 1) {
+      shape[i] = lhs_dim;
+    } else if (lhs_dim == 1) {
+      shape[i] = rhs_dim;
+    } else {
+      shape[i] = sym_dim_next--;
+    }
+  }
+}
+
 class TileHelper {
  public:
   struct TileCand {
@@ -196,6 +215,15 @@ void CubeOp::NormalizeOutput() {
   for (size_t i = 0; i < ndd_.size(); ++i) {
     shape_[i] = nd_[ndd_.size() - 1 - i];
   }
+}
+
+void CubeOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<CubeOp *>(op);
+  auto *lhs = self->lhs_->shape_ref_;
+  auto *rhs = self->rhs_->shape_ref_;
+  MatMulBatchShapeProp(lhs, rhs, self->shape_, sym_dim_next);
+  self->shape_[self->shape_.size - 2] = self->trans_a_ ? lhs->data[lhs->size - 1] : lhs->data[lhs->size - 2];
+  self->shape_[self->shape_.size - 1] = self->trans_b_ ? rhs->data[rhs->size - 2] : rhs->data[rhs->size - 1];
 }
 
 float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
@@ -518,6 +546,28 @@ void GmmOp::NormalizeOutput() {
   for (size_t i = 0; i < ndd_.size(); ++i) {
     shape_[i] = ndd_[ndd_.size() - 1 - i];
   }
+}
+
+void GmmOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<GmmOp *>(op);
+  auto *lhs = self->lhs_->shape_ref_;
+  auto *rhs = self->rhs_->shape_ref_;
+  auto m_dim = self->trans_a_ ? lhs->data[lhs->size - 1] : lhs->data[lhs->size - 2];
+  auto n_dim = self->trans_b_ ? rhs->data[rhs->size - 2] : rhs->data[rhs->size - 1];
+  if (self->group_type_ == kSplit_M) {
+    self->shape_.Resize(2);
+    self->shape_[0] = m_dim;
+    self->shape_[1] = n_dim;
+    return;
+  }
+  if (self->group_type_ == kSplit_K) {
+    self->shape_.Resize(3);
+    self->shape_[0] = self->group_list_->shape_ref_->data[0];
+    self->shape_[1] = m_dim;
+    self->shape_[2] = n_dim;
+    return;
+  }
+  CubeOp::ShapeProp(op, sym_dim_next);
 }
 
 void GmmOp::GenTiling(vCubeOp *op) {

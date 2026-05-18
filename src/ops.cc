@@ -332,10 +332,10 @@ template void BroadReduceFoldProp<PropRange::BROADCAST>(const DimArray &, const 
 template void BroadReduceFoldProp<PropRange::REDUCE>(const DimArray &, const DimArray &, PropRange &);
 
 template <int AFFINE>
-void BroadReduceAlignProp(const DimArray &small_dim, const DimArray &big_dim, PropRange &range) {
+void BroadReduceTileCollect(const DimArray &small_dim, const DimArray &big_dim, TileInfo &info) {
   int state = 0;  // -1 - broadcast/reduce; 1 - elemwise, 0 - undetermined
   int new_depth = 0;
-  int depth_size = std::min<int>(range.depth, small_dim.size());
+  int depth_size = std::min<int>(info.lead_depth, small_dim.size());
   for (int i = 0; i < depth_size; ++i) {
     if ((state == -1 && small_dim[i] != 1) || (state == 1 && small_dim[i] != big_dim[i])) {
       break;
@@ -349,14 +349,14 @@ void BroadReduceAlignProp(const DimArray &small_dim, const DimArray &big_dim, Pr
     new_depth++;
   }
   if (state) {
-    if (state == -1 && range.affine < AFFINE) {
-      range.affine = AFFINE;
+    if (state == -1 && info.lead_affine < AFFINE) {
+      info.lead_affine = AFFINE;
     }
-    range.depth = new_depth;
+    info.lead_depth = new_depth;
   }
 }
-template void BroadReduceAlignProp<PropRange::BROADCAST>(const DimArray &, const DimArray &, PropRange &);
-template void BroadReduceAlignProp<PropRange::REDUCE>(const DimArray &, const DimArray &, PropRange &);
+template void BroadReduceTileCollect<PropRange::BROADCAST>(const DimArray &, const DimArray &, TileInfo &);
+template void BroadReduceTileCollect<PropRange::REDUCE>(const DimArray &, const DimArray &, TileInfo &);
 
 vSimdInsnID GetBinaryInsnID(BinaryType op, DataType dtype) { return binary_id_list[op].ids[dtype]; }
 vSimdInsnID GetCastInsnID(DataType from, DataType to) { return cast_id_list[from][to]; }
@@ -434,7 +434,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     uint32_t flags;
     void (*dim_changed)(NDObject *);
     void (*fold_prop)(NDObject *, PropRange &);
-    void (*align_prop)(NDObject *, PropRange &);
+    void (*tile_collect)(NDObject *, TileInfo &);
     void (*shape_prop)(NDObject *, int64_t &);
   };
   constexpr uint32_t F_NS = ObjectMeta::kNddShared;
@@ -446,13 +446,13 @@ static constexpr ObjectMeta GenObjectMeta() {
   BaseData data[] = {
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // LoadDummy
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // MultiLoad
-    {kGenLoad, 0, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::AlignProp},              // ViewLoad
+    {kGenLoad, 0, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::TileCollect},              // ViewLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // Load
-    {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::AlignProp},                  // PadStore
-    {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDViewStore::FoldProp, NDViewStore::AlignProp}, // ViewStore
+    {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::TileCollect},                  // PadStore
+    {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDViewStore::FoldProp, NDViewStore::TileCollect}, // ViewStore
     {kGenStore, F_IP | F_NS | F_LD, NDStore::DimChanged, nullptr, nullptr},                          // Store
-    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::AlignProp, ReduceScatterOp::ShapeProp},         // ReduceScatter
-    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::AlignProp, AllGatherOp::ShapeProp},                           // AllGather
+    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::TileCollect, ReduceScatterOp::ShapeProp},         // ReduceScatter
+    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::TileCollect, AllGatherOp::ShapeProp},                           // AllGather
     {kGenComm, 0, nullptr, nullptr, nullptr},                                                        // AllGatherV2
     {kGenComm, F_LR, nullptr, nullptr, nullptr},                                                     // AllReduce
     {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr, ReshapeOp::ShapeProp},                                             // Reshape
@@ -461,16 +461,16 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},                               // Binary
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // Cast
     {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                               // BinaryS
-    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::AlignProp, BroadcastOp::ShapeProp},                     // BroadcastTo
+    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect, BroadcastOp::ShapeProp},                     // BroadcastTo
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},                                                    // BroadcastS
-    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::AlignProp, ReduceOp::ShapeProp},       // Reduce
+    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::TileCollect, ReduceOp::ShapeProp},       // Reduce
     {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                               // Select
     {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                                    // ElemAny
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // RemovePad
     {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, PowerOp::ShapeProp},                                              // Power
     {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},                                // Compare
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // CompareS
-    {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::AlignProp, OneHotOp::ShapeProp},                // OneHot
+    {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},                // OneHot
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                                         // CubeOp
     {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                                          // GmmOp
   };
@@ -481,7 +481,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     meta.tmpl[i] = data[i].tmpl;
     meta.dim_changed[i] = data[i].dim_changed;
     meta.fold_prop[i] = data[i].fold_prop;
-    meta.align_prop[i] = data[i].align_prop;
+    meta.tile_collect[i] = data[i].tile_collect;
     meta.shape_prop[i] = data[i].shape_prop;
   }
   return meta;
@@ -736,16 +736,16 @@ void NDViewLoad::DimChanged(NDObject *op) {
   }
 }
 
-void NDViewLoad::AlignProp(NDObject *op, PropRange &range) {
+void NDViewLoad::TileCollect(NDObject *op, TileInfo &info) {
   auto view = static_cast<NDViewLoad *>(op);
   auto &stride = view->src_stride_;
-  if (int max_depth = stride.size(); range.depth > max_depth) {
-    range.depth = max_depth;
+  if (int max_depth = stride.size(); info.lead_depth > max_depth) {
+    info.lead_depth = max_depth;
   }
   auto &dims = view->ndd_.dims;
-  for (int d = 1; d < range.depth; ++d) {
+  for (int d = 1; d < info.lead_depth; ++d) {
     if (stride[d - 1] * dims[d - 1] != stride[d]) {
-      range.depth = d;
+      info.lead_depth = d;
       break;
     }
   }
@@ -984,15 +984,15 @@ void NDViewStore::DimChanged(NDObject *op) {
   }
 }
 
-void NDViewStore::AlignProp(NDObject *op, PropRange &range) {
+void NDViewStore::TileCollect(NDObject *op, TileInfo &info) {
   auto store = static_cast<NDViewStore *>(op);
   auto &stride = store->dst_stride_;
-  if (int max_depth = stride.size(); range.depth > max_depth) {
-    range.depth = max_depth;
+  if (int max_depth = stride.size(); info.lead_depth > max_depth) {
+    info.lead_depth = max_depth;
   }
-  for (int d = 1; d < range.depth; ++d) {
+  for (int d = 1; d < info.lead_depth; ++d) {
     if (stride[d - 1] * store->nd_[d - 1] != stride[d]) {
-      range.depth = d;
+      info.lead_depth = d;
       break;
     }
   }
@@ -1154,7 +1154,7 @@ void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
   nd_ = lhs_->nd_;
 }
 
-void NDPadStore::AlignProp(NDObject *op, PropRange &range) { range.depth = 1; }
+void NDPadStore::TileCollect(NDObject *op, TileInfo &info) { info.lead_depth = 1; }
 
 void NDPadStore::FoldProp(NDObject *op, PropRange &range) {
   if (range.depth == range.base + 1) range.depth--;
@@ -1928,10 +1928,10 @@ void _BroadcastOp::FoldProp(NDObject *op, PropRange &range) {
   BroadReduceFoldProp<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, range);
 }
 
-void _BroadcastOp::AlignProp(NDObject *op, PropRange &range) {
+void _BroadcastOp::TileCollect(NDObject *op, TileInfo &info) {
   auto &lhs_nd = op->lhs_->nd_;
   auto &ndd = static_cast<_BroadcastOp *>(op)->ndd_;
-  BroadReduceAlignProp<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, range);
+  BroadReduceTileCollect<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, info);
 }
 
 uint64_t _BroadcastOp::Emit(VectorKernel &k) {
@@ -2100,11 +2100,11 @@ void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
   BroadReduceFoldProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
 }
 
-void _ReduceOp::AlignProp(NDObject *op, PropRange &range) {
+void _ReduceOp::TileCollect(NDObject *op, TileInfo &info) {
   auto &lhs_nd = op->lhs_->nd_;
   auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
-  BroadReduceAlignProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
-  range.simd_dim = 1;
+  BroadReduceTileCollect<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, info);
+  info.flags = ObjectMeta::kSimdDim;
 }
 
 void _ReduceOp::Tile(const TileParam &tp) {
@@ -2589,12 +2589,12 @@ void OneHotOp::FoldProp(NDObject *op, PropRange &range) {
   }
 }
 
-void OneHotOp::AlignProp(NDObject *op, PropRange &range) {
+void OneHotOp::TileCollect(NDObject *op, TileInfo &info) {
   auto depth_dim = static_cast<OneHotOp *>(op)->depth_dim_;
   if (depth_dim == 0) {
-    range.depth = 1;
-  } else if (range.depth > depth_dim) {
-    range.depth = depth_dim;
+    info.lead_depth = 1;
+  } else if (info.lead_depth > depth_dim) {
+    info.lead_depth = depth_dim;
   }
 }
 

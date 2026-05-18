@@ -525,19 +525,20 @@ void InsertRemovePad(BasicBlock &block) {
     min_type_id = std::min(min_type_id, op.type_id_);
   }
 
-  PropRange range;
-  range.base = 0;
-  range.depth = max_depth;
+  TileInfo info;
+  info.lead_depth = max_depth;
+  info.lead_affine = PropRange::ELEMWISE;
+  info.flags = 0;
   for (auto &op : block) {
     if (auto ndd = op.Ndd(); ndd != nullptr && ndd->dims.size() != max_depth) {
       ndd->dims.resize(max_depth, 1);
     }
-    op.AlignProp(range); // TODO: shard mode should less align
+    op.TileCollect(info);
   }
   for (auto iter = block.begin(); iter != block.end(); iter++) {
     if (iter->GetObjectType() == kStore) {
       auto obj_id = iter->lhs_->obj_id_;
-      if (obj_id == kElementAny || static_cast<int>(iter->nd_.size()) == range.depth) {
+      if (obj_id == kElementAny || static_cast<int>(iter->nd_.size()) == info.lead_depth) {
         continue;
       }
       if (obj_id == kReduce && g_system.deterministic_) {
@@ -547,7 +548,7 @@ void InsertRemovePad(BasicBlock &block) {
       if (iter_size == 1) {
         continue;
       }
-      for (int i = 0; i < range.depth; i++) {
+      for (int i = 0; i < info.lead_depth; i++) {
         iter_size *= iter->nd_[i];
       }
       const uint64_t store_threshold = g_system.CoreNum() * iter_size;

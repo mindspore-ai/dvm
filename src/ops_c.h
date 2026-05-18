@@ -93,7 +93,7 @@ class ReduceScatterOp : public CommOp {
   NDObject *Clone(CloneHelper &h) override;
   uint64_t MultiLoadEmit(VectorKernel &k);
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
   bool multi_load_;
@@ -141,7 +141,7 @@ class AllGatherOp : public CommOp {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static void AlignProp(NDObject *op, PropRange &range);
+  static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 

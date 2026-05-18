@@ -605,20 +605,18 @@ void VectorKernel::BuildDomain() {
 void VectorKernel::PrepareTiling() {
   tile_num_ = 1;
   auto &nd = dom_->nd_;
-  align_.base = 0;
-  align_.depth = shard_ ? shard_->base + 1 : nd.size();
-  align_.affine = PropRange::ELEMWISE;
-  align_.simd_dim = -1;
+  tile_info_.lead_depth = shard_ ? shard_->base + 1 : nd.size();
+  tile_info_.lead_affine = PropRange::ELEMWISE;
+  tile_info_.flags = 0;
   for (auto op : objects_) {
-    op->AlignProp(align_);
+    op->TileCollect(tile_info_);
   }
-  tile_size_ = 1;
-  for (int i = 0; i < align_.depth; ++i) {
-    tile_size_ *= nd[i];
+  align_space_ = 1;
+  for (int i = 0; i < tile_info_.lead_depth; ++i) {
+    align_space_ *= nd[i];
   }
-  align_.space = tile_size_;
-  tile_size_ = RoundUp<int64_t>(tile_size_, block_align_);
-  for (size_t i = align_.depth; i < nd.size(); ++i) {
+  tile_size_ = RoundUp<int64_t>(align_space_, block_align_);
+  for (size_t i = tile_info_.lead_depth; i < nd.size(); ++i) {
     tile_size_ *= nd[i];
   }
 }
@@ -645,7 +643,7 @@ void VectorKernel::ManualTiling() {
 }
 
 void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit) {
-  int align_depth = align_.depth;
+  int align_depth = tile_info_.lead_depth;
   PropRange fold;
   fold.base = DimSpace().size() - 1;
   int64_t tile_size = tile_size_;
@@ -689,7 +687,7 @@ void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit) {
     tp.start = 0;
     tp.end = align_depth - 1;
     tp.num = 1;
-    tp.tile = align_.space;
+    tp.tile = align_space_;
     tp.tail = 0;
     TileProp(tp);
   }
@@ -795,11 +793,11 @@ void VectorKernel::LeadTiling(int64_t tile_size, int64_t size_limit, int64_t cor
     return core_tile * (CeilDiv(block_num, 8L) + 2);
   };
   int64_t block_size = block_align_;
-  int64_t space = align_.space;
+  int64_t space = align_space_;
   if (tile_num_ > 1) {  // avoid tile range pad
     tp.num = GetDivision(space, CeilDiv(tile_size, size_limit));
     tp.tile = space / tp.num;
-    if (tp.num < space && align_.affine < PropRange::REDUCE) {
+    if (tp.num < space && tile_info_.lead_affine < PropRange::REDUCE) {
       int64_t best_cost = cost_measure(CeilDiv(tp.tile, block_size), tp.num);
       int64_t div_tile = tp.num;
       while (div_tile < space) {
@@ -918,7 +916,7 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
     ManualTiling();
   }
   // simd_width
-  if (align_.simd_dim >= 0) {
+  if (tile_info_.flags & ObjectMeta::kSimdDim) {
     int64_t lead_dim = DimSpace()[0];
     int64_t block_sw = block_align_;
     int64_t block_lead = RoundUp(lead_dim, block_sw);

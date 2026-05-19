@@ -175,10 +175,12 @@ class DevRunner : public KernelRunner {
     // Since CANN 8.5, Python must preload this library before runtime-related code can run correctly.
     void *handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
     EXCEPTION_IF(handle == nullptr, dlerror());
-#endif
+    dev_id = 0;
+#else
     uint32_t dev_count = 0;
     ERROR_CHECK(aclrtGetDeviceCount(&dev_count));
     ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
+#endif
     ERROR_CHECK(aclrtSetDevice(dev_id));
     ERROR_CHECK(aclrtCreateStream(&stream_));
     dev_id_ = dev_id;

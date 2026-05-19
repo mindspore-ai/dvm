@@ -42,25 +42,25 @@ enum vAccInsnID {
   V_LOAD = 0,
   V_LOAD_DUMMY,
   V_LOAD_VIEW,
-  V_LOAD_VIEW_X_B32, // [c220]
-  V_LOAD_VIEW_X_B16, // [c220]
+  V_LOAD_VIEW_X_B32,
+  V_LOAD_VIEW_X_B16,
   V_SLOAD,
   V_LOAD_CC, // [c310]
-  V_MULTI_LOAD,
+  V_MULTI_LOAD, // [c220]
   V_PINGPONG_LOAD,
-  V_PINGPONG_PEER_LOAD,
-  V_PEER_LOAD,
-  V_PEER_LOAD_MIX,
+  V_PINGPONG_PEER_LOAD, // [c220]
+  V_PEER_LOAD, // [c220]
+  V_PEER_LOAD_MIX, // [c220]
   V_STORE,
   V_STORE_ATOMIC,
   V_STORE_COND,
-  V_STORE_VIEW,  // [c220]
+  V_STORE_VIEW,
   V_SSTORE,
   V_SLICE_STORE,
-  V_STORE_AG,  // For AllGather
-  V_STORE_RS,  // For ReduceScatter
-  V_PEER_STORE,
-  V_PEER_STORE_MIX,
+  V_STORE_AG,  // [c220] For AllGather
+  V_STORE_RS,  // [c220] For ReduceScatter
+  V_PEER_STORE, // [c220]
+  V_PEER_STORE_MIX, // [c220]
   V_ACCESS_NONE,
 };
 

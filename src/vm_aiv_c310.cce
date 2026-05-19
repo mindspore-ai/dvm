@@ -1308,8 +1308,166 @@ __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-__aicore_inline__ void MultiLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
- // Todo
+template <typename T>
+__aicore_inline__ void nddma(__ubuf__ T *dst, __gm__ uint8_t *src, uint32_t loop0_size, uint32_t loop1_size,
+                             uint32_t loop2_size, uint32_t loop3_size, uint32_t loop4_size,
+                             uint64_t loop0_stride, uint64_t loop1_stride, uint64_t loop2_stride,
+                             uint64_t loop3_stride, uint64_t loop4_stride) {
+  set_pad_cnt_nddma(0);
+  set_pad_val_nddma(0);
+  set_loop0_stride_nddma(loop0_stride);
+  set_loop1_stride_nddma(loop1_stride);
+  set_loop2_stride_nddma(loop2_stride);
+  set_loop3_stride_nddma(loop3_stride);
+  set_loop4_stride_nddma(loop4_stride);
+  set_pcie_rd_ctrl(0);
+  if constexpr (sizeof(T) == 2) {
+    nddma_out_to_ub_b16(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
+                        true, 0);
+  } else {
+    nddma_out_to_ub_b32(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
+                        true, 0);
+  }
+}
+
+template <typename T>
+__aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewLoadX op;
+  vViewLoadX::Decode(pc, head, op);
+  if (op.loop_depth == 0 && IsLastTile(tile)) {
+    op.iter_size = op.tail_size;
+  }
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  uint64_t tile_space = 0;
+  uint64_t tile_depth = op.tile_depth;
+  for (; tile_depth > 0 && tile_idx > 0; --tile_depth) {
+    uint64_t stride;
+    vViewLoad::DecodeTile(pc[vViewLoadX::VAR_OFFSET - 1 + op.loop_depth + tile_depth], tile_space, stride);
+    uint64_t factor = tile_idx / tile_space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * tile_space;
+  }
+  if (tile_space > 1 && tile_depth == 0 && tile_idx > 0 && !IsBeginTile(tile) && !IsSkipTile(tile)) {
+    return;
+  }
+  __gm__ uint8_t *src = (__gm__ uint8_t *)(op.from + tile_offset);
+  __ubuf__ T *dst = (__ubuf__ T *)(op.xd);
+  uint64_t loop0_stride = ((op.iter_stride / sizeof(T)) << 20) | 1;
+  if (likely(op.loop_depth <= 4)) {
+    uint32_t loop_size[4] = {1, 1, 1, 1};
+    uint64_t loop_stride[4] = {0, 0, 0, 0};
+    for (uint64_t idx = 0; idx < op.loop_depth; ++idx) {
+      uint64_t size, dst_stride, src_stride;
+      vViewLoad::DecodeLoop(pc[vViewLoadX::VAR_OFFSET + idx], size, dst_stride, src_stride);
+      if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+        size = op.tail_size;
+      }
+      loop_size[idx] = static_cast<uint32_t>(size);
+      loop_stride[idx] = ((src_stride / sizeof(T)) << 20) | (dst_stride & 0xfffff);
+    }
+    nddma(dst, src, static_cast<uint32_t>(op.iter_size), loop_size[0], loop_size[1], loop_size[2], loop_size[3],
+          loop0_stride, loop_stride[0], loop_stride[1], loop_stride[2], loop_stride[3]);
+  } else {
+    uint32_t coord[6] = {0};
+    uint64_t idx = 0;
+    do {
+      nddma(dst, src, static_cast<uint32_t>(op.iter_size), 1, 1, 1, 1, loop0_stride, 0, 0, 0, 0);
+      for (idx = 0; idx < op.loop_depth; ++idx) {
+        uint64_t loop_size, dst_stride, src_stride;
+        vViewLoad::DecodeLoop(pc[vViewLoadX::VAR_OFFSET + idx], loop_size, dst_stride, src_stride);
+        if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+          loop_size = op.tail_size;
+        }
+        if (coord[idx] + 1 < loop_size) {
+          coord[idx] += 1;
+          dst += dst_stride;
+          src += src_stride;
+          idx = 0;
+          break;
+        }
+        coord[idx] = 0;
+        dst -= (loop_size - 1) * dst_stride;
+        src -= (loop_size - 1) * src_stride;
+      }
+    } while (idx < op.loop_depth);
+  }
+}
+
+__aicore_inline__ void ViewStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewStore op;
+  vViewStore::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  for (uint64_t i = op.tile_depth; i > 0 && tile_idx > 0; --i) {
+    uint64_t space, stride;
+    vViewStore::DecodeTile(pc[vViewStore::VAR_OFFSET - 1 + op.loop_depth + i], space, stride);
+    uint64_t factor = tile_idx / space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * space;
+  }
+  __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
+  __gm__ uint8_t *dst = (__gm__ uint8_t *)op.to + tile_offset;
+  uint32_t dst_stride = op.iter_size + op.dst_gap;
+  uint32_t src_stride = (op.src_gap + CeilDiv(op.iter_size, 32UL)) << 5;
+  if (op.loop_depth == 0) {
+    if (IsLastTile(tile)) {
+      if (op.iter_num == 1) {
+        op.iter_size = op.tail_size;
+      } else {
+        op.iter_num = op.tail_size;
+      }
+    }
+    copy_ubuf_to_gm_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, dst_stride, src_stride);
+  } else if (op.loop_depth == 1) {
+    uint64_t loop_size, dst_loop_stride, src_loop_stride;
+    vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET], loop_size, dst_loop_stride, src_loop_stride);
+    if (IsLastTile(tile)) {
+      loop_size = op.tail_size;
+    }
+    for (uint64_t i = 0; i < loop_size; ++i) {
+      copy_ubuf_to_gm_align_v2(dst + i * dst_loop_stride, src + i * src_loop_stride, 0, op.iter_num, op.iter_size,
+                               0, dst_stride, src_stride);
+    }
+  } else if (op.loop_depth == 2) {
+    uint64_t loop_size0, dst_stride0, src_stride0;
+    uint64_t loop_size1, dst_stride1, src_stride1;
+    vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET], loop_size0, dst_stride0, src_stride0);
+    vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET + 1], loop_size1, dst_stride1, src_stride1);
+    if (IsLastTile(tile)) {
+      loop_size1 = op.tail_size;
+    }
+    for (uint64_t i = 0; i < loop_size1; ++i) {
+      for (uint64_t j = 0; j < loop_size0; ++j) {
+        copy_ubuf_to_gm_align_v2(dst + i * dst_stride1 + j * dst_stride0,
+                                 src + i * src_stride1 + j * src_stride0,
+                                 0, op.iter_num, op.iter_size, 0, dst_stride, src_stride);
+      }
+    }
+  } else {
+    uint32_t coord[6] = {0};
+    uint64_t idx = 0;
+    while (idx < op.loop_depth) {
+      copy_ubuf_to_gm_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, dst_stride, src_stride);
+      for (idx = 0; idx < op.loop_depth; ++idx) {
+        uint64_t loop_size, dst_loop_stride, src_loop_stride;
+        vViewStore::DecodeLoop(pc[vViewStore::VAR_OFFSET + idx], loop_size, dst_loop_stride, src_loop_stride);
+        if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+          loop_size = op.tail_size;
+        }
+        if (coord[idx] + 1 < loop_size) {
+          coord[idx] += 1;
+          dst += dst_loop_stride;
+          src += src_loop_stride;
+          idx = 0;
+          break;
+        }
+        coord[idx] = 0;
+        dst -= (loop_size - 1) * dst_loop_stride;
+        src -= (loop_size - 1) * src_loop_stride;
+      }
+    }
+  }
 }
 
 __aicore_inline__ void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
@@ -1489,35 +1647,6 @@ __aicore_inline__ void SStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   SliceStore2D(dst, src, begin_m, end_m, begin_n, end_n, slice_n, shard.stride_n, pad_size, op.type_size);
 }
 
-/******************************************************
- * Collective Communication Operations
-*******************************************************/
-__aicore_inline__ void WaitBuffFlag(uint64_t flag, __gm__ uint64_t *buff){
- // Todo
-}
-
-__aicore_inline__ void StoreAG(bcodeptr_t pc, uint64_t head, uint64_t tile) {
- // Todo
-}
-
-__aicore_inline__ void StoreRS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
-  // Todo
-}
-
-template <bool MIX>
-__aicore_inline__ void PeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
- // Todo
-}
-
-template <bool MIX>
-__aicore_inline__ void PeerStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
- // Todo
-}
-
-__aicore_inline__ void PingPongPeerLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
- // Todo
-}
-
 extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t entry) {
   __gm__ uint8_t * body_addr = (__gm__ uint8_t*)(get_para_base()) + sizeof(ffts_addr) + sizeof(entry);
   if (entry & V_ENTRY_FLAG_EXTERN_CODE) {
@@ -1677,22 +1806,17 @@ DEF_DISP_VISIT(V_VISIT_PIPE_WAIT, VisitPipeWait);
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_VIEW_X_B32, ViewLoadX<uint32_t>(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_VIEW_X_B16, ViewLoadX<uint16_t>(pc, head, tile))
 DEF_DISP_LOAD(V_SLOAD, SLoad(pc, head, tile))
-DEF_DISP_LOAD(V_MULTI_LOAD, MultiLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))
-DEF_DISP_LOAD(V_PINGPONG_PEER_LOAD, PingPongPeerLoad(pc, head, tile))
-DEF_DISP_LOAD(V_PEER_LOAD, PeerLoad<false>(pc, head, tile))
-DEF_DISP_LOAD(V_PEER_LOAD_MIX, PeerLoad<true>(pc, head, tile))
 
 DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
 DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
+DEF_DISP_STORE(V_STORE_VIEW, ViewStore(pc, head, tile))
 DEF_DISP_STORE(V_SSTORE, SStore(pc, head, tile))
 DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
-DEF_DISP_STORE(V_STORE_AG, StoreAG(pc, head, tile))
-DEF_DISP_STORE(V_STORE_RS, StoreRS(pc, head, tile))
-DEF_DISP_STORE(V_PEER_STORE, PeerStore<false>(pc, head, tile))
-DEF_DISP_STORE(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))
 
 DEF_DISP_SIMD(V_COPY, Copy(pc, head))
 DEF_DISP_SIMD(V_NOP,  ;)

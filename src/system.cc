@@ -38,7 +38,6 @@ typedef struct tagRtDevBinary {
   const void *data;  // binary data
   uint64_t length;   // binary length
 } rtDevBinary_t;
-
 rtError_t rtDevBinaryRegister(const rtDevBinary_t *bin, void **hdl);
 rtError_t rtDevBinaryUnRegister(void *hdl);
 rtError_t rtFunctionRegister(void *binHandle, const void *stubFunc, const char_t *stubName, const void *kernelInfoExt,
@@ -181,9 +180,9 @@ const char *SocTypeName(SocType type) {
   return "Unknow";
 }
 
+#ifndef VK_SIM_MODEL
 using RtDevBinaryRegisterFunc = rtError_t (*)(const rtDevBinary_t *, void **);
 using RtFunctionRegisterFunc = rtError_t (*)(void *, const void *, const char_t *, const void *, uint32_t);
-
 static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegisterFunc reg_function,
                             const unsigned char *bin_data, unsigned int bin_len, void *func_handles[3]) {
   func_handles[Code::kTargetVec] = reinterpret_cast<uint8_t *>(&g_system) + Code::kTargetVec;
@@ -214,6 +213,7 @@ static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegist
   err = reg_function(module, func_handles[Code::kTargetMix], "dvm", "dvm", 0);
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 }
+#endif
 
 static int CodeLaunchNone(const System &self, const Code *code, void *extern_ws, void *stream) { return 0; }
 
@@ -354,16 +354,19 @@ void System::DoInit() {
   }
   inited_ = true;
 #ifdef VK_SIM_MODEL
-  RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
-  code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;
-  kernel_launch_func_ = reinterpret_cast<void *>(::rtKernelLaunch);
-  get_ffts_addr_func_ = reinterpret_cast<void *>(::rtGetC2cCtrlAddr);
-  return;
+  void *sim_handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
+  EXCEPTION_IF(sim_handle == nullptr, dlerror());
+  auto set_device_ret = aclrtSetDevice(0);
+  EXCEPTION_IF(set_device_ret != ACL_SUCCESS, "aclrtSetDevice failed");
+  std::atexit([]() {
+    (void)aclrtResetDeviceForce(0);
+    (void)aclFinalize();
+  });
 #endif
+  auto acl_handle = dlopen("libascendcl.so", RTLD_LAZY | RTLD_LOCAL);
+#ifndef VK_SIM_MODEL
   auto ret = MsprofRegisterCallback(0, ProfCommandHandler);
   EXCEPTION_IF(ret != MSPROF_ERROR_NONE, "MsprofRegisterCallBack failed.");
-
-  auto acl_handle = dlopen("libascendcl.so", RTLD_LAZY | RTLD_LOCAL);
   bool try_reg_rt = true;
   if (acl_handle) {
     typedef aclError (*GetVersionFunc)(aclCANNPackageName, aclCANNPackageVersion *);
@@ -397,7 +400,7 @@ void System::DoInit() {
       rt_handle_ = nullptr;
     }
   }
-
+#endif
   rt_handle_ = acl_handle;
   typedef aclError (*LoadBinaryFunc)(const void *data, size_t len, const aclrtBinaryLoadOptions *opt,
                                      aclrtBinHandle *handle);

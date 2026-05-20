@@ -1553,8 +1553,12 @@ __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) 
       set_atomic_min();
     }
   }
-  uint32_t src_stride = op.pad_size + op.iter_size;
-  copy_ubuf_to_gm_align_v2(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, 0, src_stride);
+  if (op.pad_size == 0) {
+    copy_ubuf_to_gm_align_v2(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0);
+  } else {
+    uint32_t src_stride = op.pad_size + op.iter_size;
+    copy_ubuf_to_gm_align_v2(gm, (__ubuf__ void *)(op.xn), 0, op.iter_num, op.iter_size, 0, op.iter_size, src_stride);
+  }
   set_atomic_none();
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
 }

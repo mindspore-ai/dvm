@@ -58,12 +58,6 @@ __aicore_inline__ uint64_t GetWorkspace() { return static_cast<uint64_t>(get_shm
 #define IsEndTile(tile) ((tile) & (1ul << V_TILE_END_FLAG_OFFSET))
 #define IsSkipTile(tile) ((tile) & (1ul << V_TILE_SKIP_FLAG_OFFSET))
 
-#define PushSkipStride(stride)                                         \
-  do {                                                                 \
-    *((__ubuf__ uint64_t *)(WORKSPACE + sizeof(uint64_t))) = (stride); \
-  } while (0)
-#define PopSkipStride() *((__ubuf__ uint64_t *)(WORKSPACE + sizeof(uint64_t)))
-
 typedef uint64_t (*VisitFunc)(bcodeptr_t pc);
 
 struct vRegTable {
@@ -71,7 +65,7 @@ struct vRegTable {
   uint32_t blocknum;
   uint64_t blockgroup;
   uint8_t *vm_code_base;
-  uint64_t reserved[1];
+  uint64_t skip_stride;
 };
 
 __aicore_inline__ __ubuf__ vRegTable *__restrict__ RegTable() {
@@ -93,6 +87,9 @@ __aicore_inline__ void vBlockGroupInit(uint64_t groupidx, uint64_t groupnum) {
 __aicore_inline__ uint64_t vBlockGroup() { return RegTable()->blockgroup; }
 #define vGroupIdx(blockgroup) ((blockgroup) & 0xfffful)
 #define vGroupNum(blockgroup) (((blockgroup) >> 16) & 0xfffful)
+
+__aicore_inline__ void PushSkipStride(uint64_t skip_stride) { RegTable()->skip_stride = skip_stride; }
+__aicore_inline__ uint64_t PopSkipStride() { return RegTable()->skip_stride; }
 
 __aicore_inline__ uint64_t GetBlock(uint64_t stride, uint64_t type_size) { return (stride * type_size + 31) >> 5; }
 

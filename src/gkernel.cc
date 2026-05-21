@@ -18,6 +18,7 @@
 #include <queue>
 #include <algorithm>
 #include <functional>
+#include <unordered_set>
 #include "gkernel.h"
 
 namespace dvm {
@@ -233,11 +234,18 @@ class GraphSpliter {
     for (auto area : areas_) {
       if (area->pattern != kPatNone) {
         auto kernel = area->stage->kernel;
+        std::unordered_set<NDObject *> stage_loads;
+        stage_loads.reserve(area->ops.size());
         for (auto it = area->ops.rbegin(); it != area->ops.rend(); ++it) {
           auto op = *it;
-          op->ForInput([this, area, kernel](NDObject *&in) {
+          op->ForInput([this, area, kernel, &stage_loads](NDObject *&in) {
             if (in->IsLoad()) {
-              kernel->Append(in);
+              // Stage-local inputs are graph nodes, not per-use nodes. Reusing
+              // the same NDLoad pointer multiple times breaks later list-based
+              // optimization passes that assume unique objects.
+              if (stage_loads.insert(in).second) {
+                kernel->Append(in);
+              }
             } else if (in->prop_id_ != area->id) {
               ASSERT(stores_.count(in));
               auto store = stores_[in];

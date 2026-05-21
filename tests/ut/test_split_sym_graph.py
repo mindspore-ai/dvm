@@ -97,6 +97,26 @@ def test_split_static_matmul_reduce_shared_rhs():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_static_stage_local_shared_load():
+    t = Tester("split:priv1")
+    x_data = np.random.normal(0, 0.02, (768, 5)).astype(np.float32)
+
+    x = t.load(x_data)
+    x2 = t.mul(x, x)
+    x3 = t.mul(x2, x)
+    x4 = t.mul(x3, 0.044715)
+    x5 = t.add(x, x4)
+    x6 = t.mul(x5, -1.5957691216057308)
+    x7 = t.exp(x6)
+    x8 = t.add(x7, 1.0)
+    out = t.div(x, x8)
+
+    out_expect = x_data / (np.exp((x_data + x_data * x_data * x_data * 0.044715) * -1.5957691216057308) + 1.0)
+    t.store_expect(out, out_expect, 1e-5)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_split_dyn_shape():
     t = Tester("split:dyn,priv1")
     x0 = t.load([-1, -2], "float32")

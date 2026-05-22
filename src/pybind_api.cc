@@ -526,6 +526,18 @@ py::object RtKernelPy::PadStore(py::object obj, int64_t pad_size) {
   return ObjToPy(op);
 }
 
+py::object RtKernelPy::ConcatStore(py::object inputs, int dim) {
+  py::list input_list = py::cast<py::list>(inputs);
+  std::vector<NDObject *> objs;
+  for (auto item : input_list) {
+    objs.push_back(PyToObj(item.cast<py::object>()));
+  }
+  auto op = kernel_.ConcatStore(nullptr, objs.data(), objs.size(), dim);
+  auto &store = stores_.emplace_back();
+  store.op = op;
+  return ObjToPy(op);
+}
+
 py::object RtKernelPy::AllReduce(const std::string &type, py::object input) {
   ReduceType reduce_type{ReduceType::kReduceTypeEnd};
   if (type == "sum") {
@@ -935,6 +947,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("stridedslice_load", &RtKernelPy::StridedSliceLoad, "load array")
     .def("multi_load", &RtKernelPy::MultiLoad, "load array(for reducescatter)")
     .def("pad_store", &RtKernelPy::PadStore, "pad store array")
+    .def("concat_store", &RtKernelPy::ConcatStore, "emit concat store op")
     .def("one_hot", &RtKernelPy::OneHot, "emit onehot op")
     .def("allreduce", &RtKernelPy::AllReduce, "emit allreduce op")
     .def("allgather", &RtKernelPy::AllGather, "emit allgather op")

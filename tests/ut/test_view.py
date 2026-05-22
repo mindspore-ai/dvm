@@ -394,3 +394,17 @@ def test_view_store_broadcast_3d(slice_shape, out_shape, broadcast_shape):
     x2 = t.add(x0, t.load(b))
     t.store_expect(x2, a + 0.1 + b)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_concat_single_vector():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [20, 512]).astype(np.float32)
+    a1 = np.random.normal(0, 1, [20, 512]).astype(np.float32)
+    a2 = np.random.normal(0, 1, [20, 1]).astype(np.float32)
+    x0 = t.mul(t.load(a0), 0.5)
+    x1 = t.load(a1)
+    x2 = t.add(x1, t.load(a2))
+    out = t.concat_store([x0, x1, x2], 0)
+    t.run()
+    t.check(out, np.concatenate((a0 * 0.5, a1, a1 + a2), axis=0))

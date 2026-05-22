@@ -18,11 +18,21 @@
 #include <queue>
 #include <algorithm>
 #include <functional>
+#include <unordered_map>
 #include <unordered_set>
 #include "gkernel.h"
 
 namespace dvm {
 static int sym_dump_ = -1;
+
+namespace {
+struct _GraphReloadCloner : public CloneHelper {
+  IntArrayRef *GetClone(IntArrayRef *shape) override { return shape; }
+  ScalarRef *GetClone(ScalarRef *scalar) override { return scalar; }
+  NDObject *GetClone(NDObject *op) override { return op; }
+  void SetClone(NDObject *op, NDObject *clone) override {}
+};
+}  // namespace
 
 class GraphSpliter {
  public:
@@ -234,18 +244,33 @@ class GraphSpliter {
     for (auto area : areas_) {
       if (area->pattern != kPatNone) {
         auto kernel = area->stage->kernel;
-        std::unordered_set<NDObject *> stage_loads;
+        std::unordered_map<NDAccess *, NDAccess *> stage_loads;
+        std::unordered_set<NDObject *> stage_ops;
         stage_loads.reserve(area->ops.size());
-        for (auto it = area->ops.rbegin(); it != area->ops.rend(); ++it) {
-          auto op = *it;
-          op->ForInput([this, area, kernel, &stage_loads](NDObject *&in) {
+        stage_ops.reserve(area->ops.size());
+        std::function<void(NDObject *)> append_stage_op;
+        append_stage_op = [&](NDObject *op) {
+          if (!op->IsSimd() || op->prop_id_ != area->id || !stage_ops.insert(op).second) {
+            return;
+          }
+          op->ForInput([this, area, kernel, &stage_loads, &append_stage_op](NDObject *&in) {
             if (in->IsLoad()) {
-              // Stage-local inputs are graph nodes, not per-use nodes. Reusing
-              // the same NDLoad pointer multiple times breaks later list-based
-              // optimization passes that assume unique objects.
-              if (stage_loads.insert(in).second) {
-                kernel->Append(in);
+              auto acc = static_cast<NDAccess *>(in);
+              auto it = stage_loads.find(acc);
+              if (it == stage_loads.end()) {
+                // Clone graph loads per stage so child-kernel tiling stays local.
+                // The original graph load also needs a reloc slot for StageBind.
+                if (acc->addr_.reloc_ == nullptr) {
+                  acc->addr_.Update(&acc->addr_.data);
+                }
+                _GraphReloadCloner cloner;
+                auto clone = static_cast<NDAccess *>(in->Clone(cloner));
+                clone->prop_id_ = area->id;
+                area->stage->StageLoad(clone, acc);
+                kernel->Append(clone);
+                it = stage_loads.emplace(acc, clone).first;
               }
+              in = it->second;
             } else if (in->prop_id_ != area->id) {
               ASSERT(stores_.count(in));
               auto store = stores_[in];
@@ -267,6 +292,8 @@ class GraphSpliter {
                 swap_loads_[store].push_back(load);
               }
               in = load;
+            } else if (in->prop_id_ == area->id) {
+              append_stage_op(in);
             }
           });
           if (op->SharedNdd() && op->nd_.data != op->lhs_->nd_.data) {
@@ -276,6 +303,9 @@ class GraphSpliter {
           if (auto st = stores_.find(op); st != stores_.end()) {
             kernel->Append(st->second);
           }
+        };
+        for (auto it = graph_kernel->build_ops_.rbegin(); it != graph_kernel->build_ops_.rend(); ++it) {
+          append_stage_op(*it);
         }
       }
     }

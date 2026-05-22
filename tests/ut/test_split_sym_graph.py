@@ -117,6 +117,68 @@ def test_split_static_stage_local_shared_load():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_static_cross_stage_shared_load():
+    t = Tester("split:priv1")
+    rng = np.random.default_rng(0)
+
+    x_data = rng.normal(0.0, 0.02, size=(4, 128, 768)).astype(np.float32)
+    gamma_data = rng.normal(0.0, 0.02, size=(768,)).astype(np.float32)
+    sub_data = rng.normal(0.0, 0.02, size=(4, 128, 768)).astype(np.float32)
+    tangents_data = rng.normal(0.0, 0.02, size=(4, 128, 768)).astype(np.float32)
+    getitem_176_data = rng.normal(0.0, 0.02, size=(4, 128, 768)).astype(np.float32)
+    sqrt_23_data = rng.normal(1.0, 0.02, size=(4, 128, 1)).astype(np.float32)
+    sqrt_23_data[0, 0, 0] = 0.0
+    expand_48_data = rng.normal(0.0, 0.02, size=(4, 128, 768)).astype(np.float32)
+    getitem_174_data = rng.normal(1.0, 0.02, size=(4, 128, 1)).astype(np.float32)
+    full_default_12_data = np.array(0.0, dtype=np.float32)
+
+    x = t.load(x_data)
+    gamma = t.load(gamma_data)
+    sub = t.load(sub_data)
+    tangents = t.load(tangents_data)
+    getitem_176 = t.load(getitem_176_data)
+    sqrt_23 = t.load(sqrt_23_data)
+    expand_48 = t.load(expand_48_data)
+    getitem_174 = t.load(getitem_174_data)
+    full_default_12 = t.load(full_default_12_data)
+
+    neg = t.mul(x, -1.0)
+    mul_67 = t.mul(gamma, sub)
+    add_104 = t.add(tangents, getitem_176)
+    mul_89 = t.mul(sqrt_23, 2.0)
+    positive = t.greater(sqrt_23, 0.0)
+    div_53 = t.div(expand_48, 768.0)
+    div_46 = t.div(mul_67, getitem_174)
+    div_50 = t.div(div_46, getitem_174)
+    mul_86 = t.mul(neg, div_50)
+    sum_4 = t.sum(mul_86, (2,), True)
+    div_52 = t.div(sum_4, mul_89)
+    where_12 = t.select(positive, div_52, full_default_12)
+    mul_90 = t.mul(where_12, 0.002607561929595828)
+    mul_91 = t.mul(mul_90, sub)
+    add_105 = t.add(add_104, mul_91)
+    out = t.add(add_105, div_53)
+
+    neg_expect = -x_data
+    mul_67_expect = gamma_data * sub_data
+    add_104_expect = tangents_data + getitem_176_data
+    mul_89_expect = sqrt_23_data * 2.0
+    div_53_expect = expand_48_data / 768.0
+    div_46_expect = mul_67_expect / getitem_174_data
+    div_50_expect = div_46_expect / getitem_174_data
+    mul_86_expect = neg_expect * div_50_expect
+    sum_4_expect = np.sum(mul_86_expect, axis=2, keepdims=True)
+    div_52_expect = np.divide(sum_4_expect, mul_89_expect, out=np.zeros_like(sum_4_expect), where=mul_89_expect != 0)
+    where_12_expect = np.where(sqrt_23_data > 0.0, div_52_expect, full_default_12_data)
+    mul_90_expect = where_12_expect * np.float32(0.002607561929595828)
+    mul_91_expect = mul_90_expect * sub_data
+    out_expect = add_104_expect + mul_91_expect + div_53_expect
+
+    t.store_expect(out, out_expect, 1e-4)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_split_dyn_shape():
     t = Tester("split:dyn,priv1")
     x0 = t.load([-1, -2], "float32")

@@ -337,6 +337,16 @@ class Kernel {
   NDObject *PadStore(void *addr, NDObject *input, int64_t pad_size);
 
   /**
+   * @brief Emit a concat store operation directly.
+   * @param addr memory address of output tensor.
+   * @param inputs array of input operations.
+   * @param input_num number of inputs.
+   * @param dim dimension to concatenate along.
+   * @return the store operation.
+   */
+  NDObject *ConcatStore(void *addr, NDObject **inputs, size_t input_num, int dim);
+
+  /**
    * @brief mark a store operation is an inplace store. used to prevent memory reuse for workspace.
    * @param store store operation.
    */

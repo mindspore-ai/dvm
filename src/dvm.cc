@@ -1015,6 +1015,17 @@ NDObject *Kernel::PadStore(void *addr, NDObject *input, int64_t pad_size) {
   return obj;
 }
 
+NDObject *Kernel::ConcatStore(void *addr, NDObject **inputs, size_t input_num, int dim) {
+  auto input = inputs[0]->IsLoad() ? Copy(inputs[0]) : inputs[0];
+  auto main = new NDConcatStoreM(addr, input, dim);
+  kernel_->Append(main);
+  for (size_t i = 1; i < input_num; ++i) {
+    input = inputs[i]->IsLoad() ? Copy(inputs[i]) : inputs[i];
+    kernel_->Append(main->AddSibling(input));
+  }
+  return main;
+}
+
 void Kernel::SetStoreInplace(NDObject *store) {
   ASSERT(kernel_->IsSplit());
   _SplitKernel::SetStoreInplace(store, 1);

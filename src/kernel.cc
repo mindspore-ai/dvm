@@ -608,12 +608,13 @@ void VectorKernel::PrepareTiling() {
   tile_info_.lead_depth = shard_ ? shard_->base + 1 : nd.size();
   tile_info_.lead_affine = PropRange::ELEMWISE;
   tile_info_.flags = 0;
+  tile_info_.ext_ws = 0;
   for (auto op : objects_) {
     op->TileCollect(tile_info_);
   }
   local_mem_size_ = g_system.LocalMemSize();
   if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
-    local_mem_size_ -= g_system.UbWorkspaceSize();
+    local_mem_size_ -= g_system.UbWorkspaceSize() + tile_info_.ext_ws;
   } else {
     if (tile_info_.flags & ObjectMeta::kSimt) {
       flags_ |= kKernelSimt;
@@ -1040,7 +1041,6 @@ int64_t VectorKernel::Analyze() {
   }
   int cur_live = 0;
   int live_peak = 0;
-  bool ws_reserve = false;    // TODO: unify workspace
   for (auto it = objects_.rbegin(); it != objects_.rend(); ++it) {
     auto op = *it;
     if (op->IsSimd()) {
@@ -1131,12 +1131,10 @@ int64_t VectorKernel::Analyze() {
     } else if (op->IsLoad()) {
       if (!OP_LIVE(op)) {
         op->flags_ |= OBJ_FLAG_DEAD;
-      } else if (op->obj_id_ == ObjectType::kViewLoad && !static_cast<NDViewLoad *>(op)->IsLeadContinuous()) {
-        ws_reserve = true;
       }
     }
   }
-  return live_peak || !ws_reserve ? live_peak : 1;
+  return live_peak;
 }
 
 void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {

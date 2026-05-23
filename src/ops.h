@@ -94,6 +94,7 @@ struct TileInfo {
   int lead_depth;
   int lead_affine;
   uint32_t flags;
+  uint32_t ext_ws;
 };
 
 // shard map(low axis left): [a0, a1,.. s0, s1, s2, ...] -> [a0, a1,...tile[0], tile[1], 1, 1, ..]
@@ -613,8 +614,6 @@ class NDViewLoad : public NDAccess {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
-
-  bool IsLeadContinuous() const { return src_stride_[0] == 1; }
 
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);

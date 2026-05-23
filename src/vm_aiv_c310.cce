@@ -1038,7 +1038,7 @@ __aicore_inline__ void CopyCubeTile(bcodeptr_t pc, uint64_t head, uint64_t tile)
   vCopy::Decode(pc, head, op);
   uint64_t tile_idx = TileIdx(tile);
   uint64_t src = op.xn + tile_idx * (op.lenburst << 5);
-  uint64_t lenburst = min(op.lenburst, (WORKSPACE - src) >> 5);
+  uint64_t lenburst = min(op.lenburst, (static_cast<uint64_t>(get_shmem_sz())- src) >> 5);
   copy_ubuf_to_ubuf((__ubuf__ uint8_t *)op.xd, (__ubuf__ void *)src, 0, 1, lenburst, 0, 0);
 }
 

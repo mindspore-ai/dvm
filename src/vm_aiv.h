@@ -30,10 +30,6 @@
 #if __VM_ARCH__ == 220
 inline constexpr uint64_t UB_WORKSPACE_SIZE = 512;
 inline constexpr uint64_t WORKSPACE = 192ul * 1024ul - UB_WORKSPACE_SIZE;
-#else
-inline constexpr uint64_t UB_WORKSPACE_SIZE = 256;
-__aicore_inline__ uint64_t GetWorkspace() { return static_cast<uint64_t>(get_shmem_sz()) - UB_WORKSPACE_SIZE; }
-#define WORKSPACE GetWorkspace()
 #endif
 
 #define VREG_TABLE_BASE 0

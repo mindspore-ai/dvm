@@ -205,7 +205,7 @@ class Tester(Kernel):
     def view_store_expect(self, x, stride, e, eps=None):
         op = Kernel.view_store(self, x, stride)
         self.expects.append([op, e, eps])
-        self.set_output(op, np.zeros_like(e))
+        self.set_output(op, np.ascontiguousarray(np.zeros_like(e)))
         return op
 
     def codegen(self, verbose=False):

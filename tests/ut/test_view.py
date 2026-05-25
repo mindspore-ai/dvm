@@ -396,6 +396,27 @@ def test_view_store_broadcast_3d(slice_shape, out_shape, broadcast_shape):
     assert (t.run_check())
 
 
+@pytest.mark.parametrize("dtype", [np.float16, np.float32])
+def test_view_store_x(dtype):
+    t = Tester()
+    a = np.random.normal(0, 1, [400, 600]).astype(dtype)
+    x = t.load(a)
+    y = t.add(x, 0.1)
+    e = np.full([400, 2000], 0.0, dtype)
+    e[:, :1800:3] = a + 0.1
+    t.view_store_expect(y, [2000, 3], e)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_store_x_transpose():
+    t = Tester()
+    a = np.random.normal(0, 1, [2000, 4000]).astype(np.float32)
+    x = t.load(a)
+    t.view_store_expect(x, [1, 2000], np.swapaxes(a, 0, 1))
+    assert (t.run_check())
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_concat_single_vector():
     t = Tester()

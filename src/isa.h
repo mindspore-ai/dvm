@@ -59,6 +59,8 @@ enum vAccInsnID {
   V_STORE_ATOMIC,
   V_STORE_COND,
   V_STORE_VIEW,
+  V_STORE_VIEW_X_B32, // [c220]
+  V_STORE_VIEW_X_B16, // [c220]
   V_SSTORE,
   V_SLICE_STORE,
   V_STORE_AG,  // [c220] For AllGather
@@ -1237,6 +1239,49 @@ struct vViewStore {
     return loop_size << 48 | src_stride << 32 | dst_stride;
   }
   __aicore_inline__ uint64_t EncodeTile(uint64_t space, uint64_t stride) { return space << 32 | stride; }
+};
+
+struct vViewStoreX {
+  enum { RELOC_OFFSET = 3 };
+  enum { VAR_OFFSET = 4 };
+  uint64_t xn;
+  uint64_t to;
+  uint64_t offset;
+  uint64_t ws;
+  uint64_t ws_size;
+  uint64_t iter_size;
+  uint64_t iter_stride;
+  uint64_t tail_size;
+  uint64_t loop_depth;
+  uint64_t tile_depth;
+  // pc[0]: iter_stride(32)
+  // pc[1]: tail_size(16) << 48 | iter_size(16) << 32 | offset(32)
+  // pc[2]: ws_size(16) << 48 | reserved(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xn(18) << 18 | ws(18)
+  // pc[3]: to(64)
+  // pc[VAR::loop_depth]: loop_size(16) << 48 | src_stride(16) << 32 | dst_stride(32)  [vViewStore format]
+  // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewStoreX &op) {
+    op.iter_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 32);
+    uint64_t data1 = pc[1];
+    op.offset = vGetBitRange(data1, 0, 32);
+    op.iter_size = (data1 >> 32) & 0xfffful;
+    op.tail_size = (data1 >> 48);
+    uint64_t data2 = pc[2];
+    op.ws = data2 & 0x3fffful;
+    op.xn = (data2 >> 18) & 0x3fffful;
+    op.tile_depth = (data2 >> 36) & 0xful;
+    op.loop_depth = (data2 >> 40) & 0xful;
+    op.ws_size = data2 >> 48;
+    op.to = pc[3];
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewStoreX &op) {
+    uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
+    pc[0] = vMakeAccHead(id, op.iter_stride, size);
+    pc[1] = op.tail_size << 48 | op.iter_size << 32 | op.offset;
+    pc[2] = op.ws_size << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xn << 18 | op.ws;
+    pc[3] = op.to;
+    return size;
+  }
 };
 
 struct vGatherLoad {

@@ -73,7 +73,7 @@ namespace dvm {
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t)}
 const uint64_t ITEM_SIZE[dvm::kDataTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t), sizeof(int64_t)};
 const char *DTYPE_NAMES[dvm::kDataTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32", "int64"};
-const uint64_t ITEM_SIMD_WIDTH_MAX[kDataTypeEnd] = {128, 128, 128, 64, 64};
+const uint64_t ITEM_SIMD_WIDTH_MAX[SIMD_DTYPE_END] = {128, 128, 128, 64, 64};
 
 void DvmException(const char *error_str) {
   std::ostringstream oss;

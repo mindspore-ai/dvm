@@ -26,7 +26,7 @@ namespace dvm {
 namespace {
 struct InsnIdTable {
   const char *name;
-  vSimdInsnID ids[kDataTypeEnd];
+  vSimdInsnID ids[SIMD_DTYPE_END];
 };
 
 static const InsnIdTable unary_id_list[kUnaryTypeEnd] = {
@@ -186,7 +186,7 @@ uint64_t SelectSimdWidth(uint64_t iter_size, DataType type_id) {
 }
 
 uint64_t EmitClearPad(uint64_t *pc, NDObject *op, uint64_t iter_tail, uint64_t simd_width, uint64_t scalar = 0) {
-  const static vSimdInsnID id_list[kDataTypeEnd] = {V_NONE, V_CLR_PAD_B16, V_CLR_PAD_B16, V_CLR_PAD, V_CLR_PAD};
+  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_CLR_PAD_B16, V_CLR_PAD_B16, V_CLR_PAD, V_CLR_PAD};
   vClearPad clr_op;
   clr_op.xd = op->xbuf_;
   clr_op.iter_size = op->nd_.lead_dim();
@@ -461,6 +461,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Unary
     {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},                               // Binary
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // Cast
+    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                     // Extract
     {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                               // BinaryS
     {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect, BroadcastOp::ShapeProp},                     // BroadcastTo
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},                                                    // BroadcastS
@@ -1735,7 +1736,7 @@ NDObject *UnaryOp::Clone(CloneHelper &h) { return new UnaryOp(op_type_, h.GetClo
 void UnaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << unary_id_list[op_type_].name; }
 
 uint64_t RemovePadOp::Emit(VectorKernel &k) {
-  const static vSimdInsnID id_list[kDataTypeEnd] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
+  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
   if (nd_.lead_dim() == nd_.lead_stride() || nd_.stride_back() == nd_.lead_stride()) {
     return CopyOp::Emit(k);
   }
@@ -1817,6 +1818,24 @@ uint64_t CastOp::Emit(VectorKernel &k) {
 NDObject *CastOp::Clone(CloneHelper &h) { return new CastOp(h.GetClone(lhs_), type_id_); }
 
 void CastOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Cast"; }
+
+void ExtractOp::Normalize(std::vector<NDObject *> &run_ops) { nd_ = lhs_->nd_; }
+
+uint64_t ExtractOp::Emit(VectorKernel &k) {
+  vExtract op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.count = nd_.stride_back();
+  op.slot = slot_;
+  ASSERT(type_id_ == DataType::kInt32 || type_id_ == DataType::kFloat32);
+  return vExtract::Encode(insn_, V_EXTRACT_B32, op);
+}
+
+NDObject *ExtractOp::Clone(CloneHelper &h) { return new ExtractOp(h.GetClone(lhs_), slot_, type_id_); }
+
+void ExtractOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "Extract<" << slot_ << '>';
+}
 
 uint64_t BinaryScalarOp::Emit(VectorKernel &k) {
   vBinaryS op;
@@ -2199,8 +2218,8 @@ uint64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   op.lead_num = end_dim + 1 < rank_size ? ndd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
   op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();
-  const static vSimdInsnID id_list[kDataTypeEnd] = {V_NONE, V_BROADCAST_X_B16, V_BROADCAST_X_B16, V_BROADCAST_X_B32,
-                                                    V_BROADCAST_X_B32};
+  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_BROADCAST_X_B16, V_BROADCAST_X_B16, V_BROADCAST_X_B32,
+                                                      V_BROADCAST_X_B32};
   ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }

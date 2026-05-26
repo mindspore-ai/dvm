@@ -364,8 +364,8 @@ class Kernel {
   /**
    * @brief Emit a binary operation.
    * @param op_type binary operation type.
-   * @param lhs left head side input. supported data types: NDObject *, float, int32_t, Float16, BFloat16, ScalarRef *.
-   * @param rhs right head side input. supported data types: NDObject *, float, int32_t, Float16, BFloat16, ScalarRef *.
+   * @param lhs left head side input. supported data types: NDObject *, float, int32_t, Float16, BFloat16, ScalarRef *, int64_t(compare op only).
+   * @param rhs right head side input. supported data types: NDObject *, float, int32_t, Float16, BFloat16, ScalarRef *, int64_t(compare op only).
    * @return the result operation.
    */
   template <BinaryType op_type, typename L, typename R>

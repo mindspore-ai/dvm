@@ -166,6 +166,7 @@ enum vSimdInsnID {
   V_CAST_BF16_TO_FP32,
   V_CAST_BF16_TO_INT32,
   V_CMP_INT32,
+  V_EXTRACT_B32, // [c220]
   V_ABS_INT32, // [c310]
   V_CMPS_INT32, // [c310]
   V_ADDS_BF16, // [c310]
@@ -561,6 +562,28 @@ struct vCompareS {
     pc[0] = vMakeSimdHead(id, op.type << 18 | op.xn, size);
     pc[1] = op.count << 48 | op.ws << 18 | op.xd;
     pc[2] = op.scalar;
+    return size;
+  }
+};
+
+struct vExtract {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t count;
+  uint64_t slot;
+  // pc[0]:
+  // pc[1]: slot(4) << 60 | reserve(8) << 52 | xd(18) << 34 | xn(18) << 16 | count(16)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vExtract &op) {
+    uint64_t data = pc[1];
+    op.count = data & 0xfffful;
+    op.xn = (data >> 16)  & V_X_MASK;
+    op.xd = (data >> 34) & V_X_MASK;
+    op.slot = data >> 60;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vExtract &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeSimdHead(id, 0, size);
+    pc[1] = op.slot << 60 | op.xd << 34 | op.xn << 16 | op.count;
     return size;
   }
 };

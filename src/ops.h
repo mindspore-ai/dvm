@@ -52,6 +52,7 @@ enum ObjectType {
   kUnary,
   kBinary,
   kCast,
+  kExtract,
   kBinaryS,
   kBroadcastTo,
   kBroadcastS,
@@ -883,6 +884,20 @@ class CastOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+};
+
+class ExtractOp : public NDObject {
+ public:
+  ExtractOp(NDObject *input, int slot, DataType type_id)
+      : NDObject(input, nullptr, type_id, ObjectType::kExtract), slot_(slot) {
+    shape_ref_ = input->shape_ref_;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  int slot_;
 };
 
 enum BinarySOpType {

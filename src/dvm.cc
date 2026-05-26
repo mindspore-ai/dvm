@@ -46,6 +46,11 @@ struct TypeTrait<int32_t> {
   using code_t = uint32_t;
 };
 template <>
+struct TypeTrait<int64_t> {
+  static constexpr DataType ID = kInt64;
+  using code_t = uint64_t;
+};
+template <>
 struct TypeTrait<float> {
   static constexpr DataType ID = kFloat32;
   using code_t = uint32_t;
@@ -59,6 +64,10 @@ template <>
 struct TypeTrait<BFloat16> {
   static constexpr DataType ID = kBFloat16;
   using code_t = uint16_t;
+};
+template <>
+struct TypeTrait<ScalarRef *> {
+  static constexpr DataType ID = kDataTypeEnd;
 };
 
 union Union32 {
@@ -438,6 +447,93 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
   return nullptr;
 }
 
+enum ExtractPart { kExtractLo32 = 0, kExtractHi32 = 1 };
+
+template <ExtractPart part>
+NDObject *ExtractInt64(Kernel *kernel, NDObject *input) {
+  auto obj = new ExtractOp(input, part, DataType::kInt32);
+  kernel->GetImpl()->Append(obj);
+  return obj;
+}
+
+template <BinaryType op_type>
+NDObject *CompareInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
+  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
+  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
+  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
+  if constexpr (op_type == kEqual) {
+    auto lo_eq = kernel->Binary<kEqual>(lhs_lo, rhs_lo);
+    auto hi_eq = kernel->Binary<kEqual>(lhs_hi, rhs_hi);
+    return kernel->Binary<kLogicalAnd>(hi_eq, lo_eq);
+  }
+  if constexpr (op_type == kNotEqual) {
+    auto lo_ne = kernel->Binary<kNotEqual>(lhs_lo, rhs_lo);
+    auto hi_ne = kernel->Binary<kNotEqual>(lhs_hi, rhs_hi);
+    return kernel->Binary<kLogicalOr>(hi_ne, lo_ne);
+  }
+  lhs_lo = kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN)); // skip sign bit
+  rhs_lo = kernel->Binary<kAdd>(rhs_lo, static_cast<int32_t>(INT32_MIN));
+  if constexpr (op_type == kGreater) {
+    auto hi_gt = kernel->Binary<kGreater>(lhs_hi, rhs_hi);
+    auto hi_eq = kernel->Binary<kEqual>(lhs_hi, rhs_hi);
+    auto lo_gt = kernel->Binary<kGreater>(lhs_lo, rhs_lo);
+    return kernel->Select(hi_eq, lo_gt, hi_gt);
+  } else if constexpr (op_type == kGreaterEqual) {
+    auto hi_ge = kernel->Binary<kGreaterEqual>(lhs_hi, rhs_hi);
+    auto hi_eq = kernel->Binary<kEqual>(lhs_hi, rhs_hi);
+    auto lo_ge = kernel->Binary<kGreaterEqual>(lhs_lo, rhs_lo);
+    return kernel->Select(hi_eq, lo_ge, hi_ge);
+  } else if constexpr (op_type == kLess) {
+    auto hi_lt = kernel->Binary<kLess>(lhs_hi, rhs_hi);
+    auto hi_eq = kernel->Binary<kEqual>(lhs_hi, rhs_hi);
+    auto lo_lt = kernel->Binary<kLess>(lhs_lo, rhs_lo);
+    return kernel->Select(hi_eq, lo_lt, hi_lt);
+  } else if constexpr (op_type == kLessEqual) {
+    auto hi_le = kernel->Binary<kLessEqual>(lhs_hi, rhs_hi);
+    auto hi_eq = kernel->Binary<kEqual>(lhs_hi, rhs_hi);
+    auto lo_le = kernel->Binary<kLessEqual>(lhs_lo, rhs_lo);
+    return kernel->Select(hi_eq, lo_le, hi_le);
+  }
+  return nullptr;
+}
+
+template <BinaryType op_type, typename T, bool rhs_val>
+NDObject *CompareScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
+  int64_t scalar_i64;
+  if constexpr (std::is_same<T, ScalarRef *>::value) {
+    ASSERT(scalar->type == kInt64);
+    scalar_i64 = scalar->i64;
+  } else if constexpr (std::is_integral<T>::value) {
+    scalar_i64 = static_cast<int64_t>(scalar);
+  } else if constexpr (std::is_same<T, float>::value) {
+    scalar_i64 = static_cast<int64_t>(scalar);
+  } else {
+    scalar_i64 = static_cast<int64_t>(ToFloat32(scalar));
+  }
+  int32_t scalar_hi = static_cast<int32_t>((scalar_i64 >> 32) & 0xFFFFFFFFLL);
+  int32_t scalar_lo = static_cast<int32_t>(scalar_i64 & 0xFFFFFFFFLL);
+  auto input_lo = ExtractInt64<kExtractLo32>(kernel, input);
+  auto input_hi = ExtractInt64<kExtractHi32>(kernel, input);
+  if constexpr (op_type == kEqual) {
+    auto lo_eq = rhs_val ? kernel->Binary<kEqual>(input_lo, scalar_lo) : kernel->Binary<kEqual>(scalar_lo, input_lo);
+    auto hi_eq = rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi) : kernel->Binary<kEqual>(scalar_hi, input_hi);
+    return kernel->Binary<kLogicalAnd>(hi_eq, lo_eq);
+  } else if constexpr (op_type == kNotEqual) {
+    auto lo_ne = rhs_val ? kernel->Binary<kNotEqual>(input_lo, scalar_lo) : kernel->Binary<kNotEqual>(scalar_lo, input_lo);
+    auto hi_ne = rhs_val ? kernel->Binary<kNotEqual>(input_hi, scalar_hi) : kernel->Binary<kNotEqual>(scalar_hi, input_hi);
+    return kernel->Binary<kLogicalOr>(hi_ne, lo_ne);
+  } else if constexpr (op_type == kGreater || op_type == kGreaterEqual || op_type == kLess || op_type == kLessEqual) {
+    scalar_lo = static_cast<int32_t>(static_cast<uint32_t>(scalar_lo) + 0x80000000u);
+    input_lo = kernel->Binary<kAdd>(input_lo, static_cast<int32_t>(INT32_MIN));
+    auto hi_cmp = rhs_val ? kernel->Binary<op_type>(input_hi, scalar_hi) : kernel->Binary<op_type>(scalar_hi, input_hi);
+    auto hi_eq = rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi) : kernel->Binary<kEqual>(scalar_hi, input_hi);
+    auto lo_cmp = rhs_val ? kernel->Binary<op_type>(input_lo, scalar_lo) : kernel->Binary<op_type>(scalar_lo, input_lo);
+    return kernel->Select(hi_eq, lo_cmp, hi_cmp);
+  }
+  return nullptr;
+}
+
 class NDSliceLoad : public NDViewLoad {
  public:
   NDSliceLoad(void *src, IntArrayRef *src_ref, IntArrayRef *start_ref, IntArrayRef *size_ref, DataType type_id)
@@ -779,6 +875,11 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     if (rhs->type_id_ == kBool) {
       return Cast(Binary<op_type>(lhs, Cast(rhs, kFloat16)), kBool);
     }
+    if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
+      if (rhs->type_id_ == kInt64) {
+        return CompareScalarInt64<op_type, L, false>(this, lhs, rhs);
+      }
+    }
     NDObject *obj = GetBinaryS<op_type, L, false>(this, lhs, rhs);
     if (obj == nullptr) {
       return Binary<op_type>(Broadcast(lhs, rhs->shape_ref_, rhs->type_id_), rhs);
@@ -787,6 +888,11 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
   } else if constexpr (!std::is_same<R, NDObject *>::value) {
     if (lhs->type_id_ == kBool) {
       return Cast(Binary<op_type>(Cast(lhs, kFloat16), rhs), kBool);
+    }
+    if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
+      if (lhs->type_id_ == kInt64) {
+        return CompareScalarInt64<op_type, R, true>(this, rhs, lhs);
+      }
     }
     NDObject *obj = GetBinaryS<op_type, R, true>(this, rhs, lhs);
     if (obj == nullptr) {
@@ -823,6 +929,13 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
         }
         break;
       }
+      case kInt64: {
+        if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
+          return CompareInt64<op_type>(this, lhs, rhs);
+        }
+        DvmException("int64 binary op not supported");
+        return nullptr;
+      }
       default:
         break;
     }
@@ -843,10 +956,12 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
   template NDObject *Kernel::Binary<op>(NDObject *, NDObject *); \
   template NDObject *Kernel::Binary<op>(NDObject *, float);      \
   template NDObject *Kernel::Binary<op>(NDObject *, int32_t);    \
+  template NDObject *Kernel::Binary<op>(NDObject *, int64_t);    \
   template NDObject *Kernel::Binary<op>(NDObject *, Float16);    \
   template NDObject *Kernel::Binary<op>(NDObject *, BFloat16);   \
   template NDObject *Kernel::Binary<op>(float, NDObject *);      \
   template NDObject *Kernel::Binary<op>(int32_t, NDObject *);    \
+  template NDObject *Kernel::Binary<op>(int64_t, NDObject *);    \
   template NDObject *Kernel::Binary<op>(Float16, NDObject *);    \
   template NDObject *Kernel::Binary<op>(BFloat16, NDObject *);   \
   template NDObject *Kernel::Binary<op>(NDObject *, ScalarRef *);\
@@ -878,7 +993,7 @@ NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
 }
 
 NDObject *Kernel::Cast(NDObject *input, DataType type) {
-  static const int g_cast_staff_type[kDataTypeEnd][kDataTypeEnd] = {
+  static const int g_cast_staff_type[kDataTypeEnd][SIMD_DTYPE_END] = {
     {-1, -1, kFloat16, kFloat16, kFloat16},  // V_BOOL
     {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
     {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16

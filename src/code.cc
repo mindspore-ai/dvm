@@ -524,6 +524,15 @@ void DumpStoreViewX_B32(const DumpInfo &dump_info, std::ostringstream &oss) {
   _DumpStoreViewX(dump_info, oss);
 }
 
+void DumpExtract(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vExtract op;
+  vExtract::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << op.count;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << " // ";
+  DumpVal("slot", op.slot, oss);
+}
+
 void DumpUnary(const DumpInfo &dump_info, std::ostringstream &oss) {
   vUnary op;
   vUnary::Decode(dump_info.insn, *dump_info.insn, op);
@@ -909,6 +918,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CMP_FP16, {&DumpCompare, "Compare", "fp16"}},
   {V_CMP_BF16, {&DumpCompare, "Compare", "bf16"}},
   {V_CMP_INT32, {&DumpCompare, "Compare", "int32"}},
+  {V_EXTRACT_B32, {&DumpExtract, "Extract", "b32"}},
   {V_CMPS, {&DumpCompareS<float>, "CompareS", "fp32"}},
   {V_CMPS_FP16, {&DumpCompareS<Float16>, "CompareS", "fp16"}},
   {V_CMPS_BF16, {&DumpCompareS<dvm::BFloat16>, "CompareS", "bf16"}},

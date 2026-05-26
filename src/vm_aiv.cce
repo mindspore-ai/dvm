@@ -333,6 +333,16 @@ __aicore_inline__ void CompareInt(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vconv_f322s32z((__ubuf__ int32_t *)xd, xd, 1, 1, 1, 8, 8);
 }
 
+__aicore_inline__ void ExtractB32(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vExtract op;
+  vExtract::Decode(pc, head, op);
+  __ubuf__ uint32_t *xd = (__ubuf__ uint32_t *)(op.xd);
+  __ubuf__ uint32_t *src = (__ubuf__ uint32_t *)(op.xn);
+  uint32_t pattern = op.slot == 0 ? 1 : 2;
+  set_vector_mask(0, op.count * 2);
+  vreducev2(xd, src, src, 1, 1, pattern, 0, 0);
+}
+
 template <typename T>
 __aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 #define CMPS_DISPATCH(op_type, builtin)                                     \
@@ -2056,3 +2066,4 @@ DEF_DISP_SIMD(V_DIVS, BINARYS_EXT(pc, vdiv, head, float))
 DEF_DISP_SIMD(V_DIVS_FP16, BINARYS_EXT(pc, vdiv, head, half))
 
 DEF_DISP_SIMD(V_CMP_INT32, CompareInt(pc, head, tile))
+DEF_DISP_SIMD(V_EXTRACT_B32, ExtractB32(pc, head, tile))

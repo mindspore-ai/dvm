@@ -158,3 +158,59 @@ def test_cmp_repeat_overflow():
     z = t.cast(z, "bool")
     t.store_expect(z, np.less_equal(a, 2))
     assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
+def test_cmp_int64(op, func):
+    t = Tester()
+    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    b = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    if op == Tester.equal or op == Tester.not_equal:
+        a[10][100] = 1000
+        a[10][100] = 1000
+        a[100][2] = 1
+        a[100][2] = 1
+    x = t.load(a)
+    y = t.load(b)
+    z = op(t, x, y)
+    t.store_expect(z, func(a, b))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
+def test_cmp_int64_s_r(op, func):
+    t = Tester()
+    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    if op == Tester.equal or op == Tester.not_equal:
+        a[10][100] = 1000
+        a[10][100] = 1000
+        a[100][2] = 1000
+        a[100][2] = 1
+    x = t.load(a)
+    y = op(t, x, 1000)
+    t.store_expect(y, func(a, 1000))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
+                                      (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
+                                      (Tester.not_equal, np.not_equal)])
+def test_cmp_int64_s_l(op, func):
+    t = Tester()
+    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    if op == Tester.equal or op == Tester.not_equal:
+        a[10][100] = 1000
+        a[10][100] = 1000
+        a[100][2] = 1000
+        a[100][2] = 1
+    x = t.load(a)
+    y = op(t, 1000, x)
+    t.store_expect(y, func(1000, a))
+    assert (t.run_check())

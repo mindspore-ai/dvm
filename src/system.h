@@ -236,8 +236,8 @@ inline constexpr uint32_t MATMUL_ALIGN_MAX = 1024;
 
 inline constexpr uint32_t SIMD_DTYPE_END = DataType::kInt64;
 
-extern const uint64_t ITEM_SIZE[dvm::kDataTypeEnd];
-extern const char *DTYPE_NAMES[dvm::kDataTypeEnd];
-extern const uint64_t ITEM_SIMD_WIDTH_MAX[SIMD_DTYPE_END];
+extern const uint64_t ITEM_SIZE[DataType::kDataTypeEnd];
+extern const char *DTYPE_NAMES[DataType::kDataTypeEnd];
+extern const uint64_t ITEM_SIMD_WIDTH_MAX[DataType::kDataTypeEnd];
 }  // namespace dvm
 #endif  // _DVM_SYSTEM_H_

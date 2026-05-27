@@ -456,6 +456,12 @@ NDObject *ExtractInt64(Kernel *kernel, NDObject *input) {
   return obj;
 }
 
+NDObject *Pack(Kernel *kernel, NDObject *lo, NDObject *hi) {
+  auto obj = new PackOp(lo, hi);
+  kernel->GetImpl()->Append(obj);
+  return obj;
+}
+
 template <BinaryType op_type>
 NDObject *CompareInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
   auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
@@ -993,13 +999,13 @@ NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
 }
 
 NDObject *Kernel::Cast(NDObject *input, DataType type) {
-  static const int g_cast_staff_type[kDataTypeEnd][SIMD_DTYPE_END] = {
-    {-1, -1, kFloat16, kFloat16, kFloat16},  // V_BOOL
-    {-1, -1, kFloat32, -1, -1},              // V_FLOAT16
-    {kFloat32, kFloat32, -1, -1, -1},        // V_BFLOAT16
-    {kFloat16, -1, -1, -1, -1},              // V_FLOAT32
-    {kFloat16, -1, kFloat32, -1, -1},        // V_INT32
-    {-1, -1, -1, -1, -1},                    // V_INT64
+  static const int g_cast_staff_type[DataType::kDataTypeEnd][DataType::kDataTypeEnd] = {
+    {-1, -1, kFloat16, kFloat16, kFloat16, kFloat16},  // V_BOOL
+    {-1, -1, kFloat32, -1, -1, kFloat32},              // V_FLOAT16
+    {kFloat32, kFloat32, -1, -1, -1, kFloat32},        // V_BFLOAT16
+    {kFloat16, -1, -1, -1, -1, -1},                    // V_FLOAT32
+    {kFloat16, -1, kFloat32, -1, -1, -1},              // V_INT32
+    {-1, kFloat32, kFloat32, -1, -1, -1},              // V_INT64
   };
   if (input->type_id_ == type) {
     return input;
@@ -1061,6 +1067,11 @@ NDObject *Kernel::Broadcast(NDObject *input, IntArrayRef *shape) {
     auto obj = Broadcast(cast1, shape);
     auto cast2 = Cast(obj, DataType::kBool);
     return cast2;
+  }
+  if (input->type_id_ == DataType::kInt64) {
+    auto lo = ExtractInt64<kExtractLo32>(this, input);
+    auto hi = ExtractInt64<kExtractHi32>(this, input);
+    return Pack(this, Broadcast(lo, shape), Broadcast(hi, shape));
   }
   auto obj = new BroadcastOp(input, shape);
   kernel_->Append(obj);

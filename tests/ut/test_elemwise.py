@@ -155,6 +155,25 @@ def test_scalar(type):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+@pytest.mark.parametrize("shape", [(32, 1024), (17, 129)])
+def test_cast_int64(shape):
+    t = Tester()
+    size = int(np.prod(shape))
+    s32 = (np.arange(size, dtype=np.int32).reshape(shape) - 2048).astype(np.int32)
+    s64 = (np.arange(size, dtype=np.int64).reshape(shape) - 4096).astype(np.int64)
+    f32 = np.linspace(-8192.0, 8191.0, num=size, dtype=np.float32).reshape(shape)
+    x32 = t.load(s32)
+    x64 = t.load(s64)
+    xf32 = t.load(f32)
+    t.store_expect(t.cast(x32, "int64"), s32.astype(np.int64))
+    t.store_expect(t.cast(x64, "int32"), s64.astype(np.int32))
+    t.store_expect(t.cast(xf32, "int64"), f32.astype(np.int64))
+    t.store_expect(t.cast(x64, "float32"), s64.astype(np.float32))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type, eps, shape', [(np.float16, 1e-03, [2, 3, 4, 5]), (np.float32, 1e-05, [1, 1, 4, 5])])
 def test_scalar_tensor_div(type, eps, shape):
     t = Tester()

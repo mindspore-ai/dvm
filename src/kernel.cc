@@ -207,6 +207,7 @@ class CodeGenHelper {
   CodeGenHelper(VectorKernel &kernel, uint32_t xbuf_size, uint32_t pool_size)
       : free_xbuf_(pool_size), xbuf_size_(xbuf_size), kernel_(kernel) {}
   uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve, uint32_t tile_size) {
+    forward_event_num_ = g_system.EventNum() - kernel_.tile_info_.event_reserve;
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
     static_xbuf_ = code_reserve;
     for (size_t i = 0; i < kernel_.static_ops_.size(); ++i) {
@@ -365,7 +366,7 @@ class CodeGenHelper {
  private:
   void BackwardSync() {
     auto &objects = kernel_.objects_;
-    uint64_t max_event = kernel_.backward_event_num_ - 1;
+    uint64_t max_event = g_system.EventNum() - kernel_.tile_info_.event_reserve - 1;
     uint64_t cur_event = 0;
     int sync_idx = 0;
     for (size_t i = 0; i < kernel_.load_num_; ++i) {
@@ -521,7 +522,7 @@ class CodeGenHelper {
   }
 
   inline bool AllocForwardEvent(EventManager &m, int from_idx, int to_idx, uint64_t &event) {
-    int total = kernel_.forward_event_num_;
+    int total = forward_event_num_;
     for (int i = 1; i <= total; ++i) {
       if (int next = (m.hold_event + i) % total; from_idx >= m.hold_idx[next]) {
         event = static_cast<uint64_t>(next);
@@ -540,6 +541,7 @@ class CodeGenHelper {
   uint32_t xbuf_size_;
 
   int vector_vector_sync = 0;
+  int forward_event_num_;
   EventManager lv_event_;
   EventManager vs_event_;
 
@@ -605,10 +607,7 @@ void VectorKernel::BuildDomain() {
 void VectorKernel::PrepareTiling() {
   tile_num_ = 1;
   auto &nd = dom_->nd_;
-  tile_info_.lead_depth = shard_ ? shard_->base + 1 : nd.size();
-  tile_info_.lead_affine = PropRange::ELEMWISE;
-  tile_info_.flags = 0;
-  tile_info_.ext_ws = 0;
+  tile_info_.Reset(shard_ ? shard_->base + 1 : nd.size());
   for (auto op : objects_) {
     op->TileCollect(tile_info_);
   }
@@ -943,7 +942,6 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   }
   // codegen
   code_.block_dim_ = core_limit;
-  forward_event_num_ = backward_event_num_ = g_system.EventNum();
   CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
   auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);

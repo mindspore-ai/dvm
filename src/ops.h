@@ -92,10 +92,20 @@ struct PropRange {
 };
 
 struct TileInfo {
+  void Reset(int init_depth) {
+    lead_depth = init_depth;
+    lead_affine = PropRange::ELEMWISE;
+    flags = 0;
+    ext_ws = 0;
+    code_reserve = 0;
+    event_reserve = 0;
+  }
   int lead_depth;
   int lead_affine;
   uint32_t flags;
   uint32_t ext_ws;
+  uint32_t code_reserve;
+  uint32_t event_reserve;
 };
 
 // shard map(low axis left): [a0, a1,.. s0, s1, s2, ...] -> [a0, a1,...tile[0], tile[1], 1, 1, ..]

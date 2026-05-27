@@ -20,15 +20,6 @@
 #include "ops_c.h"
 
 namespace dvm {
-static void ReserveCommEvent(VectorKernel &k) {
-  if (k.forward_event_num_ > 7) {
-    k.forward_event_num_ = 7;
-  }
-  if (k.backward_event_num_ > 6) {
-    k.backward_event_num_ = 6;
-  }
-}
-
 void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
   auto dims = shape_ref_->size;
   ndd_.dims.resize(dims);
@@ -88,6 +79,8 @@ int CommIdWrap::LaunchWrap(void *workspace, void *stream) {
   return next_->LaunchWrap(workspace, stream);
 }
 
+void CommOp::TileCollect(NDObject *op, TileInfo &info) { static_cast<CommOp *>(op)->TileReserve(info); }
+
 ReduceScatterOp::ReduceScatterOp(NDObject *input, const Communicator *comm)
     : CommOp(input, comm, ObjectType::kReduceScatter) {
   add_id_ = GetBinaryInsnID(kAdd, type_id_);
@@ -140,6 +133,7 @@ void ReduceScatterOp::FoldProp(NDObject *op, PropRange &range) {
 
 void ReduceScatterOp::TileCollect(NDObject *op, TileInfo &info) {
   auto self = static_cast<ReduceScatterOp *>(op);
+  self->TileReserve(info);
   if (self->multi_load_) {
     return;
   }
@@ -163,7 +157,6 @@ void ReduceScatterOp::Tile(const TileParam &tp) {
 
 uint64_t ReduceScatterOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
-  ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   if (multi_load_) {
     return MultiLoadEmit(k);
@@ -668,7 +661,6 @@ uint64_t AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
 template <bool is_bf16>
 uint64_t AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
-  ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   if (cube_op_ != nullptr) {
     return MatmulEmit(k);
@@ -1004,14 +996,15 @@ void AllGatherOp::FoldProp(NDObject *op, PropRange &range) {
 }
 
 void AllGatherOp::TileCollect(NDObject *op, TileInfo &info) {
-  auto &lhs_nd = op->lhs_->nd_;
-  auto &ndd = static_cast<AllGatherOp *>(op)->ndd_;
+  auto self = static_cast<AllGatherOp *>(op);
+  self->TileReserve(info);
+  auto &lhs_nd = self->lhs_->nd_;
+  auto &ndd = self->ndd_;
   BroadReduceTileCollect<PropRange::BROADCAST>(lhs_nd.data->dims, ndd.dims, info);
 }
 
 uint64_t AllGatherOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
-  ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
@@ -1148,7 +1141,6 @@ void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
 
 uint64_t AllGatherV2Op::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
-  ReserveCommEvent(k);
   k.code_.InsertWrap(&id_wrap_);
   uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];

@@ -86,6 +86,7 @@ class VectorKernel : public VKernel {
     MESS(max_type_, 100);
     MESS(min_type_, 200);
     MESS(visit_, reinterpret_cast<VisitCoder *>(100));
+    tile_info_.code_reserve = 0; // TODO: mix get ReserveCodeSize before TileCollect
   }
   ~VectorKernel() override = default;
 
@@ -136,10 +137,7 @@ class VectorKernel : public VKernel {
   const DimArray &DimSpace() const { return dom_->nd_.dims(); }
 
   uint64_t ReserveCodeSize() const {
-    auto res = SIMD_BLOCK_SIZE + objects_.size() * V_INSN_SIZE_MAX;
-    if (comm_op_) {
-      res += comm_op_->CodeReserve();
-    }
+    auto res = SIMD_BLOCK_SIZE + objects_.size() * V_INSN_SIZE_MAX + tile_info_.code_reserve;
     return (res + 511ul) & ~511ul;  // 512B align
   }
 
@@ -194,8 +192,6 @@ class VectorKernel : public VKernel {
     uint64_t block_align_;  // tiling
     uint64_t lead_align_;   // codegen
   };
-  int forward_event_num_;
-  int backward_event_num_;
 
   size_t load_num_{0};
   std::vector<NDObject *> static_ops_;

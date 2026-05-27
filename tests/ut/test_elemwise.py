@@ -159,10 +159,9 @@ def test_scalar(type):
 @pytest.mark.parametrize("shape", [(32, 1024), (17, 129)])
 def test_cast_int64(shape):
     t = Tester()
-    size = int(np.prod(shape))
-    s32 = (np.arange(size, dtype=np.int32).reshape(shape) - 2048).astype(np.int32)
-    s64 = (np.arange(size, dtype=np.int64).reshape(shape) - 4096).astype(np.int64)
-    f32 = np.linspace(-8192.0, 8191.0, num=size, dtype=np.float32).reshape(shape)
+    s32 = np.random.randint(low=-2 ** 30, high=2 ** 30, size=shape).astype(np.int32)
+    s64 = np.random.randint(low=-2 ** 30, high=2 ** 30, size=shape, dtype=np.int64)
+    f32 = np.random.randint(low=-8192, high=8192, size=shape).astype(np.float32)
     x32 = t.load(s32)
     x64 = t.load(s64)
     xf32 = t.load(f32)
@@ -273,6 +272,95 @@ def test_binary_int(type, op, func):
     z = op(t, x, y)
     z = t.copy(z)
     t.store_expect(z, func(a, b))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+@pytest.mark.parametrize("op, func", [(Tester.add, np.add), (Tester.sub, np.subtract)])
+def test_int64_binary(op, func):
+    t = Tester()
+    a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=(3200, 1024), dtype=np.int64)
+    b = np.random.randint(low=-0x2000000000, high=0x2000000000, size=(3200, 1024), dtype=np.int64)
+    x = t.load(a)
+    y = t.load(b)
+    z = op(t, x, y)
+    t.store_expect(z, func(a, b))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+@pytest.mark.parametrize("op, func", [(Tester.add, np.add), (Tester.sub, np.subtract)])
+def test_int64_binary_scalar(op, func):
+    t = Tester()
+    shape = (1024, 1025)
+    scalar = -0x100000000
+    a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=shape, dtype=np.int64)
+    x = t.load(a)
+    y0 = op(t, x, scalar)
+    y1 = op(t, scalar, x)
+    t.store_expect(y0, func(a, scalar))
+    t.store_expect(y1, func(scalar, a))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+@pytest.mark.parametrize("op, func", [(Tester.add, np.add), (Tester.sub, np.subtract)])
+def test_int64_binary_scalar_ref(op, func):
+    t = Tester('vector:dyn')
+    shape = (1024, 1025)
+    x = t.load([-1], "int64")
+    s = t.scalar(dvm.int64)
+    y0 = op(t, x, s)
+    y1 = op(t, s, x)
+    out0 = t.store(y0)
+    out1 = t.store(y1)
+    a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=shape, dtype=np.int64)
+    t.input(x, a)
+    for scalar in [1, 0x100000000, -0x100000000]:
+        s.update(scalar)
+        t.run()
+        assert t.check(out0, func(a, scalar))
+        assert t.check(out1, func(scalar, a))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+def test_int64_add_sub_scalar_codegen():
+    t = Tester()
+    shape = (1024, 1025)
+    a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=shape, dtype=np.int64)
+    x = t.load(a)
+    y = t.sub(t.add(x, 1), 2)
+    t.store_expect(y, np.subtract(np.add(a, 1), 2))
+    assert (t.run_check())
+    das = t.das()
+    assert das.count("Pack.b32") == 1
+    assert das.count("Extract.b32") == 2
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+def test_int64_mixed_add_sub_cast_le():
+    t = Tester()
+    a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=(1024), dtype=np.int64)
+    b = np.random.randint(low=-2 ** 30, high=2 ** 30, size=(256, 32, 1024), dtype=np.int64)
+    c = np.random.randint(low=-2 ** 30, high=2 ** 30, size=(1, 32, 1), dtype=np.int64)
+    x = t.load(a)
+    y = t.load(b)
+    z = t.load(c)
+    y64 = t.cast(t.cast(y, "int32"), "int64")
+    z64 = t.cast(t.cast(z, "int32"), "int64")
+    add = t.add(x, y64)
+    sub = t.sub(add, z64)
+    le = t.less_equal(sub, y)
+    expect_add = np.add(a, b)
+    expect_sub = np.subtract(expect_add, c)
+    t.store_expect(add, expect_add)
+    t.store_expect(sub, expect_sub)
+    t.store_expect(le, np.less_equal(expect_sub, b))
     assert (t.run_check())
 
 

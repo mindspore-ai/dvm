@@ -155,6 +155,24 @@ def test_broadcast_s_bool(scalar):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+def test_broadcast_s_int64_scalar_ref():
+    t = Tester('vector:dyn')
+    shape = (1024, 1025)
+    x = t.load([-1], "int64")
+    s = t.scalar(dvm.int64)
+    y = t.full(s, shape, "int64")
+    z = t.add(x, y)
+    out = t.store(z)
+    a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=shape, dtype=np.int64)
+    t.input(x, a)
+    for scalar in [1, 0x100000000, -0x100000000]:
+        s.update(scalar)
+        t.run()
+        assert t.check(out, np.add(a, scalar))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('lead_dim', [1024, 511])
 def test_broadcast_store_rank_1(lead_dim):
     t = Tester()

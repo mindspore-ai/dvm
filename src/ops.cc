@@ -2358,6 +2358,33 @@ void BroadcastScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   }
 }
 
+BroadcastInt64ScalarOp::BroadcastInt64ScalarOp(uint64_t scalar, IntArrayRef *shape_ref)
+    : BroadcastScalarOp(static_cast<scode_t>(scalar & 0xfffffffful), shape_ref, DataType::kInt64),
+      high_(static_cast<scode_t>((scalar >> 32) & 0xfffffffful)) {}
+
+uint64_t BroadcastInt64ScalarOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(k.LeadAlign());
+  vBroadcastS_B64 op;
+  op.scalar = scalar_;
+  op.high = high_;
+  op.xd = xbuf_;
+  op.count = ndd_.stride_back();
+  return vBroadcastS_B64::Encode(insn_, V_BROADCAST_S_B64, op);
+}
+
+NDObject *BroadcastInt64ScalarOp::Clone(CloneHelper &h) {
+  uint64_t scalar = (static_cast<uint64_t>(high_) << 32) | scalar_;
+  return new BroadcastInt64ScalarOp(scalar, h.GetClone(shape_ref_));
+}
+
+void BroadcastInt64ScalarOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "BroadcastS";
+  if (verbose) {
+    uint64_t scalar = (static_cast<uint64_t>(high_) << 32) | scalar_;
+    oss << "<" << static_cast<int64_t>(scalar) << ">";
+  }
+}
+
 void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
   auto &lhs_nd = op->lhs_->nd_;
   auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;

@@ -542,10 +542,11 @@ void InsertRemovePad(BasicBlock &block) {
       if (obj_id == kReduce && g_system.deterministic_) {
         continue;
       }
-      uint64_t iter_size = ITEM_SIZE[min_type_id];
-      if (iter_size == 1) {
+      uint64_t item_size = ITEM_SIZE[iter->lhs_->type_id_];
+      if (item_size != 2 && item_size != 4) {
         continue;
       }
+      uint64_t iter_size = ITEM_SIZE[min_type_id];
       for (int i = 0; i < info.lead_depth; i++) {
         iter_size *= iter->nd_[i];
       }

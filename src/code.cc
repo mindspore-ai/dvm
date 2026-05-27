@@ -635,6 +635,14 @@ void DumpBroadcastS(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << op.scalar;
 }
 
+void DumpBroadcastS_B64(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vBroadcastS_B64 op;
+  vBroadcastS_B64::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << op.count;
+  uint64_t scalar = (op.high << 32) | op.scalar;
+  oss << " " << reinterpret_cast<void *>(dump_info.ext) << ", " << static_cast<int64_t>(scalar);
+}
+
 void DumpSelect(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSelect op;
   vSelect::Decode(dump_info.insn, *dump_info.insn, op);
@@ -933,6 +941,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CMP_INT32, {&DumpCompare, "Compare", "int32"}},
   {V_EXTRACT_B32, {&DumpExtract, "Extract", "b32"}},
   {V_PACK_B32, {&DumpPack, "Pack", "b32"}},
+  {V_BROADCAST_S_B64, {&DumpBroadcastS_B64, "BroadcastS", "b64"}},
   {V_CMPS, {&DumpCompareS<float>, "CompareS", "fp32"}},
   {V_CMPS_FP16, {&DumpCompareS<Float16>, "CompareS", "fp16"}},
   {V_CMPS_BF16, {&DumpCompareS<dvm::BFloat16>, "CompareS", "bf16"}},

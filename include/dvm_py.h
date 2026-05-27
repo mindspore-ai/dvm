@@ -82,7 +82,7 @@ class ScalarRefPy {
   explicit ScalarRefPy(DataTypePy type) { data_.type = type; }
   void Update(py::object val) {
     if (py::isinstance<py::int_>(val)) {
-      data_ = val.cast<int>();
+      data_ = val.cast<int64_t>();
     } else if (py::isinstance<py::float_>(val)) {
       data_ = val.cast<float>();
     } else {
@@ -116,11 +116,11 @@ class KernelPy {
   py::object Binary(py::object lhs, py::object rhs) {
     NDObject *op;
     if (py::isinstance<py::int_>(lhs)) {
-      op = kernel_.Binary<op_type>(lhs.cast<int>(), PyToObj(rhs));
+      op = kernel_.Binary<op_type>(lhs.cast<int64_t>(), PyToObj(rhs));
     } else if (py::isinstance<py::float_>(lhs)) {
       op = kernel_.Binary<op_type>(lhs.cast<float>(), PyToObj(rhs));
     } else if (py::isinstance<py::int_>(rhs)) {
-      op = kernel_.Binary<op_type>(PyToObj(lhs), rhs.cast<int>());
+      op = kernel_.Binary<op_type>(PyToObj(lhs), rhs.cast<int64_t>());
     } else if (py::isinstance<py::float_>(rhs)) {
       op = kernel_.Binary<op_type>(PyToObj(lhs), rhs.cast<float>());
     } else if (py::isinstance<ScalarRefPy>(lhs)) {
@@ -148,7 +148,7 @@ class KernelPy {
     if (py::isinstance<py::bool_>(scalar)) {
       op = kernel_.Broadcast(static_cast<int>(scalar.cast<bool>()), shape_ref, dtype);
     } else if (py::isinstance<py::int_>(scalar)) {
-      op = kernel_.Broadcast(scalar.cast<int>(), shape_ref, dtype);
+      op = kernel_.Broadcast(scalar.cast<int64_t>(), shape_ref, dtype);
     } else if (py::isinstance<py::float_>(scalar)) {
       op = kernel_.Broadcast(scalar.cast<float>(), shape_ref, dtype);
     } else if (py::isinstance<ScalarRefPy>(scalar)) {

@@ -858,7 +858,7 @@ class UnaryOp : public NDObject {
 class RemovePadOp : public CopyOp {
  public:
   RemovePadOp(NDObject *input) : CopyOp(input) {
-    ASSERT(ITEM_SIZE[type_id_] != 1);
+    ASSERT(ITEM_SIZE[type_id_] == 2 || ITEM_SIZE[type_id_] == 4);
     obj_id_ = ObjectType::kRemovePad;
   }
   uint64_t Emit(VectorKernel &k) override;
@@ -1136,6 +1136,17 @@ class BroadcastScalarOp : public NDObject {
   scode_t scalar_;
   NDSpaceData ndd_;
   NDLoadDummy *dummy_load_{nullptr};
+};
+
+class BroadcastInt64ScalarOp : public BroadcastScalarOp {
+ public:
+  BroadcastInt64ScalarOp(uint64_t scalar, IntArrayRef *shape_ref);
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+ protected:
+  scode_t high_;
 };
 
 class _ReduceOp : public FlexOp {

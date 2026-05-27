@@ -172,6 +172,7 @@ enum vSimdInsnID {
   V_CAST_FP32_TO_INT64, // [c220]
   V_CAST_INT64_TO_FP32, // [c220]
   V_PACK_B32, // [c220]
+  V_BROADCAST_S_B64, // [c220]
   V_ABS_INT32, // [c310]
   V_CMPS_INT32, // [c310]
   V_ADDS_BF16, // [c310]
@@ -636,6 +637,29 @@ struct vBroadcastS {
     uint64_t size = 2;
     pc[0] = vMakeSimdHead(id, op.xd, size);
     pc[1] = op.scalar << 32 | op.count;
+    return size;
+  }
+};
+
+struct vBroadcastS_B64 {
+  uint64_t xd;
+  uint64_t count;
+  uint64_t scalar;
+  uint64_t high;
+  // pc[0]: xd
+  // pc[1]: count
+  // pc[2]: high(32) << 32 | scalar(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vBroadcastS_B64 &op) {
+    op.xd = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    op.count = pc[1];
+    op.scalar = pc[2] & 0xfffffffful;
+    op.high = pc[2] >> 32;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vBroadcastS_B64 &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeSimdHead(id, op.xd, size);
+    pc[1] = op.count;
+    pc[2] = op.high << 32 | op.scalar;
     return size;
   }
 };

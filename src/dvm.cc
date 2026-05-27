@@ -353,6 +353,47 @@ class BinaryScalarRefOp : public BinaryScalarOp {
   ScalarRef *scalar_ref_;
 };
 
+class BroadcastInt64ScalarRefOp : public BroadcastInt64ScalarOp {
+ public:
+  BroadcastInt64ScalarRefOp(ScalarRef *scalar, IntArrayRef *shape_ref)
+      : BroadcastInt64ScalarOp(0, shape_ref), scalar_ref_(scalar) {}
+
+  uint64_t Emit(VectorKernel &k) override {
+    ASSERT(scalar_ref_->type == kInt64);
+    uint64_t scalar = static_cast<uint64_t>(scalar_ref_->i64);
+    scalar_ = static_cast<scode_t>(scalar & 0xfffffffful);
+    high_ = static_cast<scode_t>((scalar >> 32) & 0xfffffffful);
+    return BroadcastInt64ScalarOp::Emit(k);
+  }
+
+  NDObject *Clone(CloneHelper &h) override {
+    return new BroadcastInt64ScalarRefOp(h.GetClone(scalar_ref_), h.GetClone(shape_ref_));
+  }
+
+ private:
+  ScalarRef *scalar_ref_;
+};
+
+enum ExtractPart { kExtractLo32 = 0, kExtractHi32 = 1 };
+
+template <typename T>
+int64_t CastToInt64Scalar(T scalar) {
+  if constexpr (std::is_integral<T>::value) {
+    return static_cast<int64_t>(scalar);
+  } else if constexpr (std::is_same<T, float>::value) {
+    return static_cast<int64_t>(scalar);
+  } else {
+    return static_cast<int64_t>(ToFloat32(scalar));
+  }
+}
+
+template <typename T>
+void SplitInt64Scalar(T scalar, int32_t &lo, int32_t &hi) {
+  int64_t scalar_i64 = CastToInt64Scalar(scalar);
+  lo = static_cast<int32_t>(scalar_i64 & 0xFFFFFFFFLL);
+  hi = static_cast<int32_t>((scalar_i64 >> 32) & 0xFFFFFFFFLL);
+}
+
 template <BinaryType op_type>
 NDObject *BinaryPromotion(Kernel *kernel, dvm::DataType promote_dtype, NDObject *lhs, NDObject *rhs) {
   auto orig_dtype = lhs->type_id_;
@@ -377,6 +418,9 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
                 op_type == BinaryType::kMaximum) {
     NDObject *obj;
     if constexpr (std::is_same<T, ScalarRef *>::value) {
+      if (input->type_id_ == kInt64) {
+        return nullptr;
+      }
       obj = new BinaryScalarRefOp(binary_map[op_type], input, val);
     } else {
       obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
@@ -404,6 +448,9 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
     if (type_id != kInt32 || g_system.Arch() == kAiCore_C310) {
       NDObject *obj;
       if constexpr (std::is_same<T, ScalarRef *>::value) {
+        if (type_id == kInt64) {
+          return nullptr;
+        }
         obj = new CompareScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
       } else {
         obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
@@ -414,7 +461,7 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
     }
     return nullptr;
   } else if constexpr (op_type == BinaryType::kPow) {
-    if constexpr (std::is_pointer<T>::value) {
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
       return nullptr;
     } else {
       if constexpr (rhs_val) {
@@ -433,7 +480,7 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
       return nullptr;
     }
   } else if constexpr (op_type == BinaryType::kSub) {
-    if constexpr (std::is_pointer<T>::value) {
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
       return nullptr;
     } else {
       if constexpr (rhs_val) {
@@ -447,10 +494,15 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
   return nullptr;
 }
 
-enum ExtractPart { kExtractLo32 = 0, kExtractHi32 = 1 };
-
 template <ExtractPart part>
 NDObject *ExtractInt64(Kernel *kernel, NDObject *input) {
+  if (input->GetObjectType() == kPack) {
+    if constexpr (part == kExtractLo32) {
+      return input->lhs_;
+    } else {
+      return input->rhs_;
+    }
+  }
   auto obj = new ExtractOp(input, part, DataType::kInt32);
   kernel->GetImpl()->Append(obj);
   return obj;
@@ -460,6 +512,78 @@ NDObject *Pack(Kernel *kernel, NDObject *lo, NDObject *hi) {
   auto obj = new PackOp(lo, hi);
   kernel->GetImpl()->Append(obj);
   return obj;
+}
+
+NDObject *AddInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
+  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
+  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
+  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
+  auto lo_sum = kernel->Binary<kAdd>(lhs_lo, rhs_lo);
+  auto carry = kernel->Binary<kLess>(kernel->Binary<kAdd>(lo_sum, static_cast<int32_t>(INT32_MIN)),
+                                     kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN)));
+  auto hi_sum = kernel->Binary<kAdd>(kernel->Binary<kAdd>(lhs_hi, rhs_hi), carry);
+  return Pack(kernel, lo_sum, hi_sum);
+}
+
+NDObject *SubInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
+  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
+  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
+  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
+  auto lo_diff = kernel->Binary<kSub>(lhs_lo, rhs_lo);
+  auto borrow = kernel->Binary<kLess>(kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN)),
+                                      kernel->Binary<kAdd>(rhs_lo, static_cast<int32_t>(INT32_MIN)));
+  auto hi_diff = kernel->Binary<kSub>(kernel->Binary<kSub>(lhs_hi, rhs_hi), borrow);
+  return Pack(kernel, lo_diff, hi_diff);
+}
+
+template <typename T, bool rhs_val>
+NDObject *AddScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
+  static_assert(!std::is_same<T, ScalarRef *>::value);
+  auto input_lo = ExtractInt64<kExtractLo32>(kernel, input);
+  auto input_hi = ExtractInt64<kExtractHi32>(kernel, input);
+  int32_t scalar_lo;
+  int32_t scalar_hi;
+  SplitInt64Scalar(scalar, scalar_lo, scalar_hi);
+  if constexpr (rhs_val) {
+    auto lo_sum = kernel->Binary<kAdd>(input_lo, scalar_lo);
+    auto carry = kernel->Binary<kLess>(kernel->Binary<kAdd>(lo_sum, static_cast<int32_t>(INT32_MIN)),
+                                       kernel->Binary<kAdd>(input_lo, static_cast<int32_t>(INT32_MIN)));
+    auto hi_sum = kernel->Binary<kAdd>(kernel->Binary<kAdd>(input_hi, scalar_hi), carry);
+    return Pack(kernel, lo_sum, hi_sum);
+  } else {
+    int32_t scalar_lo_bias = static_cast<int32_t>(static_cast<uint32_t>(scalar_lo) + 0x80000000u);
+    auto lo_sum = kernel->Binary<kAdd>(scalar_lo, input_lo);
+    auto carry = kernel->Binary<kLess>(kernel->Binary<kAdd>(lo_sum, static_cast<int32_t>(INT32_MIN)), scalar_lo_bias);
+    auto hi_sum = kernel->Binary<kAdd>(kernel->Binary<kAdd>(scalar_hi, input_hi), carry);
+    return Pack(kernel, lo_sum, hi_sum);
+  }
+}
+
+template <typename T, bool rhs_val>
+NDObject *SubScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
+  static_assert(!std::is_same<T, ScalarRef *>::value);
+  auto input_lo = ExtractInt64<kExtractLo32>(kernel, input);
+  auto input_hi = ExtractInt64<kExtractHi32>(kernel, input);
+  int32_t scalar_lo;
+  int32_t scalar_hi;
+  SplitInt64Scalar(scalar, scalar_lo, scalar_hi);
+  int32_t scalar_lo_bias = static_cast<int32_t>(static_cast<uint32_t>(scalar_lo) + 0x80000000u);
+  if constexpr (rhs_val) {
+    int32_t scalar_lo_neg = static_cast<int32_t>(0u - static_cast<uint32_t>(scalar_lo));
+    int32_t scalar_hi_neg = static_cast<int32_t>(0u - static_cast<uint32_t>(scalar_hi));
+    auto lo_diff = kernel->Binary<kAdd>(input_lo, scalar_lo_neg);
+    auto borrow = kernel->Binary<kLess>(kernel->Binary<kAdd>(input_lo, static_cast<int32_t>(INT32_MIN)),
+                                        scalar_lo_bias);
+    auto hi_diff = kernel->Binary<kSub>(kernel->Binary<kAdd>(input_hi, scalar_hi_neg), borrow);
+    return Pack(kernel, lo_diff, hi_diff);
+  } else {
+    auto lo_diff = kernel->Binary<kSub>(scalar_lo, input_lo);
+    auto borrow = kernel->Binary<kLess>(scalar_lo_bias, kernel->Binary<kAdd>(input_lo, static_cast<int32_t>(INT32_MIN)));
+    auto hi_diff = kernel->Binary<kSub>(kernel->Binary<kSub>(scalar_hi, input_hi), borrow);
+    return Pack(kernel, lo_diff, hi_diff);
+  }
 }
 
 template <BinaryType op_type>
@@ -506,21 +630,12 @@ NDObject *CompareInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
 
 template <BinaryType op_type, typename T, bool rhs_val>
 NDObject *CompareScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
-  int64_t scalar_i64;
-  if constexpr (std::is_same<T, ScalarRef *>::value) {
-    ASSERT(scalar->type == kInt64);
-    scalar_i64 = scalar->i64;
-  } else if constexpr (std::is_integral<T>::value) {
-    scalar_i64 = static_cast<int64_t>(scalar);
-  } else if constexpr (std::is_same<T, float>::value) {
-    scalar_i64 = static_cast<int64_t>(scalar);
-  } else {
-    scalar_i64 = static_cast<int64_t>(ToFloat32(scalar));
-  }
-  int32_t scalar_hi = static_cast<int32_t>((scalar_i64 >> 32) & 0xFFFFFFFFLL);
-  int32_t scalar_lo = static_cast<int32_t>(scalar_i64 & 0xFFFFFFFFLL);
+  static_assert(!std::is_same<T, ScalarRef *>::value);
   auto input_lo = ExtractInt64<kExtractLo32>(kernel, input);
   auto input_hi = ExtractInt64<kExtractHi32>(kernel, input);
+  int32_t scalar_lo;
+  int32_t scalar_hi;
+  SplitInt64Scalar(scalar, scalar_lo, scalar_hi);
   if constexpr (op_type == kEqual) {
     auto lo_eq = rhs_val ? kernel->Binary<kEqual>(input_lo, scalar_lo) : kernel->Binary<kEqual>(scalar_lo, input_lo);
     auto hi_eq = rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi) : kernel->Binary<kEqual>(scalar_hi, input_hi);
@@ -883,7 +998,22 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     }
     if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
       if (rhs->type_id_ == kInt64) {
-        return CompareScalarInt64<op_type, L, false>(this, lhs, rhs);
+        if constexpr (!std::is_same<L, ScalarRef *>::value) {
+          return CompareScalarInt64<op_type, L, false>(this, lhs, rhs);
+        }
+      }
+    }
+    if constexpr (op_type == kAdd) {
+      if (rhs->type_id_ == kInt64) {
+        if constexpr (!std::is_same<L, ScalarRef *>::value) {
+          return AddScalarInt64<L, false>(this, lhs, rhs);
+        }
+      }
+    } else if constexpr (op_type == kSub) {
+      if (rhs->type_id_ == kInt64) {
+        if constexpr (!std::is_same<L, ScalarRef *>::value) {
+          return SubScalarInt64<L, false>(this, lhs, rhs);
+        }
       }
     }
     NDObject *obj = GetBinaryS<op_type, L, false>(this, lhs, rhs);
@@ -897,7 +1027,22 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     }
     if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
       if (lhs->type_id_ == kInt64) {
-        return CompareScalarInt64<op_type, R, true>(this, rhs, lhs);
+        if constexpr (!std::is_same<R, ScalarRef *>::value) {
+          return CompareScalarInt64<op_type, R, true>(this, rhs, lhs);
+        }
+      }
+    }
+    if constexpr (op_type == kAdd) {
+      if (lhs->type_id_ == kInt64) {
+        if constexpr (!std::is_same<R, ScalarRef *>::value) {
+          return AddScalarInt64<R, true>(this, rhs, lhs);
+        }
+      }
+    } else if constexpr (op_type == kSub) {
+      if (lhs->type_id_ == kInt64) {
+        if constexpr (!std::is_same<R, ScalarRef *>::value) {
+          return SubScalarInt64<R, true>(this, rhs, lhs);
+        }
       }
     }
     NDObject *obj = GetBinaryS<op_type, R, true>(this, rhs, lhs);
@@ -938,6 +1083,10 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
       case kInt64: {
         if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
           return CompareInt64<op_type>(this, lhs, rhs);
+        } else if constexpr (op_type == kAdd) {
+          return AddInt64(this, lhs, rhs);
+        } else if constexpr (op_type == kSub) {
+          return SubInt64(this, lhs, rhs);
         }
         DvmException("int64 binary op not supported");
         return nullptr;
@@ -1045,6 +1194,18 @@ NDObject *Kernel::Broadcast(T val, IntArrayRef *shape, DataType type) {
   if (type == DataType::kBool) {
     return Cast(Broadcast(val, shape, DataType::kFloat16), DataType::kBool);
   }
+  if (type == DataType::kInt64) {
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      ASSERT(val->type == kInt64);
+      auto obj = new BroadcastInt64ScalarRefOp(val, shape);
+      kernel_->Append(obj);
+      return obj;
+    } else {
+      auto obj = new BroadcastInt64ScalarOp(static_cast<uint64_t>(CastToInt64Scalar(val)), shape);
+      kernel_->Append(obj);
+      return obj;
+    }
+  }
   NDObject *obj;
   if constexpr (std::is_same<T, ScalarRef *>::value) {
     obj = new BroadcastScalarRefOp(val, shape, type);
@@ -1057,6 +1218,7 @@ NDObject *Kernel::Broadcast(T val, IntArrayRef *shape, DataType type) {
 
 template NDObject *Kernel::Broadcast<float>(float val, IntArrayRef *shape, DataType type);
 template NDObject *Kernel::Broadcast<int32_t>(int32_t val, IntArrayRef *shape, DataType type);
+template NDObject *Kernel::Broadcast<int64_t>(int64_t val, IntArrayRef *shape, DataType type);
 template NDObject *Kernel::Broadcast<Float16>(Float16 val, IntArrayRef *shape, DataType type);
 template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, IntArrayRef *shape, DataType type);
 template NDObject *Kernel::Broadcast<ScalarRef *>(ScalarRef *val, IntArrayRef *shape, DataType type);

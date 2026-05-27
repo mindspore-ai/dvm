@@ -167,6 +167,11 @@ enum vSimdInsnID {
   V_CAST_BF16_TO_INT32,
   V_CMP_INT32,
   V_EXTRACT_B32, // [c220]
+  V_CAST_INT32_TO_INT64, // [c220]
+  V_CAST_INT64_TO_INT32, // [c220]
+  V_CAST_FP32_TO_INT64, // [c220]
+  V_CAST_INT64_TO_FP32, // [c220]
+  V_PACK_B32, // [c220]
   V_ABS_INT32, // [c310]
   V_CMPS_INT32, // [c310]
   V_ADDS_BF16, // [c310]
@@ -495,6 +500,33 @@ struct vBinaryWS {
     pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = op.count << 48 | op.xd << 18 | op.xm;
     pc[2] = op.ws1 << 18 | op.ws0;
+    return size;
+  }
+};
+
+struct vPack {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t xm;
+  uint64_t ws;
+  uint64_t count;
+  // pc[0]: xn(18)
+  // pc[1]: count(16) << 48 | xd(18) << 18 | xm(18)
+  // pc[2]: ws(18)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vPack &op) {
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.xm = data & V_X_MASK;
+    op.xd = (data >> 18) & V_X_MASK;
+    op.count = data >> 48;
+    data = pc[2];
+    op.ws = data & V_X_MASK;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vPack &op) {
+    uint64_t size = 3;
+    pc[0] = vMakeSimdHead(id, op.xn, size);
+    pc[1] = op.count << 48 | op.xd << 18 | op.xm;
+    pc[2] = op.ws;
     return size;
   }
 };

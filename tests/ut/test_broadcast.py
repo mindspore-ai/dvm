@@ -15,6 +15,7 @@
 
 import pytest
 import numpy as np
+import dvm
 from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
@@ -81,6 +82,22 @@ def test_broadcast_large_shape():
     x = t.load(a)
     y = t.broadcast(x, dst_shape)
     t.store_expect(y, np_res)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+@pytest.mark.parametrize("src_shape,dst_shape", [
+    ((8, 1, 257, 1), (8, 5, 257, 129)),
+    ((1, 9, 1, 257), (6, 9, 33, 257)),
+    ((4, 1, 8, 1, 129), (4, 3, 8, 17, 129)),
+])
+def test_broadcast_int64(src_shape, dst_shape):
+    t = Tester()
+    a = np.random.randint(0x10000000, 0x2000000000, size=src_shape, dtype=np.int64)
+    x = t.load(a)
+    y = t.broadcast(x, dst_shape)
+    t.store_expect(y, np.broadcast_to(a, dst_shape))
     assert (t.run_check())
 
 

@@ -343,6 +343,63 @@ __aicore_inline__ void ExtractB32(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vreducev2(xd, src, src, 1, 1, pattern, 0, 0);
 }
 
+__aicore_inline__ void InitPackOffset(__ubuf__ uint32_t *offset, uint64_t count) {
+  set_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID0);
+  for (uint64_t idx = 0; idx < TYPE_SHIFT(uint32_t); ++idx) {
+    offset[idx] = static_cast<uint32_t>(idx);
+  }
+  for (uint64_t cur_count = TYPE_SHIFT(uint32_t); cur_count < count;) {
+    uint64_t copy_count = cur_count < count - cur_count ? cur_count : count - cur_count;
+    set_vector_mask(0, copy_count);
+    vadds((__ubuf__ int32_t *)(offset + cur_count), (__ubuf__ int32_t *)offset, (int32_t)cur_count, 1, 1, 1, 8, 8);
+    pipe_barrier(PIPE_V);
+    cur_count += copy_count;
+  }
+  set_vector_mask(0, count);
+  vshr(offset, offset, (uint32_t)1, 1, 1, 1, 8, 8, false);
+  pipe_barrier(PIPE_V);
+  vshl(offset, offset, (uint32_t)2, 1, 1, 1, 8, 8);
+}
+
+__aicore_inline__ void PackGatherWithMask(__ubuf__ uint32_t *dst, __ubuf__ uint32_t *offset, __ubuf__ uint32_t *src,
+                                          uint64_t count, uint64_t repeat, uint64_t mask) {
+  uint64_t tail = count - repeat * BlockNum(uint32_t);
+  set_vector_mask(0, mask);
+  for (; repeat > 255; repeat -= 255) {
+    vgather(dst, offset, (uint64_t)src, 8, 255);
+    dst += 255 * BlockNum(uint32_t);
+    offset += 255 * BlockNum(uint32_t);
+  }
+  if (repeat > 0) {
+    vgather(dst, offset, (uint64_t)src, 8, repeat);
+    dst += repeat * BlockNum(uint32_t);
+    offset += repeat * BlockNum(uint32_t);
+  }
+  if (tail > 0) {
+    uint64_t tail_mask = ((1ul << tail) - 1) & mask;
+    set_vector_mask(0, tail_mask);
+    vgather(dst, offset, (uint64_t)src, 8, 1);
+  }
+}
+
+__aicore_inline__ void Pack(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vPack op;
+  vPack::Decode(pc, head, op);
+  __ubuf__ uint32_t *xd = (__ubuf__ uint32_t *)(op.xd);
+  __ubuf__ uint32_t *lo = (__ubuf__ uint32_t *)(op.xn);
+  __ubuf__ uint32_t *hi = (__ubuf__ uint32_t *)(op.xm);
+  __ubuf__ uint32_t *offset = (__ubuf__ uint32_t *)(op.ws);
+  uint64_t repeat = op.count >> 6;
+  InitPackOffset(offset, op.count);
+  pipe_barrier(PIPE_V);
+  set_mask_norm();
+  PackGatherWithMask(xd, offset, lo, op.count, repeat, 0x5555555555555555ul);
+  pipe_barrier(PIPE_V);
+  PackGatherWithMask(xd, offset, hi, op.count, repeat, 0xaaaaaaaaaaaaaaaaul);
+  set_mask_count();
+}
+
 template <typename T>
 __aicore_inline__ void BinCompareS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 #define CMPS_DISPATCH(op_type, builtin)                                     \
@@ -1987,6 +2044,7 @@ DEF_DISP_SIMD(V_CMP, BinCompare<float>(pc, head, tile))
 DEF_DISP_SIMD(V_CMPS, BinCompareS<float>(pc, head, tile))
 DEF_DISP_SIMD(V_CAST_FP32_TO_FP16, CAST(pc, vconv_f322f16, head, tile, float, half))
 DEF_DISP_SIMD(V_CAST_FP32_TO_INT32, CAST(pc, vconv_f322s32z, head, tile, float, int32_t))
+DEF_DISP_SIMD(V_CAST_FP32_TO_INT64, CAST(pc, vconv_f322s64z, head, tile, float, int64_t))
 DEF_DISP_SIMD(V_RSUM_X, (ReduceX<V_RED_SUM, float>(pc, head, tile)))
 DEF_DISP_SIMD(V_RSUM_Y, (ReduceY<V_RED_SUM, float>(pc, head, tile)))
 DEF_DISP_SIMD(V_RMAX_X, (ReduceX<V_RED_MAX, float>(pc, head, tile)))
@@ -2040,6 +2098,9 @@ DEF_DISP_SIMD(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t))
 DEF_DISP_SIMD(V_SEL_INT32, Select<float>(pc, head, tile))
 DEF_DISP_SIMD(V_CAST_INT32_TO_FP16, set_deqscale((half)1.0);CAST(pc, vconv_deq, head, tile, int32_t, half);)
 DEF_DISP_SIMD(V_CAST_INT32_TO_FP32, CAST(pc, vconv_s322f32, head, tile, int32_t, float))
+DEF_DISP_SIMD(V_CAST_INT32_TO_INT64, CAST(pc, vconv_s322s64, head, tile, int32_t, int64_t))
+DEF_DISP_SIMD(V_CAST_INT64_TO_FP32, CAST(pc, vconv_s642f32z, head, tile, int64_t, float))
+DEF_DISP_SIMD(V_CAST_INT64_TO_INT32, CAST(pc, vconv_s642s32, head, tile, int64_t, int32_t))
 
 DEF_DISP_SIMD(V_ISFINITE, IsFinite<uint32_t>(pc, head, tile))
 DEF_DISP_SIMD(V_MAXS, BINARYS(pc, vmaxs, head, float))
@@ -2067,3 +2128,4 @@ DEF_DISP_SIMD(V_DIVS_FP16, BINARYS_EXT(pc, vdiv, head, half))
 
 DEF_DISP_SIMD(V_CMP_INT32, CompareInt(pc, head, tile))
 DEF_DISP_SIMD(V_EXTRACT_B32, ExtractB32(pc, head, tile))
+DEF_DISP_SIMD(V_PACK_B32, Pack(pc, head, tile))

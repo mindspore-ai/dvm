@@ -53,6 +53,7 @@ enum ObjectType {
   kBinary,
   kCast,
   kExtract,
+  kPack,
   kBinaryS,
   kBroadcastTo,
   kBroadcastS,
@@ -908,6 +909,19 @@ class ExtractOp : public NDObject {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   int slot_;
+};
+
+class PackOp : public FlexOp {
+ public:
+  PackOp(NDObject *lo, NDObject *hi) : FlexOp(lo, hi, DataType::kInt64, ObjectType::kPack) {
+    ASSERT(lo->type_id_ == kInt32 && hi->type_id_ == kInt32);
+    ws_num_ = 1;
+    shape_ref_ = lo->shape_ref_;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
 };
 
 enum BinarySOpType {

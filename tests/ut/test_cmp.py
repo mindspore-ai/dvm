@@ -161,13 +161,14 @@ def test_cmp_repeat_overflow():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
                                       (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
                                       (Tester.not_equal, np.not_equal)])
 def test_cmp_int64(op, func):
     t = Tester()
-    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
-    b = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000], dtype=np.int64)
+    b = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000], dtype=np.int64)
     if op == Tester.equal or op == Tester.not_equal:
         a[10][100] = 1000
         a[10][100] = 1000
@@ -181,12 +182,32 @@ def test_cmp_int64(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
+@pytest.mark.parametrize('op, func', [(Tester.greater_equal, np.greater_equal)])
+@pytest.mark.parametrize("lhs_shape,rhs_shape", [
+    ((8, 1, 257, 1), (1, 5, 257, 129)),
+    ((1, 9, 1, 257), (6, 9, 33, 1)),
+    ((4, 1, 8, 1, 129), (1, 3, 1, 17, 129)),
+])
+def test_cmp_int64_broadcast(lhs_shape, rhs_shape, op, func):
+    t = Tester()
+    a = np.random.randint(0x10000000, 0x2000000000, size=lhs_shape, dtype=np.int64)
+    b = np.random.randint(0x10000000, 0x2000000000, size=rhs_shape, dtype=np.int64)
+    x = t.load(a)
+    y = t.load(b)
+    z = op(t, x, y)
+    t.store_expect(z, func(a, b))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
                                       (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
                                       (Tester.not_equal, np.not_equal)])
 def test_cmp_int64_s_r(op, func):
     t = Tester()
-    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000], dtype=np.int64)
     if op == Tester.equal or op == Tester.not_equal:
         a[10][100] = 1000
         a[10][100] = 1000
@@ -199,12 +220,13 @@ def test_cmp_int64_s_r(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
                                       (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
                                       (Tester.not_equal, np.not_equal)])
 def test_cmp_int64_s_l(op, func):
     t = Tester()
-    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000]).astype(np.int64)
+    a = np.random.randint(0x10000000, 0x2000000000, size=[800, 1000], dtype=np.int64)
     if op == Tester.equal or op == Tester.not_equal:
         a[10][100] = 1000
         a[10][100] = 1000

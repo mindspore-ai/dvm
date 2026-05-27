@@ -76,12 +76,14 @@ static const InsnIdTable binarys_id_list[] = {
   {"Maximum", {V_NONE, V_MAXS_FP16, V_MAXS_BF16, V_MAXS, V_MAXS_INT32}},
   {"Minimum", {V_NONE, V_MINS_FP16, V_MINS_BF16, V_MINS, V_MINS_INT32}}};
 
-static const vSimdInsnID cast_id_list[][kDataTypeEnd] = {
-  {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE},                             // V_BOOL
-  {V_CAST_FP16_TO_BOOL, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32},  // V_FLOAT16
-  {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32},               // V_BFLOAT16
-  {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32},  // V_FLOAT32
-  {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE},              // V_INT32
+static const vSimdInsnID cast_id_list[DataType::kDataTypeEnd][DataType::kDataTypeEnd] = {
+  {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE, V_NONE},  // V_BOOL
+  {V_CAST_FP16_TO_BOOL, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32, V_NONE},  // V_FLOAT16
+  {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32, V_NONE},               // V_BFLOAT16
+  {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32,
+   V_CAST_FP32_TO_INT64},  // V_FLOAT32
+  {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE, V_CAST_INT32_TO_INT64},  // V_INT32
+  {V_NONE, V_NONE, V_NONE, V_CAST_INT64_TO_FP32, V_CAST_INT64_TO_INT32, V_NONE},  // V_INT64
 };
 
 static const vSimdInsnID reduce_x_list[][ReduceType::kReduceTypeEnd] = {
@@ -462,6 +464,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},                               // Binary
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // Cast
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                     // Extract
+    {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                                      // Pack
     {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                               // BinaryS
     {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect, BroadcastOp::ShapeProp},                     // BroadcastTo
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},                                                    // BroadcastS
@@ -1830,6 +1833,20 @@ NDObject *ExtractOp::Clone(CloneHelper &h) { return new ExtractOp(h.GetClone(lhs
 void ExtractOp::Dump(bool verbose, std::ostringstream &oss) {
   oss << "Extract<" << slot_ << '>';
 }
+
+uint64_t PackOp::Emit(VectorKernel &k) {
+  vPack op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xm = rhs_->xbuf_;
+  op.count = nd_.stride_back() * 2;
+  op.ws = wss_[0];
+  return vPack::Encode(insn_, V_PACK_B32, op);
+}
+
+NDObject *PackOp::Clone(CloneHelper &h) { return new PackOp(h.GetClone(lhs_), h.GetClone(rhs_)); }
+
+void PackOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Pack"; }
 
 uint64_t BinaryScalarOp::Emit(VectorKernel &k) {
   vBinaryS op;

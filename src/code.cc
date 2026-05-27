@@ -584,6 +584,15 @@ void DumpBinaryWS(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("ws1", reinterpret_cast<void *>(op.ws1), oss);
 }
 
+void DumpPack(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vPack op;
+  vPack::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << op.count;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
+  oss << ", " << reinterpret_cast<void *>(op.xm) << " //";
+  DumpVal("ws", reinterpret_cast<void *>(op.ws), oss);
+}
+
 void DumpCompare(const DumpInfo &dump_info, std::ostringstream &oss) {
   vCompare op;
   vCompare::Decode(dump_info.insn, *dump_info.insn, op);
@@ -871,6 +880,10 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CAST_INT32_TO_FP16, {&DumpUnary, "CastS32", "fp16"}},
   {V_CAST_BF16_TO_FP32, {&DumpUnary, "CastBF16", "fp32"}},
   {V_CAST_BF16_TO_INT32, {&DumpUnary, "CastBF16", "int32"}},
+  {V_CAST_INT32_TO_INT64, {&DumpUnary, "CastS32", "int64"}},
+  {V_CAST_INT64_TO_INT32, {&DumpUnary, "CastS64", "int32"}},
+  {V_CAST_FP32_TO_INT64, {&DumpUnary, "CastFP32", "int64"}},
+  {V_CAST_INT64_TO_FP32, {&DumpUnary, "CastS64", "fp32"}},
   {V_ADDS, {&DumpBinaryS, "Adds", "fp32"}},
   {V_ADDS_FP16, {&DumpBinaryS<Float16>, "Adds", "fp16"}},
   {V_ADDS_BF16, {&DumpBinaryS<dvm::BFloat16>, "Adds", "bf16"}},
@@ -919,6 +932,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_CMP_BF16, {&DumpCompare, "Compare", "bf16"}},
   {V_CMP_INT32, {&DumpCompare, "Compare", "int32"}},
   {V_EXTRACT_B32, {&DumpExtract, "Extract", "b32"}},
+  {V_PACK_B32, {&DumpPack, "Pack", "b32"}},
   {V_CMPS, {&DumpCompareS<float>, "CompareS", "fp32"}},
   {V_CMPS_FP16, {&DumpCompareS<Float16>, "CompareS", "fp16"}},
   {V_CMPS_BF16, {&DumpCompareS<dvm::BFloat16>, "CompareS", "bf16"}},

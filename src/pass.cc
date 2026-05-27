@@ -526,9 +526,7 @@ void InsertRemovePad(BasicBlock &block) {
   }
 
   TileInfo info;
-  info.lead_depth = max_depth;
-  info.lead_affine = PropRange::ELEMWISE;
-  info.flags = 0;
+  info.Reset(max_depth);
   for (auto &op : block) {
     if (auto ndd = op.Ndd(); ndd != nullptr && ndd->dims.size() != max_depth) {
       ndd->dims.resize(max_depth, 1);

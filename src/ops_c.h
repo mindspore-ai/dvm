@@ -57,11 +57,19 @@ class CommOp : public NDObject {
     nd_.data = &ndd_;
   }
   ~CommOp() override = default;
-  // Extra space needed to store expanded instructions
-  uint64_t CodeReserve() { return code_reserve_; }
   int XbufReserve() { return xbuf_reserve_; }
   void SetXbufSize(uint32_t size) { xbuf_size_ = size; }
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
+  void TileReserve(TileInfo &info) {
+    if (info.code_reserve < code_reserve_) {
+      info.code_reserve = code_reserve_;
+    }
+    if (info.event_reserve < 2) {
+      info.event_reserve = 2;
+    }
+  }
+
+  static void TileCollect(NDObject *op, TileInfo &info);
 
  public:
   std::vector<uint64_t> xbufs_;

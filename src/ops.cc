@@ -455,8 +455,8 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenStore, F_IP | F_NS | F_LD, NDStore::DimChanged, nullptr, nullptr},                          // Store
     {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::TileCollect, ReduceScatterOp::ShapeProp},         // ReduceScatter
     {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::TileCollect, AllGatherOp::ShapeProp},                           // AllGather
-    {kGenComm, 0, nullptr, nullptr, nullptr},                                                        // AllGatherV2
-    {kGenComm, F_LR, nullptr, nullptr, nullptr},                                                     // AllReduce
+    {kGenComm, 0, nullptr, nullptr, CommOp::TileCollect, nullptr},                                                        // AllGatherV2
+    {kGenComm, F_LR, nullptr, nullptr, CommOp::TileCollect, nullptr},                                                     // AllReduce
     {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr, ReshapeOp::ShapeProp},                                             // Reshape
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Copy
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Unary
@@ -841,6 +841,9 @@ void NDViewLoad::TileCollect(NDObject *op, TileInfo &info) {
     if (static_cast<uint64_t>(stride[0]) > ITEM_SIZE[view->type_id_] && info.ext_ws < EXT_WS) {
       info.ext_ws = EXT_WS;
     }
+    if (info.event_reserve < 2) {
+      info.event_reserve = 2;
+    }
   }
 }
 
@@ -969,12 +972,6 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       space *= fold_dim[i];
     }
     addr_.Update(insn_ + vViewLoadX::RELOC_OFFSET);
-    if (k.forward_event_num_ > 6) {
-      k.forward_event_num_ = 6;
-    }
-    if (k.backward_event_num_ > 6) {
-      k.backward_event_num_ = 6;
-    }
     return vViewLoadX::Encode(insn_, item_size == 2 ?  V_LOAD_VIEW_X_B16 : V_LOAD_VIEW_X_B32 , op);
   } else {
     vViewLoad op;
@@ -1093,6 +1090,9 @@ void NDViewStore::TileCollect(NDObject *op, TileInfo &info) {
     constexpr uint32_t EXT_WS = 512;
     if (static_cast<uint64_t>(stride[0]) > ITEM_SIZE[store->type_id_] && info.ext_ws < EXT_WS) {
       info.ext_ws = EXT_WS;
+    }
+    if (info.event_reserve < 2) {
+      info.event_reserve = 2;
     }
   }
 }
@@ -1220,12 +1220,6 @@ uint64_t NDViewStore::Emit(VectorKernel &k) {
       space *= fold_dim[i];
     }
     addr_.Update(insn_ + vViewStoreX::RELOC_OFFSET);
-    if (k.forward_event_num_ > 6) {
-      k.forward_event_num_ = 6;
-    }
-    if (k.backward_event_num_ > 6) {
-      k.backward_event_num_ = 6;
-    }
     return vViewStoreX::Encode(insn_, item_size == 2 ? V_STORE_VIEW_X_B16 : V_STORE_VIEW_X_B32, op);
   }
   vViewStore op;
@@ -2354,8 +2348,12 @@ void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
 }
 
 void _ReduceOp::TileCollect(NDObject *op, TileInfo &info) {
-  auto &lhs_nd = op->lhs_->nd_;
-  auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
+  auto self = static_cast<_ReduceOp *>(op);
+  if (self->ws_num_ == 2 && info.event_reserve < 2) {
+    info.event_reserve = 2;
+  }
+  auto &lhs_nd = self->lhs_->nd_;
+  auto &ndd = self->ndd_;
   BroadReduceTileCollect<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, info);
   info.flags = ObjectMeta::kSimdDim;
 }
@@ -2805,12 +2803,6 @@ uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
   ws_reloc_.ws = 0;
   ws_reloc_.Update(tail_insn_ + vReduceJoin::RELOC_OFFSET);
   k.code_.BindWorkspace(ws_reloc_, ws_offset);
-  if (k.forward_event_num_ > 6) {
-    k.forward_event_num_ = 6;
-  }
-  if (k.backward_event_num_ > 6) {
-    k.backward_event_num_ = 6;
-  }
   return size;
 }
 

@@ -211,8 +211,8 @@ def test_cmp_int64_s_r(op, func):
     if op == Tester.equal or op == Tester.not_equal:
         a[10][100] = 1000
         a[10][100] = 1000
-        a[100][2] = 1000
-        a[100][2] = 1
+        a[100][3] = 1000
+        a[100][3] = 1000
     x = t.load(a)
     y = op(t, x, 1000)
     t.store_expect(y, func(a, 1000))
@@ -230,8 +230,8 @@ def test_cmp_int64_s_l(op, func):
     if op == Tester.equal or op == Tester.not_equal:
         a[10][100] = 1000
         a[10][100] = 1000
-        a[100][2] = 1000
-        a[100][2] = 1
+        a[100][3] = 1000
+        a[100][3] = 1000
     x = t.load(a)
     y = op(t, 1000, x)
     t.store_expect(y, func(1000, a))

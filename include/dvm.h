@@ -300,7 +300,7 @@ class Kernel {
   NDObject *GatherLoad(void *addr, IntArrayRef *shape, NDObject *index, int axis, DataType type);
 
   /**
-   * @brief [DEPRECATED] Emit a slice load operation from input tensor. please use incontinuous load.
+   * @brief Emit a slice load operation from input tensor. please use incontinuous load.
    */
   NDObject *SliceLoad(void *addr, IntArrayRef *shape, IntArrayRef *start, IntArrayRef *size, DataType type);
 
@@ -351,6 +351,9 @@ class Kernel {
    * @param store store operation.
    */
   void SetStoreInplace(NDObject *store);
+
+  void SetStoreTemp(NDObject *store);
+  void SetLoadBind(NDObject *load, NDObject *access);
 
   /**
    * @brief Emit a unary operation.

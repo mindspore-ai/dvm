@@ -305,3 +305,33 @@ def test_auto_spec_indirect_cut_depend():
     t.store_expect(x3, e3)
     t.store_expect(x4, e3 + e1)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_custom():
+    t = Tester("vector:spec,priv1")
+    a0 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    x0 = t.load(a0)
+    x0 = t.mul(x0, 0.1)
+    x1 = t.store(x0)
+    x2 = t.load([1024, 500], "float32")
+    t.set_store_temp(x1)
+    t.set_load_bind(x2, x1)
+    x3 = t.add(x2, 0.2)
+    t.store_expect(x3, a0 * 0.1 + 0.2)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_slice():
+    t = Tester("vector:spec,priv1")
+    a0 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.mul(x0, 0.1)
+    x2 = t.store(x1)
+    x3 = t.slice_load([1024, 500], [100, 100],  [600, 300], "float32")
+    t.set_store_temp(x2)
+    t.set_load_bind(x3, x2)
+    x4 = t.add(x3, 0.2)
+    t.store_expect(x4, (a0 * 0.1)[100:700, 100:400] + 0.2)
+    assert (t.run_check())

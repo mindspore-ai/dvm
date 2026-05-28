@@ -179,6 +179,8 @@ class KernelPy {
     return ObjToPy(op);
   }
   void SetStoreInplace(py::object store) { kernel_.SetStoreInplace(PyToObj(store)); }
+  void SetStoreTemp(py::object store) { kernel_.SetStoreTemp(PyToObj(store)); }
+  void SetLoadBind(py::object load, py::object access) { kernel_.SetLoadBind(PyToObj(load), PyToObj(access)); }
   py::object DisAssemble() { return py::cast(kernel_.Das()); }
   py::object DumpGraph() { return py::cast(kernel_.Dump()); }
   void SpecNext() { kernel_.SpecNext(); }
@@ -262,6 +264,8 @@ static inline void RegDvmPy(const py::module &m) {
     .def("view_store", &KernelPy::ViewStore, "store array with stride", py::arg("obj"), py::arg("stride"),
          py::arg("type") = DataTypePy(kDataTypeEnd))
     .def("set_store_inplace", &KernelPy::SetStoreInplace, "store inplace")
+    .def("set_store_temp", &KernelPy::SetStoreTemp, "mark store as temporary")
+    .def("set_load_bind", &KernelPy::SetLoadBind, "mark load bind")
     .def("scalar", &KernelPy::MakeScalar, "create scalar", py::arg("dtype") = DataTypePy(kDataTypeEnd))
     .def("int_array", &KernelPy::MakeIntArray, "create int array")
     .def("sqrt", &KernelPy::Unary<UnaryOpType::kSqrt>, "emit sqrt")

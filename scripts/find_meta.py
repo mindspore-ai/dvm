@@ -3,37 +3,35 @@ import sys
 import struct
 import subprocess
 
-def find_section_offset(binary_path, section_name):
+def find_section_info(binary_path, section_name):
     result = subprocess.run(
         ['objdump', '-h', binary_path],
-        capture_output=True, text=True
+        capture_output=True, text=True, check=True
     )
-    for line in result.stdout.split('\n'):
-        if section_name in line and 'Idx' not in line:
-            parts = line.split()
-            for part in reversed(parts):
-                if len(part) >= 8 and all(c in '0123456789abcdef' for c in part):
-                    try:
-                        return int(part, 16)
-                    except ValueError:
-                        continue
-    return None
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) >= 7 and parts[1] == section_name:
+            size = int(parts[2], 16)
+            file_off = int(parts[5], 16)
+            return file_off, size
+
+    raise ValueError(f"section {section_name} not found")
 
 def find_aiv_type_value_offset(binary_path):
     section_name = '.ascend.meta.dvm_mix_aiv'
-    section_offset = find_section_offset(binary_path, section_name)
+    section_offset, section_size = find_section_info(binary_path, section_name)
+
     with open(binary_path, 'rb') as f:
         f.seek(section_offset)
-        section_size = 48
         pos = 0
-        while pos < section_size:
-            type_val = struct.unpack('<H', f.read(2))[0]
-            reserved = struct.unpack('<H', f.read(2))[0]
-            value = struct.unpack('<I', f.read(4))[0]
+        while pos + 8 <= section_size:
+            data = f.read(8)
+            type_val, reserved, value = struct.unpack('<HHI', data)
             if type_val == 12:
-                value_offset = section_offset + pos + 4
-                return value_offset
+                return section_offset + pos + 4
             pos += 8
+
     raise ValueError("aiv_type meta not found")
 
 if __name__ == '__main__':

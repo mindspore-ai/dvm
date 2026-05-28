@@ -1908,6 +1908,13 @@ SpecVecContext::~SpecVecContext() {
 uint64_t SpecVecBase::CodeGen() { return DoCodeGenInner(g_system.CoreNum()); }
 
 bool SpecVecBase::SpecBuild() {
+  if (fall_opt_ & FALL_CUSTOM_SPLIT) {
+    fall_opt_ &= ~FALL_CUSTOM_SPLIT;
+    if (CustomSpec()) {
+      SplitBuild();
+      return false;
+    }
+  }
   if (fall_opt_ & FALL_RESHAPE) {
     fall_opt_ &= ~FALL_RESHAPE;
     if (ReshapeSpec()) {
@@ -2094,6 +2101,47 @@ bool SpecVecBase::ReduceSpec() {
   return true;
 }
 
+bool SpecVecBase::CustomSpec() {
+  ctx_.ResetSpec();
+  auto &spec_ops = ctx_.spec_ops_;
+  size_t custom_begin = spec_ops.size();
+  for (auto op : objects_) {
+    InitMeta(op);
+  }
+  for (size_t i = 0; i < load_num_; ++i) {
+    auto op = static_ops_[i];
+    if (op->CheckFlag(OBJ_FLAG_LOAD_BIND)) {
+      auto store = static_cast<NDAccess *>(op)->LoadBind();
+      if (!GetMeta(store)->IsCut()) {
+        spec_ops.push_back(store);
+        GetMeta(store)->SetCut();
+      }
+    }
+  }
+  size_t cut_begin = spec_ops.size();
+  if (cut_begin == custom_begin) {
+    return false;
+  }
+  for (size_t i = custom_begin; i < cut_begin; ++i) {
+    spec_ops.push_back(spec_ops[i]->lhs_);
+  }
+  SplitPlan(cut_begin);
+  for (size_t i = 0; i < load_num_; ++i) {
+    auto op = static_ops_[i];
+    if (op->CheckFlag(OBJ_FLAG_LOAD_BIND)) {
+      auto load = static_cast<NDAccess *>(op);
+      auto store = load->LoadBind();
+      auto store_aid = ctx_.RootArea(GetMeta(store)->aid);
+      auto load_aid = ctx_.RootArea(GetMeta(load)->aid);
+      if (store_aid == load_aid) {
+        ctx_.areas_[store_aid].ext_opt = FALL_CUSTOM_SPLIT;
+      }
+    }
+  }
+  spec_ops.resize(custom_begin);
+  return true;
+}
+
 bool SpecVecBase::ReshapeSpec() {
   ctx_.ResetSpec();
   auto &spec_ops = ctx_.spec_ops_;
@@ -2197,6 +2245,10 @@ void SpecVecBase::SplitBuild() {
     auto stage = ctx_.areas_[ctx_.RootArea(GetMeta(load)->aid)].stage;
     if (load->CheckFlag(OBJ_FLAG_STAGE_IO)) {
       stage->StageLoad(load, static_cast<_SpecSwapLoad *>(load)->store_);
+    } else if (load->CheckFlag(OBJ_FLAG_LOAD_BIND)) {
+      auto store = static_cast<NDAccess *>(load->addr_.gm);
+      ctx_.tracker_.Record(reinterpret_cast<NDObject **>(&load->addr_.gm));
+      stage->StageLoad(load, store);
     }
   }
   for (size_t i = load_num_; i < static_ops_.size(); ++i) {
@@ -2207,7 +2259,7 @@ void SpecVecBase::SplitBuild() {
     if (store->obj_id_ == ObjectType::kStore) {
       GetMeta(store->lhs_)->store = static_cast<uint16_t>(stage->sstores_.size());
     }
-    stage->StageStore(static_cast<NDAccess *>(store), !store->CheckFlag(OBJ_FLAG_STAGE_IO));
+    stage->StageStore(static_cast<NDAccess *>(store), !(store->flags_ & (OBJ_FLAG_STAGE_IO | OBJ_FLAG_STORE_TEMP)));
   }
   for (auto op : objects_) {
     auto out_aid = ctx_.RootArea(GetMeta(op)->aid);
@@ -2320,34 +2372,43 @@ void SpecVecKernel::Append(NDObject *obj) {
   VKernelS::Append(obj);
 }
 
+void SpecVecKernel::SpecInit() {
+  // dead code elim
+  for (auto op : build_ops_) {
+    op->reuse_dep_ = op->IsStore() ?  1 : 0;
+  }
+  for (auto it = build_ops_.rbegin(); it != build_ops_.rend(); ++it) {
+    if (auto op = *it; op->reuse_dep_) {
+      op->ForInput([](NDObject *in) { in->reuse_dep_ = 1;});
+    }
+  }
+  size_t index = 0;
+  for (auto op : build_ops_) {
+    if (!op->reuse_dep_) {
+      delete op;
+    } else {
+      build_ops_[index++] = op;
+    }
+  }
+  build_ops_.resize(index);
+  StaticInit(build_ops_);
+  if ((fall_opt_init_ & FALL_BROADCAST) && static_ops_.size() < 4) {
+    fall_opt_init_ &= ~FALL_BROADCAST;
+  }
+  for (size_t i = 0; i < load_num_; ++i) {
+    if (static_ops_[i]->CheckFlag(OBJ_FLAG_LOAD_BIND)) {
+      fall_opt_init_ |= FALL_CUSTOM_SPLIT;
+    }
+  }
+}
+
 uint64_t SpecVecKernel::CodeGen() {
+  if (static_ops_.empty()) {
+    SpecInit();
+  }
   context_.Reset();
   Clear();
   fall_opt_ = fall_opt_init_;
-  if (static_ops_.empty()) {
-    // dead code elim
-    for (auto op : build_ops_) {
-      op->reuse_dep_ = op->IsStore() ?  1 : 0;
-    }
-    for (auto it = build_ops_.rbegin(); it != build_ops_.rend(); ++it) {
-      if (auto op = *it; op->reuse_dep_) {
-        op->ForInput([](NDObject *in) { in->reuse_dep_ = 1;});
-      }
-    }
-    size_t index = 0;
-    for (auto op : build_ops_) {
-      if (!op->reuse_dep_) {
-        delete op;
-      } else {
-        build_ops_[index++] = op;
-      }
-    }
-    build_ops_.resize(index);
-    StaticInit(build_ops_);
-    if ((fall_opt_init_ & FALL_BROADCAST) && static_ops_.size() < 4) {
-      fall_opt_init_ &= ~FALL_BROADCAST;
-    }
-  }
   for (auto op : build_ops_) {
     op->Normalize(objects_);
     objects_.push_back(op);

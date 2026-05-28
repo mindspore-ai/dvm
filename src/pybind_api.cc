@@ -762,6 +762,9 @@ void RtKernelPy::ClearStoreMemory(py::object store) {
 
 void RtKernelPy::PrepareStore(StoreInfo &info) {
   auto op = info.op;
+  if (op->CheckFlag(OBJ_FLAG_STORE_TEMP)) {
+    return;
+  }
   if (!info.set_host) {
     size_t size = ITEM_SIZE[op->type_id_];
     for (size_t i = 0; i < op->shape_ref_->size; i++) {

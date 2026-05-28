@@ -1157,6 +1157,13 @@ void Kernel::SetStoreInplace(NDObject *store) {
   _SplitKernel::SetStoreInplace(store, 1);
 }
 
+void Kernel::SetStoreTemp(NDObject *store) { store->SetFlag(OBJ_FLAG_STORE_TEMP); }
+
+void Kernel::SetLoadBind(NDObject *load, NDObject *access) {
+  load->SetFlag(OBJ_FLAG_LOAD_BIND);
+  static_cast<NDAccess *>(load)->addr_.gm = access;
+}
+
 NDObject *Kernel::_AllReduce(int op_type, NDObject *input, const Comm *comm) {
   NDObject *obj;
   if (input->type_id_ == DataType::kBFloat16) {

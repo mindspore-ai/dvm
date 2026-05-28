@@ -432,6 +432,7 @@ class SpecVecBase : public VKernelS {
   bool BroadcastSpec();
   bool ReduceSpec();
   bool ReshapeSpec();
+  bool CustomSpec();
 
   struct OpMeta {
     void SetCut() { cut_mark = CUT_MARK; }
@@ -465,6 +466,7 @@ class SpecVecBase : public VKernelS {
   static constexpr uint32_t FALL_BROADCAST = 1;
   static constexpr uint32_t FALL_REDUCE = 2;
   static constexpr uint32_t FALL_RESHAPE = 4;
+  static constexpr uint32_t FALL_CUSTOM_SPLIT = 8;
 };
 
 class SpecVecKernel : public SpecVecBase {
@@ -477,6 +479,8 @@ class SpecVecKernel : public SpecVecBase {
   uint64_t CodeGen() override;
 
  protected:
+  void SpecInit();
+
   uint32_t fall_opt_init_{0};
   SpecVecContext context_;
 };

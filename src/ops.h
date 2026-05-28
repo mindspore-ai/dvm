@@ -409,6 +409,8 @@ class VectorKernel;
 #define OBJ_FLAG_STAGE_IO (16u << 16)
 
 #define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
+#define OBJ_FLAG_STORE_TEMP (1u << 31)
+#define OBJ_FLAG_LOAD_BIND (1u << 29)
 #define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
 #define OBJ_FLAG_REDUCE_NO_CUM (1u << 30)
@@ -525,6 +527,10 @@ class NDAccess : public NDObject {
  public:
   NDAccess(void *gm, NDObject *lhs, DataType type_id, ObjectType obj_id)
       : NDObject(lhs, nullptr, type_id, obj_id), addr_({gm}) {}
+  NDAccess *LoadBind() const {
+    ASSERT(flags_ & OBJ_FLAG_LOAD_BIND);
+    return static_cast<NDAccess *>(addr_.gm);
+  }
   RelocAddr addr_;
 };
 

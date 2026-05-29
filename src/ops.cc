@@ -476,6 +476,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},                                // Compare
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // CompareS
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},                // OneHot
+    {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                             // Permute
   };
 
   ObjectMeta meta;
@@ -1714,6 +1715,48 @@ void ReshapeOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
   shape.Resize(dst_shape->size);
   for (size_t i = 0; i < dst_shape->size; ++i) {
     shape[i] = dst_shape->data[i];
+  }
+}
+
+void PermuteOp::Normalize(std::vector<NDObject *> &run_ops) {
+  size_t dim_size = lhs_->shape_ref_->size;
+  for (size_t k = 0; k < dim_size; ++k) {
+    perm_[k] = dim_size - 1 - dims_ref_->data[dim_size - 1 - k];
+  }
+  perm_.resize(dim_size);
+  ndd_.dims.resize(dim_size);
+  shape_.Resize(dim_size);
+  for (size_t k = 0; k < dim_size; ++k) {
+    ndd_.dims[k] = lhs_->nd_.data->dims[perm_[k]];
+  }
+  for (size_t k = 0; k < dim_size; ++k) {
+    shape_[dim_size - 1 - k] = ndd_.dims[k];
+  }
+}
+
+uint64_t PermuteOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(k.LeadAlign());
+  return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
+}
+
+NDObject *PermuteOp::Clone(CloneHelper &h) { return new PermuteOp(h.GetClone(lhs_), dims_ref_); }
+
+void PermuteOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Permute"; }
+
+void PermuteOp::FoldProp(NDObject *op, PropRange &range) {
+  if (!(op->flags_ & OBJ_FLAG_BROKER_AFFINED)) {
+    range.depth = 1;
+  }
+}
+
+void PermuteOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<PermuteOp *>(op);
+  auto &shape = self->shape_;
+  auto dims_ref = self->dims_ref_;
+  auto input_shape = self->lhs_->shape_ref_;
+  shape.Resize(dims_ref->size);
+  for (size_t i = 0; i < dims_ref->size; ++i) {
+    shape[i] = input_shape->data[dims_ref->data[i]];
   }
 }
 

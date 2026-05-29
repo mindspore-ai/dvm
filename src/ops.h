@@ -65,6 +65,7 @@ enum ObjectType {
   kCompare,
   kCompareS,
   kOneHot,
+  kPermute,
   kCubeOp,
   kGmmOp,
   kObjectBulk
@@ -632,6 +633,7 @@ class NDViewLoad : public NDAccess {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  DimArray &Stride() { return src_stride_; }
 
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
@@ -692,6 +694,7 @@ class NDViewStore : public NDAccess {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  DimArray &Stride() { return dst_stride_; }
 
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
@@ -838,6 +841,31 @@ class ReshapeOp : public CopyOp {
   IntArrayRef *dst_shape_ref_;
   ShapeWithRef shape_;
   NDSpaceData ndd_;
+};
+
+class PermuteOp : public CopyOp {
+ public:
+  PermuteOp(NDObject *input, IntArrayRef *dims_ref) : CopyOp(input) {
+    dims_ref_ = dims_ref;
+    shape_ref_ = &shape_;
+    nd_.data = &ndd_;
+    obj_id_ = ObjectType::kPermute;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  const DimArray &GetNddPerm() const { return perm_; }
+
+  static void FoldProp(NDObject *op, PropRange &range);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
+ protected:
+  IntArrayRef *dims_ref_;
+  ShapeWithRef shape_;
+  NDSpaceData ndd_;
+  DimArray perm_;
 };
 
 class UnaryOp : public NDObject {

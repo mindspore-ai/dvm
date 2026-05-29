@@ -1262,6 +1262,12 @@ NDObject *Kernel::Reshape(NDObject *input, IntArrayRef *shape) {
   return obj;
 }
 
+NDObject *Kernel::Permute(NDObject *input, IntArrayRef *dims) {
+  auto obj = new PermuteOp(input, dims);
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::_Reduce(int op_type, NDObject *input, IntArrayRef *dims, bool keepdims) {
   if (input->type_id_ != DataType::kFloat32 && op_type == kSum) {
     return nullptr;
@@ -1324,6 +1330,14 @@ void Kernel::SetStoreTemp(NDObject *store) { store->SetFlag(OBJ_FLAG_STORE_TEMP)
 void Kernel::SetLoadBind(NDObject *load, NDObject *access) {
   load->SetFlag(OBJ_FLAG_LOAD_BIND);
   static_cast<NDAccess *>(load)->addr_.gm = access;
+}
+
+NDObject *Kernel::Slice(NDObject *input, IntArrayRef *start, IntArrayRef *size) {
+  auto store = Store(nullptr, input);
+  SetStoreTemp(store);
+  auto load = SliceLoad(nullptr, input->shape_ref_, start, size, input->type_id_);
+  SetLoadBind(load, store);
+  return load;
 }
 
 NDObject *Kernel::_AllReduce(int op_type, NDObject *input, const Comm *comm) {

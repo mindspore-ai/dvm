@@ -161,6 +161,12 @@ class KernelPy {
   py::object Reshape(py::object input, py::object shape) {
     return ObjToPy(kernel_.Reshape(PyToObj(input), GetShapeRef(shape)));
   }
+  py::object Permute(py::object input, py::object dims) {
+    return ObjToPy(kernel_.Permute(PyToObj(input), GetShapeRef(dims)));
+  }
+  py::object Slice(py::object input, py::object start, py::object size) {
+    return ObjToPy(kernel_.Slice(PyToObj(input), GetShapeRef(start), GetShapeRef(size)));
+  }
   py::object Copy(py::object input) { return ObjToPy(kernel_.Copy(PyToObj(input))); }
   py::object Broadcast(py::object input, py::object shape) {
     return ObjToPy(kernel_.Broadcast(PyToObj(input), GetShapeRef(shape)));
@@ -300,6 +306,8 @@ static inline void RegDvmPy(const py::module &m) {
     .def("broadcast", &KernelPy::Broadcast, "emit broadcast op")
     .def("full", &KernelPy::Full, "emit full op")
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
+    .def("permute", &KernelPy::Permute, "emit permute op")
+    .def("slice", &KernelPy::Slice, "emit slice op")
     .def("sum", &KernelPy::Reduce<ReduceOpType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
          "emit sum")
     .def("max", &KernelPy::Reduce<ReduceOpType::kMax>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,

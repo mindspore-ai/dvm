@@ -433,6 +433,7 @@ class SpecVecBase : public VKernelS {
   bool ReduceSpec();
   bool ReshapeSpec();
   bool CustomSpec();
+  bool PermuteSpec();
 
   struct OpMeta {
     void SetCut() { cut_mark = CUT_MARK; }
@@ -460,6 +461,9 @@ class SpecVecBase : public VKernelS {
   }
   void SplitBuild();
 
+  bool PermPropCheck(int prop, const DimArray &perm);
+  void PermPropUpdate(int prop, const DimArray &perm);
+
   SpecVecContext &ctx_;
   int64_t tile_limit_;
   uint32_t fall_opt_;
@@ -467,6 +471,7 @@ class SpecVecBase : public VKernelS {
   static constexpr uint32_t FALL_REDUCE = 2;
   static constexpr uint32_t FALL_RESHAPE = 4;
   static constexpr uint32_t FALL_CUSTOM_SPLIT = 8;
+  static constexpr uint32_t FALL_PERMUTE = 16;
 };
 
 class SpecVecKernel : public SpecVecBase {

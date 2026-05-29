@@ -429,6 +429,23 @@ class Kernel {
   NDObject *Reshape(NDObject *input, IntArrayRef *shape);
 
   /**
+   * @brief Emit a permute operation. dims[i] means new dim i comes from old dim dims[i].
+   * @param input input operation.
+   * @param dims permutation axes reference (PyTorch convention).
+   * @return the result operation.
+   */
+  NDObject *Permute(NDObject *input, IntArrayRef *dims);
+
+  /**
+   * @brief Emit a slice op. ONLY for spec vector.
+   * @param input input operation.
+   * @param start dimension offset to slice.
+   * @param size dimension size to slice.
+   * @return the result operation.
+   */
+  NDObject *Slice(NDObject *input, IntArrayRef *start, IntArrayRef *size);
+
+  /**
    * @brief Emit a copy operation.
    * @param input input operation.
    * @return the result operation.

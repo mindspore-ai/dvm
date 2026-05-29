@@ -1805,6 +1805,13 @@ bool SpecVecBase::SpecBuild() {
       return false;
     }
   }
+  if (fall_opt_ & FALL_PERMUTE) {
+    fall_opt_ &= ~FALL_PERMUTE;
+    if (PermuteSpec()) {
+      SplitBuild();
+      return false;
+    }
+  }
   // TODO: Optimize
   BuildDomain();
   PrepareTiling();
@@ -2018,6 +2025,8 @@ bool SpecVecBase::CustomSpec() {
       auto load_aid = ctx_.RootArea(GetMeta(load)->aid);
       if (store_aid == load_aid) {
         ctx_.areas_[store_aid].ext_opt = FALL_CUSTOM_SPLIT;
+      } else {
+        ctx_.tracker_.Record(reinterpret_cast<NDObject **>(&load->addr_.gm));
       }
     }
   }
@@ -2080,6 +2089,135 @@ bool SpecVecBase::ReshapeSpec() {
   return fail_touch ? ReshapeSpec() : false;
 }
 
+template <int64_t fill>
+void PermuteDimArray(DimArray &dims, const DimArray &perm) {
+  size_t P = perm.size();
+  size_t N = dims.size();
+  if (N < P) {
+    dims.resize(P);
+    for (size_t k = N; k < P; ++k) dims[k] = fill;
+  }
+  DimArray old_dims = dims;
+  for (size_t k = 0; k < P; ++k) {
+    dims[k] = old_dims[perm[k]];
+  }
+}
+
+static bool IsRangeSplited(const DimArray &inv_perm, const DimArray &small, const DimArray &big) {
+  int64_t small_size = small.size();
+  int64_t big_size = big.size();
+  size_t i = 0;
+  while (i < inv_perm.size()) {
+    auto e1 = inv_perm[i] < small_size ? small[inv_perm[i]] : 1;
+    auto e2 = inv_perm[i] < big_size ? big[inv_perm[i]] : 1;
+    i++;
+    if (e1 != e2) {
+      break;
+    }
+  }
+  while (i < inv_perm.size()) {
+    auto e1 = inv_perm[i] < small_size ? small[inv_perm[i]] : 1;
+    i++;
+    if (e1 > 1) {
+      break;
+    }
+  }
+  while (i < inv_perm.size()) {
+    auto e1 = inv_perm[i] < small_size ? small[inv_perm[i]] : 1;
+    auto e2 = inv_perm[i] < big_size ? big[inv_perm[i]] : 1;
+    if (e1 != e2) {
+      return true;
+    }
+    i++;
+  }
+  return false;
+};
+
+bool SpecVecBase::PermPropCheck(int prop, const DimArray &inv_perm) {
+  constexpr uint64_t black_mask =
+    1ull << kGatherLoad | 1ull << kLoad | 1ull << kPadStore | 1ull << kStore | 1ull << kPermute;
+  for (auto obj : objects_) {
+    if (obj->prop_id_ != prop) continue;
+    if ((1ull << obj->obj_id_) & black_mask) {
+      return false;
+    } else if (obj->obj_id_ == ObjectType::kBroadcastTo) {
+      if (IsRangeSplited(inv_perm, obj->lhs_->nd_.dims(), obj->nd_.dims())) {
+        return false;
+      }
+    } else if (obj->obj_id_ == ObjectType::kReduce) {
+      if (IsRangeSplited(inv_perm, obj->nd_.dims(), obj->lhs_->nd_.dims())) {
+        return false;
+      }
+    }
+  }
+  return true;
+}
+
+void SpecVecBase::PermPropUpdate(int prop, const DimArray &perm) {
+  for (auto obj : objects_) {
+    if (obj->prop_id_ != prop) continue;
+    if (auto ndd = obj->Ndd(); ndd != nullptr) {
+      PermuteDimArray<1>(ndd->dims, perm);
+    }
+    if (obj->obj_id_ == ObjectType::kViewLoad) {
+      PermuteDimArray<0>(static_cast<NDViewLoad *>(obj)->Stride(), perm);
+    } else if (obj->obj_id_ == ObjectType::kViewStore) {
+      PermuteDimArray<0>(static_cast<NDViewStore *>(obj)->Stride(), perm);
+    } else {
+      obj->DimChanged();
+    }
+  }
+}
+
+bool SpecVecBase::PermuteSpec() {
+  ctx_.ResetSpec();
+  auto &spec_ops = ctx_.spec_ops_;
+  size_t permute_begin = spec_ops.size();
+  for (auto op : objects_) {
+    InitMeta(op);
+    if (op->obj_id_ == ObjectType::kPermute &&
+        !GetMeta(op->lhs_)->IsCut() &&
+        op->lhs_->obj_id_ != ObjectType::kPermute) {
+      spec_ops.push_back(op);
+      GetMeta(op->lhs_)->SetCut();
+    }
+  }
+  size_t cut_begin = spec_ops.size();
+  if (cut_begin == permute_begin) return false;
+  for (size_t i = permute_begin; i < cut_begin; ++i) {
+    spec_ops.push_back(spec_ops[i]->lhs_);
+  }
+  SplitPlan(cut_begin);
+  for (auto op : objects_) {
+    op->prop_id_ = ctx_.RootArea(GetMeta(op)->aid);
+  }
+  bool fail = false;
+  for (size_t i = permute_begin; i < cut_begin; ++i) {
+    auto perm_op = static_cast<PermuteOp *>(spec_ops[i]);
+    int out_prop = perm_op->prop_id_;
+    int in_prop = perm_op->lhs_->prop_id_;
+    auto &perm = perm_op->GetNddPerm();
+    DimArray inv_perm;
+    inv_perm.resize(perm.size());
+    for (size_t k = 0; k < perm.size(); ++k) {
+      inv_perm[perm[k]] = k;
+    }
+    if (PermPropCheck(in_prop, inv_perm)) {
+      PermPropUpdate(in_prop, perm);
+      perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
+    } else if (PermPropCheck(out_prop, perm)) {
+      PermPropUpdate(out_prop, inv_perm);
+      perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
+    } else {
+      auto aid = ctx_.RootArea(GetMeta(perm_op)->aid);
+      ctx_.areas_[aid].ext_opt = FALL_PERMUTE;
+      fail = true;
+    }
+  }
+  spec_ops.resize(permute_begin);
+  return fail;
+}
+
 namespace {
 struct _SpecSwapLoad : public NDLoad {
   _SpecSwapLoad(NDAccess *store)
@@ -2090,7 +2228,24 @@ struct _SpecSwapLoad : public NDLoad {
     tail_size_ = 0;
     round_tile_.resize(0);
   }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "SwapLoad"; }
   NDAccess *store_;
+};
+
+struct _SpecSwapViewLoad : public NDViewLoad {
+  _SpecSwapViewLoad(NDAccess *store)
+      : NDViewLoad(store->addr_.gm, store->shape_ref_, &stride_data_, store->type_id_), store_(store) {
+    auto shape = store->shape_ref_;
+    stride_data_.Resize(shape->size);
+    int64_t stride = 1;
+    for (int i = shape->size - 1; i >= 0; --i) {
+      stride_data_[i] = stride;
+      stride *= shape->data[i];
+    }
+  }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "SwapViewLoad"; }
+  NDAccess *store_;
+  ShapeWithRef stride_data_;
 };
 
 struct _ReloadCloner : public CloneHelper {
@@ -2127,10 +2282,10 @@ void SpecVecBase::SplitBuild() {
     auto load = static_cast<NDAccess *>(static_ops_[i]);
     auto stage = ctx_.areas_[ctx_.RootArea(GetMeta(load)->aid)].stage;
     if (load->CheckFlag(OBJ_FLAG_STAGE_IO)) {
-      stage->StageLoad(load, static_cast<_SpecSwapLoad *>(load)->store_);
+      stage->StageLoad(load, load->obj_id_ == ObjectType::kViewLoad ? static_cast<_SpecSwapViewLoad *>(load)->store_
+                                                                    : static_cast<_SpecSwapLoad *>(load)->store_);
     } else if (load->CheckFlag(OBJ_FLAG_LOAD_BIND)) {
       auto store = static_cast<NDAccess *>(load->addr_.gm);
-      ctx_.tracker_.Record(reinterpret_cast<NDObject **>(&load->addr_.gm));
       stage->StageLoad(load, store);
     }
   }
@@ -2148,7 +2303,7 @@ void SpecVecBase::SplitBuild() {
     auto out_aid = ctx_.RootArea(GetMeta(op)->aid);
     auto stage = ctx_.areas_[out_aid].stage;
     if (op->IsSimd()) {
-        op->ForInput([this, out_aid, stage](NDObject *&in) {
+        op->ForInput([this, out_aid, stage, op](NDObject *&in) {
         if (auto in_aid = ctx_.RootArea(GetMeta(in)->aid); in_aid != out_aid) {
           if (auto recent = GetMeta(in)->recent_load; recent < OpMeta::IO_END) {
             auto load = static_cast<NDAccess *>(ctx_.spec_ops_[recent]);
@@ -2166,6 +2321,7 @@ void SpecVecBase::SplitBuild() {
             stage->spec_k_.SplitAppend(clone);
             stage->StageLoad(static_cast<NDAccess *>(clone), static_cast<NDAccess *>(in));
             GetMeta(clone)->aid = out_aid;
+            ctx_.tracker_.Record(&in);
             in = clone;
           } else {
             auto in_stage = ctx_.areas_[in_aid].stage;
@@ -2180,9 +2336,14 @@ void SpecVecBase::SplitBuild() {
               in_stage->spec_k_.SplitAppend(store);
               in_stage->StageStore(store);
             }
-            auto load = new _SpecSwapLoad(store);
+            NDAccess *load;
+            if (op->obj_id_ != kPermute) {
+              load = new _SpecSwapLoad(store);
+              GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+            } else {
+              load = new _SpecSwapViewLoad(store);
+            }
             load->SetFlag(OBJ_FLAG_STAGE_IO);
-            GetMeta(in)->recent_load = ctx_.spec_ops_.size();
             ctx_.spec_ops_.push_back(load);
             load->Normalize(stage->spec_k_.objects_);
             stage->spec_k_.SplitAppend(load);
@@ -2225,6 +2386,12 @@ void SpecVecKernel::Append(NDObject *obj) {
     if (obj->lhs_->obj_id_ == ObjectType::kReshape) {
       obj->lhs_ = obj->lhs_->lhs_;
     }
+  } else if (obj->obj_id_ == ObjectType::kPermute) {
+    if (auto lhs = obj->lhs_; lhs->IsLoad() && lhs->obj_id_ != ObjectType::kViewLoad) {
+      obj->lhs_ = new CopyOp(lhs);
+      VKernelS::Append(obj->lhs_);
+    }
+    fall_opt_init_ |= FALL_PERMUTE;
   } else if (obj->obj_id_ == ObjectType::kReduce) {
     obj->insn_ = nullptr;
   } else if (obj->rhs_ != nullptr || obj->obj_id_ == ObjectType::kBroadcastTo) {

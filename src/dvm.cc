@@ -586,6 +586,19 @@ NDObject *SubScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
   }
 }
 
+NDObject *SelectInt64(Kernel *kernel, NDObject *cond, NDObject *lhs, NDObject *rhs) {
+  ASSERT(cond->type_id_ == kInt64);
+  ASSERT(lhs->type_id_ == kInt64 && rhs->type_id_ == kInt64);
+  auto cond_mask = kernel->Binary<kNotEqual>(cond, static_cast<int64_t>(0));
+  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
+  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
+  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
+  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
+  auto lo = kernel->Select(cond_mask, lhs_lo, rhs_lo);
+  auto hi = kernel->Select(cond_mask, lhs_hi, rhs_hi);
+  return Pack(kernel, lo, hi);
+}
+
 template <BinaryType op_type>
 NDObject *CompareInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
   auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
@@ -1141,6 +1154,9 @@ DEF_BINARY(BinaryType::kLogicalOr);
 NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   if (cond->type_id_ != lhs->type_id_) {
     cond = this->Cast(cond, lhs->type_id_);
+  }
+  if (lhs->type_id_ == kInt64) {
+    return SelectInt64(this, cond, lhs, rhs);
   }
   auto obj = new SelectOp(cond, lhs, rhs);
   kernel_->Append(obj);

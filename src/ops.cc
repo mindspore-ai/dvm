@@ -2208,7 +2208,8 @@ uint64_t SelectOp::Emit(VectorKernel &k) {
   vSelect op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  const static vSimdInsnID id_list[kDataTypeEnd] = {V_NONE, V_SEL_FP16, V_SEL_BF16, V_SEL, V_SEL_INT32};
+  const static vSimdInsnID id_list[DataType::kDataTypeEnd] = {V_NONE, V_SEL_FP16, V_SEL_BF16, V_SEL, V_SEL_INT32,
+                                                              V_NONE};
   op.count = nd_.stride_back();
   op.xm = rhs_->xbuf_;
   op.cond = xhs_->xbuf_;

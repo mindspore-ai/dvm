@@ -15,6 +15,7 @@
 
 import pytest
 import numpy as np
+import dvm
 from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
@@ -323,12 +324,34 @@ def test_spec_custom():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_spec_slice():
+@pytest.mark.parametrize('is_split', [True, False])
+def test_spec_slice(is_split):
     t = Tester("vector:spec,priv1")
     a0 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
     x0 = t.load(a0)
-    x1 = t.mul(x0, 0.1)
-    x3 = t.slice(x1, [100, 100], [600, 300])
+    if is_split:
+        x0 = t.mul(x0, 0.1)
+        a0 = a0 * 0.1
+    x3 = t.slice(x0, [100, 100], [600, 300])
     x4 = t.add(x3, 0.2)
-    t.store_expect(x4, (a0 * 0.1)[100:700, 100:400] + 0.2)
+    t.store_expect(x4, a0[100:700, 100:400] + 0.2)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('is_split', [True, False])
+def test_spec_slice_dim(is_split):
+    t = Tester("vector:spec,priv1")
+    a0 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    x0 = t.load(a0)
+    if is_split:
+        x0 = t.mul(x0, 0.1)
+        a0 = a0 * 0.1
+    b_ref = t.scalar(dvm.int64)
+    e_ref = t.scalar(dvm.int64)
+    b_ref.update(100)
+    e_ref.update(700)
+    x2 = t.slice_dim(x0, 0, b_ref, e_ref)
+    x3 = t.add(x2, 0.2)
+    t.store_expect(x3, a0[100:700, :] + 0.2)
     assert (t.run_check())

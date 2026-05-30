@@ -611,10 +611,8 @@ void VectorKernel::PrepareTiling() {
   for (auto op : objects_) {
     op->TileCollect(tile_info_);
   }
-  local_mem_size_ = g_system.LocalMemSize();
-  if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
-    local_mem_size_ -= g_system.UbWorkspaceSize() + tile_info_.ext_ws;
-  } else {
+  local_mem_size_ = g_system.LocalMemSize() - g_system.UbWorkspaceSize() - tile_info_.ext_ws;
+  if (g_system.Arch() == AiCoreArch::kAiCore_C310) {
     if (tile_info_.flags & ObjectMeta::kSimt) {
       flags_ |= kKernelSimt;
       local_mem_size_ -= g_system.SimtWorkspace();
@@ -2430,7 +2428,12 @@ void SpecVecKernel::SpecInit() {
   size_t index = 0;
   for (auto op : build_ops_) {
     if (!op->reuse_dep_) {
-      delete op;
+      if (!op->IsSimd()) {
+        auto &addr = static_cast<NDAccess *>(op)->addr_;
+        addr.Update(&addr.data);
+      }
+      context_.spec_ops_.push_back(op);
+      context_.spec_begin_++;
     } else {
       build_ops_[index++] = op;
     }

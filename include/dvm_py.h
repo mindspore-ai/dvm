@@ -167,6 +167,9 @@ class KernelPy {
   py::object Slice(py::object input, py::object start, py::object size) {
     return ObjToPy(kernel_.Slice(PyToObj(input), GetShapeRef(start), GetShapeRef(size)));
   }
+  py::object SliceDim(py::object input, int dim, py::object begin, py::object end) {
+    return ObjToPy(kernel_.Slice(PyToObj(input), dim, PyToScalar(begin), PyToScalar(end)));
+  }
   py::object Copy(py::object input) { return ObjToPy(kernel_.Copy(PyToObj(input))); }
   py::object Broadcast(py::object input, py::object shape) {
     return ObjToPy(kernel_.Broadcast(PyToObj(input), GetShapeRef(shape)));
@@ -220,6 +223,7 @@ class KernelPy {
   static constexpr uint32_t F_DYN = KernelFlag::kDynamic;
   static constexpr uint32_t F_UWS = KernelFlag::kUnifyWS;
   static constexpr uint32_t F_SPEC = KernelFlag::kSpeculate;
+  static constexpr uint32_t F_PRIV1 = KernelFlag::kPrivate1;
 
  protected:
   virtual IntArrayRef *GetShapeRef(py::object shape) = 0;
@@ -308,6 +312,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def("reshape", &KernelPy::Reshape, "emit reshape op")
     .def("permute", &KernelPy::Permute, "emit permute op")
     .def("slice", &KernelPy::Slice, "emit slice op")
+    .def("slice_dim", &KernelPy::SliceDim, "emit dim slice op")
     .def("sum", &KernelPy::Reduce<ReduceOpType::kSum>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
          "emit sum")
     .def("max", &KernelPy::Reduce<ReduceOpType::kMax>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
@@ -336,6 +341,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def_readonly_static("F_DYN", &KernelPy::F_DYN)
     .def_readonly_static("F_UWS", &KernelPy::F_UWS)
     .def_readonly_static("F_SPEC", &KernelPy::F_SPEC)
+    .def_readonly_static("F_PRIV1", &KernelPy::F_PRIV1)
     .def_static("set_deterministic", &KernelPy::SetDeterm, "set deterministic")
     .def_static("set_online_tuning", &KernelPy::SetOnlineTuning, "set online tuning");
 }

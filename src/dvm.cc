@@ -672,27 +672,26 @@ class NDSliceLoad : public NDViewLoad {
  public:
   NDSliceLoad(void *src, IntArrayRef *src_ref, IntArrayRef *start_ref, IntArrayRef *size_ref, DataType type_id)
       : NDViewLoad(src, size_ref, &stride_data_, type_id), start_ref_(start_ref), src_ref_(src_ref) {
-    MESS(offset_data_, 10);
   }
   void Normalize(std::vector<NDObject *> &run_ops) {
     stride_data_[src_ref_->size - 1] = 1;
     for (size_t i = src_ref_->size - 1; i > 0; --i) {
       stride_data_[i - 1] = stride_data_[i] * src_ref_->data[i];
     }
-    offset_data_ = 0;
+    int64_t offset_data = 0;
     if (start_ref_) {
       ASSERT(start_ref_->size == src_ref_->size);
       auto get_start = [this](size_t idx) -> int64_t {
         auto start = start_ref_->data[idx];
         return start >= 0 ? start : start + src_ref_->data[idx];
       };
-      offset_data_ = get_start(start_ref_->size - 1);
+      offset_data = get_start(start_ref_->size - 1);
       for (size_t i = src_ref_->size - 1; i > 0; --i) {
-        offset_data_ += stride_data_[i - 1] * get_start(i - 1);
+        offset_data += stride_data_[i - 1] * get_start(i - 1);
       }
     }
     NDViewLoad::Normalize(run_ops);
-    offset_bytes_ = static_cast<uint64_t>(offset_data_) * ITEM_SIZE[type_id_];
+    offset_bytes_ = static_cast<uint64_t>(offset_data) * ITEM_SIZE[type_id_];
   }
   NDObject *Clone(CloneHelper &h) override {
     auto src_ref = h.GetClone(src_ref_);
@@ -704,7 +703,25 @@ class NDSliceLoad : public NDViewLoad {
   IntArrayRef *start_ref_;
   IntArrayRef *src_ref_;
   ShapeWithRef stride_data_;
-  int64_t offset_data_;
+};
+
+class NDSliceBindLoad : public NDSliceLoad {
+ public:
+  NDSliceBindLoad(NDAccess *input, IntArrayRef *start_ref, IntArrayRef *size_ref)
+      : NDSliceLoad(nullptr, input->shape_ref_, start_ref, size_ref, input->type_id_), input_(input) {}
+  uint64_t Emit(VectorKernel &k) override {
+    k.code_.BindOpFast(addr_, input_->addr_);
+    return NDViewLoad::Emit(k);
+  }
+  NDObject *Clone(CloneHelper &h) override {
+    auto input = static_cast<NDAccess *>(h.GetClone(static_cast<NDObject *>(input_)));
+    auto start_ref = h.GetClone(start_ref_);
+    auto shape_ref = h.GetClone(shape_ref_);
+    return new NDSliceBindLoad(input, start_ref, shape_ref);
+  }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "SliceViewLoad"; }
+ private:
+  NDAccess *input_;
 };
 
 class NDStridedSliceLoad : public NDSliceLoad {
@@ -736,6 +753,63 @@ class NDStridedSliceLoad : public NDSliceLoad {
   ShapeWithRef shape_;
   IntArrayRef *end_ref_;
   IntArrayRef *step_ref_;
+};
+
+class NDDimSliceLoad : public NDViewLoad {
+ public:
+  NDDimSliceLoad(void *src, IntArrayRef *src_ref, int dim, ScalarRef *begin, ScalarRef *end, DataType type_id)
+      : NDViewLoad(src, &shape_, &stride_data_, type_id), src_ref_(src_ref), dim_(dim), begin_(begin), end_(end) {
+    shape_.Resize(src_ref->size);
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) {
+    auto dim_size = src_ref_->size;
+    shape_.Resize(dim_size);
+    for (size_t i = 0; i < dim_size; i++) {
+      shape_[i] = src_ref_->data[i];
+    }
+    int64_t b = begin_->i64 >= 0 ? begin_->i64 : begin_->i64 + src_ref_->data[dim_];
+    int64_t e = end_->i64 >= 0 ? end_->i64 : end_->i64 + src_ref_->data[dim_];
+    shape_[dim_] = e - b;
+    stride_data_.Resize(dim_size);
+    stride_data_[dim_size - 1] = 1;
+    for (size_t i = dim_size - 1; i > 0; --i) {
+      stride_data_[i - 1] = stride_data_[i] * src_ref_->data[i];
+    }
+    NDViewLoad::Normalize(run_ops);
+    offset_bytes_ = b * stride_data_[dim_] * ITEM_SIZE[type_id_];
+  }
+  NDObject *Clone(CloneHelper &h) override {
+    auto src_ref = h.GetClone(src_ref_);
+    auto begin = h.GetClone(begin_);
+    auto end = h.GetClone(end_);
+    return new NDDimSliceLoad(addr_.gm, src_ref, dim_, begin, end, type_id_);
+  }
+ protected:
+  IntArrayRef *src_ref_;
+  int dim_;
+  ScalarRef *begin_;
+  ScalarRef *end_;
+  ShapeWithRef shape_;
+  ShapeWithRef stride_data_;
+};
+
+class NDDimSliceBindLoad : public NDDimSliceLoad {
+ public:
+  NDDimSliceBindLoad(NDAccess *input, int dim, ScalarRef *begin, ScalarRef *end)
+      : NDDimSliceLoad(nullptr, input->shape_ref_, dim, begin, end, input->type_id_), input_(input) {}
+  uint64_t Emit(VectorKernel &k) override {
+    k.code_.BindOpFast(addr_, input_->addr_);
+    return NDViewLoad::Emit(k);
+  }
+  NDObject *Clone(CloneHelper &h) override {
+    auto input = static_cast<NDAccess *>(h.GetClone(static_cast<NDObject *>(input_)));
+    auto begin = h.GetClone(begin_);
+    auto end = h.GetClone(end_);
+    return new NDDimSliceBindLoad(input, dim_, begin, end);
+  }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "DimSliceViewLoad"; }
+ private:
+  NDAccess *input_;
 };
 
 class ReshapeRankOp : public ReshapeOp {
@@ -1349,9 +1423,28 @@ void Kernel::SetLoadBind(NDObject *load, NDObject *access) {
 }
 
 NDObject *Kernel::Slice(NDObject *input, IntArrayRef *start, IntArrayRef *size) {
+  if (input->GetObjectType() == ObjectType::kLoad) {
+    auto load = new NDSliceBindLoad(static_cast<NDAccess *>(input), start, size);
+    kernel_->Append(load);
+    return load;
+  }
   auto store = Store(nullptr, input);
   SetStoreTemp(store);
   auto load = SliceLoad(nullptr, input->shape_ref_, start, size, input->type_id_);
+  SetLoadBind(load, store);
+  return load;
+}
+
+NDObject *Kernel::Slice(NDObject *input, int dim, ScalarRef *begin, ScalarRef *end) {
+  if (input->GetObjectType() == ObjectType::kLoad) {
+    auto load = new NDDimSliceBindLoad(static_cast<NDAccess *>(input), dim, begin, end);
+    kernel_->Append(load);
+    return load;
+  }
+  auto store = Store(nullptr, input);
+  SetStoreTemp(store);
+  auto load = new NDDimSliceLoad(nullptr, input->shape_ref_, dim, begin, end, input->type_id_);
+  kernel_->Append(load);
   SetLoadBind(load, store);
   return load;
 }

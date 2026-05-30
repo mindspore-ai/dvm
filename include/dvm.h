@@ -446,6 +446,16 @@ class Kernel {
   NDObject *Slice(NDObject *input, IntArrayRef *start, IntArrayRef *size);
 
   /**
+   * @brief Emit a dim slice op. Slice along a single dimension.
+   * @param input input operation.
+   * @param dim dimension index to slice along.
+   * @param begin start index (supports negative indexing).
+   * @param end end index (supports negative indexing).
+   * @return the result operation.
+   */
+  NDObject *Slice(NDObject *input, int dim, ScalarRef *begin, ScalarRef *end);
+
+  /**
    * @brief Emit a copy operation.
    * @param input input operation.
    * @return the result operation.

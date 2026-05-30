@@ -352,10 +352,10 @@ class SpecVecContext {
 
   void Reset() {
     stage_size_ = 0;
-    for (auto op : spec_ops_) {
-      delete op;
+    for (size_t i = spec_begin_; i < spec_ops_.size(); ++i) {
+      delete spec_ops_[i];
     }
-    spec_ops_.clear();
+    spec_ops_.resize(spec_begin_);
     tracker_.RecoverClear();
   }
   void ResetSpec() { area_size_ = 0; }
@@ -408,6 +408,7 @@ class SpecVecContext {
   StagesKernel *stage_k_{nullptr};
   std::vector<SpecVecStage *> stage_pool_;
   std::vector<NDObject *> spec_ops_;
+  size_t spec_begin_{0};
   GraphTracker tracker_;
 };
 

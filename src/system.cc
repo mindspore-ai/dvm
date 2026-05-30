@@ -343,7 +343,7 @@ void System::DoInit() {
     local_mem_size_ = 192 * 1024;
   } else if (arch_ == kAiCore_C310) {
     bt_size_ = 4096;
-    ub_workspace_size_ = 256;
+    ub_workspace_size_ = 256; // avoid access overflow: vlds etc.
     g_access_func_offset_ = g_access_func_offset_c310;
     g_simd_func_offset_ = g_simd_func_offset_c310;
     g_visit_func_offset_ = g_visit_func_offset_c310;

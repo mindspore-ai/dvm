@@ -1399,21 +1399,33 @@ uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
   GraphTracker tracker;
   std::vector<StagesKernel::Stage *> children;
   children.resize(broker_num_ * 2, nullptr);
+  uint64_t append_mask = 0;
   for (auto op : objects_) {
     set_sstore(op, nullptr);
     auto s = children[op->prop_id_];
     if (s == nullptr) {
       s = new StagesKernel::Stage(new SplitVector());
-      stage->AppendStage(s);
       children[op->prop_id_] = s;
     }
     auto k = static_cast<SplitVector *>(s->kernel);
     if (IsBroker(op)) {
       auto store = get_sstore(op->lhs_);
       if (store == nullptr) {
-        auto input_s = children[op->lhs_->prop_id_];
+        int prop_id = op->lhs_->prop_id_;
+        auto input_s = children[prop_id];
+        if (uint64_t prop_mask = 0x1ull << prop_id; !(append_mask & prop_mask)) {
+          append_mask |= prop_mask;
+          stage->AppendStage(input_s);
+        }
         auto input_k = static_cast<SplitVector *>(input_s->kernel);
-        store = new NDStore(op->lhs_);
+        auto input = op->lhs_;
+        if (input->IsLoad()) {
+          input = new CopyOp(input);
+          input->Normalize(input_k->objects_);
+          input_k->objects_.push_back(input);
+          input_k->build_ops_.push_back(input);
+        }
+        store = new NDStore(input);
         set_sstore(op->lhs_, store);
         store->Normalize(input_k->objects_);
         input_s->StageStore(store);
@@ -1429,6 +1441,15 @@ uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {
       op->lhs_ = load;
     }
     k->objects_.push_back(op);
+  }
+  for (size_t i = 0; i < children.size(); ++i) {
+    auto s = children[i];
+    if (s == nullptr) {
+      break;
+    }
+    if (!((append_mask >> i) & 0x1ull)) {
+      stage->AppendStage(s);
+    }
   }
   auto ws_size = stage->CodeGen();
   tracker.RecoverClear();

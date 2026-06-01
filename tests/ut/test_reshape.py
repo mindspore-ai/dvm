@@ -359,3 +359,19 @@ def test_reshape_share_domain():
     x2 = t.mul(x0, x1)
     t.store_expect(x2, np.reshape(a, [1, 128]) * np.reshape(b, [100, 128]))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reshape_fallback_sort():
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, [4, 1, 1, 512]).astype(np.float32)
+    b = np.random.normal(-0.5, 0.5, [4, 64, 512]).astype(np.float32)
+    x0 = t.load(a)
+    x1  = t.add(x0, 0.01)
+    x2 = t.load(b)
+    x3 = t.reshape(x2, [4, 64, 1, 512])
+    x4 = t.reshape(x2, [4, 1, 64, 512])
+    x5 = t.add(x3, x4)
+    x6 = t.mul(x1, x5)
+    t.store_expect(x6, (a + 0.01) * (np.reshape(b, [4, 64, 1, 512]) + np.reshape(b, [4, 1, 64, 512])))
+    assert (t.run_check())

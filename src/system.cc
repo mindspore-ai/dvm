@@ -202,6 +202,8 @@ static bool RegKernelWithRT(void *reg_binary_func, void *reg_function_func, cons
   return err == RT_ERROR_NONE;
 }
 
+static int CodeLaunchNone(const System &self, const Code *code, void *extern_ws, void *stream) { return 0; }
+
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
   typedef rtError_t (*LaunchKernelFunc)(const void *func, uint32_t blockdim, void *args, uint32_t argssize,
@@ -248,7 +250,6 @@ int System::CodeLaunchACL(const System &self, const Code *code, void *extern_ws,
 }
 
 void System::DoInit() {
-  inited_ = true;
   const SocConfig *config = nullptr;
   auto soc_name = GetSocName();
   for (const SocConfig &c : soc_configs) {
@@ -289,6 +290,12 @@ void System::DoInit() {
     l0c_size_ = 256 * 1024;
     local_mem_size_ = 256 * 1024 - ub_workspace_size_;
   }
+  int device_id = 0;
+  if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
+    code_launch_ = CodeLaunchNone;
+    return;
+  }
+  inited_ = true;
 #ifdef VK_SIM_MODEL
   RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
   code_launch_ = CodeLaunchRT;

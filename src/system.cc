@@ -212,6 +212,8 @@ static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegist
   EXCEPTION_IF(err != RT_ERROR_NONE, "reg mix function failed");
 }
 
+static int CodeLaunchNone(const System &self, const Code *code, void *extern_ws, void *stream) { return 0; }
+
 template <AiCoreArch arch>
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
@@ -295,7 +297,6 @@ void System::GetSocConfig() {
 }
 
 void System::DoInit() {
-  inited_ = true;
   GetSocConfig();
   event_num_ = 8;
   vector_core_num_ = cube_core_num_ * 2;
@@ -323,6 +324,12 @@ void System::DoInit() {
     l0c_size_ = 256 * 1024;
     local_mem_size_ = 256 * 1024 - ub_workspace_size_;
   }
+  int device_id = 0;
+  if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
+    code_launch_ = CodeLaunchNone;
+    return;
+  }
+  inited_ = true;
 #ifdef VK_SIM_MODEL
   RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);
   code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchRT<kAiCore_C220> : CodeLaunchRT<kAiCore_C310>;

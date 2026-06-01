@@ -168,7 +168,7 @@ class KernelPy {
     return ObjToPy(kernel_.Slice(PyToObj(input), GetShapeRef(start), GetShapeRef(size)));
   }
   py::object SliceDim(py::object input, int dim, py::object begin, py::object end) {
-    return ObjToPy(kernel_.Slice(PyToObj(input), dim, PyToScalar(begin), PyToScalar(end)));
+    return ObjToPy(kernel_.Slice(PyToObj(input), dim, GetScalarRef(begin), GetScalarRef(end)));
   }
   py::object Copy(py::object input) { return ObjToPy(kernel_.Copy(PyToObj(input))); }
   py::object Broadcast(py::object input, py::object shape) {
@@ -230,7 +230,21 @@ class KernelPy {
   NDObject *PyToObj(py::object obj) { return obj.cast<NDOpPyPtr>()->Get(); }
   py::object ObjToPy(NDObject *obj) { return py::cast(std::make_shared<NDObjectPy>(obj)); }
   ScalarRef *PyToScalar(py::object scalar) { return &(scalar.cast<ScalarRefPyPtr>()->data_); }
+  ScalarRef *GetScalarRef(py::object scalar) {
+    if (py::isinstance<ScalarRefPy>(scalar)) {
+      return PyToScalar(scalar);
+    }
+    if (!py::isinstance<py::int_>(scalar)) {
+      DvmException("Unsupported slice_dim bound type: expected int or ScalarRef (used for dynamic scalar inputs).");
+      return nullptr;
+    }
+    auto ref = std::make_shared<ScalarRefPy>(DataTypePy(kInt64));
+    ref->Update(scalar);
+    owned_scalars_.push_back(ref);
+    return &(ref->data_);
+  }
   Kernel kernel_;
+  std::vector<ScalarRefPyPtr> owned_scalars_;
 };
 
 constexpr auto bool_py = DataTypePy(kBool);

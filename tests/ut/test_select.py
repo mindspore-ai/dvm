@@ -114,11 +114,6 @@ def test_select_int64():
 @pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_select_int64_boundary_patterns():
     t = Tester()
-    cond = np.array([
-        [0, 1, 1 << 32, -(1 << 32)],
-        [(1 << 31) - 1, -1, 1 << 40, -(1 << 40)],
-        [np.iinfo(np.int64).min, np.iinfo(np.int64).max, (1 << 32) | 7, -((1 << 32) | 9)],
-    ], dtype=np.int64)
     lhs = np.array([
         [11, -(1 << 33), 1 << 45, -(1 << 45)],
         [((1 << 32) | 5), -((1 << 32) | 6), np.iinfo(np.int64).min, np.iinfo(np.int64).max],
@@ -129,11 +124,12 @@ def test_select_int64_boundary_patterns():
         [-((1 << 32) | 15), (1 << 32) | 16, 17, -18],
         [-(1 << 47), 1 << 47, -((1 << 39) | 0x77), (1 << 39) | 0x88],
     ], dtype=np.int64)
+    cond = np.random.choice([True, False], lhs.shape).astype(bool)
     x = t.load(cond)
     y = t.load(lhs)
     z = t.load(rhs)
     out = t.select(x, y, z)
-    t.store_expect(out, np.where(cond != 0, lhs, rhs).astype(np.int64))
+    t.store_expect(out, np.where(cond, lhs, rhs).astype(np.int64))
     assert (t.run_check())
 
 

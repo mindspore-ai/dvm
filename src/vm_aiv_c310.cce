@@ -1270,6 +1270,31 @@ __aicore_inline__ void PingPongLoad(bcodeptr_t pc, uint64_t head, uint64_t tile)
   }
 }
 
+template <typename T>
+__aicore_inline__ void nddma(__ubuf__ T *dst, __gm__ uint8_t *src, uint32_t loop0_size, uint32_t loop1_size,
+                             uint32_t loop2_size, uint32_t loop3_size, uint32_t loop4_size,
+                             uint64_t loop0_stride, uint64_t loop1_stride, uint64_t loop2_stride,
+                             uint64_t loop3_stride, uint64_t loop4_stride) {
+  set_pad_cnt_nddma(0);
+  set_pad_val_nddma(0);
+  set_loop0_stride_nddma(loop0_stride);
+  set_loop1_stride_nddma(loop1_stride);
+  set_loop2_stride_nddma(loop2_stride);
+  set_loop3_stride_nddma(loop3_stride);
+  set_loop4_stride_nddma(loop4_stride);
+  set_pcie_rd_ctrl(0);
+  if constexpr (sizeof(T) == 1) {
+    nddma_out_to_ub_b8(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
+                       true, 0);
+  } else if constexpr (sizeof(T) == 2) {
+    nddma_out_to_ub_b16(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
+                        true, 0);
+  } else {
+    nddma_out_to_ub_b32(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
+                        true, 0);
+  }
+}
+
 __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewLoad op;
   vViewLoad::Decode(pc, head, op);
@@ -1289,42 +1314,39 @@ __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   __gm__ uint8_t *src = (__gm__ uint8_t *)op.from + tile_offset;
   __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xd);
-  uint32_t src_stride = op.src_gap + op.iter_size;
-  uint32_t dst_stride = (op.dst_gap + CeilDiv(op.iter_size, 32UL)) << 5;
+  uint64_t iter_size = op.iter_size;
+  uint64_t iter_num = op.iter_num;
+  uint64_t src_stride = op.src_gap + op.iter_size;
+  uint64_t dst_stride = (op.dst_gap + CeilDiv(op.iter_size, 32UL)) << 5;
   if (op.loop_depth == 0) {
     if (IsLastTile(tile)) {
-      if (op.iter_num == 1) {
-        op.iter_size = op.tail_size;
+      if (iter_num == 1) {
+        iter_size = op.tail_size;
       } else {
-        op.iter_num = op.tail_size;
+        iter_num = op.tail_size;
       }
     }
-    copy_gm_to_ubuf_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
-  } else if (op.loop_depth == 1) {
-    uint64_t loop_size, dst_loop_stride, src_loop_stride;
-    vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET], loop_size, dst_loop_stride, src_loop_stride);
-    if (IsLastTile(tile)) {
-      loop_size = op.tail_size;
+    copy_gm_to_ubuf_align_v2(dst, src, 0, iter_num, iter_size, 0, 0, false, 0, src_stride, dst_stride);
+  } else if (op.loop_depth + (iter_num > 1) <= 4) {
+    uint32_t loop_size[4] = {1, 1, 1, 1};
+    uint64_t loop_stride[4] = {0, 0, 0, 0};
+    uint64_t loop_offset = 0;
+    if (iter_num > 1) {
+      loop_size[0] = static_cast<uint32_t>(iter_num);
+      loop_stride[0] = (src_stride << 20) | (dst_stride & 0xfffff);
+      loop_offset = 1;
     }
-    for (uint64_t i = 0; i < loop_size; ++i) {
-      copy_gm_to_ubuf_align_v2(dst, src, 0, op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
-      dst += dst_loop_stride;
-      src += src_loop_stride;
-    }
-  } else if (op.loop_depth == 2) {
-    uint64_t loop_size0, dst_stride0, src_stride0;
-    uint64_t loop_size1, dst_stride1, src_stride1;
-    vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET], loop_size0, dst_stride0, src_stride0);
-    vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET + 1], loop_size1, dst_stride1, src_stride1);
-    if (IsLastTile(tile)) {
-      loop_size1 = op.tail_size;
-    }
-    for (uint64_t i = 0; i < loop_size1; ++i) {
-      for (uint64_t j = 0; j < loop_size0; ++j) {
-        copy_gm_to_ubuf_align_v2(dst + i * dst_stride1 + j * dst_stride0, src + i * src_stride1 + j * src_stride0, 0,
-                                 op.iter_num, op.iter_size, 0, 0, false, 0, src_stride, dst_stride);
+    for (uint64_t idx = 0; idx < op.loop_depth; ++idx) {
+      uint64_t size, dst_loop_stride, src_loop_stride;
+      vViewLoad::DecodeLoop(pc[vViewLoad::VAR_OFFSET + idx], size, dst_loop_stride, src_loop_stride);
+      if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+        size = op.tail_size;
       }
+      loop_size[idx + loop_offset] = static_cast<uint32_t>(size);
+      loop_stride[idx + loop_offset] = (src_loop_stride << 20) | (dst_loop_stride & 0xfffff);
     }
+    nddma(dst, src, static_cast<uint32_t>(iter_size), loop_size[0], loop_size[1], loop_size[2], loop_size[3],
+          (1UL << 20) | 1, loop_stride[0], loop_stride[1], loop_stride[2], loop_stride[3]);
   } else {
     uint32_t coord[6] = {0};
     uint64_t idx = 0;
@@ -1348,28 +1370,6 @@ __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         src -= (loop_size - 1) * src_loop_stride;
       }
     }
-  }
-}
-
-template <typename T>
-__aicore_inline__ void nddma(__ubuf__ T *dst, __gm__ uint8_t *src, uint32_t loop0_size, uint32_t loop1_size,
-                             uint32_t loop2_size, uint32_t loop3_size, uint32_t loop4_size,
-                             uint64_t loop0_stride, uint64_t loop1_stride, uint64_t loop2_stride,
-                             uint64_t loop3_stride, uint64_t loop4_stride) {
-  set_pad_cnt_nddma(0);
-  set_pad_val_nddma(0);
-  set_loop0_stride_nddma(loop0_stride);
-  set_loop1_stride_nddma(loop1_stride);
-  set_loop2_stride_nddma(loop2_stride);
-  set_loop3_stride_nddma(loop3_stride);
-  set_loop4_stride_nddma(loop4_stride);
-  set_pcie_rd_ctrl(0);
-  if constexpr (sizeof(T) == 2) {
-    nddma_out_to_ub_b16(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
-                        true, 0);
-  } else {
-    nddma_out_to_ub_b32(dst, (__gm__ T *)src, 0, loop0_size, loop1_size, loop2_size, loop3_size, loop4_size, 0, 0,
-                        true, 0);
   }
 }
 

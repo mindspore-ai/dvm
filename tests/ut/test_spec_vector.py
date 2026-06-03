@@ -375,10 +375,8 @@ def test_spec_slice_dim(is_split):
         x0 = t.mul(x0, 0.1)
         a0 = a0 * 0.1
     b_ref = t.scalar(dvm.int64)
-    e_ref = t.scalar(dvm.int64)
     b_ref.update(100)
-    e_ref.update(700)
-    x2 = t.slice_dim(x0, 0, b_ref, e_ref)
+    x2 = t.slice_dim(x0, 0, b_ref, 700)
     x3 = t.add(x2, 0.2)
     t.store_expect(x3, a0[100:700, :] + 0.2)
     assert (t.run_check())

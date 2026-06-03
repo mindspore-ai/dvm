@@ -114,5 +114,10 @@ vm_aic_c310.o: vm_aic_c310.cce isa.h vm_aic.h
 clean:
 	rm -f *.o *.so *.a *bin vm.cc
 
+prebuild: g_vkernel_c220_bin g_vkernel_c310_bin
+	cp -f g_vkernel_c220_bin prebuild/g_vkernel_c220_bin
+	cp -f g_vkernel_c310_bin prebuild/g_vkernel_c310_bin
+	printf '[lib information]\ngit branch: %s\ncommit  id: %s\n' "$$(git branch --show-current)" "$$(git rev-parse HEAD)" > prebuild/lib_info.txt
+
 help:
 	@echo "Usage: make [dbg=1] [asan=1] [PRE_ASCEND=1]"

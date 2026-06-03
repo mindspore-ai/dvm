@@ -375,3 +375,27 @@ def test_reshape_fallback_sort():
     x6 = t.mul(x1, x5)
     t.store_expect(x6, (a + 0.01) * (np.reshape(b, [4, 64, 1, 512]) + np.reshape(b, [4, 1, 64, 512])))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reshape_before_after_connect():
+    t = Tester()
+    a = np.random.normal(0.0, 0.03, [10, 1, 1000]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.add(x0, 0.1)
+    x2 = t.reshape(x1, [1, 10, 1000])
+    x3 = t.mul(x2, x1)
+    t.store_expect(x3, (a + 0.1).reshape([1, 10, 1000]) * (a + 0.1))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_auto_spec_reshape_cross_dim():
+    t = Tester()
+    a = np.random.normal(0.0, 0.03, [10, 1000]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.reshape(x0, [1, 10, 1000])
+    x2 = t.reshape(x0, [10, 1, 1000])
+    x3 = t.add(x1, x2)
+    t.store_expect(x3, a.reshape([1, 10, 1000]) + a.reshape([10, 1, 1000]))
+    assert (t.run_check())

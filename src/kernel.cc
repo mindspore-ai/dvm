@@ -1198,6 +1198,42 @@ void VKernelS::BrokerInit() {
       op->prop_id_ = GetPdHead(op)->prop_id_;
     }
   }
+  for (size_t bidx = 0; bidx < build_ops_.size(); ++ bidx) {
+    auto op = build_ops_[bidx];
+    if (!IsBroker(op) || op->prop_id_ != op->lhs_->prop_id_) continue;
+    int merged_prop = op->prop_id_;
+    int broker_prop = prop_id++;
+    op->prop_id_ = broker_prop;
+    for (size_t midx = bidx + 1; midx < build_ops_.size(); ++midx) {
+      auto cand = build_ops_[midx];
+      if (cand->prop_id_ != merged_prop) continue;
+      bool is_after = false;
+      bool is_cross = false;
+      cand->ForInput([&](NDObject *in) {
+        if (in->prop_id_ == broker_prop) {
+          is_after = true;
+        } else if (in->prop_id_ == merged_prop) {
+          is_cross = true;
+        }
+      });
+      if (is_after) {
+        if (is_cross) {
+          cand->ForInput([&](NDObject *&in) {
+            if (in->prop_id_ == merged_prop) {
+              in = new ReshapeOp(in, in->shape_ref_);
+              build_ops_.insert(build_ops_.begin() + midx, in);
+              if (midx > static_cast<size_t>(last_broker_)) {
+                last_broker_ = midx;
+              }
+              broker_num_++;
+              midx++;
+            }
+          });
+        }
+        cand->prop_id_ = broker_prop;
+      }
+    } // it2
+  } // it1
 }
 
 class DomainUnifier {
@@ -1209,12 +1245,9 @@ class DomainUnifier {
     // TODO: move to stuff ops..
     for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
       auto op = *it;
-      if (auto lhs = op->lhs_) {
-        if (lhs->prop_id_ == -1) lhs->prop_id_ = op->prop_id_;
-        if (auto rhs = op->rhs_) {
-          if (rhs->prop_id_ == -1) rhs->prop_id_ = op->prop_id_;
-        }
-      }
+      op->ForInput([op](NDObject *in) {
+        if (in->prop_id_ == -1) in->prop_id_ = op->prop_id_;
+      });
     }
   }
 
@@ -1230,7 +1263,7 @@ class DomainUnifier {
     while (op->VisitChangeRange(range)) {
       if (!forward_only) {
         visited_mask_ = 0;
-        if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size, range.size)) {
+        if (auto prop = op->lhs_->prop_id_; AffineCheck(prop, range.begin, range.in_size, range.size, op->nd_.dims())) {
           gen_update(op->nd_.data->dims, range.begin, range.size);
           visited_mask_ = 0;
           ReshapeRange(prop, range.begin, range.in_size, update);
@@ -1238,8 +1271,8 @@ class DomainUnifier {
           continue;
         }
       }
-        visited_mask_ = 0;
-      if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size)) {
+      visited_mask_ = 0;
+      if (auto prop = op->prop_id_; AffineCheck(prop, range.begin, range.size, range.in_size, op->lhs_->nd_.dims())) {
         gen_update(op->lhs_->nd_.data->dims, range.begin, range.in_size);
         visited_mask_ = 0;
         ReshapeRange(prop, range.begin, range.size, update);
@@ -1258,8 +1291,15 @@ class DomainUnifier {
   }
   bool IsVisited(int prop) const { return (visited_mask_ >> prop) & 0x1ul; }
   void SetVisited(int prop) { visited_mask_ |= 1ul << prop; }
+  bool DimRangeEqual(const DimArray &dim, const DimArray &base, int begin, int size) {
+    if (dim.size() < static_cast<size_t>(begin + size)) return false;
+    for (int i = begin; i < begin + size; ++i) {
+      if (dim[i] != base[i]) return false;
+    }
+    return true;
+  }
 
-  bool AffineCheck(int prop, int range_begin, int range_size, int out_size) {
+  bool AffineCheck(int prop, int range_begin, int range_size, int out_size, const DimArray &nd) {
     SetVisited(prop);
     PropRange range;
     range.base = range_begin + range_size - 1;
@@ -1267,10 +1307,16 @@ class DomainUnifier {
     range.affine = PropRange::ELEMWISE;
     for (auto op : objects_) {
       if (op->prop_id_ != prop) {
-        auto rmap = BrokerRemap(op, range_begin);
-        if (rmap >= 0 && op->lhs_->prop_id_ == prop && !IsVisited(op->prop_id_) &&
-            !AffineCheck(op->prop_id_, rmap, range_size, out_size)) {
-          return false;
+        if (IsBroker(op) && op->lhs_->prop_id_ == prop) {
+          if (op->CheckFlag(OBJ_FLAG_BROKER_AFFINED)) {
+            if (!IsVisited(op->prop_id_) && !AffineCheck(op->prop_id_, range_begin, range_size, out_size, nd)) {
+              return false;
+            }
+          } else {
+            if (IsVisited(op->prop_id_) && !DimRangeEqual(op->nd_.dims(), nd, range_begin, range_size)) {
+              return false;
+            }
+          }
         }
         continue;
       }
@@ -1295,9 +1341,16 @@ class DomainUnifier {
           }
         }
       }
-      if (auto rmap = BrokerRemap(op, range_begin);
-          rmap >= 0 && !IsVisited(op->lhs_->prop_id_) && !AffineCheck(op->lhs_->prop_id_, rmap, range_size, out_size)) {
-        return false;
+      if (IsBroker(op)) {
+        if (op->CheckFlag(OBJ_FLAG_BROKER_AFFINED)) {
+          if (!IsVisited(op->lhs_->prop_id_) && !AffineCheck(op->lhs_->prop_id_, range_begin, range_size, out_size, nd)) {
+            return false;
+          }
+        } else {
+          if (IsVisited(op->lhs_->prop_id_) && !DimRangeEqual(op->lhs_->nd_.dims(), nd, range_begin, range_size)) {
+            return false;
+          }
+        }
       }
     }
     return true;
@@ -1709,6 +1762,49 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
     std::vector<NDObject *> clones_;
   };
   if (fall_kernel_ == nullptr) {
+    {
+      std::vector<int> uf(stage_ids_.size());
+      for (size_t i = 0; i < uf.size(); ++i) uf[i] = i;
+      auto Find = [&uf](int i) -> int {
+        while (uf[i] != i) { uf[i] = uf[uf[i]]; i = uf[i]; }
+        return i;
+      };
+      for (size_t i = 0; i < stage_ids_.size(); ++i) {
+        build_ops_[i]->index_ = i;
+      }
+      for (size_t i = 0; i < stage_ids_.size(); ++i) {
+        build_ops_[i]->ForInput([&](NDObject *in) {
+          auto in_idx = in->index_;
+          while (static_cast<size_t>(in_idx) >= stage_ids_.size() || in != build_ops_[in_idx]) {
+            in = in->lhs_;
+            in_idx = in->index_;
+          }
+          if (stage_ids_[in_idx] == stage_ids_[i]) {
+            int a = Find(i), b = Find(in->index_);
+            if (a != b) uf[a] = b;
+          }
+        });
+      }
+      std::vector<int> comp_id(stage_ids_.size(), -1);
+      int new_sid = 0;
+      for (int s = 0; s <= last_stage_; ++s) {
+        std::vector<int> roots;
+        for (size_t i = 0; i < stage_ids_.size(); ++i) {
+          if (stage_ids_[i] != s) continue;
+          int root = Find(i);
+          int cid = 0;
+          for (; cid < (int)roots.size(); ++cid)
+            if (roots[cid] == root) break;
+          if (cid == (int)roots.size()) roots.push_back(root);
+          comp_id[i] = new_sid + cid;
+        }
+        new_sid += roots.size();
+      }
+      for (size_t i = 0; i < stage_ids_.size(); ++i) {
+        if (comp_id[i] >= 0) stage_ids_[i] = comp_id[i];
+      }
+      last_stage_ = new_sid - 1;
+    }
     auto stage_kernel = new RemapKernel<StagesKernel>();
     if constexpr (dyn_shape) {
       stage_kernel->SetDynamic();
@@ -2019,21 +2115,21 @@ bool SpecVecBase::ReshapeSpec() {
   DomainUnifier affine(objects_, true);
   auto &areas = ctx_.areas_;
   bool fail_touch = false;
-  uint64_t fail_affine = false;
+  uint64_t fail_affine = 0;
   for (size_t i = reshape_begin; i < cut_begin; ++i) {
     auto op = static_cast<ReshapeOp *>(spec_ops[i]);
     if (op->prop_id_ == op->lhs_->prop_id_) {
       areas[op->prop_id_].u32 = 1;
       fail_touch = true;
     } else if (!affine.Process(op, areas[op->lhs_->prop_id_].u32)) {
-      fail_affine = true;
+      fail_affine |= 1ull << op->prop_id_;
     }
   }
   if (fail_affine) {
     for (size_t i = reshape_begin; i < cut_begin; ++i) {
       auto op = spec_ops[i];
       auto aid = ctx_.RootArea(GetMeta(op)->aid);
-      if (op->lhs_->nd_.dims() == op->nd_.dims()) {
+      if (op->lhs_->nd_.dims() == op->nd_.dims() && !((fail_affine >> op->prop_id_) & 1ull)) {
         if (auto in_aid = ctx_.RootArea(GetMeta(op->lhs_)->aid); in_aid != aid) {
           ctx_.MergeArea(in_aid, aid);
         }
@@ -2186,8 +2282,13 @@ void SpecVecBase::Dump(std::ostringstream &oss, const std::string &indent) {
 void SpecVecKernel::Append(NDObject *obj) {
   if (obj->obj_id_ == ObjectType::kReshape) {
     fall_opt_init_ |= FALL_RESHAPE;
-    if (obj->lhs_->obj_id_ == ObjectType::kReshape) {
-      obj->lhs_ = obj->lhs_->lhs_;
+    auto lhs = obj->lhs_;
+    if (lhs->obj_id_ == ObjectType::kReshape) {
+      obj->lhs_ = lhs->lhs_;
+    } else if (lhs->IsLoad()) {
+      // TODO: support load split
+      obj->lhs_ = new CopyOp(lhs);
+      VKernelS::Append(obj->lhs_);
     }
   } else if (obj->obj_id_ == ObjectType::kReduce) {
     obj->insn_ = nullptr;

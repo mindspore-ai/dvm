@@ -94,6 +94,21 @@ def test_spec_load_reloc():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_connected_split():
+    t = Tester("vector:spec")
+    a = np.random.normal(0.0, 0.3, [10, 6000]).astype(np.float32)
+    x1 = t.load(a)
+    x2 = t.add(x1, 0.02)
+    x3 = t.sum(x2, (0,), False)
+    t.spec_next()
+    x4 = t.mul(x3, 0.5)
+    x5 = t.add(x2, 0.3)
+    t.store_expect(x4, np.sum(a + 0.02, axis=(0,), keepdims=False) * 0.5)
+    t.store_expect(x5, a + 0.02 + 0.3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_dyn_spec_fall_reduce():
     t = Tester("vector:spec,dyn")
     x1 = t.load([-1], "float32")
@@ -245,6 +260,18 @@ def test_auto_spec_reshape_elim():
     x3 = t.reshape(x2, [20, 500])
     x4 = t.add(x3, 0.2)
     t.store_expect(x4, (a + 0.01).reshape([20, 500]) + 0.2)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_auto_spec_reshape_cross_dim():
+    t = Tester("vector:spec,priv1")
+    a = np.random.normal(0.0, 0.03, [10, 1000]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.reshape(x0, [1, 10, 1000])
+    x2 = t.reshape(x0, [10, 1, 1000])
+    x3 = t.add(x1, x2)
+    t.store_expect(x3, a.reshape([1, 10, 1000]) + a.reshape([10, 1, 1000]))
     assert (t.run_check())
 
 

@@ -783,6 +783,23 @@ def test_eager_cv_with_view_load():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_eager_cv_multi_user():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [1024, 512]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.cast(x2, "float32")
+    x4 = t.cast(x2, "float32")
+    x5 = t.add(x3, x4)
+    e_cast = np.matmul(a.astype(np.float32), b.astype(np.float32))
+    t.store_expect(x5, e_cast + e_cast, 1e-3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_eager_reshape():
     t = Tester("eager")
     a0 = np.random.normal(-1, 1, [600, 512]).astype(np.float16)

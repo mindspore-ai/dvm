@@ -1674,7 +1674,12 @@ void _SplitKernel::Split(NDObject *root) {
     for (auto exchange: exchange_cache_) {
       NDObject *&input = *exchange;
       auto a = areas_[GetArea(input)].second;
-      if (a == area) continue;
+      if (a == area) {
+        if (input->IsCube()) {
+          input = Exchange(input, a->area_id_);
+        }
+        continue;
+      }
       if (a->state_ == EagerArea::kPending) {
         if (area->FuseCheck(a) && (!a->dom_->IsCube() || cube_check(a, area, input))) {
           area->fused_.push_back(a);

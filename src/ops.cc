@@ -1746,12 +1746,6 @@ NDObject *PermuteOp::Clone(CloneHelper &h) { return new PermuteOp(h.GetClone(lhs
 
 void PermuteOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Permute"; }
 
-void PermuteOp::FoldProp(NDObject *op, PropRange &range) {
-  if (!(op->flags_ & OBJ_FLAG_BROKER_AFFINED)) {
-    range.depth = 1;
-  }
-}
-
 void PermuteOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
   auto *self = static_cast<PermuteOp *>(op);
   auto &shape = self->shape_;

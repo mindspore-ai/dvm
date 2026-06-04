@@ -1328,7 +1328,8 @@ class DomainUnifier {
         if (range_begin >= dim_size) {
           continue;
         }
-        if (op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) {
+        if ((op->obj_id_ == kLoad && op->CheckFlag(OBJ_FLAG_LOAD_FROM_CUBE)) ||
+            (op->obj_id_ == kPermute && !op->CheckFlag(OBJ_FLAG_BROKER_AFFINED))) {
           return false;
         }
         if (range_size > 0) {

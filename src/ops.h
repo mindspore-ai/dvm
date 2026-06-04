@@ -858,7 +858,6 @@ class PermuteOp : public CopyOp {
 
   const DimArray &GetNddPerm() const { return perm_; }
 
-  static void FoldProp(NDObject *op, PropRange &range);
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
  protected:

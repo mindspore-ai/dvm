@@ -99,3 +99,17 @@ def test_permute_nest():
     x3 = t.permute(x2, [0, 2, 1])
     t.store_expect(x3, np.transpose(np.broadcast_to(np.transpose(a, (1, 0, 2)), [20, 10, 100]), (0, 2, 1)))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_permute_reshape():
+    t = Tester("vector:spec,priv1")
+    a = np.random.normal(0.0, 0.5, [32, 1024]).astype(np.float32)
+    b = np.random.normal(0.0, 0.5, [1024, 1, 16]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.permute(x0, [1, 0])
+    x2 = t.copy(x1)
+    x3 = t.reshape(x2, [1024, 32, 1])
+    x4 = t.add(x3, t.load(b))
+    t.store_expect(x4, np.reshape(np.transpose(a, [1, 0]), [1024, 32, 1]) + b)
+    assert (t.run_check())

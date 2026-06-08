@@ -2291,9 +2291,7 @@ bool SpecVecBase::PermuteSpec() {
   size_t permute_begin = spec_ops.size();
   for (auto op : objects_) {
     InitMeta(op);
-    if (op->obj_id_ == ObjectType::kPermute &&
-        !GetMeta(op->lhs_)->IsCut() &&
-        op->lhs_->obj_id_ != ObjectType::kPermute) {
+    if (op->obj_id_ == ObjectType::kPermute && !GetMeta(op->lhs_)->IsCut()) {
       spec_ops.push_back(op);
       GetMeta(op->lhs_)->SetCut();
     }
@@ -2312,19 +2310,25 @@ bool SpecVecBase::PermuteSpec() {
     auto perm_op = static_cast<PermuteOp *>(spec_ops[i]);
     int out_prop = perm_op->prop_id_;
     int in_prop = perm_op->lhs_->prop_id_;
-    auto &perm = perm_op->GetNddPerm();
-    DimArray inv_perm;
-    inv_perm.resize(perm.size());
-    for (size_t k = 0; k < perm.size(); ++k) {
-      inv_perm[perm[k]] = k;
+    bool fall_back = out_prop == in_prop;
+    if (!fall_back) {
+      auto &perm = perm_op->GetNddPerm();
+      DimArray inv_perm;
+      inv_perm.resize(perm.size());
+      for (size_t k = 0; k < perm.size(); ++k) {
+        inv_perm[perm[k]] = k;
+      }
+      if (PermPropCheck(in_prop, inv_perm)) {
+        PermPropUpdate(in_prop, perm);
+        perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
+      } else if (PermPropCheck(out_prop, perm)) {
+        PermPropUpdate(out_prop, inv_perm);
+        perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
+      } else {
+        fall_back = true;
+      }
     }
-    if (PermPropCheck(in_prop, inv_perm)) {
-      PermPropUpdate(in_prop, perm);
-      perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
-    } else if (PermPropCheck(out_prop, perm)) {
-      PermPropUpdate(out_prop, inv_perm);
-      perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
-    } else {
+    if (fall_back) {
       auto aid = ctx_.RootArea(GetMeta(perm_op)->aid);
       ctx_.areas_[aid].ext_opt = FALL_PERMUTE;
       fail = true;

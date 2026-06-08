@@ -113,3 +113,15 @@ def test_permute_reshape():
     x4 = t.add(x3, t.load(b))
     t.store_expect(x4, np.reshape(np.transpose(a, [1, 0]), [1024, 32, 1]) + b)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_permute_chained():
+    t = Tester("vector:spec,priv1")
+    a = np.random.normal(0.0, 0.5, [50, 300, 1024]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.add(x0, 0.02)
+    x2 = t.permute(x1, [1, 0, 2])
+    x3 = t.permute(x2, [0, 2, 1])
+    t.store_expect(x3, np.transpose(a + 0.02, (1, 2, 0)))
+    assert (t.run_check())

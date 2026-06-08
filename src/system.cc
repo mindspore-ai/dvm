@@ -319,11 +319,6 @@ void System::GetSocConfig() {
 
 void System::DoInit() {
   GetSocConfig();
-  int32_t device_id = 0;
-  if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
-    return;
-  }
-  inited_ = true;
   event_num_ = 8;
   vector_core_num_ = cube_core_num_ * 2;
   l1_size_ = 512 * 1024;
@@ -350,6 +345,11 @@ void System::DoInit() {
     l0c_size_ = 256 * 1024;
     local_mem_size_ = 256 * 1024;
   }
+  int32_t device_id = 0;
+  if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
+    return;
+  }
+  inited_ = true;
 #ifdef VK_SIM_MODEL
   void *sim_handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
   EXCEPTION_IF(sim_handle == nullptr, dlerror());

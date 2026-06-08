@@ -366,8 +366,8 @@ def test_spec_slice(is_split):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.parametrize('is_split', [True, False])
-def test_spec_slice_dim(is_split):
+@pytest.mark.parametrize('is_split, end', [[True, 700], [True, -2], [False, 100000]])
+def test_spec_slice_dim(is_split, end):
     t = Tester("vector:spec,priv1")
     a0 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
     x0 = t.load(a0)
@@ -376,7 +376,7 @@ def test_spec_slice_dim(is_split):
         a0 = a0 * 0.1
     b_ref = t.scalar(dvm.int64)
     b_ref.update(100)
-    x2 = t.slice_dim(x0, 0, b_ref, 700)
+    x2 = t.slice_dim(x0, 0, b_ref, end)
     x3 = t.add(x2, 0.2)
-    t.store_expect(x3, a0[100:700, :] + 0.2)
+    t.store_expect(x3, a0[100:end, :] + 0.2)
     assert (t.run_check())

@@ -766,8 +766,9 @@ class NDDimSliceLoad : public NDViewLoad {
     for (size_t i = 0; i < dim_size; i++) {
       shape_[i] = src_ref_->data[i];
     }
-    int64_t b = begin_->i64 >= 0 ? begin_->i64 : begin_->i64 + src_ref_->data[dim_];
-    int64_t e = end_->i64 >= 0 ? end_->i64 : end_->i64 + src_ref_->data[dim_];
+    int64_t slice_dim = src_ref_->data[dim_];
+    int64_t b = begin_->i64 >= 0 ? begin_->i64 : begin_->i64 + slice_dim;
+    int64_t e = end_->i64 >= 0 ? std::min(end_->i64, slice_dim) : end_->i64 + slice_dim;
     shape_[dim_] = e - b;
     stride_data_.Resize(dim_size);
     stride_data_[dim_size - 1] = 1;

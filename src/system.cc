@@ -321,11 +321,6 @@ void System::GetSocConfig() {
 
 void System::DoInit() {
   GetSocConfig();
-  int32_t device_id = 0;
-  if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
-    return;
-  }
-  inited_ = true;
   event_num_ = 8;
   vector_core_num_ = cube_core_num_ * 2;
   l1_size_ = 512 * 1024;

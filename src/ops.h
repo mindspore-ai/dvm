@@ -409,6 +409,7 @@ class VectorKernel;
 #define OBJ_FLAG_EAGER (8u << 16)
 #define OBJ_FLAG_STAGE_IO (16u << 16)
 
+#define OBJ_FLAG_CAST_NOLOSS (1u << 31)
 #define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
 #define OBJ_FLAG_STORE_TEMP (1u << 31)
 #define OBJ_FLAG_LOAD_BIND (1u << 29)

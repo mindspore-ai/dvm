@@ -394,8 +394,49 @@ void SplitInt64Scalar(T scalar, int32_t &lo, int32_t &hi) {
   hi = static_cast<int32_t>((scalar_i64 >> 32) & 0xFFFFFFFFLL);
 }
 
+NDObject *ToBoolOp(Kernel *k, NDObject *input) {
+  constexpr DataType compute_type = kFloat16;
+  if (input->obj_id_ == kCast && input->CheckFlag(OBJ_FLAG_CAST_NOLOSS) && input->lhs_->type_id_ == compute_type) {
+    return input->lhs_;
+  }
+  if (compute_type == kFloat16 && input->type_id_ == kBool) {
+    auto op = new CastOp(input, kFloat16);
+    op->SetFlag(OBJ_FLAG_CAST_NOLOSS);
+    k->GetImpl()->Append(op);
+    return op;
+  }
+  return k->Cast(input, compute_type);
+}
+
+NDObject *FromBoolOp(Kernel *k, NDObject *input, DataType orig_type) {
+  if (input->type_id_ == kFloat16 && orig_type == kBool) {
+    auto op = new CastOp(input, kBool);
+    op->SetFlag(OBJ_FLAG_CAST_NOLOSS);
+    k->GetImpl()->Append(op);
+    return op;
+  }
+  return k->Cast(input, orig_type);
+}
+
 template <BinaryType op_type>
-NDObject *BinaryPromotion(Kernel *kernel, dvm::DataType promote_dtype, NDObject *lhs, NDObject *rhs) {
+NDObject *BoolBinaryPromotion(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  auto orig_dtype = lhs->type_id_;
+  lhs = ToBoolOp(kernel, lhs);
+  rhs = ToBoolOp(kernel, rhs);
+  auto result = kernel->Binary<op_type>(lhs, rhs);
+  return FromBoolOp(kernel, result, orig_dtype);
+}
+
+template <UnaryType op_type>
+NDObject *BoolUnaryPromotion(Kernel *kernel, NDObject *lhs) {
+  auto orig_dtype = lhs->type_id_;
+  lhs = ToBoolOp(kernel, lhs);
+  auto result = kernel->Unary<op_type>(lhs);
+  return FromBoolOp(kernel, result, orig_dtype);
+}
+
+template <BinaryType op_type, DataType promote_dtype>
+NDObject *BinaryPromotion(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
   auto orig_dtype = lhs->type_id_;
   lhs = kernel->Cast(lhs, promote_dtype);
   rhs = kernel->Cast(rhs, promote_dtype);
@@ -403,8 +444,8 @@ NDObject *BinaryPromotion(Kernel *kernel, dvm::DataType promote_dtype, NDObject 
   return kernel->Cast(result, orig_dtype);
 }
 
-template <UnaryType op_type>
-NDObject *UnaryPromotion(Kernel *kernel, dvm::DataType promote_dtype, NDObject *lhs) {
+template <UnaryType op_type, DataType promote_dtype>
+NDObject *UnaryPromotion(Kernel *kernel, NDObject *lhs) {
   auto orig_dtype = lhs->type_id_;
   lhs = kernel->Cast(lhs, promote_dtype);
   auto result = kernel->Unary<op_type>(lhs);
@@ -1033,12 +1074,12 @@ template <UnaryType op_type>
 NDObject *Kernel::Unary(NDObject *input) {
   switch (input->type_id_) {
     case kBool:
-      return UnaryPromotion<op_type>(this, DataType::kFloat16, input);
+      return BoolUnaryPromotion<op_type>(this, input);
     case kBFloat16:
-      return UnaryPromotion<op_type>(this, DataType::kFloat32, input);
+      return UnaryPromotion<op_type, DataType::kFloat32>(this, input);
     case kFloat16: {
       if constexpr (op_type >= UnaryType::kRound && op_type <= UnaryType::kTrunc) {
-        return UnaryPromotion<op_type>(this, DataType::kFloat32, input);
+        return UnaryPromotion<op_type, DataType::kFloat32>(this, input);
       }
       break;
     }
@@ -1081,7 +1122,7 @@ template <BinaryType op_type, typename L, typename R>
 NDObject *Kernel::Binary(L lhs, R rhs) {
   if constexpr (!std::is_same<L, NDObject *>::value) {
     if (rhs->type_id_ == kBool) {
-      return Cast(Binary<op_type>(lhs, Cast(rhs, kFloat16)), kBool);
+      return FromBoolOp(this, Binary<op_type>(lhs, ToBoolOp(this, rhs)), kBool);
     }
     if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
       if (rhs->type_id_ == kInt64) {
@@ -1110,7 +1151,7 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     return obj;
   } else if constexpr (!std::is_same<R, NDObject *>::value) {
     if (lhs->type_id_ == kBool) {
-      return Cast(Binary<op_type>(Cast(lhs, kFloat16), rhs), kBool);
+      return FromBoolOp(this, Binary<op_type>(ToBoolOp(this, lhs), rhs), kBool);
     }
     if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
       if (lhs->type_id_ == kInt64) {
@@ -1140,16 +1181,16 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
   } else {
     switch (lhs->type_id_) {
       case kBool:
-        return BinaryPromotion<op_type>(this, DataType::kFloat16, lhs, rhs);
+        return BoolBinaryPromotion<op_type>(this, lhs, rhs);
       case kBFloat16: {
         if constexpr (op_type == BinaryType::kPow || op_type == BinaryType::kDiv) {
-          return BinaryPromotion<op_type>(this, DataType::kFloat32, lhs, rhs);
+          return BinaryPromotion<op_type, DataType::kFloat32>(this, lhs, rhs);
         }
         break;
       }
       case kFloat16: {
         if constexpr (op_type == BinaryType::kPow) {
-          return BinaryPromotion<op_type>(this, DataType::kFloat32, lhs, rhs);
+          return BinaryPromotion<op_type, DataType::kFloat32>(this, lhs, rhs);
         }
         break;
       }
@@ -1282,7 +1323,7 @@ NDObject *Kernel::ElemAny(NDObject *input) {
 template <typename T>
 NDObject *Kernel::Broadcast(T val, IntArrayRef *shape, DataType type) {
   if (type == DataType::kBool) {
-    return Cast(Broadcast(val, shape, DataType::kFloat16), DataType::kBool);
+    return Cast(Broadcast(val, shape, DataType::kFloat16), DataType::kBool); // TODO: convert val to bool and use FromBoolOp
   }
   if (type == DataType::kInt64) {
     if constexpr (std::is_same<T, ScalarRef *>::value) {
@@ -1315,10 +1356,7 @@ template NDObject *Kernel::Broadcast<ScalarRef *>(ScalarRef *val, IntArrayRef *s
 
 NDObject *Kernel::Broadcast(NDObject *input, IntArrayRef *shape) {
   if (input->type_id_ == DataType::kBool) {
-    auto cast1 = Cast(input, DataType::kFloat16);
-    auto obj = Broadcast(cast1, shape);
-    auto cast2 = Cast(obj, DataType::kBool);
-    return cast2;
+    return FromBoolOp(this, Broadcast(ToBoolOp(this, input), shape), DataType::kBool);
   }
   if (input->type_id_ == DataType::kInt64) {
     auto lo = ExtractInt64<kExtractLo32>(this, input);

@@ -491,3 +491,14 @@ def test_binary_float_scalar_ref(op, func):
         s.update(i)
         t.run()
         assert (t.check(out, func(d1, i)))
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_bool_cast_eliminate():
+    t = Tester()
+    a = np.random.choice([True, False], [32, 64]).astype(np.bool_)
+    b = np.random.choice([True, False], [32, 64]).astype(np.bool_)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.logical_or(t.logical_not(x0), x1)
+    t.store_expect(x2, np.logical_or(np.logical_not(a), b))
+    assert (t.run_check())

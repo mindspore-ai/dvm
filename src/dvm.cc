@@ -214,6 +214,8 @@ scode_t EncodeScalar(T scalar, int type) {
         return EncodeScalar(static_cast<float>(scalar));
       case kInt32:
         return EncodeScalar(static_cast<int32_t>(scalar));
+      case kBool:
+        return static_cast<scode_t>(static_cast<bool>(scalar));
       default:
         return 0;
     }
@@ -394,6 +396,21 @@ void SplitInt64Scalar(T scalar, int32_t &lo, int32_t &hi) {
   hi = static_cast<int32_t>((scalar_i64 >> 32) & 0xFFFFFFFFLL);
 }
 
+bool IsBoolResultOp(NDObject *input) {
+  auto input_obj_type = input->GetObjectType();
+  if (input_obj_type == kCompare || input_obj_type == kCompareS) {
+    return true;
+  }
+  if (input_obj_type == kBinary) {
+    return static_cast<BinaryOp *>(input)->GetOpType() == BinaryType::kLogicalOr ||
+           static_cast<BinaryOp *>(input)->GetOpType() == BinaryType::kLogicalAnd;
+  }
+  if (input_obj_type == kUnary) {
+    return static_cast<UnaryOp *>(input)->GetOpType() == UnaryType::kLogicalNot;
+  }
+  return false;
+}
+
 NDObject *ToBoolOp(Kernel *k, NDObject *input) {
   constexpr DataType compute_type = kFloat16;
   if (input->obj_id_ == kCast && input->CheckFlag(OBJ_FLAG_CAST_NOLOSS) && input->lhs_->type_id_ == compute_type) {
@@ -420,6 +437,9 @@ NDObject *FromBoolOp(Kernel *k, NDObject *input, DataType orig_type) {
 
 template <BinaryType op_type>
 NDObject *BoolBinaryPromotion(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  if (g_system.Arch() == kAiCore_C310) {
+    return kernel->Binary<op_type>(lhs, rhs);
+  }
   auto orig_dtype = lhs->type_id_;
   lhs = ToBoolOp(kernel, lhs);
   rhs = ToBoolOp(kernel, rhs);
@@ -429,6 +449,9 @@ NDObject *BoolBinaryPromotion(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
 
 template <UnaryType op_type>
 NDObject *BoolUnaryPromotion(Kernel *kernel, NDObject *lhs) {
+  if (g_system.Arch() == kAiCore_C310) {
+    return kernel->Unary<op_type>(lhs);
+  }
   auto orig_dtype = lhs->type_id_;
   lhs = ToBoolOp(kernel, lhs);
   auto result = kernel->Unary<op_type>(lhs);
@@ -1095,7 +1118,9 @@ NDObject *Kernel::Unary(NDObject *input) {
       break;
   }
   if constexpr (op_type == UnaryType::kLogicalNot) {
-    return Binary<BinaryType::kSub>(1, input);
+    if (g_system.Arch() != kAiCore_C310) {
+      return Binary<BinaryType::kSub>(1, input);
+    }
   }
   if constexpr (op_type == UnaryType::kReciprocal) {
     return Binary<BinaryType::kDiv>(1, input);
@@ -1121,7 +1146,7 @@ DEF_UNARY(UnaryType::kTrunc);
 template <BinaryType op_type, typename L, typename R>
 NDObject *Kernel::Binary(L lhs, R rhs) {
   if constexpr (!std::is_same<L, NDObject *>::value) {
-    if (rhs->type_id_ == kBool) {
+    if (rhs->type_id_ == kBool && g_system.Arch() != kAiCore_C310) {
       return FromBoolOp(this, Binary<op_type>(lhs, ToBoolOp(this, rhs)), kBool);
     }
     if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
@@ -1150,7 +1175,7 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     }
     return obj;
   } else if constexpr (!std::is_same<R, NDObject *>::value) {
-    if (lhs->type_id_ == kBool) {
+    if (lhs->type_id_ == kBool && g_system.Arch() != kAiCore_C310) {
       return FromBoolOp(this, Binary<op_type>(ToBoolOp(this, lhs), rhs), kBool);
     }
     if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
@@ -1280,32 +1305,30 @@ NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
 
 NDObject *Kernel::Cast(NDObject *input, DataType type) {
   static const int g_cast_staff_type[DataType::kDataTypeEnd][DataType::kDataTypeEnd] = {
-    {-1, -1, kFloat16, kFloat16, kFloat16, kFloat16},  // V_BOOL
-    {-1, -1, kFloat32, -1, -1, kFloat32},              // V_FLOAT16
-    {kFloat32, kFloat32, -1, -1, -1, kFloat32},        // V_BFLOAT16
-    {kFloat16, -1, -1, -1, -1, -1},                    // V_FLOAT32
-    {kFloat16, -1, kFloat32, -1, -1, -1},              // V_INT32
-    {-1, kFloat32, kFloat32, -1, -1, -1},              // V_INT64
+    {kBool, kFloat16, kFloat16, kFloat16, kFloat16, kFloat16},       // V_BOOL
+    {kBool, kFloat16, kFloat32, kFloat32, kInt32, kFloat32},         // V_FLOAT16
+    {kFloat32, kFloat32, kBFloat16, kFloat32, kInt32, kFloat32},     // V_BFLOAT16
+    {kFloat16, kFloat16, kBFloat16, kFloat32, kInt32, kInt64},       // V_FLOAT32
+    {kFloat16, kFloat16, kFloat32, kFloat32, kInt32, kInt64},        // V_INT32
+    {kBool, kFloat32, kFloat32, kFloat32, kInt32, kInt64},           // V_INT64
   };
   if (input->type_id_ == type) {
     return input;
   }
-  auto input_obj_type = input->GetObjectType();
-  if (type == kBool && input_obj_type != kCompare && input_obj_type != kCompareS) {
+  if (type == kBool && !IsBoolResultOp(input)) {
     if (input->type_id_ == kBFloat16 && g_system.Arch() == kAiCore_C220) {
       input = Cast(input, kFloat32);
     }
     input = Binary<BinaryType::kNotEqual>(input, 0);
   }
-  auto stuff_type = g_cast_staff_type[input->type_id_][type];
-  while (stuff_type != -1) {
-    input = new CastOp(input, static_cast<DataType>(stuff_type));
+  auto cur_type = input->type_id_;
+  while (cur_type != type) {
+    auto stuff_type = static_cast<DataType>(g_cast_staff_type[cur_type][type]);
+    input = new CastOp(input, stuff_type);
     kernel_->Append(input);
-    stuff_type = g_cast_staff_type[input->type_id_][type];
+    cur_type = stuff_type;
   }
-  auto obj = new CastOp(input, type);
-  kernel_->Append(obj);
-  return obj;
+  return input;
 }
 
 NDObject *Kernel::Copy(NDObject *input) {
@@ -1322,7 +1345,7 @@ NDObject *Kernel::ElemAny(NDObject *input) {
 
 template <typename T>
 NDObject *Kernel::Broadcast(T val, IntArrayRef *shape, DataType type) {
-  if (type == DataType::kBool) {
+  if (type == DataType::kBool && g_system.Arch() != kAiCore_C310) {
     return Cast(Broadcast(val, shape, DataType::kFloat16), DataType::kBool); // TODO: convert val to bool and use FromBoolOp
   }
   if (type == DataType::kInt64) {
@@ -1355,7 +1378,7 @@ template NDObject *Kernel::Broadcast<BFloat16>(BFloat16 val, IntArrayRef *shape,
 template NDObject *Kernel::Broadcast<ScalarRef *>(ScalarRef *val, IntArrayRef *shape, DataType type);
 
 NDObject *Kernel::Broadcast(NDObject *input, IntArrayRef *shape) {
-  if (input->type_id_ == DataType::kBool) {
+  if (input->type_id_ == DataType::kBool && g_system.Arch() != kAiCore_C310) {
     return FromBoolOp(this, Broadcast(ToBoolOp(this, input), shape), DataType::kBool);
   }
   if (input->type_id_ == DataType::kInt64) {

@@ -112,6 +112,8 @@ enum vSimdInsnID {
   V_ONE_HOT,
   V_BROADCAST_X_B16,
   V_BROADCAST_S_B16,
+  V_BROADCAST_X_B8, // [c310]
+  V_BROADCAST_S_B8, // [c310]
   V_SQRT_FP16,
   V_ABS_FP16,
   V_LOG_FP16,
@@ -188,6 +190,9 @@ enum vSimdInsnID {
   V_MAX_BF16, // [c310]
   V_ISFINITE_BF16, // [c310]
   V_SEL_BF16, // [c310]
+  V_LOGICAL_NOT_BOOL, // [c310]
+  V_LOGICAL_AND_BOOL, // [c310]
+  V_LOGICAL_OR_BOOL, // [c310]
   V_NONE,
 };
 

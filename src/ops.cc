@@ -38,7 +38,7 @@ static const InsnIdTable unary_id_list[kUnaryTypeEnd] = {
   {"Exp", {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE}},
   {"Reciprocal", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
   {"IsFinite", {V_NONE, V_ISFINITE_FP16, V_ISFINITE_BF16, V_ISFINITE, V_NONE}},
-  {"LogicalNot", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
+  {"LogicalNot", {V_LOGICAL_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE}},
   {"Round", {V_NONE, V_NONE, V_NONE, V_ROUND, V_NONE}},
   {"Floor", {V_NONE, V_NONE, V_NONE, V_FLOOR, V_NONE}},
   {"Ceil", {V_NONE, V_NONE, V_NONE, V_CEIL, V_NONE}},
@@ -59,8 +59,8 @@ static const InsnIdTable binary_id_list[] = {
   {"Pow", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},  // power: individual implement
   {"Maximum", {V_NONE, V_MAX_FP16, V_MAX_BF16, V_MAX, V_MAX_INT32}},
   {"Minimum", {V_NONE, V_MIN_FP16, V_MIN_BF16, V_MIN, V_MIN_INT32}},
-  {"LogicalAnd", {V_NONE, V_MIN_FP16, V_MAX_BF16, V_MIN, V_MIN_INT32}},
-  {"LogicalOr", {V_NONE, V_MAX_FP16, V_MIN_BF16, V_MAX, V_MAX_INT32}}};
+  {"LogicalAnd", {V_LOGICAL_AND_BOOL, V_MIN_FP16, V_MAX_BF16, V_MIN, V_MIN_INT32}},
+  {"LogicalOr", {V_LOGICAL_OR_BOOL, V_MAX_FP16, V_MIN_BF16, V_MAX, V_MAX_INT32}}};
 
 static const InsnIdTable binarys_id_list[] = {
   // must keep consistent order with BinarySOpType
@@ -78,13 +78,12 @@ static const InsnIdTable binarys_id_list[] = {
   {"Minimum", {V_NONE, V_MINS_FP16, V_MINS_BF16, V_MINS, V_MINS_INT32}}};
 
 static const vSimdInsnID cast_id_list[DataType::kDataTypeEnd][DataType::kDataTypeEnd] = {
-  {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE, V_NONE},  // V_BOOL
-  {V_CAST_FP16_TO_BOOL, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32, V_NONE},  // V_FLOAT16
-  {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32, V_NONE},               // V_BFLOAT16
-  {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32,
-   V_CAST_FP32_TO_INT64},  // V_FLOAT32
-  {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE, V_CAST_INT32_TO_INT64},  // V_INT32
-  {V_NONE, V_NONE, V_NONE, V_CAST_INT64_TO_FP32, V_CAST_INT64_TO_INT32, V_NONE},  // V_INT64
+  {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE, V_NONE},                                           // V_BOOL
+  {V_CAST_FP16_TO_BOOL, V_NONE, V_NONE, V_CAST_FP16_TO_FP32, V_CAST_FP16_TO_INT32, V_NONE},                // V_FLOAT16
+  {V_NONE, V_NONE, V_NONE, V_CAST_BF16_TO_FP32, V_CAST_BF16_TO_INT32, V_NONE},                             // V_BFLOAT16
+  {V_NONE, V_CAST_FP32_TO_FP16, V_CAST_FP32_TO_BF16, V_NONE, V_CAST_FP32_TO_INT32, V_CAST_FP32_TO_INT64},  // V_FLOAT32
+  {V_NONE, V_CAST_INT32_TO_FP16, V_NONE, V_CAST_INT32_TO_FP32, V_NONE, V_CAST_INT32_TO_INT64},             // V_INT32
+  {V_NONE, V_NONE, V_NONE, V_CAST_INT64_TO_FP32, V_CAST_INT64_TO_INT32, V_NONE},                           // V_INT64
 };
 
 static const vSimdInsnID reduce_x_list[][ReduceType::kReduceTypeEnd] = {
@@ -446,40 +445,43 @@ static constexpr ObjectMeta GenObjectMeta() {
   constexpr uint32_t F_LD = ObjectMeta::kLhsDom;
   constexpr uint32_t F_DM = ObjectMeta::kDom;
   BaseData data[] = {
-    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // LoadDummy
-    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                        // MultiLoad
-    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // GlobalAccess
-    {kGenLoad, F_IP, nullptr, nullptr, NDSimtLoad::TileCollect},                                     // GatherLoad
-    {kGenLoad, 0, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::TileCollect},              // ViewLoad
-    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                     // Load
-    {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::TileCollect},                  // PadStore
-    {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDViewStore::FoldProp, NDViewStore::TileCollect}, // ViewStore
-    {kGenStore, F_IP | F_NS | F_LD, NDStore::DimChanged, nullptr, nullptr},                          // Store
-    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::TileCollect, ReduceScatterOp::ShapeProp},         // ReduceScatter
-    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::TileCollect, AllGatherOp::ShapeProp},                           // AllGather
-    {kGenComm, 0, nullptr, nullptr, CommOp::TileCollect, nullptr},                                                        // AllGatherV2
-    {kGenComm, F_LR, nullptr, nullptr, CommOp::TileCollect, nullptr},                                                     // AllReduce
-    {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr, ReshapeOp::ShapeProp},                                             // Reshape
-    {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Copy
-    {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                      // Unary
-    {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},                               // Binary
-    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // Cast
-    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                     // Extract
+    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // LoadDummy
+    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // MultiLoad
+    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                         // GlobalAccess
+    {kGenLoad, F_IP, nullptr, nullptr, NDSimtLoad::TileCollect},                                         // GatherLoad
+    {kGenLoad, 0, NDViewLoad::DimChanged, NDViewLoad::FoldProp, NDViewLoad::TileCollect},                // ViewLoad
+    {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                         // Load
+    {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::TileCollect},                    // PadStore
+    {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDViewStore::FoldProp, NDViewStore::TileCollect},  // ViewStore
+    {kGenStore, F_IP | F_NS | F_LD, NDStore::DimChanged, nullptr, nullptr},                              // Store
+    {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::TileCollect,
+     ReduceScatterOp::ShapeProp},                                                                     // ReduceScatter
+    {kGenComm, 0, nullptr, AllGatherOp::FoldProp, AllGatherOp::TileCollect, AllGatherOp::ShapeProp},  // AllGather
+    {kGenComm, 0, nullptr, nullptr, CommOp::TileCollect, nullptr},                                    // AllGatherV2
+    {kGenComm, F_LR, nullptr, nullptr, CommOp::TileCollect, nullptr},                                 // AllReduce
+    {kGenSimd1, F_IP | F_LR, nullptr, nullptr, nullptr, ReshapeOp::ShapeProp},                        // Reshape
+    {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // Copy
+    {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // Unary
+    {kGenSimd2, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},           // Binary
+    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                              // Cast
+    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                                     // Extract
     {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                                      // Pack
-    {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                               // BinaryS
-    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect, BroadcastOp::ShapeProp},                     // BroadcastTo
-    {kGenSimd0, F_IP, nullptr, nullptr, nullptr},                                                    // BroadcastS
-    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::TileCollect, ReduceOp::ShapeProp},       // Reduce
-    {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                               // Select
-    {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                                    // ElemAny
-    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                             // RemovePad
-    {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, PowerOp::ShapeProp},                                              // Power
-    {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},                                // Compare
-    {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                                       // CompareS
-    {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},                // OneHot
-    {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                             // Permute
-    {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                                         // CubeOp
-    {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                                          // GmmOp
+    {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                                // BinaryS
+    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect,
+     BroadcastOp::ShapeProp},                      // BroadcastTo
+    {kGenSimd0, F_IP, nullptr, nullptr, nullptr},  // BroadcastS
+    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::TileCollect,
+     ReduceOp::ShapeProp},                                                                   // Reduce
+    {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                       // Select
+    {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                            // ElemAny
+    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                     // RemovePad
+    {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, PowerOp::ShapeProp},                  // Power
+    {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},  // Compare
+    {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                               // CompareS
+    {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},  // OneHot
+    {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
+    {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
+    {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                              // GmmOp
   };
 
   ObjectMeta meta;
@@ -583,7 +585,9 @@ uint64_t NDLoadDummy::Emit(VectorKernel &k) {
 
 uint64_t NDGlobalAccess::Emit(VectorKernel &k) { return 0; }
 
-NDObject *NDGlobalAccess::Clone(CloneHelper &h) { return new NDGlobalAccess(addr_.gm, h.GetClone(shape_ref_), type_id_); }
+NDObject *NDGlobalAccess::Clone(CloneHelper &h) {
+  return new NDGlobalAccess(addr_.gm, h.GetClone(shape_ref_), type_id_);
+}
 
 void NDGlobalAccess::Dump(bool verbose, std::ostringstream &oss) { oss << "GlobalAccess"; }
 
@@ -760,10 +764,11 @@ uint64_t NDGatherLoad::Emit(VectorKernel &k) {
   op.iter_size = lead_dim;
   op.pad_size = lead_align - lead_dim;
   op.round_rank = round_tile_.size();
-  op.tail_iter = tail_dim_ < 0 ? (op.body_iter == 1 ? op.iter_size : op.body_iter)
-                               : (op.body_iter == 1 ? static_cast<uint64_t>(tail_size_)
-                                                    : op.body_iter / static_cast<uint64_t>(ndd_[tail_dim_]) *
-                                                        static_cast<uint64_t>(tail_size_));
+  op.tail_iter =
+    tail_dim_ < 0
+      ? (op.body_iter == 1 ? op.iter_size : op.body_iter)
+      : (op.body_iter == 1 ? static_cast<uint64_t>(tail_size_)
+                           : op.body_iter / static_cast<uint64_t>(ndd_[tail_dim_]) * static_cast<uint64_t>(tail_size_));
   addr_.Update(insn_ + vGatherLoad::RELOC_OFFSET);
   index_->addr_.Update(insn_ + vGatherLoad::INDEX_RELOC_OFFSET);
   const auto insn_id = ITEM_SIZE[type_id_] == 2 ? vAccInsnID::V_LOAD_GATHER_B16 : vAccInsnID::V_LOAD_GATHER_B32;
@@ -943,7 +948,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
   fold_dim.resize(fold_idx + 1);
   fold_stride.resize(fold_idx + 1);
   int64_t item_size = ITEM_SIZE[type_id_];
-  if (fold_stride[0]  > item_size) {
+  if (fold_stride[0] > item_size) {
     vViewLoadX op;
     op.xd = xbuf_;
     op.from = addr_.data;
@@ -954,7 +959,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     auto ws_block_num = (g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
     op.ws_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
     op.iter_size = fold_dim[0];
-    op.iter_stride= fold_stride[0];
+    op.iter_stride = fold_stride[0];
     op.loop_depth = tile_start - 1;
     op.tail_size = fold_dim[tile_start - 1];
     if (tail_size_) {
@@ -976,7 +981,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       space *= fold_dim[i];
     }
     addr_.Update(insn_ + vViewLoadX::RELOC_OFFSET);
-    return vViewLoadX::Encode(insn_, item_size == 2 ?  V_LOAD_VIEW_X_B16 : V_LOAD_VIEW_X_B32 , op);
+    return vViewLoadX::Encode(insn_, item_size == 2 ? V_LOAD_VIEW_X_B16 : V_LOAD_VIEW_X_B32, op);
   } else {
     vViewLoad op;
     uint64_t *var_insn = insn_ + vViewLoad::VAR_OFFSET;
@@ -1126,7 +1131,7 @@ void NDViewStore::Normalize(std::vector<NDObject *> &run_ops) {
   dst_stride_.resize(dim_size);
   tile_.resize(dim_size);
   for (size_t i = 0; i < dim_size; i++) {
-    dst_stride_[i] = nd_[i] == 1 ?  0 : dst_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
+    dst_stride_[i] = nd_[i] == 1 ? 0 : dst_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
   }
   tail_dim_ = dim_size;
   tail_size_ = 0;
@@ -1773,7 +1778,8 @@ NDObject *UnaryOp::Clone(CloneHelper &h) { return new UnaryOp(op_type_, h.GetClo
 void UnaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << unary_id_list[op_type_].name; }
 
 uint64_t RemovePadOp::Emit(VectorKernel &k) {
-  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
+  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD,
+                                                      V_REMOVEPAD};
   if (nd_.lead_dim() == nd_.lead_stride() || nd_.stride_back() == nd_.lead_stride()) {
     return CopyOp::Emit(k);
   }
@@ -1870,9 +1876,7 @@ uint64_t ExtractOp::Emit(VectorKernel &k) {
 
 NDObject *ExtractOp::Clone(CloneHelper &h) { return new ExtractOp(h.GetClone(lhs_), slot_, type_id_); }
 
-void ExtractOp::Dump(bool verbose, std::ostringstream &oss) {
-  oss << "Extract<" << slot_ << '>';
-}
+void ExtractOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Extract<" << slot_ << '>'; }
 
 uint64_t PackOp::Emit(VectorKernel &k) {
   vPack op;
@@ -2205,8 +2209,8 @@ uint64_t SelectOp::Emit(VectorKernel &k) {
   vSelect op;
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
-  const static vSimdInsnID id_list[DataType::kDataTypeEnd] = {V_NONE, V_SEL_FP16, V_SEL_BF16, V_SEL, V_SEL_INT32,
-                                                              V_NONE};
+  const static vSimdInsnID id_list[DataType::kDataTypeEnd] = {V_NONE, V_SEL_FP16,  V_SEL_BF16,
+                                                              V_SEL,  V_SEL_INT32, V_NONE};
   op.count = nd_.stride_back();
   op.xm = rhs_->xbuf_;
   op.cond = xhs_->xbuf_;
@@ -2270,8 +2274,8 @@ uint64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   op.lead_num = end_dim + 1 < rank_size ? ndd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
   op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();
-  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_BROADCAST_X_B16, V_BROADCAST_X_B16, V_BROADCAST_X_B32,
-                                                      V_BROADCAST_X_B32};
+  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_BROADCAST_X_B8, V_BROADCAST_X_B16, V_BROADCAST_X_B16,
+                                                      V_BROADCAST_X_B32, V_BROADCAST_X_B32};
   ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
@@ -2379,7 +2383,9 @@ uint64_t BroadcastScalarOp::Emit(VectorKernel &k) {
   op.scalar = scalar_;
   op.xd = xbuf_;
   op.count = ndd_.stride_back();
-  return vBroadcastS::Encode(insn_, ITEM_SIZE[type_id_] == sizeof(uint32_t) ? V_BROADCAST_S : V_BROADCAST_S_B16, op);
+  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_BROADCAST_S_B8, V_BROADCAST_S_B16, V_BROADCAST_S_B16,
+                                                      V_BROADCAST_S, V_BROADCAST_S};
+  return vBroadcastS::Encode(insn_, id_list[type_id_], op);
 }
 
 NDObject *BroadcastScalarOp::Clone(CloneHelper &h) {
@@ -2843,7 +2849,7 @@ void AddTileVisit(size_t round_depth, RedVisitCoder *coder) {
     }
   }
 }
-} // namepsace
+}  // namespace
 
 uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
   auto coder = k.GetVisitor<RedVisitCoder>();

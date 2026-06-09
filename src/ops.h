@@ -878,6 +878,7 @@ class UnaryOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  int GetOpType() const { return op_type_; }
 
  protected:
   int op_type_;
@@ -1033,6 +1034,7 @@ class BinaryOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  int GetOpType() const { return op_type_; }
 
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 

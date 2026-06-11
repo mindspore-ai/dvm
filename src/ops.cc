@@ -233,6 +233,16 @@ float GetRedInitScalar(int red_op) {
   }
   return 0;
 }
+
+uint32_t GetPointwiseMask(const DimArray &dims) {
+  uint32_t mask = (0x1u << dims.size()) - 1;
+  for (size_t i = 0; i < dims.size(); ++i) {
+    if (dims[i] == 1) {
+      mask ^= 1u << i;
+    }
+  }
+  return mask;
+}
 }  // namespace
 
 bool CollectRoundTile(uint32_t elem_mask, const TileParam &tp, DimArray &round_tile) {
@@ -809,7 +819,7 @@ void NDViewLoad::DimChanged(NDObject *op) {
   int64_t acc_stride = 1;
   for (size_t i = 0; i < dim_size; ++i) {
     if (dims[i] == 1) {
-      stride[i] = 0;
+      stride[i] = i > 0 ? stride[i - 1] : ITEM_SIZE[view->type_id_];
     } else if (!acc_nd) {
       acc_stride = ref_stride[ref_idx];
       stride[i] = acc_stride * ITEM_SIZE[view->type_id_];
@@ -879,9 +889,14 @@ void NDViewLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ndd_.dims.resize(dim_size);
   src_stride_.resize(dim_size);
   tile_.resize(dim_size);
-  for (size_t i = 0; i < dim_size; i++) {
-    ndd_.dims[i] = shape_ref_->data[dim_size - i - 1];
-    src_stride_[i] = ndd_.dims[i] == 1 ? 0 : src_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
+  if (dim_size > 0) {
+    auto item_size = ITEM_SIZE[type_id_];
+    ndd_.dims[0] = shape_ref_->data[dim_size - 1];
+    src_stride_[0] = ndd_.dims[0] == 1 ? item_size : src_stride_ref_->data[dim_size - 1] * item_size;
+    for (size_t i = 1; i < dim_size; i++) {
+      ndd_.dims[i] = shape_ref_->data[dim_size - i - 1];
+      src_stride_[i] = ndd_.dims[i] == 1 ? src_stride_[i - 1] : src_stride_ref_->data[dim_size - i - 1] * item_size;
+    }
   }
   tail_dim_ = dim_size;
   tail_size_ = 0;
@@ -898,9 +913,16 @@ void NDViewLoad::Tile(const TileParam &tp) {
       tile_.resize(tile_size);
       tail_dim_ = tile_size;
     }
+    bool pointwise = ndd_[tp.start] > 1;
     tile_[tp.start] = tp.num;
     for (int i = tp.start + 1; i < tail_dim_; ++i) {
       tile_[i] = 0;
+      pointwise = pointwise || ndd_[i] > 1;
+    }
+    if (!pointwise) {
+      for (int i = tp.start; i < tail_dim_; ++i) {
+        src_stride_[i] = 0;
+      }
     }
     tail_dim_ = tp.start;
     tail_size_ = tp.tail;
@@ -914,7 +936,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     tail_dim_ = dim_size - 1;
   }
   DimArray fold_dim, fold_stride;
-  auto lead_idx = ndd_.lead_idx();
+  auto lead_idx = std::min(ndd_.lead_idx(), tail_dim_);
   fold_dim[0] = ndd_.dims[lead_idx];
   fold_stride[0] = src_stride_[lead_idx];
   int fold_idx = 0;
@@ -948,7 +970,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
   fold_dim.resize(fold_idx + 1);
   fold_stride.resize(fold_idx + 1);
   int64_t item_size = ITEM_SIZE[type_id_];
-  if (fold_stride[0] > item_size) {
+  if (fold_stride[0] != item_size) {
     vViewLoadX op;
     op.xd = xbuf_;
     op.from = addr_.data;
@@ -1060,7 +1082,7 @@ void NDViewStore::DimChanged(NDObject *op) {
   int ref_idx = ref_shape->size - 1;
   for (size_t i = 0; i < dim_size; ++i) {
     if (dims[i] == 1) {
-      stride[i] = 0;
+      stride[i] = i > 0 ? stride[i - 1] : ITEM_SIZE[store->type_id_];
     } else if (!acc_nd) {
       acc_stride = ref_stride->data[ref_idx];
       stride[i] = acc_stride * ITEM_SIZE[store->type_id_];
@@ -1081,6 +1103,7 @@ void NDViewStore::DimChanged(NDObject *op) {
       }
     }
   }
+  store->elem_dim_mask_ = GetPointwiseMask(dims.dims());
 }
 
 void NDViewStore::TileCollect(NDObject *op, TileInfo &info) {
@@ -1130,12 +1153,17 @@ void NDViewStore::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(dim_size <= nd_.size());
   dst_stride_.resize(dim_size);
   tile_.resize(dim_size);
-  for (size_t i = 0; i < dim_size; i++) {
-    dst_stride_[i] = nd_[i] == 1 ? 0 : dst_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
+  if (dim_size > 0) {
+    auto item_size = ITEM_SIZE[type_id_];
+    dst_stride_[0] = nd_[0] == 1 ? item_size : dst_stride_ref_->data[dim_size - 1] * item_size;
+    for (size_t i = 1; i < dim_size; i++) {
+      dst_stride_[i] = nd_[i] == 1 ? dst_stride_[i - 1] : dst_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
+    }
   }
   tail_dim_ = dim_size;
   tail_size_ = 0;
   offset_bytes_ = 0;
+  elem_dim_mask_ = GetPointwiseMask(nd_.dims());
 }
 
 void NDViewStore::Tile(const TileParam &tp) {
@@ -1147,6 +1175,11 @@ void NDViewStore::Tile(const TileParam &tp) {
       dst_stride_.resize(tile_size);
       tile_.resize(tile_size);
       tail_dim_ = tile_size;
+    }
+    if (!((elem_dim_mask_ >> tp.start) & ((1u << (tail_dim_ - tp.start)) - 1))) {
+      for (int i = tp.start; i < tail_dim_; ++i) {
+        dst_stride_[i] = 0;
+      }
     }
     tile_[tp.start] = tp.num;
     for (int i = tp.start + 1; i < tail_dim_; ++i) {
@@ -1163,7 +1196,7 @@ uint64_t NDViewStore::Emit(VectorKernel &k) {
     tail_dim_ = dim_size - 1;
   }
   DimArray fold_dim, fold_stride;
-  auto lead_idx = nd_.lead_idx();
+  auto lead_idx = std::min(nd_.lead_idx(), tail_dim_);
   fold_dim[0] = nd_[lead_idx];
   fold_stride[0] = dst_stride_[lead_idx];
   int fold_idx = 0;
@@ -1196,7 +1229,8 @@ uint64_t NDViewStore::Emit(VectorKernel &k) {
   fold_dim.resize(fold_idx + 1);
   fold_stride.resize(fold_idx + 1);
   int64_t item_size = ITEM_SIZE[type_id_];
-  if (fold_stride[0] > item_size) {
+  if (fold_stride[0] != item_size) {
+    ASSERT(fold_stride[0] != 0);
     vViewStoreX op;
     op.xn = lhs_->xbuf_;
     op.to = addr_.data;
@@ -1435,7 +1469,7 @@ void NDStore::Normalize(std::vector<NDObject *> &run_ops) {
   tail_dim_ = -1;
   tail_size_ = 0;
   round_tile_.resize(0);
-  UpdateDimMask();
+  elem_dim_mask_ = GetPointwiseMask(nd_.dims());
 }
 
 void NDStore::Shard(const ShardParam &sp) {
@@ -1625,7 +1659,9 @@ NDObject *NDStore::Clone(CloneHelper &h) { return new NDStore(h.GetClone(lhs_));
 
 void NDStore::Dump(bool verbose, std::ostringstream &oss) { oss << "Store"; }
 
-void NDStore::DimChanged(NDObject *op) { static_cast<NDStore *>(op)->UpdateDimMask(); }
+void NDStore::DimChanged(NDObject *op) {
+  static_cast<NDStore *>(op)->elem_dim_mask_ = GetPointwiseMask(op->nd_.dims());
+}
 
 uint64_t CopyOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, nd_.stride_back() * ITEM_SIZE[type_id_]);

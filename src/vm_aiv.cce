@@ -1396,28 +1396,33 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     op.ws_size -= UB_WORKSPACE_SIZE / 32;
   }
   do {
-    for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
-      __ubuf__ T *ws;
-      if (pingpong) {
-        pingpong = false;
-        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
-        ws = (__ubuf__ T *)(op.ws);
-      } else {
-        pingpong = true;
-        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
-        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-        ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
+    if (op.iter_stride > 0) {
+      for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
+        __ubuf__ T *ws;
+        if (pingpong) {
+          pingpong = false;
+          set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+          wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+          ws = (__ubuf__ T *)(op.ws);
+        } else {
+          pingpong = true;
+          set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+          wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+          ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
+        }
+        uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
+        if (custom_gather) {
+          ViewLoadXCustomGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride);
+        } else if (item_stride == 2 || item_stride == 4) {
+          uint8_t pattern_mode = item_stride == 2 ? 1 : 3;
+          ViewLoadXFixedGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride, pattern_mode);
+        } else {
+          ViewLoadXNormal(dst, ws, src, iter_offset, iter_size, op.iter_stride);
+        }
       }
-      uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
-      if (custom_gather) {
-        ViewLoadXCustomGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride);
-      } else if (item_stride == 2 || item_stride == 4) {
-        uint8_t pattern_mode = item_stride == 2 ? 1 : 3;
-        ViewLoadXFixedGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride, pattern_mode);
-      } else {
-        ViewLoadXNormal(dst, ws, src, iter_offset, iter_size, op.iter_stride);
-      }
+    } else {
+      set_vector_mask(0, op.iter_size);
+      vector_dup(dst, *(__gm__ T *)src, 1, 1, 1, 8, 8);
     }
     for (idx = 0; idx < op.loop_depth; ++idx) {
       uint64_t loop_size, dst_stride, src_stride;

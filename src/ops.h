@@ -666,15 +666,6 @@ class NDStore : public NDAccess {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  void UpdateDimMask() {
-    elem_dim_mask_ = (0x1u << nd_.size()) - 1;
-    for (size_t i = 0; i < nd_.size(); ++i) {
-      if (nd_[i] == 1) {
-        elem_dim_mask_ ^= 1u << i;
-      }
-    }
-  }
-
   static void DimChanged(NDObject *op);
 
  private:
@@ -707,6 +698,7 @@ class NDViewStore : public NDAccess {
   DimArray tile_;
   int tail_dim_;
   int tail_size_;
+  uint32_t elem_dim_mask_;
   uint64_t offset_bytes_{0};
 };
 

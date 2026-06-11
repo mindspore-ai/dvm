@@ -437,9 +437,6 @@ NDObject *FromBoolOp(Kernel *k, NDObject *input, DataType orig_type) {
 
 template <BinaryType op_type>
 NDObject *BoolBinaryPromotion(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
-  if (g_system.Arch() == kAiCore_C310) {
-    return kernel->Binary<op_type>(lhs, rhs);
-  }
   auto orig_dtype = lhs->type_id_;
   lhs = ToBoolOp(kernel, lhs);
   rhs = ToBoolOp(kernel, rhs);
@@ -449,9 +446,6 @@ NDObject *BoolBinaryPromotion(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
 
 template <UnaryType op_type>
 NDObject *BoolUnaryPromotion(Kernel *kernel, NDObject *lhs) {
-  if (g_system.Arch() == kAiCore_C310) {
-    return kernel->Unary<op_type>(lhs);
-  }
   auto orig_dtype = lhs->type_id_;
   lhs = ToBoolOp(kernel, lhs);
   auto result = kernel->Unary<op_type>(lhs);
@@ -1097,7 +1091,10 @@ template <UnaryType op_type>
 NDObject *Kernel::Unary(NDObject *input) {
   switch (input->type_id_) {
     case kBool:
-      return BoolUnaryPromotion<op_type>(this, input);
+      if (g_system.Arch() != kAiCore_C310) {
+        return BoolUnaryPromotion<op_type>(this, input);
+      }
+      break;
     case kBFloat16:
       return UnaryPromotion<op_type, DataType::kFloat32>(this, input);
     case kFloat16: {
@@ -1118,7 +1115,7 @@ NDObject *Kernel::Unary(NDObject *input) {
       break;
   }
   if constexpr (op_type == UnaryType::kLogicalNot) {
-    if (g_system.Arch() != kAiCore_C310) {
+    if (g_system.Arch() != kAiCore_C310 || input->type_id_ != kBool) {
       return Binary<BinaryType::kSub>(1, input);
     }
   }
@@ -1206,7 +1203,10 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
   } else {
     switch (lhs->type_id_) {
       case kBool:
-        return BoolBinaryPromotion<op_type>(this, lhs, rhs);
+        if (g_system.Arch() != kAiCore_C310) {
+          return BoolBinaryPromotion<op_type>(this, lhs, rhs);
+        }
+        break;
       case kBFloat16: {
         if constexpr (op_type == BinaryType::kPow || op_type == BinaryType::kDiv) {
           return BinaryPromotion<op_type, DataType::kFloat32>(this, lhs, rhs);

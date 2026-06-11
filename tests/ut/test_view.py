@@ -184,6 +184,7 @@ def test_transpose(shape, dim0, dim1):
     ([1, 10, 64], [40, 10, 64]),
     ([1, 1, 64], [40, 10, 64]),
     ([1, 3, 1, 64], [5, 3, 10, 64]),
+    ([8, 1, 1, 1], [8, 3, 10, 64]), # lead broadcast
 ])
 def test_broadcast(shape, new_shape):
     t = Tester()
@@ -216,6 +217,18 @@ def test_broadcast_tiling():
     t.tile(4, 4, 6)
     t.tile(3, 3, 8)
     t.tile(2, 2, 9)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_lead_tiled():
+    t = Tester()
+    a = np.random.normal(0, 0.1, [32, 1, 1, 1]).astype(np.float32)
+    b = np.random.normal(0, 0.1, [16, 10, 1, 4000]).astype(np.float32)
+    x0 = t.view_load([16, 1, 1, 1], [2, 1, 1, 1], a)
+    x1 = t.load(b)
+    x2 = t.add(x0, x1)
+    t.store_expect(x2, a[::2, :, :, :] + b)
     assert (t.run_check())
 
 

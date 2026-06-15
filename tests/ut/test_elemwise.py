@@ -70,6 +70,26 @@ def test_logical(type, shape, op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('op, func', [(Tester.logical_or, np.logical_or), (Tester.logical_and, np.logical_and)])
+def test_logical_mixed_compare_dtype(op, func):
+    t = Tester()
+    shape = (128, 777)
+    a = np.random.randint(-1024, 1024, shape).astype(np.int32)
+    b = np.random.randint(-1024, 1024, shape).astype(np.int32)
+    c = np.random.normal(0, 1, shape).astype(np.float32)
+    d = np.random.normal(0, 1, shape).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.load(c)
+    x3 = t.load(d)
+    y0 = t.greater(x0, x1)
+    y1 = t.less(x2, x3)
+    z = op(t, y0, y1)
+    t.store_expect(z, func(a > b, c < d))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.bool_, np.float16, np.float32, np.int32])
 @pytest.mark.parametrize("shape", [(1024, 32), (1312, 131), (16, 11), (128, 7), (128, 777)])
 def test_logical_not(type, shape):

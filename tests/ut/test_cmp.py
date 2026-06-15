@@ -39,7 +39,7 @@ def test_cmp(shape, type, op, func):
     x = t.copy(x)
     z = op(t, x, y)
     z = t.copy(z)
-    t.store_expect(z, func(a, b).astype(type))
+    t.store_expect(z, func(a, b))
     assert (t.run_check())
 
 
@@ -58,7 +58,7 @@ def test_cmp_s_r(type, op, func):
     x = t.copy(x)
     z = op(t, x, b)
     z = t.copy(z)
-    t.store_expect(z, func(a, b).astype(type))
+    t.store_expect(z, func(a, b))
     assert (t.run_check())
 
 
@@ -75,7 +75,7 @@ def test_cmp_s_l(type, op, func):
     x = t.copy(x)
     z = op(t, b, x)
     z = t.copy(z)
-    t.store_expect(z, func(b, a).astype(type))
+    t.store_expect(z, func(b, a))
     assert (t.run_check())
 
 
@@ -88,7 +88,7 @@ def test_cmp_over_repeat(op, func):
     x = t.load(a)
     y = t.load(b)
     z = op(t, x, y)
-    t.store_expect(z, func(a, b).astype(np.float16))
+    t.store_expect(z, func(a, b))
     assert (t.run_check())
 
 
@@ -103,7 +103,7 @@ def test_cmp_int(op, func):
     x = t.load(a)
     y = t.load(b)
     z = op(t, x, y)
-    t.store_expect(z, func(a, b).astype(np.int32))
+    t.store_expect(z, func(a, b))
     assert (t.run_check())
 
 
@@ -117,7 +117,7 @@ def test_cmp_ws_inplace():
     x = t.copy(x)
     y = t.copy(y)
     z = t.equal(x, y)
-    t.store_expect(z, np.equal(a, b).astype(np.float16))
+    t.store_expect(z, np.equal(a, b))
     assert (t.run_check())
 
 
@@ -128,7 +128,7 @@ def test_cmp_s_ws_inplace():
     x = t.load(a)
     x = t.copy(x)
     z = t.equal(x, 1.0)
-    t.store_expect(z, np.equal(a, 1.0).astype(np.float16))
+    t.store_expect(z, np.equal(a, 1.0))
     assert (t.run_check())
 
 

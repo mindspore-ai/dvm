@@ -42,6 +42,26 @@ def test_select(shape, type):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_select_fp32_compare_no_cast():
+    t = Tester()
+    shape = (128, 777)
+    a = np.random.normal(0, 1, shape).astype(np.float32)
+    b = np.random.normal(0, 1, shape).astype(np.float32)
+    c = np.random.normal(0, 1, shape).astype(np.float32)
+    d = np.random.normal(0, 1, shape).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.load(c)
+    x3 = t.load(d)
+    cond = t.greater(x0, x1)
+    out = t.select(cond, x2, x3)
+    t.store_expect(out, np.where(a > b, c, d).astype(np.float32))
+    t.codegen()
+    assert "cast" not in t.das().lower()
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('type', [np.float32, np.float16, np.int32])
 def test_select_broadcast(type):
     t = Tester()

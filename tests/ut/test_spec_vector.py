@@ -276,6 +276,18 @@ def test_auto_spec_reshape_cross_dim():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_auto_spec_reshape_side_connect():
+    t = Tester("vector:spec,priv1")
+    a = np.random.normal(0.0, 0.03, [10, 1, 1000]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.add(x0, 0.1)
+    x2 = t.reshape(x1, [1, 10, 1000])
+    x3 = t.mul(x2, x1)
+    t.store_expect(x3, (a + 0.1).reshape([1, 10, 1000]) * (a + 0.1))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_auto_spec_dyn_shape():
     t = Tester("vector:spec,dyn,priv1")
     x1 = t.load([-1], "float32")

@@ -857,7 +857,7 @@ void NDViewLoad::TileCollect(NDObject *op, TileInfo &info) {
   }
   if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
     constexpr uint32_t EXT_WS = 512;
-    if (static_cast<uint64_t>(stride[0]) > ITEM_SIZE[view->type_id_] && info.ext_ws < EXT_WS) {
+    if ((static_cast<uint64_t>(stride[0]) > ITEM_SIZE[view->type_id_] || dims[0] == 1) && info.ext_ws < EXT_WS) {
       info.ext_ws = EXT_WS;
     }
     if (info.event_reserve < 2) {
@@ -1120,7 +1120,7 @@ void NDViewStore::TileCollect(NDObject *op, TileInfo &info) {
   }
   if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
     constexpr uint32_t EXT_WS = 512;
-    if (static_cast<uint64_t>(stride[0]) > ITEM_SIZE[store->type_id_] && info.ext_ws < EXT_WS) {
+    if ((static_cast<uint64_t>(stride[0]) > ITEM_SIZE[store->type_id_] || store->nd_[0] == 1) && info.ext_ws < EXT_WS) {
       info.ext_ws = EXT_WS;
     }
     if (info.event_reserve < 2) {

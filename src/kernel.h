@@ -366,20 +366,19 @@ class SpecVecContext {
     }
     auto aid = area_size_++;
     areas_[aid].parent = aid;
-    areas_[aid].next = -1;
+    areas_[aid].child_mask = 0;
     areas_[aid].u64 = 0;
     return aid;
   }
   void MergeArea(int aid, int src_aid) {
-    auto next = areas_[aid].next;
-    areas_[aid].next = src_aid;
-    auto tail = &areas_[src_aid];
-    while (tail->next >= 0) {
-      tail->parent = aid;
-      tail = &areas_[tail->next];
+    uint64_t src_group = (1ull << src_aid) | areas_[src_aid].child_mask;
+    areas_[aid].child_mask |= src_group;
+    while (src_group) {
+      auto b = __builtin_ctzll(src_group);
+      src_group &= src_group - 1;
+      areas_[b].parent = aid;
     }
-    tail->parent = aid;
-    tail->next = next;
+    areas_[src_aid].child_mask = 0;
   }
   int RootArea(int aid) const {
     ASSERT(aid >= 0);
@@ -388,14 +387,16 @@ class SpecVecContext {
 
   struct Area {
     int parent;
-    int next;
+    union {
+      uint64_t child_mask;
+      SpecVecStage *stage;
+    };
     union {
       uint64_t u64;
       struct {
         uint32_t ext_opt;
         uint32_t u32;
       };
-      SpecVecStage *stage;
     };
     uint32_t &MergeMask() { return ext_opt; }
     uint32_t &UnMergeMask() { return u32; }

@@ -1558,7 +1558,7 @@ __aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
       }
       uint64_t chunk_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
-      uint64_t repeat = chunk_size >> 3;
+      uint64_t repeat = (chunk_size + 7) >> 3;
       __ubuf__ T *xd = ws;
       __ubuf__ T *xn = (__ubuf__ T *)src + iter_offset;
       for (; repeat > 254; repeat -= 254) {

@@ -215,6 +215,8 @@ static void RegKernelWithRT(RtDevBinaryRegisterFunc reg_binary, RtFunctionRegist
 }
 #endif
 
+static int CodeLaunchNone(const System &self, const Code *code, void *extern_ws, void *stream) { return 0; }
+
 int System::CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream) {
   typedef rtError_t (*GetFftsFunc)(uint64_t *addr, uint32_t *len);
   typedef rtError_t (*LaunchKernelFunc)(const void *func, uint32_t blockdim, void *args, uint32_t argssize,
@@ -347,6 +349,7 @@ void System::DoInit() {
   }
   int32_t device_id = 0;
   if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {
+    code_launch_ = CodeLaunchNone;
     return;
   }
   inited_ = true;

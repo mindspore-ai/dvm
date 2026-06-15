@@ -2013,12 +2013,15 @@ void SpecVecBase::SplitPlan(size_t cut_begin) {
   }
   for (int aid = cut_area_end; aid < ctx_.area_size_; ++aid) {
     if (auto &area = ctx_.areas_[aid]; area.parent == aid) {
-      uint32_t merge_mask = area.MergeMask() & ~area.UnMergeMask();
+      uint32_t merge_mask = area.MergeMask();
+      auto unmerge_mask = area.UnMergeMask();
       int rid = aid;
       while (merge_mask) {
         auto cut_aid = 31 - __builtin_clz(merge_mask);
         merge_mask &= ~(1ul << cut_aid);
         auto cut_rid = ctx_.RootArea(cut_aid);
+        if (cut_rid == rid) continue;
+        if (unmerge_mask & static_cast<uint32_t>((1ull << cut_rid) | ctx_.areas_[cut_rid].child_mask)) continue;
         if (cut_rid < rid) {
           ctx_.MergeArea(cut_rid, rid);
           rid = cut_rid;
@@ -2170,8 +2173,16 @@ bool SpecVecBase::ReshapeSpec() {
     spec_ops.push_back(spec_ops[i]->lhs_);
   }
   SplitPlan(cut_begin);
+  uint64_t side_mask = 0;
   for (auto op : objects_) {
     op->prop_id_ = ctx_.RootArea(GetMeta(op)->aid);
+    if (op->obj_id_ != ObjectType::kReshape) {
+      op->ForInput([&side_mask, op](NDObject *in) {
+        if (in->prop_id_ != op->prop_id_) {
+          side_mask |= 1ull << in->prop_id_;
+        }
+      });
+    }
   }
   DomainUnifier affine(objects_, true);
   auto &areas = ctx_.areas_;
@@ -2179,10 +2190,11 @@ bool SpecVecBase::ReshapeSpec() {
   uint64_t fail_affine = 0;
   for (size_t i = reshape_begin; i < cut_begin; ++i) {
     auto op = static_cast<ReshapeOp *>(spec_ops[i]);
-    if (op->prop_id_ == op->lhs_->prop_id_) {
+    auto lhs_prop = op->lhs_->prop_id_;
+    if (op->prop_id_ == lhs_prop) {
       areas[op->prop_id_].u32 = 1;
       fail_touch = true;
-    } else if (!affine.Process(op, areas[op->lhs_->prop_id_].u32)) {
+    } else if (((side_mask >> lhs_prop) & 1ull) || !affine.Process(op, areas[lhs_prop].u32)) {
       fail_affine |= 1ull << op->prop_id_;
     }
   }
@@ -2291,7 +2303,7 @@ bool SpecVecBase::PermuteSpec() {
   size_t permute_begin = spec_ops.size();
   for (auto op : objects_) {
     InitMeta(op);
-    if (op->obj_id_ == ObjectType::kPermute && !GetMeta(op->lhs_)->IsCut()) {
+    if (op->obj_id_ == ObjectType::kPermute && !op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) && !GetMeta(op->lhs_)->IsCut()) {
       spec_ops.push_back(op);
       GetMeta(op->lhs_)->SetCut();
     }
@@ -2302,15 +2314,23 @@ bool SpecVecBase::PermuteSpec() {
     spec_ops.push_back(spec_ops[i]->lhs_);
   }
   SplitPlan(cut_begin);
+  uint64_t side_mask = 0;
   for (auto op : objects_) {
     op->prop_id_ = ctx_.RootArea(GetMeta(op)->aid);
+    if (op->obj_id_ != ObjectType::kPermute) {
+      op->ForInput([&side_mask, op](NDObject *in) {
+        if (in->prop_id_ != op->prop_id_) {
+          side_mask |= 1ull << op->prop_id_;
+        }
+      });
+    }
   }
   bool fail = false;
   for (size_t i = permute_begin; i < cut_begin; ++i) {
     auto perm_op = static_cast<PermuteOp *>(spec_ops[i]);
     int out_prop = perm_op->prop_id_;
     int in_prop = perm_op->lhs_->prop_id_;
-    bool fall_back = out_prop == in_prop;
+    bool fall_back = (out_prop == in_prop) || ((side_mask >> out_prop) & 1ull);
     if (!fall_back) {
       auto &perm = perm_op->GetNddPerm();
       DimArray inv_perm;
@@ -2435,7 +2455,9 @@ void SpecVecBase::SplitBuild() {
           if (in->IsLoad()) {
             _ReloadCloner cloner;
             auto clone = in->Clone(cloner);
-            GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+            if (op->obj_id_ != kReshape) {
+              GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+            }
             ctx_.spec_ops_.push_back(clone);
             clone->Normalize(stage->spec_k_.objects_);
             stage->spec_k_.SplitAppend(clone);
@@ -2459,7 +2481,9 @@ void SpecVecBase::SplitBuild() {
             NDAccess *load;
             if (op->obj_id_ != kPermute) {
               load = new _SpecSwapLoad(store);
-              GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+              if (op->obj_id_ != kReshape) {
+                GetMeta(in)->recent_load = ctx_.spec_ops_.size();
+              }
             } else {
               load = new _SpecSwapViewLoad(store);
             }

@@ -1442,6 +1442,7 @@ class EagerArea {
 
   static constexpr uint64_t kPatReduce = 1;
   static constexpr uint64_t kPatView = 2;
+  static constexpr uint64_t kPatCubeVec = 4;
 
   EagerArea() {
     objects_.reserve(64);
@@ -1668,6 +1669,7 @@ void _SplitKernel::Split(NDObject *root) {
         v->objects_.push_back(input);
       }
       v->dom_ = c->dom_;
+      v->pattern_ |= EagerArea::kPatCubeVec;
       pv_black_mask_ |= 1ul << v->area_id_;
       return true;
     };

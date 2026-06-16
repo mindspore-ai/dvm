@@ -800,6 +800,21 @@ def test_eager_cv_multi_user():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_eager_cv_multi_c():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [1024, 512]).astype(np.float16)
+    c = np.random.normal(0, 0.01, [1024, 768]).astype(np.float16)
+    d = np.random.normal(0, 0.01, [768, 512]).astype(np.float16)
+    x0 = t.matmul(t.load(a), t.load(b), False, False)
+    x1 = t.matmul(t.load(c), t.load(d), False, False)
+    x2 = t.add(x0, x1)
+    t.store_expect(x2, np.matmul(a.astype(np.float32), b.astype(np.float32)) + np.matmul(c.astype(np.float32), d.astype(np.float32)), 1e-3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_eager_reshape():
     t = Tester("eager")
     a0 = np.random.normal(-1, 1, [600, 512]).astype(np.float16)

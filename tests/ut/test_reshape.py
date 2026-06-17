@@ -399,3 +399,14 @@ def test_auto_spec_reshape_cross_dim():
     x3 = t.add(x1, x2)
     t.store_expect(x3, a.reshape([1, 10, 1000]) + a.reshape([10, 1, 1000]))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reshape_expand_outmost_dim():
+    t = Tester()
+    a = np.random.normal(0.0, 0.01, [1, 10, 1, 200]).astype(np.float32)
+    b = np.random.normal(0.0, 0.01, [10, 20, 200]).astype(np.float32)
+    x0 = t.reshape(t.load(a), [10, 1, 200])
+    x1 = t.add(x0, t.load(b))
+    t.store_expect(x1, a.reshape([10, 1, 200]) + b)
+    assert (t.run_check())

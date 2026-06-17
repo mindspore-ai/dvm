@@ -1227,6 +1227,8 @@ void VKernelS::BrokerInit() {
               build_ops_.insert(build_ops_.begin() + midx, in);
               if (midx > static_cast<size_t>(last_broker_)) {
                 last_broker_ = midx;
+              } else {
+                last_broker_++;
               }
               broker_num_++;
               midx++;
@@ -1283,6 +1285,13 @@ class DomainUnifier {
       } else {
         return false;
       }
+    }
+    size_t in_size = op->lhs_->nd_.size();
+    size_t out_size = op->nd_.size();
+    if (in_size > out_size) {
+      ExpandDim(op->prop_id_, in_size);
+    } else if (in_size < out_size) {
+      ExpandDim(op->lhs_->prop_id_, out_size);
     }
     op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
     return true;
@@ -1404,6 +1413,31 @@ class DomainUnifier {
         ReshapeRange(op->lhs_->prop_id_, rmap, range_size, update);
       }
       op->DimChanged();
+    }
+  }
+
+  void ExpandDim(int prop, size_t expand_size) {
+    SetVisited(prop);
+    for (auto op : objects_) {
+      if (op->prop_id_ != prop) {
+        if (IsBroker(op) && op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) && op->lhs_->prop_id_ == prop && !IsVisited(op->prop_id_)) {
+          ExpandDim(op->prop_id_, expand_size);
+        }
+        continue;
+      }
+      if (auto ndd = op->Ndd(); ndd != nullptr) {
+        auto &dims = ndd->dims;
+        if (auto size = dims.size(); size < expand_size) {
+          dims.resize(expand_size);
+          for (auto i = size; i < expand_size; ++i) {
+            dims[i]= 1;
+          }
+        }
+        if (IsBroker(op) && op->CheckFlag(OBJ_FLAG_BROKER_AFFINED) && !IsVisited(op->lhs_->prop_id_)) {
+          ExpandDim(op->lhs_->prop_id_, expand_size);
+        }
+        op->DimChanged();
+      }
     }
   }
 

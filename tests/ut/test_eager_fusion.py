@@ -799,6 +799,22 @@ def test_eager_cv_multi_user():
     assert (t.run_check())
 
 
+@pytest.mark.mix
+def test_eager_cv_horizontal_user():
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
+    b = np.random.normal(0, 0.01, [1024, 512]).astype(np.float16)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    x3 = t.add(x2, 0.1)
+    x4 = t.mul(x2, 0.5)
+    e2 = np.matmul(a.astype(np.float32), b.astype(np.float32)).astype(np.float16)
+    t.store_expect(x3, e2 + 0.1, 1e-3)
+    t.store_expect(x4, e2 * 0.5, 1e-3)
+    assert (t.run_check())
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 def test_eager_cv_multi_c():
@@ -811,6 +827,25 @@ def test_eager_cv_multi_c():
     x1 = t.matmul(t.load(c), t.load(d), False, False)
     x2 = t.add(x0, x1)
     t.store_expect(x2, np.matmul(a.astype(np.float32), b.astype(np.float32)) + np.matmul(c.astype(np.float32), d.astype(np.float32)), 1e-3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+@pytest.mark.parametrize('shape_a, shape_b, shape_c', [
+    [[1024, 512], [512, 256], [256, 1024]],  # no pad
+    [[4096, 640], [640, 8], [8, 640]],  # pad
+])
+def test_eager_cube_chain(shape_a, shape_b, shape_c):
+    t = Tester("eager")
+    a = np.random.normal(0, 0.01, shape_a).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape_b).astype(np.float16)
+    c = np.random.normal(0, 0.01, shape_c).astype(np.float16)
+    x0 = t.matmul(t.load(a), t.load(b), False, False)
+    x1 = t.matmul(x0, t.load(c), False, False)
+    e0 = np.matmul(a.astype(np.float32), b.astype(np.float32))
+    e1 = np.matmul(e0, c.astype(np.float32)).astype(np.float16)
+    t.store_expect(x1, e1, 1e-3)
     assert (t.run_check())
 
 

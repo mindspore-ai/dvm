@@ -1660,7 +1660,7 @@ void _SplitKernel::Split(NDObject *root) {
   }
   if (!exchange_cache_.empty()) {
     auto cube_check = [this](EagerArea *c, EagerArea *v, NDObject *&input) -> bool {
-      if (v->pattern_) { // reduce, view..
+      if (v->pattern_ || c->pattern_) { // reduce, view..
         return false;
       }
       if (input == c->dom_) {
@@ -1797,9 +1797,7 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
       input = Exchange(input, area_used_);
       area->state_ = EagerArea::kSubmitted;
       dep_mask |= 1ul << aid;
-    } else {
-      // exclusive cube input to avoid fused
-      ASSERT(input->flags_ & OBJ_FLAG_EAGER);
+    } else if (input->flags_ & OBJ_FLAG_EAGER) { // exclusive cube input to avoid fused
       auto acc = static_cast<NDAccess *>(input);
       acc->addr_.Update(&acc->addr_.data);
       input = new NDLoad(nullptr, acc->shape_ref_, acc->type_id_);
@@ -1810,6 +1808,19 @@ NDObject *_SplitKernel::AppendCube(CubeOp *mm) {
     }
     SetArea(input, area_used_);
   };
+  auto exchange_cube = [this, &dep_mask](NDObject *input) {
+    auto aid = GetArea(input);
+    ASSERT(aid != -1);
+    areas_[aid].second->state_ = EagerArea::kSubmitted;
+    dep_mask |= 1ul << aid;
+    return Exchange(input, area_used_);
+  };
+  if (mm->lhs_->IsCube()) {
+    mm->lhs_ = exchange_cube(mm->lhs_);
+  }
+  if (mm->rhs_->IsCube()) {
+    mm->rhs_ = exchange_cube(mm->rhs_);
+  }
   prepare_input(opt.AlignA(temp_ops), mm->lhs_);
   prepare_input(opt.AlignB(temp_ops), mm->rhs_);
   if (mm->bias_) {

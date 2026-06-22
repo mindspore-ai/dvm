@@ -112,7 +112,6 @@ def test_select_scalar():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_select_int64():
     t = Tester()
     shape = (13, 131)
@@ -131,7 +130,6 @@ def test_select_int64():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_select_int64_boundary_patterns():
     t = Tester()
     lhs = np.array([
@@ -154,7 +152,6 @@ def test_select_int64_boundary_patterns():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_select_int64_broadcast():
     t = Tester()
     a = np.random.randint(-(1 << 40), 1 << 40, size=(1, 10, 1, 1, 50), dtype=np.int64)

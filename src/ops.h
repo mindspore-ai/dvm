@@ -1073,6 +1073,9 @@ class PowerOp : public FlexOp {
 class CompareOp : public FlexOp {
  public:
   CompareOp(int op_type, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kCompare) {
+    if (lhs->type_id_ == kInt64) {
+      type_id_ = kInt32;
+    }
     if (g_system.Arch() == kAiCore_C220) {
       ws_num_ = 1;
       flags_ |= OBJ_FLAG_FLEX_INPL_WS;

@@ -86,7 +86,6 @@ def test_broadcast_large_shape():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize("src_shape,dst_shape", [
     ((8, 1, 257, 1), (8, 5, 257, 129)),
     ((1, 9, 1, 257), (6, 9, 33, 257)),
@@ -155,7 +154,6 @@ def test_broadcast_s_bool(scalar):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_broadcast_s_int64_scalar_ref():
     t = Tester('vector:dyn')
     shape = (1024, 1025)

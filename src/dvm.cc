@@ -474,89 +474,6 @@ NDObject *UnaryPromotion(Kernel *kernel, NDObject *lhs) {
   return kernel->Cast(result, orig_dtype);
 }
 
-template <BinaryType op_type, typename T, bool rhs_val>
-NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
-  auto vkernel = kernel->GetImpl();
-  if constexpr (op_type == BinaryType::kAdd || op_type == BinaryType::kMul || op_type == BinaryType::kMinimum ||
-                op_type == BinaryType::kMaximum) {
-    NDObject *obj;
-    if constexpr (std::is_same<T, ScalarRef *>::value) {
-      if (input->type_id_ == kInt64) {
-        return nullptr;
-      }
-      obj = new BinaryScalarRefOp(binary_map[op_type], input, val);
-    } else {
-      obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
-    }
-    vkernel->Append(obj);
-    return obj;
-  } else if constexpr (op_type == BinaryType::kDiv) {
-    if (input->type_id_ == kBFloat16) {
-      auto result = GetBinaryS<op_type, T, rhs_val>(kernel, val, kernel->Cast(input, kFloat32));
-      return kernel->Cast(result, input->type_id_);
-    }
-    NDObject *obj;
-    if constexpr (std::is_same<T, ScalarRef *>::value) {
-      obj = new BinaryScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
-    } else {
-      obj = new BinaryScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
-                               EncodeScalar(val, input->type_id_));
-    }
-    vkernel->Append(obj);
-    return obj;
-  } else if constexpr (op_type == BinaryType::kEqual || op_type == BinaryType::kNotEqual ||
-                       op_type == BinaryType::kGreater || op_type == BinaryType::kGreaterEqual ||
-                       op_type == BinaryType::kLess || op_type == BinaryType::kLessEqual) {
-    auto type_id = input->type_id_;
-    if (type_id != kInt32 || g_system.Arch() == kAiCore_C310) {
-      NDObject *obj;
-      if constexpr (std::is_same<T, ScalarRef *>::value) {
-        if (type_id == kInt64) {
-          return nullptr;
-        }
-        obj = new CompareScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
-      } else {
-        obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
-                                  EncodeScalar(val, type_id));
-      }
-      vkernel->Append(obj);
-      return NoLossCast(kernel, obj, kBool);
-    }
-    return nullptr;
-  } else if constexpr (op_type == BinaryType::kPow) {
-    if constexpr (std::is_same<T, ScalarRef *>::value) {
-      return nullptr;
-    } else {
-      if constexpr (rhs_val) {
-        if (isInteger(val)) {
-          return PowS(kernel, input, val);
-        }
-      } else if (val > T(0)) {
-        if (input->type_id_ != kFloat32) {
-          auto result = GetBinaryS<BinaryType::kPow, float, false>(kernel, static_cast<float>(val),
-                                                                     kernel->Cast(input, kFloat32));
-          return kernel->Cast(result, input->type_id_);
-        }
-        auto tmp = GetBinaryS<BinaryType::kMul, float, true>(kernel, std::log(static_cast<float>(val)), input);
-        return kernel->Unary<UnaryType::kExp>(tmp);
-      }
-      return nullptr;
-    }
-  } else if constexpr (op_type == BinaryType::kSub) {
-    if constexpr (std::is_same<T, ScalarRef *>::value) {
-      return nullptr;
-    } else {
-      if constexpr (rhs_val) {
-        return GetBinaryS<BinaryType::kAdd, T, true>(kernel, -val, input);
-      } else {
-        auto neg_input = GetBinaryS<BinaryType::kMul, T, true>(kernel, static_cast<T>(-1), input);
-        return GetBinaryS<BinaryType::kAdd, T, true>(kernel, val, neg_input);
-      }
-    }
-  }
-  return nullptr;
-}
-
 template <ExtractPart part>
 NDObject *ExtractInt64(Kernel *kernel, NDObject *input) {
   if (input->GetObjectType() == kPack) {
@@ -575,32 +492,6 @@ NDObject *Pack(Kernel *kernel, NDObject *lo, NDObject *hi) {
   auto obj = new PackOp(lo, hi);
   kernel->GetImpl()->Append(obj);
   return obj;
-}
-
-NDObject *AddInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
-  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
-  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
-  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
-  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
-  auto lo_sum = kernel->Binary<kAdd>(lhs_lo, rhs_lo);
-  auto lo_sum_bias = kernel->Binary<kAdd>(lo_sum, static_cast<int32_t>(INT32_MIN));
-  auto lhs_lo_bias = kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN));
-  auto carry = NoLossCast(kernel, kernel->Binary<kLess>(lo_sum_bias, lhs_lo_bias), kInt32);
-  auto hi_sum = kernel->Binary<kAdd>(kernel->Binary<kAdd>(lhs_hi, rhs_hi), carry);
-  return Pack(kernel, lo_sum, hi_sum);
-}
-
-NDObject *SubInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
-  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
-  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
-  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
-  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
-  auto lo_diff = kernel->Binary<kSub>(lhs_lo, rhs_lo);
-  auto lhs_lo_bias = kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN));
-  auto rhs_lo_bias = kernel->Binary<kAdd>(rhs_lo, static_cast<int32_t>(INT32_MIN));
-  auto borrow = NoLossCast(kernel, kernel->Binary<kLess>(lhs_lo_bias, rhs_lo_bias), kInt32);
-  auto hi_diff = kernel->Binary<kSub>(kernel->Binary<kSub>(lhs_hi, rhs_hi), borrow);
-  return Pack(kernel, lo_diff, hi_diff);
 }
 
 template <typename T, bool rhs_val>
@@ -654,6 +545,160 @@ NDObject *SubScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
   }
 }
 
+template <BinaryType op_type, typename T, bool rhs_val>
+NDObject *CompareScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
+  static_assert(!std::is_same<T, ScalarRef *>::value);
+  auto input_lo = ExtractInt64<kExtractLo32>(kernel, input);
+  auto input_hi = ExtractInt64<kExtractHi32>(kernel, input);
+  int32_t scalar_lo;
+  int32_t scalar_hi;
+  SplitInt64Scalar(scalar, scalar_lo, scalar_hi);
+  if constexpr (op_type == kEqual) {
+    auto lo_eq = rhs_val ? kernel->Binary<kEqual>(input_lo, scalar_lo) : kernel->Binary<kEqual>(scalar_lo, input_lo);
+    auto hi_eq = rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi) : kernel->Binary<kEqual>(scalar_hi, input_hi);
+    return kernel->Binary<kLogicalAnd>(hi_eq, lo_eq);
+  } else if constexpr (op_type == kNotEqual) {
+    auto lo_ne = rhs_val ? kernel->Binary<kNotEqual>(input_lo, scalar_lo) : kernel->Binary<kNotEqual>(scalar_lo, input_lo);
+    auto hi_ne = rhs_val ? kernel->Binary<kNotEqual>(input_hi, scalar_hi) : kernel->Binary<kNotEqual>(scalar_hi, input_hi);
+    return kernel->Binary<kLogicalOr>(hi_ne, lo_ne);
+  } else if constexpr (op_type == kGreater || op_type == kGreaterEqual || op_type == kLess || op_type == kLessEqual) {
+    scalar_lo = static_cast<int32_t>(static_cast<uint32_t>(scalar_lo) + 0x80000000u);
+    input_lo = kernel->Binary<kAdd>(input_lo, static_cast<int32_t>(INT32_MIN));
+    auto hi_cmp =
+        NoLossCast(kernel, rhs_val ? kernel->Binary<op_type>(input_hi, scalar_hi)
+                                 : kernel->Binary<op_type>(scalar_hi, input_hi),
+                   kInt32);
+    auto hi_eq =
+        NoLossCast(kernel, rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi)
+                                 : kernel->Binary<kEqual>(scalar_hi, input_hi),
+                   kInt32);
+    auto lo_cmp =
+        NoLossCast(kernel, rhs_val ? kernel->Binary<op_type>(input_lo, scalar_lo)
+                                 : kernel->Binary<op_type>(scalar_lo, input_lo),
+                   kInt32);
+    return NoLossCast(kernel, kernel->Select(hi_eq, lo_cmp, hi_cmp), kBool);
+  }
+  return nullptr;
+}
+
+template <BinaryType op_type, typename T, bool rhs_val>
+NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
+  auto vkernel = kernel->GetImpl();
+  if (input->type_id_ == kInt64) {
+    if (g_system.Arch() == kAiCore_C310) {
+      return nullptr;
+    }
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      return nullptr;
+    } else if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
+      return CompareScalarInt64<op_type, T, rhs_val>(kernel, val, input);
+    } else if constexpr (op_type == kAdd) {
+      return AddScalarInt64<T, rhs_val>(kernel, val, input);
+    } else if constexpr (op_type == kSub) {
+      return SubScalarInt64<T, rhs_val>(kernel, val, input);
+    }
+    return nullptr;
+  }
+  if constexpr (op_type == BinaryType::kAdd || op_type == BinaryType::kMul || op_type == BinaryType::kMinimum ||
+                op_type == BinaryType::kMaximum) {
+    NDObject *obj;
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      obj = new BinaryScalarRefOp(binary_map[op_type], input, val);
+    } else {
+      obj = new BinaryScalarOp(binary_map[op_type], input, EncodeScalar(val, input->type_id_));
+    }
+    vkernel->Append(obj);
+    return obj;
+  } else if constexpr (op_type == BinaryType::kDiv) {
+    if (input->type_id_ == kBFloat16) {
+      auto result = GetBinaryS<op_type, T, rhs_val>(kernel, val, kernel->Cast(input, kFloat32));
+      return kernel->Cast(result, input->type_id_);
+    }
+    NDObject *obj;
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      obj = new BinaryScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+    } else {
+      obj = new BinaryScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
+                               EncodeScalar(val, input->type_id_));
+    }
+    vkernel->Append(obj);
+    return obj;
+  } else if constexpr (op_type == BinaryType::kEqual || op_type == BinaryType::kNotEqual ||
+                       op_type == BinaryType::kGreater || op_type == BinaryType::kGreaterEqual ||
+                       op_type == BinaryType::kLess || op_type == BinaryType::kLessEqual) {
+    auto type_id = input->type_id_;
+    if (type_id != kInt32 || g_system.Arch() == kAiCore_C310) {
+      NDObject *obj;
+      if constexpr (std::is_same<T, ScalarRef *>::value) {
+        obj = new CompareScalarRefOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input, val);
+      } else {
+        obj = new CompareScalarOp(rhs_val ? binary_map[op_type] : lhs_val_binary_map[op_type], input,
+                                  EncodeScalar(val, type_id));
+      }
+      vkernel->Append(obj);
+      return NoLossCast(kernel, obj, kBool);
+    }
+    return nullptr;
+  } else if constexpr (op_type == BinaryType::kPow) {
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      return nullptr;
+    } else {
+      if constexpr (rhs_val) {
+        if (isInteger(val)) {
+          return PowS(kernel, input, val);
+        }
+      } else if (val > T(0)) {
+        if (input->type_id_ != kFloat32) {
+          auto result = GetBinaryS<BinaryType::kPow, float, false>(kernel, static_cast<float>(val),
+                                                                     kernel->Cast(input, kFloat32));
+          return kernel->Cast(result, input->type_id_);
+        }
+        auto tmp = GetBinaryS<BinaryType::kMul, float, true>(kernel, std::log(static_cast<float>(val)), input);
+        return kernel->Unary<UnaryType::kExp>(tmp);
+      }
+      return nullptr;
+    }
+  } else if constexpr (op_type == BinaryType::kSub) {
+    if constexpr (std::is_same<T, ScalarRef *>::value) {
+      return nullptr;
+    } else {
+      if constexpr (rhs_val) {
+        return GetBinaryS<BinaryType::kAdd, T, true>(kernel, -val, input);
+      } else {
+        auto neg_input = GetBinaryS<BinaryType::kMul, T, true>(kernel, static_cast<T>(-1), input);
+        return GetBinaryS<BinaryType::kAdd, T, true>(kernel, val, neg_input);
+      }
+    }
+  }
+  return nullptr;
+}
+
+NDObject *AddInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
+  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
+  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
+  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
+  auto lo_sum = kernel->Binary<kAdd>(lhs_lo, rhs_lo);
+  auto lo_sum_bias = kernel->Binary<kAdd>(lo_sum, static_cast<int32_t>(INT32_MIN));
+  auto lhs_lo_bias = kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN));
+  auto carry = NoLossCast(kernel, kernel->Binary<kLess>(lo_sum_bias, lhs_lo_bias), kInt32);
+  auto hi_sum = kernel->Binary<kAdd>(kernel->Binary<kAdd>(lhs_hi, rhs_hi), carry);
+  return Pack(kernel, lo_sum, hi_sum);
+}
+
+NDObject *SubInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
+  auto lhs_lo = ExtractInt64<kExtractLo32>(kernel, lhs);
+  auto rhs_lo = ExtractInt64<kExtractLo32>(kernel, rhs);
+  auto lhs_hi = ExtractInt64<kExtractHi32>(kernel, lhs);
+  auto rhs_hi = ExtractInt64<kExtractHi32>(kernel, rhs);
+  auto lo_diff = kernel->Binary<kSub>(lhs_lo, rhs_lo);
+  auto lhs_lo_bias = kernel->Binary<kAdd>(lhs_lo, static_cast<int32_t>(INT32_MIN));
+  auto rhs_lo_bias = kernel->Binary<kAdd>(rhs_lo, static_cast<int32_t>(INT32_MIN));
+  auto borrow = NoLossCast(kernel, kernel->Binary<kLess>(lhs_lo_bias, rhs_lo_bias), kInt32);
+  auto hi_diff = kernel->Binary<kSub>(kernel->Binary<kSub>(lhs_hi, rhs_hi), borrow);
+  return Pack(kernel, lo_diff, hi_diff);
+}
+
 NDObject *SelectInt64(Kernel *kernel, NDObject *cond, NDObject *lhs, NDObject *rhs) {
   ASSERT(lhs->type_id_ == kInt64 && rhs->type_id_ == kInt64);
   auto cond_mask = NoLossCast(kernel, cond, kInt32);
@@ -704,42 +749,6 @@ NDObject *CompareInt64(Kernel *kernel, NDObject *lhs, NDObject *rhs) {
     auto hi_eq = NoLossCast(kernel, kernel->Binary<kEqual>(lhs_hi, rhs_hi), kInt32);
     auto lo_le = NoLossCast(kernel, kernel->Binary<kLessEqual>(lhs_lo, rhs_lo), kInt32);
     return NoLossCast(kernel, kernel->Select(hi_eq, lo_le, hi_le), kBool);
-  }
-  return nullptr;
-}
-
-template <BinaryType op_type, typename T, bool rhs_val>
-NDObject *CompareScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
-  static_assert(!std::is_same<T, ScalarRef *>::value);
-  auto input_lo = ExtractInt64<kExtractLo32>(kernel, input);
-  auto input_hi = ExtractInt64<kExtractHi32>(kernel, input);
-  int32_t scalar_lo;
-  int32_t scalar_hi;
-  SplitInt64Scalar(scalar, scalar_lo, scalar_hi);
-  if constexpr (op_type == kEqual) {
-    auto lo_eq = rhs_val ? kernel->Binary<kEqual>(input_lo, scalar_lo) : kernel->Binary<kEqual>(scalar_lo, input_lo);
-    auto hi_eq = rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi) : kernel->Binary<kEqual>(scalar_hi, input_hi);
-    return kernel->Binary<kLogicalAnd>(hi_eq, lo_eq);
-  } else if constexpr (op_type == kNotEqual) {
-    auto lo_ne = rhs_val ? kernel->Binary<kNotEqual>(input_lo, scalar_lo) : kernel->Binary<kNotEqual>(scalar_lo, input_lo);
-    auto hi_ne = rhs_val ? kernel->Binary<kNotEqual>(input_hi, scalar_hi) : kernel->Binary<kNotEqual>(scalar_hi, input_hi);
-    return kernel->Binary<kLogicalOr>(hi_ne, lo_ne);
-  } else if constexpr (op_type == kGreater || op_type == kGreaterEqual || op_type == kLess || op_type == kLessEqual) {
-    scalar_lo = static_cast<int32_t>(static_cast<uint32_t>(scalar_lo) + 0x80000000u);
-    input_lo = kernel->Binary<kAdd>(input_lo, static_cast<int32_t>(INT32_MIN));
-    auto hi_cmp =
-        NoLossCast(kernel, rhs_val ? kernel->Binary<op_type>(input_hi, scalar_hi)
-                                 : kernel->Binary<op_type>(scalar_hi, input_hi),
-                 kInt32);
-    auto hi_eq =
-        NoLossCast(kernel, rhs_val ? kernel->Binary<kEqual>(input_hi, scalar_hi)
-                                 : kernel->Binary<kEqual>(scalar_hi, input_hi),
-                 kInt32);
-    auto lo_cmp =
-        NoLossCast(kernel, rhs_val ? kernel->Binary<op_type>(input_lo, scalar_lo)
-                                 : kernel->Binary<op_type>(scalar_lo, input_lo),
-                 kInt32);
-    return NoLossCast(kernel, kernel->Select(hi_eq, lo_cmp, hi_cmp), kBool);
   }
   return nullptr;
 }
@@ -1164,26 +1173,6 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     if (rhs->type_id_ == kBool && g_system.Arch() != kAiCore_C310) {
       return NoLossCast(this, Binary<op_type>(lhs, NoLossCast(this, rhs, kFloat16)), kBool);
     }
-    if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
-      if (rhs->type_id_ == kInt64) {
-        if constexpr (!std::is_same<L, ScalarRef *>::value) {
-          return CompareScalarInt64<op_type, L, false>(this, lhs, rhs);
-        }
-      }
-    }
-    if constexpr (op_type == kAdd) {
-      if (rhs->type_id_ == kInt64) {
-        if constexpr (!std::is_same<L, ScalarRef *>::value) {
-          return AddScalarInt64<L, false>(this, lhs, rhs);
-        }
-      }
-    } else if constexpr (op_type == kSub) {
-      if (rhs->type_id_ == kInt64) {
-        if constexpr (!std::is_same<L, ScalarRef *>::value) {
-          return SubScalarInt64<L, false>(this, lhs, rhs);
-        }
-      }
-    }
     NDObject *obj = GetBinaryS<op_type, L, false>(this, lhs, rhs);
     if (obj == nullptr) {
       return Binary<op_type>(Broadcast(lhs, rhs->shape_ref_, rhs->type_id_), rhs);
@@ -1192,26 +1181,6 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
   } else if constexpr (!std::is_same<R, NDObject *>::value) {
     if (lhs->type_id_ == kBool && g_system.Arch() != kAiCore_C310) {
       return NoLossCast(this, Binary<op_type>(NoLossCast(this, lhs, kFloat16), rhs), kBool);
-    }
-    if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
-      if (lhs->type_id_ == kInt64) {
-        if constexpr (!std::is_same<R, ScalarRef *>::value) {
-          return CompareScalarInt64<op_type, R, true>(this, rhs, lhs);
-        }
-      }
-    }
-    if constexpr (op_type == kAdd) {
-      if (lhs->type_id_ == kInt64) {
-        if constexpr (!std::is_same<R, ScalarRef *>::value) {
-          return AddScalarInt64<R, true>(this, rhs, lhs);
-        }
-      }
-    } else if constexpr (op_type == kSub) {
-      if (lhs->type_id_ == kInt64) {
-        if constexpr (!std::is_same<R, ScalarRef *>::value) {
-          return SubScalarInt64<R, true>(this, rhs, lhs);
-        }
-      }
     }
     NDObject *obj = GetBinaryS<op_type, R, true>(this, rhs, lhs);
     if (obj == nullptr) {
@@ -1252,6 +1221,10 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
         break;
       }
       case kInt64: {
+        if (g_system.Arch() == kAiCore_C310 &&
+            (static_cast<int>(op_type) < V_CMP_ALL || op_type == kAdd || op_type == kSub)) {
+          break;
+        }
         if constexpr (static_cast<int>(op_type) < V_CMP_ALL) {
           return CompareInt64<op_type>(this, lhs, rhs);
         } else if constexpr (op_type == kAdd) {
@@ -1313,9 +1286,11 @@ DEF_BINARY(BinaryType::kLogicalOr);
 
 NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   if (lhs->type_id_ == kInt64) {
-    return SelectInt64(this, cond, lhs, rhs);
-  }
-  if (cond->type_id_ != lhs->type_id_) {
+    cond = NoLossCast(this, cond, kInt32);
+    if (g_system.Arch() != kAiCore_C310) {
+      return SelectInt64(this, cond, lhs, rhs);
+    }
+  } else if (cond->type_id_ != lhs->type_id_) {
     cond = NoLossCast(this, cond, lhs->type_id_);
   }
   auto obj = new SelectOp(cond, lhs, rhs);
@@ -1393,7 +1368,7 @@ NDObject *Kernel::Broadcast(NDObject *input, IntArrayRef *shape) {
   if (input->type_id_ == DataType::kBool && g_system.Arch() != kAiCore_C310) {
     return NoLossCast(this, Broadcast(NoLossCast(this, input, kFloat16), shape), DataType::kBool);
   }
-  if (input->type_id_ == DataType::kInt64) {
+  if (input->type_id_ == DataType::kInt64 && g_system.Arch() != kAiCore_C310) {
     auto lo = ExtractInt64<kExtractLo32>(this, input);
     auto hi = ExtractInt64<kExtractHi32>(this, input);
     return Pack(this, Broadcast(lo, shape), Broadcast(hi, shape));

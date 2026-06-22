@@ -175,7 +175,6 @@ def test_scalar(type):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize("shape", [(32, 1024), (17, 129)])
 def test_cast_int64(shape):
     t = Tester()
@@ -296,7 +295,6 @@ def test_binary_int(type, op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize("op, func", [(Tester.add, np.add), (Tester.sub, np.subtract)])
 def test_int64_binary(op, func):
     t = Tester()
@@ -310,7 +308,6 @@ def test_int64_binary(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize("op, func", [(Tester.add, np.add), (Tester.sub, np.subtract)])
 def test_int64_binary_scalar(op, func):
     t = Tester()
@@ -326,7 +323,6 @@ def test_int64_binary_scalar(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize("op, func", [(Tester.add, np.add), (Tester.sub, np.subtract)])
 def test_int64_binary_scalar_ref(op, func):
     t = Tester('vector:dyn')
@@ -347,7 +343,6 @@ def test_int64_binary_scalar_ref(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_int64_add_sub_scalar_codegen():
     t = Tester()
     shape = (1024, 1025)
@@ -356,13 +351,13 @@ def test_int64_add_sub_scalar_codegen():
     y = t.sub(t.add(x, 1), 2)
     t.store_expect(y, np.subtract(np.add(a, 1), 2))
     assert (t.run_check())
-    das = t.das()
-    assert das.count("Pack.b32") == 1
-    assert das.count("Extract.b32") == 2
+    if dvm.Device.arch() != 'AscendC310':
+        das = t.das()
+        assert das.count("Pack.b32") == 1
+        assert das.count("Extract.b32") == 2
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 def test_int64_mixed_add_sub_cast_le():
     t = Tester()
     a = np.random.randint(low=-0x2000000000, high=0x2000000000, size=(1024), dtype=np.int64)

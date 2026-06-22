@@ -27,55 +27,55 @@ namespace dvm {
 namespace {
 struct InsnIdTable {
   const char *name;
-  vSimdInsnID ids[SIMD_DTYPE_END];
+  vSimdInsnID ids[DataType::kDataTypeEnd];
 };
 
 static const InsnIdTable unary_id_list[kUnaryTypeEnd] = {
   // must keep consistent order with UnaryType
-  {"Sqrt", {V_NONE, V_SQRT_FP16, V_NONE, V_SQRT, V_NONE}},
-  {"Abs", {V_NONE, V_ABS_FP16, V_NONE, V_ABS, V_ABS_INT32}},
-  {"Log", {V_NONE, V_LOG_FP16, V_NONE, V_LOG, V_NONE}},
-  {"Exp", {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE}},
-  {"Reciprocal", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
-  {"IsFinite", {V_NONE, V_ISFINITE_FP16, V_ISFINITE_BF16, V_ISFINITE, V_NONE}},
-  {"LogicalNot", {V_LOGICAL_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE}},
-  {"Round", {V_NONE, V_NONE, V_NONE, V_ROUND, V_NONE}},
-  {"Floor", {V_NONE, V_NONE, V_NONE, V_FLOOR, V_NONE}},
-  {"Ceil", {V_NONE, V_NONE, V_NONE, V_CEIL, V_NONE}},
-  {"Trunc", {V_NONE, V_NONE, V_NONE, V_TRUNC, V_NONE}}};
+  {"Sqrt", {V_NONE, V_SQRT_FP16, V_NONE, V_SQRT, V_NONE, V_NONE}},
+  {"Abs", {V_NONE, V_ABS_FP16, V_NONE, V_ABS, V_ABS_INT32, V_NONE}},
+  {"Log", {V_NONE, V_LOG_FP16, V_NONE, V_LOG, V_NONE, V_NONE}},
+  {"Exp", {V_NONE, V_EXP_FP16, V_NONE, V_EXP, V_NONE, V_NONE}},
+  {"Reciprocal", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
+  {"IsFinite", {V_NONE, V_ISFINITE_FP16, V_ISFINITE_BF16, V_ISFINITE, V_NONE, V_NONE}},
+  {"LogicalNot", {V_LOGICAL_NOT_BOOL, V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},
+  {"Round", {V_NONE, V_NONE, V_NONE, V_ROUND, V_NONE, V_NONE}},
+  {"Floor", {V_NONE, V_NONE, V_NONE, V_FLOOR, V_NONE, V_NONE}},
+  {"Ceil", {V_NONE, V_NONE, V_NONE, V_CEIL, V_NONE, V_NONE}},
+  {"Trunc", {V_NONE, V_NONE, V_NONE, V_TRUNC, V_NONE, V_NONE}}};
 
 static const InsnIdTable binary_id_list[] = {
   // must keep consistent order with BinaryType
-  {"Equal", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"NotEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"Greater", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"GreaterEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"Less", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"LessEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"Add", {V_NONE, V_ADD_FP16, V_ADD_BF16, V_ADD, V_ADD_INT32}},
-  {"Sub", {V_NONE, V_SUB_FP16, V_SUB_BF16, V_SUB, V_SUB_INT32}},
-  {"Mul", {V_NONE, V_MUL_FP16, V_MUL_BF16, V_MUL, V_MUL_INT32}},
-  {"Div", {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE}},
-  {"Pow", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},  // power: individual implement
-  {"Maximum", {V_NONE, V_MAX_FP16, V_MAX_BF16, V_MAX, V_MAX_INT32}},
-  {"Minimum", {V_NONE, V_MIN_FP16, V_MIN_BF16, V_MIN, V_MIN_INT32}},
-  {"LogicalAnd", {V_LOGICAL_AND_BOOL, V_MIN_FP16, V_MAX_BF16, V_MIN, V_MIN_INT32}},
-  {"LogicalOr", {V_LOGICAL_OR_BOOL, V_MAX_FP16, V_MIN_BF16, V_MAX, V_MAX_INT32}}};
+  {"Equal", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32, V_CMP_INT64}},
+  {"NotEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32, V_CMP_INT64}},
+  {"Greater", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32, V_CMP_INT64}},
+  {"GreaterEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32, V_CMP_INT64}},
+  {"Less", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32, V_CMP_INT64}},
+  {"LessEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32, V_CMP_INT64}},
+  {"Add", {V_NONE, V_ADD_FP16, V_ADD_BF16, V_ADD, V_ADD_INT32, V_ADD_INT64}},
+  {"Sub", {V_NONE, V_SUB_FP16, V_SUB_BF16, V_SUB, V_SUB_INT32, V_SUB_INT64}},
+  {"Mul", {V_NONE, V_MUL_FP16, V_MUL_BF16, V_MUL, V_MUL_INT32, V_NONE}},
+  {"Div", {V_NONE, V_DIV_FP16, V_NONE, V_DIV, V_NONE, V_NONE}},
+  {"Pow", {V_NONE, V_NONE, V_NONE, V_NONE, V_NONE, V_NONE}},  // power: individual implement
+  {"Maximum", {V_NONE, V_MAX_FP16, V_MAX_BF16, V_MAX, V_MAX_INT32, V_NONE}},
+  {"Minimum", {V_NONE, V_MIN_FP16, V_MIN_BF16, V_MIN, V_MIN_INT32, V_NONE}},
+  {"LogicalAnd", {V_LOGICAL_AND_BOOL, V_MIN_FP16, V_MAX_BF16, V_MIN, V_MIN_INT32, V_NONE}},
+  {"LogicalOr", {V_LOGICAL_OR_BOOL, V_MAX_FP16, V_MIN_BF16, V_MAX, V_MAX_INT32, V_NONE}}};
 
 static const InsnIdTable binarys_id_list[] = {
   // must keep consistent order with BinarySOpType
-  {"Equal", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"NotEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"Greater", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"GreaterEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"Less", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"LessEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"Add", {V_NONE, V_ADDS_FP16, V_ADDS_BF16, V_ADDS, V_ADDS_INT32}},
-  {"Mul", {V_NONE, V_MULS_FP16, V_MULS_BF16, V_MULS, V_MULS_INT32}},
-  {"Div", {V_NONE, V_DIVS_FP16, V_NONE, V_DIVS, V_NONE}},
-  {"ScalarDiv", {V_NONE, V_SDIV_FP16, V_NONE, V_SDIV, V_NONE}},
-  {"Maximum", {V_NONE, V_MAXS_FP16, V_MAXS_BF16, V_MAXS, V_MAXS_INT32}},
-  {"Minimum", {V_NONE, V_MINS_FP16, V_MINS_BF16, V_MINS, V_MINS_INT32}}};
+  {"Equal", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32, V_NONE}},
+  {"NotEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32, V_NONE}},
+  {"Greater", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32, V_NONE}},
+  {"GreaterEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32, V_NONE}},
+  {"Less", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32, V_NONE}},
+  {"LessEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32, V_NONE}},
+  {"Add", {V_NONE, V_ADDS_FP16, V_ADDS_BF16, V_ADDS, V_ADDS_INT32, V_NONE}},
+  {"Mul", {V_NONE, V_MULS_FP16, V_MULS_BF16, V_MULS, V_MULS_INT32, V_NONE}},
+  {"Div", {V_NONE, V_DIVS_FP16, V_NONE, V_DIVS, V_NONE, V_NONE}},
+  {"ScalarDiv", {V_NONE, V_SDIV_FP16, V_NONE, V_SDIV, V_NONE, V_NONE}},
+  {"Maximum", {V_NONE, V_MAXS_FP16, V_MAXS_BF16, V_MAXS, V_MAXS_INT32, V_NONE}},
+  {"Minimum", {V_NONE, V_MINS_FP16, V_MINS_BF16, V_MINS, V_MINS_INT32, V_NONE}}};
 
 static const vSimdInsnID cast_id_list[DataType::kDataTypeEnd][DataType::kDataTypeEnd] = {
   {V_NONE, V_CAST_BOOL_TO_FP16, V_NONE, V_NONE, V_NONE, V_NONE},                                           // V_BOOL
@@ -2204,7 +2204,7 @@ uint64_t CompareOp::Emit(VectorKernel &k) {
   op.type = cmp_op_;
   op.ws = wss_[0];
   op.count = nd_.stride_back();
-  auto id = binary_id_list[cmp_op_].ids[type_id_];
+  auto id = binary_id_list[cmp_op_].ids[lhs_->type_id_];
   ASSERT(id != V_NONE);
   return vCompare::Encode(insn_, id, op);
 }
@@ -2326,7 +2326,7 @@ uint64_t SelectOp::Emit(VectorKernel &k) {
   op.xd = xbuf_;
   op.xn = lhs_->xbuf_;
   const static vSimdInsnID id_list[DataType::kDataTypeEnd] = {V_NONE, V_SEL_FP16,  V_SEL_BF16,
-                                                              V_SEL,  V_SEL_INT32, V_NONE};
+                                                              V_SEL,  V_SEL_INT32, V_SEL_INT64};
   op.count = nd_.stride_back();
   op.xm = rhs_->xbuf_;
   op.cond = xhs_->xbuf_;
@@ -2390,8 +2390,9 @@ uint64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
   op.lead_num = end_dim + 1 < rank_size ? ndd_[end_dim + 1] : 1;
   op.iter_num = end_dim + 2 < rank_size ? ndd_.stride_back() / ndd_.stride(end_dim + 1) : 1;
   op.lead_pad = lhs_->nd_.lead_stride() - lhs_->nd_.lead_dim();
-  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_BROADCAST_X_B8, V_BROADCAST_X_B16, V_BROADCAST_X_B16,
-                                                      V_BROADCAST_X_B32, V_BROADCAST_X_B32};
+  const static vSimdInsnID id_list[DataType::kDataTypeEnd] = {V_BROADCAST_X_B8,  V_BROADCAST_X_B16,
+                                                              V_BROADCAST_X_B16, V_BROADCAST_X_B32,
+                                                              V_BROADCAST_X_B32, V_BROADCAST_X_B64};
   ASSERT(id_list[type_id_] != V_NONE);
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }

@@ -28,6 +28,7 @@ struct TypeGet;
 
 DEF_TYPE_GET(uint32_t, vector_u32)
 DEF_TYPE_GET(int32_t, vector_s32)
+DEF_TYPE_GET(int64_t, vector_2xvl_s64)
 DEF_TYPE_GET(uint16_t, vector_u16)
 DEF_TYPE_GET(int16_t, vector_s16)
 DEF_TYPE_GET(float, vector_f32)
@@ -65,6 +66,8 @@ __aicore_inline__ MaskReg UpdateMask(uint32_t &scalar) {
     reg = plt_b16(scalar, POST_UPDATE);
   } else if constexpr (sizeof(T) == 4) {
     reg = plt_b32(scalar, POST_UPDATE);
+  } else if constexpr (sizeof(T) == 8) {
+    reg = plt_b32(scalar, POST_UPDATE);
   }
   return reg;
 }
@@ -74,6 +77,8 @@ __aicore_inline__ MaskReg MoveMask() {
   if constexpr (sizeof(T) == 2) {
     return movp_b16();
   } else if constexpr (sizeof(T) == 4) {
+    return movp_b32();
+  } else if constexpr (sizeof(T) == 8) {
     return movp_b32();
   }
 }
@@ -91,6 +96,10 @@ constexpr __aicore_inline__ DistVST DistSTValue() {
     return DistVST::DIST_NORM_B16;
   }
   return DistVST::DIST_NORM_B32;
+}
+
+constexpr __aicore_inline__ uint32_t B64BlockNum() {
+  return BlockNum(int64_t) * 2;
 }
 
 template <auto funcPtr, typename... Args>
@@ -390,13 +399,71 @@ DECLARE_CAST(int32_t, bfloat16_t, RoundValue<R>(), RS_ENABLE, PART_EVEN)
 DECLARE_CAST(half, float, RoundValue<R>(), RS_ENABLE, PART_EVEN)
 DECLARE_CAST(bfloat16_t, float, RoundValue<R>(), RS_ENABLE, PART_EVEN)
 
+template <ROUND R>
+__aicore_inline__ void CastImpl(RegTensor<int64_t> &dst, RegTensor<int32_t> &src, MaskReg &mask) {
+  RegTensor<int32_t> tmp0;
+  RegTensor<int32_t> tmp1;
+  RegTensor<int32_t> zero;
+  MaskReg lowMask;
+  MaskReg highMask;
+  vbr(zero, (int32_t)0);
+  pintlv_b32(lowMask, highMask, mask, mask);
+  vintlv(tmp0, tmp1, src, zero);
+  vcvt((vector_s64 &)tmp0, tmp0, lowMask, PART_EVEN, MODE_ZEROING);
+  vcvt((vector_s64 &)tmp1, tmp1, highMask, PART_EVEN, MODE_ZEROING);
+  vdintlv((RegTensor<int32_t> &)dst.val[0], (RegTensor<int32_t> &)dst.val[1], tmp0, tmp1);
+}
+
+template <ROUND R>
+__aicore_inline__ void CastImpl(RegTensor<int32_t> &dst, RegTensor<int64_t> &src, MaskReg &mask) {
+  RegTensor<int32_t> tmp0;
+  RegTensor<int32_t> tmp1;
+  MaskReg lowMask;
+  MaskReg highMask;
+  pintlv_b32(lowMask, highMask, mask, mask);
+  vintlv(tmp0, tmp1, (RegTensor<int32_t> &)src.val[0], (RegTensor<int32_t> &)src.val[1]);
+  vcvt(tmp0, (vector_s64 &)tmp0, lowMask, RS_ENABLE, PART_EVEN, MODE_ZEROING);
+  vcvt(tmp1, (vector_s64 &)tmp1, highMask, RS_ENABLE, PART_EVEN, MODE_ZEROING);
+  vdintlv(dst, tmp0, tmp0, tmp1);
+}
+
+template <ROUND R>
+__aicore_inline__ void CastImpl(RegTensor<int64_t> &dst, RegTensor<float> &src, MaskReg &mask) {
+  RegTensor<float> tmp0;
+  RegTensor<float> tmp1;
+  RegTensor<int32_t> zero;
+  MaskReg lowMask;
+  MaskReg highMask;
+  vbr(zero, (int32_t)0);
+  pintlv_b32(lowMask, highMask, mask, mask);
+  vintlv(tmp0, tmp1, src, (RegTensor<float> &)zero);
+  vcvt((vector_s64 &)tmp0, tmp0, lowMask, RoundValue<R>(), RS_ENABLE, PART_EVEN, MODE_ZEROING);
+  vcvt((vector_s64 &)tmp1, tmp1, highMask, RoundValue<R>(), RS_ENABLE, PART_EVEN, MODE_ZEROING);
+  vdintlv((RegTensor<float> &)dst.val[0], (RegTensor<float> &)dst.val[1], tmp0, tmp1);
+}
+
+template <ROUND R>
+__aicore_inline__ void CastImpl(RegTensor<float> &dst, RegTensor<int64_t> &src, MaskReg &mask) {
+  RegTensor<float> tmp0;
+  RegTensor<float> tmp1;
+  MaskReg lowMask;
+  MaskReg highMask;
+  pintlv_b32(lowMask, highMask, mask, mask);
+  vintlv(tmp0, tmp1, (RegTensor<float> &)src.val[0], (RegTensor<float> &)src.val[1]);
+  vcvt(tmp0, (vector_s64 &)tmp0, lowMask, RoundValue<R>(), PART_EVEN, MODE_ZEROING);
+  vcvt(tmp1, (vector_s64 &)tmp1, highMask, RoundValue<R>(), PART_EVEN, MODE_ZEROING);
+  vdintlv(dst, tmp0, tmp0, tmp1);
+}
+
 template <typename DST_TYPE, typename SRC_TYPE, ROUND R = ROUND::A>
 __aicore_inline__ void cast_count(__ubuf__ DST_TYPE *dst, __ubuf__ SRC_TYPE *src0, uint32_t count) {
   __VEC_SCOPE__ {
     RegTensor<SRC_TYPE> vreg0;
     RegTensor<DST_TYPE> vreg1;
     vector_bool exPreg;
-    uint32_t sregLower = 256 / max(sizeof(DST_TYPE), sizeof(SRC_TYPE));
+    uint32_t sregLower = (sizeof(DST_TYPE) == 8 || sizeof(SRC_TYPE) == 8)
+                              ? B64BlockNum()
+                              : 256 / max(sizeof(DST_TYPE), sizeof(SRC_TYPE));
     uint16_t repeat = CeilDiv(count, sregLower);
     constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<DST_TYPE>()>();
     for (uint16_t i = 0; i < repeat; ++i) {
@@ -406,7 +473,9 @@ __aicore_inline__ void cast_count(__ubuf__ DST_TYPE *dst, __ubuf__ SRC_TYPE *src
         exPreg = UpdateMask<DST_TYPE>(count);
       }
 
-      if constexpr (sizeof(SRC_TYPE) == 1 && sizeof(DST_TYPE) == 2) {
+      if constexpr (sizeof(SRC_TYPE) == 8) {
+        vlds(vreg0, src0, i * sregLower);
+      } else if constexpr (sizeof(SRC_TYPE) == 1 && sizeof(DST_TYPE) == 2) {
         vlds(vreg0, src0, i * sregLower, UNPK_B8);
       } else if constexpr (sizeof(SRC_TYPE) == 2 && sizeof(DST_TYPE) == 4) {
         vlds(vreg0, src0, i * sregLower, UNPK_B16);
@@ -418,7 +487,9 @@ __aicore_inline__ void cast_count(__ubuf__ DST_TYPE *dst, __ubuf__ SRC_TYPE *src
 
       CastImpl<R>(vreg1, vreg0, exPreg);
 
-      if constexpr (sizeof(DST_TYPE) == 1 && sizeof(SRC_TYPE) == 2) {
+      if constexpr (sizeof(DST_TYPE) == 8) {
+        vsts(vreg1, dst, i * sregLower, exPreg);
+      } else if constexpr (sizeof(DST_TYPE) == 1 && sizeof(SRC_TYPE) == 2) {
         vsts(vreg1, dst, i * sregLower, PK_B16, exPreg);
       } else if constexpr (sizeof(DST_TYPE) == 2 && sizeof(SRC_TYPE) == 4) {
         vsts(vreg1, dst, i * sregLower, PK_B32, exPreg);
@@ -560,6 +631,76 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     CMP_DISPATCH(V_CMP_GE, vcmp_ge);
     CMP_DISPATCH(V_CMP_LT, vcmp_lt);
     CMP_DISPATCH(V_CMP_LE, vcmp_le);
+    default:
+      break;
+  }
+}
+
+#define BINARY_B64(pc, builtin, head, tile)                       \
+  do {                                                            \
+    vBinary op;                                                   \
+    vBinary::Decode(pc, head, op);                                \
+    __ubuf__ int64_t *xm = (__ubuf__ int64_t *)(op.xm);           \
+    __ubuf__ int64_t *xd = (__ubuf__ int64_t *)(op.xd);           \
+    __ubuf__ int64_t *xn = (__ubuf__ int64_t *)(op.xn);           \
+    __VEC_SCOPE__ {                                               \
+      RegTensor<int64_t> vreg0;                                   \
+      RegTensor<int64_t> vreg1;                                   \
+      RegTensor<int64_t> vreg2;                                   \
+      vector_bool stPreg;                                         \
+      uint32_t count = static_cast<uint32_t>(op.count);           \
+      uint32_t sregLower = B64BlockNum();                         \
+      uint16_t repeat = CeilDiv(count, sregLower);                \
+      for (uint16_t i = 0; i < repeat; ++i) {                     \
+        stPreg = UpdateMask<int64_t>(count);                      \
+        vlds(vreg0, xn, i * sregLower);                           \
+        vlds(vreg1, xm, i * sregLower);                           \
+        builtin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);       \
+        vsts(vreg2, xd, i * sregLower, stPreg);                   \
+      }                                                           \
+    }                                                             \
+  } while (0)
+
+__aicore_inline__ void BinCompareB64(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+#define CMP_B64_DISPATCH(op_type, builtin)                        \
+  case op_type:                                                   \
+    do {                                                          \
+      __VEC_SCOPE__ {                                             \
+        RegTensor<int64_t> vreg0;                                 \
+        RegTensor<int64_t> vreg1;                                 \
+        RegTensor<int32_t> vreg2;                                 \
+        RegTensor<int32_t> scalar0;                               \
+        RegTensor<int32_t> scalar1;                               \
+        vector_bool stPreg;                                       \
+        uint32_t count = static_cast<uint32_t>(op.count);         \
+        uint32_t sregLower = B64BlockNum();                       \
+        uint16_t repeat = CeilDiv(count, sregLower);              \
+        vbr(scalar0, (int32_t)0);                                 \
+        vbr(scalar1, (int32_t)1);                                 \
+        for (uint16_t i = 0; i < repeat; ++i) {                   \
+          stPreg = UpdateMask<int64_t>(count);                    \
+          vector_bool cmp_mask;                                   \
+          vlds(vreg0, xn, i * sregLower);                         \
+          vlds(vreg1, xm, i * sregLower);                         \
+          builtin(cmp_mask, vreg0, vreg1, stPreg);                \
+          vsel(vreg2, scalar1, scalar0, cmp_mask);                \
+          vsts(vreg2, xd, i * sregLower, NORM_B32, stPreg);       \
+        }                                                         \
+      }                                                           \
+    } while (0);                                                  \
+    break
+  vCompare op;
+  vCompare::Decode(pc, head, op);
+  __ubuf__ int32_t *xd = (__ubuf__ int32_t *)(op.xd);
+  __ubuf__ int64_t *xm = (__ubuf__ int64_t *)(op.xm);
+  __ubuf__ int64_t *xn = (__ubuf__ int64_t *)(op.xn);
+  switch (op.type) {
+    CMP_B64_DISPATCH(V_CMP_EQ, vcmp_eq);
+    CMP_B64_DISPATCH(V_CMP_NE, vcmp_ne);
+    CMP_B64_DISPATCH(V_CMP_GT, vcmp_gt);
+    CMP_B64_DISPATCH(V_CMP_GE, vcmp_ge);
+    CMP_B64_DISPATCH(V_CMP_LT, vcmp_lt);
+    CMP_B64_DISPATCH(V_CMP_LE, vcmp_le);
     default:
       break;
   }
@@ -796,6 +937,26 @@ __aicore_inline__ void BroadcastS(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   VectorDupCount(xd, val, op.count);
 }
 
+__aicore_inline__ void BroadcastS_B64(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vBroadcastS_B64 op;
+  vBroadcastS_B64::Decode(pc, head, op);
+  __ubuf__ int64_t *xd = (__ubuf__ int64_t *)(op.xd);
+  uint64_t raw_value = (op.high << 32) | op.scalar;
+  int64_t val = static_cast<int64_t>(raw_value);
+  __VEC_SCOPE__ {
+    RegTensor<int64_t> vreg0;
+    vector_bool stPreg;
+    uint32_t count = static_cast<uint32_t>(op.count);
+    uint32_t sregLower = B64BlockNum();
+    uint16_t repeat = CeilDiv(count, sregLower);
+    vbr(vreg0, val);
+    for (uint16_t i = 0; i < repeat; ++i) {
+      stPreg = UpdateMask<int64_t>(count);
+      vsts(vreg0, xd, i * sregLower, stPreg);
+    }
+  }
+}
+
 template <typename T>
 __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vBroadcastX op;
@@ -822,6 +983,32 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         for (uint16_t j = 0; j < repeat; j++) {
           stPreg = UpdateMask<T>(count);
           vsts(vreg0, xd, k * op.count * op.lead_num + i * op.count + j * sregLower, distValue, stPreg);
+        }
+      }
+    }
+  }
+}
+
+__aicore_inline__ void BroadcastXB64(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vBroadcastX op;
+  vBroadcastX::Decode(pc, head, op);
+  __ubuf__ int64_t *xd = (__ubuf__ int64_t *)(op.xd);
+  __ubuf__ int64_t *xn = (__ubuf__ int64_t *)(op.xn);
+  __ubuf__ int32_t *xn_b32 = (__ubuf__ int32_t *)(xn);
+  __VEC_SCOPE__ {
+    RegTensor<int64_t> vreg0;
+    vector_bool stPreg;
+    uint32_t sregLower = B64BlockNum();
+    for (uint16_t k = 0; k < (uint16_t)op.iter_num; k++) {
+      for (uint16_t i = 0; i < (uint16_t)op.lead_num; i++) {
+        uint32_t xn_offset = k * (op.lead_num + op.lead_pad) + i;
+        vlds(vreg0.val[0], xn_b32, xn_offset * 2, BRC_B32);
+        vlds(vreg0.val[1], xn_b32, xn_offset * 2 + 1, BRC_B32);
+        uint32_t count = op.count;
+        uint16_t repeat = CeilDiv(count, sregLower);
+        for (uint16_t j = 0; j < repeat; j++) {
+          stPreg = UpdateMask<int64_t>(count);
+          vsts(vreg0, xd, k * op.count * op.lead_num + i * op.count + j * sregLower, stPreg);
         }
       }
     }
@@ -1034,6 +1221,35 @@ __aicore_inline__ void Select(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       vcmps_ne(cmp_mask, vreg2, T(0), stPreg);
       vsel(vreg3, vreg0, vreg1, cmp_mask);
       vsts(vreg3, xd, i * sregLower, distValue, stPreg);
+    }
+  }
+}
+
+__aicore_inline__ void SelectB64(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vSelect op;
+  vSelect::Decode(pc, head, op);
+  __ubuf__ int64_t *xm = (__ubuf__ int64_t *)(op.xm);
+  __ubuf__ int32_t *cond = (__ubuf__ int32_t *)(op.cond);
+  __ubuf__ int64_t *xd = (__ubuf__ int64_t *)(op.xd);
+  __ubuf__ int64_t *xn = (__ubuf__ int64_t *)(op.xn);
+  __VEC_SCOPE__ {
+    RegTensor<int64_t> vreg0;
+    RegTensor<int64_t> vreg1;
+    RegTensor<int64_t> vreg3;
+    RegTensor<int32_t> vreg2;
+    vector_bool stPreg;
+    uint32_t count = static_cast<uint32_t>(op.count);
+    uint32_t sregLower = B64BlockNum();
+    uint16_t repeat = CeilDiv(count, sregLower);
+    for (uint16_t i = 0; i < repeat; ++i) {
+      stPreg = UpdateMask<int64_t>(count);
+      vector_bool cmp_mask;
+      vlds(vreg0, xn, i * sregLower);
+      vlds(vreg1, xm, i * sregLower);
+      vlds(vreg2, cond, i * sregLower, NORM);
+      vcmps_ne(cmp_mask, vreg2, (int32_t)0, stPreg);
+      vsel(vreg3, vreg0, vreg1, cmp_mask);
+      vsts(vreg3, xd, i * sregLower, stPreg);
     }
   }
 }
@@ -1915,8 +2131,10 @@ DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
 DEF_DISP_SIMD(V_COPY, Copy(pc, head))
 DEF_DISP_SIMD(V_NOP,  ;)
 DEF_DISP_SIMD(V_BROADCAST_X_B32, BroadcastX<uint32_t>(pc, head, tile))
+DEF_DISP_SIMD(V_BROADCAST_X_B64, BroadcastXB64(pc, head, tile))
 DEF_DISP_SIMD(V_BROADCAST_Y, BroadcastY(pc, head))
 DEF_DISP_SIMD(V_BROADCAST_S, BroadcastS<uint32_t>(pc, head, tile))
+DEF_DISP_SIMD(V_BROADCAST_S_B64, BroadcastS_B64(pc, head, tile))
 DEF_DISP_SIMD(V_SQRT, UNARY(pc, vsqrt, head, tile, float))
 DEF_DISP_SIMD(V_ABS, UNARY(pc, vabs, head, tile, float))
 DEF_DISP_SIMD(V_LOG, UNARY(pc, vln, head, tile, float))
@@ -1988,12 +2206,17 @@ DEF_DISP_SIMD(V_CAST_BOOL_TO_FP16, (Cast<half, int8_t>(pc, head, tile)))
 
 DEF_DISP_SIMD(V_ADD_INT32, BINARY(pc, vadd, head, tile, int32_t))
 DEF_DISP_SIMD(V_SUB_INT32, BINARY(pc, vsub, head, tile, int32_t))
+DEF_DISP_SIMD(V_ADD_INT64, BINARY_B64(pc, vadd, head, tile))
+DEF_DISP_SIMD(V_SUB_INT64, BINARY_B64(pc, vsub, head, tile))
 DEF_DISP_SIMD(V_MUL_INT32, BINARY(pc, vmul, head, tile, int32_t))
 DEF_DISP_SIMD(V_MIN_INT32, BINARY(pc, vmin, head, tile, int32_t))
 DEF_DISP_SIMD(V_MAX_INT32, BINARY(pc, vmax, head, tile, int32_t))
 DEF_DISP_SIMD(V_SEL_INT32, Select<int32_t>(pc, head, tile))
+DEF_DISP_SIMD(V_SEL_INT64, SelectB64(pc, head, tile))
 DEF_DISP_SIMD(V_CAST_INT32_TO_FP16, (Cast<half, int32_t>(pc, head, tile)))
 DEF_DISP_SIMD(V_CAST_INT32_TO_FP32, (Cast<float, int32_t>(pc, head, tile)))
+DEF_DISP_SIMD(V_CAST_INT32_TO_INT64, (Cast<int64_t, int32_t>(pc, head, tile)))
+DEF_DISP_SIMD(V_CAST_INT64_TO_INT32, (Cast<int32_t, int64_t>(pc, head, tile)))
 
 DEF_DISP_SIMD(V_ISFINITE, IsFinite<float>(pc, head, tile))
 DEF_DISP_SIMD(V_MAXS, BINARYS(pc, vmaxs, head, float))
@@ -2012,6 +2235,8 @@ DEF_DISP_SIMD(V_ATOMICCUM_FP16, AtomicCum<half>(pc, head, tile))
 DEF_DISP_SIMD(V_CAST_BF16_TO_FP32, (Cast<float, bfloat16_t>(pc, head, tile)))
 DEF_DISP_SIMD(V_CAST_BF16_TO_INT32, (Cast<int32_t, bfloat16_t, ROUND::A>(pc, head, tile)))
 DEF_DISP_SIMD(V_CAST_FP32_TO_BF16, (Cast<bfloat16_t, float, ROUND::R>(pc, head, tile)))
+DEF_DISP_SIMD(V_CAST_FP32_TO_INT64, (Cast<int64_t, float, ROUND::Z>(pc, head, tile)))
+DEF_DISP_SIMD(V_CAST_INT64_TO_FP32, (Cast<float, int64_t, ROUND::Z>(pc, head, tile)))
 
 DEF_DISP_SIMD(V_SDIV, BINARYS_EXT(pc, vdiv, head, float, false))
 DEF_DISP_SIMD(V_SDIV_FP16, BINARYS_EXT(pc, vdiv, head, half, false))
@@ -2021,6 +2246,7 @@ DEF_DISP_SIMD(V_DIVS_FP16, BINARYS_EXT(pc, vdiv, head, half, true))
 DEF_DISP_SIMD(V_ABS_INT32, UNARY(pc, vabs, head, tile, int32_t))
 DEF_DISP_SIMD(V_CMPS_INT32, BinCompareS<int32_t>(pc, head, tile))
 DEF_DISP_SIMD(V_CMP_INT32, BinCompare<int32_t>(pc, head, tile))
+DEF_DISP_SIMD(V_CMP_INT64, BinCompareB64(pc, head, tile))
 DEF_DISP_SIMD(V_ADDS_BF16, BINARYS(pc, vadds, head, bfloat16_t))
 DEF_DISP_SIMD(V_MULS_BF16, BINARYS(pc, vmuls, head, bfloat16_t))
 DEF_DISP_SIMD(V_MAXS_BF16, BINARYS(pc, vmaxs, head, bfloat16_t))

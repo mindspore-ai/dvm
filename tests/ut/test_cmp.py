@@ -161,7 +161,6 @@ def test_cmp_repeat_overflow():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
                                       (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
                                       (Tester.not_equal, np.not_equal)])
@@ -182,7 +181,6 @@ def test_cmp_int64(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.greater_equal, np.greater_equal)])
 @pytest.mark.parametrize("lhs_shape,rhs_shape", [
     ((8, 1, 257, 1), (1, 5, 257, 129)),
@@ -201,7 +199,6 @@ def test_cmp_int64_broadcast(lhs_shape, rhs_shape, op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
                                       (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
                                       (Tester.not_equal, np.not_equal)])
@@ -220,7 +217,6 @@ def test_cmp_int64_s_r(op, func):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support int64 ops")
 @pytest.mark.parametrize('op, func', [(Tester.equal, np.equal), (Tester.less, np.less), (Tester.greater, np.greater),
                                       (Tester.greater_equal, np.greater_equal), (Tester.less_equal, np.less_equal),
                                       (Tester.not_equal, np.not_equal)])

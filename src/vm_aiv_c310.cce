@@ -863,13 +863,15 @@ __aicore_inline__ void ReduceX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   ReduceBisectLoop<RED_TYPE>(xd, xn, red_size, op.dup_size, op.red_size, simd_width, (__ubuf__ T *)(op.xd));
   vReduceX::DecodeBlock(pc, op);
   SetVectorMask(simd_width);
+  uint64_t dst_rs = op.dup_block + op.dup_pad;
   uint64_t src_rs = op.red_size * op.dup_block;
   uint64_t iter_num = op.dup_size / op.dup_block;
   __VEC_SCOPE__ {
     RegTensor<T> vreg0;
     RegTensor<T> vreg1;
-    vector_align ureg;
     vector_bool exPreg = MoveMask<T>();
+    constexpr auto distValue = std::integral_constant<DistVST, sizeof(T) == 2 ? DistVST::DIST_ONEPT_B16
+                                                                              : DistVST::DIST_ONEPT_B32>();
     for (uint16_t k = 0; k < (uint16_t)iter_num; ++k) {
       for (uint16_t i = 0; i < (uint16_t)op.dup_block; ++i) {
         vlds(vreg0, xn, i * op.red_size + k * src_rs, NORM);
@@ -882,9 +884,8 @@ __aicore_inline__ void ReduceX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         if constexpr (RED_TYPE == V_RED_MIN) {
           vcmin(vreg1, vreg0, exPreg, MODE_ZEROING);
         }
-        vstus(ureg, 1, vreg1, xd, POST_UPDATE);
+        vsts(vreg1, xd, k * dst_rs + i, distValue, exPreg);
       }
-      vstas(ureg, xd, op.dup_pad, POST_UPDATE);
     }
   }
 }

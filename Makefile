@@ -15,16 +15,15 @@ CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\
 
 CCE_FLGAS_C310 = --std=c++17 -Wno-int-to-pointer-cast\
                  --cce-aicore-only \
+                 --cce-auto-sync=off \
+                 --cce-simd-vf-fusion=true \
                  -mllvm -cce-aicore-stack-size=0x8000 \
                  -mllvm -cce-aicore-function-stack-size=0x8000 \
                  -mllvm -cce-aicore-addr-transform \
                  -mllvm -cce-aicore-or-combine=false \
                  -mllvm -instcombine-code-sinking=false \
-                 -Xclang -fcce-vf-vl=256 \
-                 --cce-auto-sync=off \
                  -mllvm -cce-aicore-jump-expand=true \
                  -mllvm -cce-aicore-mask-opt=false \
-                 --cce-simd-vf-fusion=true \
                  -mllvm -cce-aicore-dcci-before-kernel-end=false \
                  -mllvm -cce-aicore-dcci-insert-for-scalar=false
 

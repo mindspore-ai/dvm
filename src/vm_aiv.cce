@@ -1446,6 +1446,135 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   pipe_barrier(PIPE_V);
 }
 
+__aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewLoadT op;
+  vViewLoadT::Decode(pc, head, op);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  uint64_t tile_space = 0;
+  uint64_t tile_depth = op.tile_depth;
+  for (; tile_depth > 0 && tile_idx > 0; --tile_depth) {
+    uint64_t stride;
+    vViewLoad::DecodeTile(pc[vViewLoadT::VAR_OFFSET - 1 + op.loop_depth + tile_depth], tile_space, stride);
+    uint64_t factor = tile_idx / tile_space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * tile_space;
+  }
+  if (tile_space > 1 && tile_depth == 0 && tile_idx > 0 && !IsBeginTile(tile) && !IsSkipTile(tile)) {
+    return;
+  }
+  if (op.loop_depth == 0 && IsLastTile(tile)) {
+    op.iter_size = op.tail_size;
+  }
+  __gm__ uint8_t *src = (__gm__ uint8_t *)(op.from + tile_offset);
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xd);
+  uint64_t ping_ws = op.ws;
+  uint64_t pong_ws = op.ws + op.ws_size * 512;
+  uint64_t conv_ws = pong_ws + op.ws_size * 512;
+  uint64_t ping_va[16];
+  uint64_t pong_va[16];
+  uint64_t conv_va[16];
+  for (uint64_t i = 0; i < 16; ++i) {
+    ping_va[i] = ping_ws + 32 * i;
+    pong_va[i] = pong_ws + 32 * i;
+  }
+  if (op.item_size == 2) {
+    for (uint64_t i = 0; i < 16; ++i) {
+      conv_va[i] = conv_ws + 32 * i;
+    }
+  } else {
+    for (uint64_t i = 0; i < 8; ++i) {
+      conv_va[i * 2] = conv_ws + 64 * i;
+      conv_va[i * 2 + 1] = conv_ws + 64 * i + 32;
+    }
+  }
+  set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+  set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+  set_va_reg_sb(VA2, ping_va);
+  set_va_reg_sb(VA3, &ping_va[8]);
+  set_va_reg_sb(VA4, pong_va);
+  set_va_reg_sb(VA5, &pong_va[8]);
+  set_va_reg_sb(VA0, conv_va);
+  set_va_reg_sb(VA1, &conv_va[8]);
+  uint32_t coord[6] = {0};
+  uint64_t idx = op.loop_depth;
+  bool pingpong = false;
+  do {
+    for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
+      uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
+      uint64_t conv_stride = iter_size > 1 ? 16 : 0;  // repeat 1 from VA[n] + stride
+      __gm__ uint8_t *iter_src = src + iter_offset * op.iter_stride;
+      if (pingpong) {
+        pingpong = false;
+        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+        for (uint64_t i = 0; i < iter_size; ++i) {
+          copy_gm_to_ubuf_align_b8((__ubuf__ void *)(ping_ws + 512 * i), iter_src, 0, op.w_fractal, op.h_fractal * op.item_size, 0, 0, op.w_gap, 0);
+          iter_src += op.iter_stride;
+        }
+        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        if (op.item_size == 2) {
+          scatter_vnchwconv_b16(VA0, VA2, iter_size, conv_stride, conv_stride);
+        } else {
+          scatter_vnchwconv_b32(VA0, VA2, iter_size, conv_stride, conv_stride);
+        }
+        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+      } else {
+        pingpong = true;
+        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+        for (uint64_t i = 0; i < iter_size; ++i) {
+          copy_gm_to_ubuf_align_b8((__ubuf__ void *)(pong_ws + 512 * i), iter_src, 0, op.w_fractal, op.h_fractal * op.item_size, 0, 0, op.w_gap, 0);
+          iter_src += op.iter_stride;
+        }
+        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        if (op.item_size == 2) {
+          scatter_vnchwconv_b16(VA0, VA4, iter_size, conv_stride, conv_stride);
+        } else {
+          scatter_vnchwconv_b32(VA0, VA4, iter_size, conv_stride, conv_stride);
+        }
+        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+      }
+      pipe_barrier(PIPE_V);
+      if (op.item_size == 2) {
+        if (op.h_fractal == 16) {
+          copy_ubuf_to_ubuf(dst + iter_offset * 512, (__ubuf__ void *)conv_ws, 0, 1, iter_size * 16, 0, 0);
+        } else {
+          copy_ubuf_to_ubuf(dst + iter_offset * op.h_fractal * 32, (__ubuf__ void *)conv_ws, 0, iter_size, op.h_fractal, 16 - op.h_fractal, 0);
+        }
+      } else if (op.w_fractal > 8) {
+        if (op.h_fractal == 8) {
+          copy_ubuf_to_ubuf(dst + iter_offset * 512, (__ubuf__ void *)conv_ws, 0, 1, iter_size * 16, 0, 0);
+        } else {
+          copy_ubuf_to_ubuf(dst + iter_offset * op.h_fractal * 64, (__ubuf__ void *)conv_ws, 0, iter_size, op.h_fractal * 2, 16 - op.h_fractal * 2, 0);
+        }
+      } else {
+        set_vector_mask(0, 8 * op.h_fractal);
+        vcopy((__ubuf__ uint32_t *)(dst + iter_offset * op.h_fractal * 32), (__ubuf__ uint32_t *)conv_ws, iter_size, 1, 2, op.h_fractal, 16);
+      }
+      pipe_barrier(PIPE_V);
+    }
+    for (idx = 0; idx < op.loop_depth; ++idx) {
+      uint64_t loop_size, dst_stride, src_stride;
+      vViewLoad::DecodeLoop(pc[vViewLoadT::VAR_OFFSET + idx], loop_size, dst_stride, src_stride);
+      if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+        loop_size = op.tail_size;
+      }
+      if (coord[idx] + 1 < loop_size) {
+        coord[idx] += 1;
+        dst += dst_stride;
+        src += src_stride;
+        break;
+      }
+      coord[idx] = 0;
+      dst -= (loop_size - 1) * dst_stride;
+      src -= (loop_size - 1) * src_stride;
+    }
+  } while (idx < op.loop_depth);
+  wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+  wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+}
+
 __aicore_inline__ void ViewStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewStore op;
   vViewStore::Decode(pc, head, op);
@@ -2029,6 +2158,7 @@ DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_X_B32, ViewLoadX<uint32_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_X_B16, ViewLoadX<uint16_t>(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_VIEW_TRANS, ViewLoadT(pc, head, tile))
 DEF_DISP_LOAD(V_SLOAD, SLoad(pc, head, tile))
 DEF_DISP_LOAD(V_MULTI_LOAD, MultiLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))

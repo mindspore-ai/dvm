@@ -445,3 +445,56 @@ def test_concat_single_vector():
     out = t.concat_store([x0, x1, x2], 0)
     t.run()
     t.check(out, np.concatenate((a0 * 0.5, a1, a1 + a2), axis=0))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
+@pytest.mark.parametrize('type', [np.float16, np.float32])
+@pytest.mark.parametrize("H, W", [
+  (1024, 2048),  # body
+  (38, 1024),  # body + h_tail
+  (1024, 38),  # body + w_tail
+  (100, 70),    # body + h_tail + w_tail
+  (2000, 900),    # body + h_tail + w_tail + hw_tail
+  (300, 10), # w_tail + hw_tail
+  (7, 300), # h_tail + hw_tail
+  (7, 12), # hw_tail
+])
+def test_trans_fractal_2d(type, H, W):
+    t = Tester("vector:opt_fractal")
+    a = np.random.normal(0, 1, (W, H)).astype(type)
+    x0 = t.view_load([H, W], [1, H], a)
+    t.view_store_expect(x0, [W, 1], a.T)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
+@pytest.mark.parametrize("shape1, swap1, shape2, swap2", [
+    [[10, 64, 200], (1, 2), [10, 64, 200], (1, 2)], # 3d. neighbor axis
+    [[4, 70, 20, 200], (1, 3), [1, 70, 20, 200], (1, 3)], # 4d. no neighbor axis
+    [[10, 1, 200], (1, 2), [10, 128, 200], (1, 2)],  # w broadcast
+    [[10, 200, 1], (1, 2), [10, 200, 128], (1, 2)],  # h broadcast
+])
+def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2):
+    def _continuous_stride(shape):
+        stride = [1] * len(shape)
+        for i in range(len(stride) - 1, 0, -1):
+            stride[i - 1] = shape[i] * stride[i]
+        return stride
+    t = Tester("vector:opt_fractal")
+    a = np.random.normal(0, 1, shape1).astype(np.float32)
+    b = np.random.normal(0, 1, shape2).astype(np.float32)
+    swap_a = np.swapaxes(a, swap1[0], swap1[1])
+    swap_b = np.swapaxes(b, swap2[0], swap2[1])
+    stride1 = _continuous_stride(shape1)
+    stride2 = _continuous_stride(shape2)
+    stride1[swap1[0]], stride1[swap1[1]] = stride1[swap1[1]], stride1[swap1[0]]
+    stride2[swap2[0]], stride2[swap2[1]] = stride2[swap2[1]], stride2[swap2[0]]
+    x0 = t.view_load(swap_a.shape, stride1, a)
+    x1 = t.view_load(swap_b.shape, stride2, b)
+    x2 = t.add(x0, x1)
+    expect = swap_a + swap_b
+    store_stride = _continuous_stride(expect.shape)
+    t.view_store_expect(x2, store_stride, expect)
+    assert (t.run_check())

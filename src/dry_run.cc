@@ -59,6 +59,17 @@ const int ONLY_VALUE = 2;
 const int PAD_NONE = 0;
 const int inc = 0;
 
+typedef enum {
+  VA0 = 0,
+  VA1,
+  VA2,
+  VA3,
+  VA4,
+  VA5,
+  VA6,
+  VA7,
+} ub_addr8_t;
+
 /************* cce intrinsic ***************/
 struct CallTracer {
   CallTracer(const char *func) : func_(func) {}
@@ -172,6 +183,9 @@ void wait_flag(int, int, int) {}
 #define vconv_f162s16c CCE_CALL(vconv_f162s16c)
 #define vbrcb CCE_CALL(vbrcb)
 #define vcopy CCE_CALL(vcopy)
+#define scatter_vnchwconv_b32 CCE_CALL(scatter_vnchwconv_b32)
+#define scatter_vnchwconv_b16 CCE_CALL(scatter_vnchwconv_b16)
+#define set_va_reg_sb CCE_CALL(set_va_reg_sb)
 
 
 #define copy_gm_to_cbuf CCE_CALL(copy_gm_to_cbuf)

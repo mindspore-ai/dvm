@@ -223,6 +223,7 @@ class KernelPy {
   static constexpr uint32_t F_DYN = KernelFlag::kDynamic;
   static constexpr uint32_t F_UWS = KernelFlag::kUnifyWS;
   static constexpr uint32_t F_SPEC = KernelFlag::kSpeculate;
+  static constexpr uint32_t F_OPT_FRAC = KernelFlag::kOptFractalTrans;
   static constexpr uint32_t F_PRIV1 = KernelFlag::kPrivate1;
 
  protected:
@@ -355,6 +356,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def_readonly_static("F_DYN", &KernelPy::F_DYN)
     .def_readonly_static("F_UWS", &KernelPy::F_UWS)
     .def_readonly_static("F_SPEC", &KernelPy::F_SPEC)
+    .def_readonly_static("F_OPT_FRAC", &KernelPy::F_OPT_FRAC)
     .def_readonly_static("F_PRIV1", &KernelPy::F_PRIV1)
     .def_static("set_deterministic", &KernelPy::SetDeterm, "set deterministic")
     .def_static("set_online_tuning", &KernelPy::SetOnlineTuning, "set online tuning");

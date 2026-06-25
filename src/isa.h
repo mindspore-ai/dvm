@@ -48,6 +48,7 @@ enum vAccInsnID {
   V_LOAD_VIEW,
   V_LOAD_VIEW_X_B32,
   V_LOAD_VIEW_X_B16,
+  V_LOAD_VIEW_TRANS, // [c220]
   V_SLOAD,
   V_LOAD_CC, // [c310]
   V_MULTI_LOAD, // [c220]
@@ -1263,6 +1264,61 @@ struct vViewLoadX {
     pc[1] = op.tail_size << 48 | op.iter_size << 32 | op.offset;
     pc[2] = op.ws_size << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xd << 18 | op.ws;
     pc[3] = op.from;
+    return size;
+  }
+};
+
+// [loopn, ..., loop0, iter_size, h_factor, w_factor] =  load[loopn, ..., loop0, iter_size, w_factor(w_gap), h_factor]
+struct vViewLoadT {
+  enum { RELOC_OFFSET = 4 };
+  enum { VAR_OFFSET = 5 };
+  uint64_t xd;
+  uint64_t from;
+  uint64_t offset;
+  uint64_t item_size;
+  uint64_t w_fractal;
+  uint64_t h_fractal;
+  uint64_t w_gap;
+  uint64_t iter_size;
+  uint64_t iter_stride;
+  uint64_t ws;
+  uint64_t ws_size;
+  uint64_t tail_size;
+  uint64_t loop_depth;
+  uint64_t tile_depth;
+  // pc[0]: w_gap(32)
+  // pc[1]: iter_stride(32) << 32 | offset(32)
+  // pc[2]: xd(18) << 46 | item_size(4) << 40 | loop_depth(4) << 36 | tile_depth(4) << 32 | tail_size(16) << 16 | h_fractal(8) << 8 | w_fractal(8)
+  // pc[3]: ws(18) << 46 | reserve(14) << 32 | ws_size(16) << 16 | iter_size(16)
+  // pc[4]: from(64)
+  // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
+  // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vViewLoadT &op) {
+    op.w_gap = vGetBitRange(head, V_M_HEAD_EXT_OFFSET, 32);
+    uint64_t data1 = pc[1];
+    op.offset = vGetBitRange(data1, 0, 32);
+    op.iter_stride = data1 >> 32;
+    uint64_t data2 = pc[2];
+    op.w_fractal = data2 & 0xfful;
+    op.h_fractal = (data2 >> 8) & 0xfful;
+    op.tail_size = (data2 >> 16) & 0xfffful;
+    op.tile_depth = (data2 >> 32) & 0xful;
+    op.loop_depth = (data2 >> 36) & 0xful;
+    op.item_size = (data2 >> 40) & 0xful;
+    op.xd = data2 >> 46;
+    uint64_t data3 = pc[3];
+    op.iter_size = data3 & 0xfffful;
+    op.ws_size = (data3 >> 16) & 0xfffful;
+    op.ws = data3 >> 46;
+    op.from = pc[4];
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vViewLoadT &op) {
+    uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
+    pc[0] = vMakeAccHead(id, op.w_gap, size);
+    pc[1] = op.iter_stride << 32 | op.offset;
+    pc[2] = op.xd << 46 | op.item_size << 40 | op.loop_depth << 36 | op.tile_depth << 32 | op.tail_size << 16 | op.h_fractal << 8 | op.w_fractal;
+    pc[3] = op.ws << 46 | op.ws_size << 16 | op.iter_size;
+    pc[4] = op.from;
     return size;
   }
 };

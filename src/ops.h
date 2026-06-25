@@ -416,6 +416,7 @@ class VectorKernel;
 #define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
 #define OBJ_FLAG_REDUCE_NO_CUM (1u << 30)
+#define OBJ_FLAG_VIEW_LOAD_FRACTAL (1u << 31)
 
 class NDObject {
  public:
@@ -636,13 +637,22 @@ class NDViewLoad : public NDAccess {
   void Dump(bool verbose, std::ostringstream &oss) override;
   DimArray &Stride() { return src_stride_; }
 
+  void ViewUpdate(uint64_t offset) {
+    int dim_size = ndd_.dims.size();
+    tail_dim_ = dim_size;
+    tail_size_ = 0;
+    offset_bytes_ = offset;
+    tile_.resize(dim_size);
+  }
+
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
- protected:
   IntArrayRef *src_stride_ref_;
   DimArray src_stride_;
+
+ protected:
   DimArray tile_;
   int tail_dim_;
   int tail_size_;
@@ -688,13 +698,16 @@ class NDViewStore : public NDAccess {
   void Dump(bool verbose, std::ostringstream &oss) override;
   DimArray &Stride() { return dst_stride_; }
 
+  void ViewUpdate(uint64_t offset);
+
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
- protected:
   IntArrayRef *dst_stride_ref_;
   DimArray dst_stride_;
+
+ protected:
   DimArray tile_;
   int tail_dim_;
   int tail_size_;

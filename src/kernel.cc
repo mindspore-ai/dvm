@@ -1598,8 +1598,331 @@ void VectorKernel::Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tr
   bb.Export(objects_);
 }
 
+void VectorSchedule::SpaceInit() {
+  space_records_.clear();
+  for (auto op : kernel_->objects_) {
+    if (auto ndd = op->Ndd()) {
+      space_records_.push_back({0, ndd});
+    }
+    if (op->IsSimd() && NDObject::meta_.dim_changed[op->obj_id_]) {
+      auto &r = space_records_.emplace_back();
+      r.bcast_mask = SpaceRecord::OP_MASK;
+      r.change_op = op;
+    }
+  }
+}
+
+void VectorSchedule::SpaceSplit(int dim, int64_t npart, int64_t nfactor) {
+  ASSERT(npart > 0 && nfactor > 0);
+  auto &space = kernel_->DimSpace();
+  size_t space_size = space.size();
+  ASSERT(dim >= 0 && static_cast<size_t>(dim) < space_size);
+  for (auto &r : space_records_) {
+    if (!r.bcast_mask) {
+      auto &dims = r.ndd->dims;
+      size_t n = dims.size();
+      int64_t orig_dim = dims[dim];
+      dims.resize(n + 1);
+      for (size_t i = n; i > static_cast<size_t>(dim) + 1; --i) {
+        dims[i] = dims[i - 1];
+      }
+      if (orig_dim != 1) {
+        dims[dim] = nfactor;
+        dims[dim + 1] = npart;
+      } else {
+        dims[dim] = 1;
+        dims[dim + 1] = 1;
+      }
+    }
+  }
+  for (size_t i = 0; i < kernel_->static_ops_.size(); ++i) {
+    auto op =  kernel_->static_ops_[i];
+    DimArray &stride = i < kernel_->load_num_
+                           ? static_cast<NDViewLoad *>(op)->Stride()
+                           : static_cast<NDViewStore *>(op)->Stride();
+    if (stride.size() < space_size) stride.resize(space_size, 0);
+    int64_t orig_stride = stride[dim];
+    size_t n = stride.size();
+    stride.resize(n + 1);
+    for (size_t j = n; j > static_cast<size_t>(dim) + 1; --j) {
+      stride[j] = stride[j - 1];
+    }
+    stride[dim] = orig_stride;
+    stride[dim + 1] = orig_stride * nfactor;
+  }
+}
+
+void VectorSchedule::SpaceTrans(int dim1, int dim2) {
+  auto &space = kernel_->DimSpace();
+  ASSERT(dim1 >= 0 && static_cast<size_t>(dim1) < space.size());
+  ASSERT(dim2 >= 0 && static_cast<size_t>(dim2) < space.size());
+  for (auto &r : space_records_) {
+    if (!r.bcast_mask) {
+      std::swap(r.ndd->dims[dim1], r.ndd->dims[dim2]);
+    }
+  }
+  size_t nd_size = space.size();
+  for (size_t i = 0; i < kernel_->static_ops_.size(); ++i) {
+    auto op =  kernel_->static_ops_[i];
+    DimArray &stride = i < kernel_->load_num_
+                           ? static_cast<NDViewLoad *>(op)->Stride()
+                           : static_cast<NDViewStore *>(op)->Stride();
+    if (stride.size() < nd_size) stride.resize(nd_size, 0);
+    std::swap(stride[dim1], stride[dim2]);
+  }
+}
+
+void VectorSchedule::SaveSpace() {
+  for (auto &r : space_records_) {
+    if (!r.bcast_mask) {
+      auto &dims = r.ndd->dims;
+      for (size_t i = 0; i < dims.size(); ++i) {
+        if (dims[i] == 1) {
+          r.bcast_mask |= (1u << i);
+        }
+      }
+    }
+  }
+}
+
+void VectorSchedule::ApplySubSpace(const DimArray &offset, const DimArray &size) {
+  for (auto &info : space_records_) {
+    if (info.bcast_mask == SpaceRecord::OP_MASK) {
+      info.change_op->DimChanged();
+    } else {
+      auto &dims = info.ndd->dims;
+      for (size_t i = 0; i < dims.size(); ++i) {
+        dims[i] = (info.bcast_mask >> i) & 1ul ?  1 : size[i];
+      }
+    }
+  }
+  auto calc_offset = [&offset](const DimArray &stride) {
+    uint64_t off = 0;
+    for (size_t i = 0; i < stride.size(); ++i) {
+      off += offset[i] * stride[i];
+    }
+    return off;
+  };
+  for (size_t i = 0; i < kernel_->load_num_; ++i) {
+    auto op = static_cast<NDViewLoad *>(kernel_->static_ops_[i]);
+    ASSERT(op->obj_id_ == kViewLoad);
+    op->ViewUpdate(calc_offset(op->Stride()));
+  }
+  for (size_t i = kernel_->load_num_; i < kernel_->static_ops_.size(); ++i) {
+    auto op = static_cast<NDViewStore *>(kernel_->static_ops_[i]);
+    ASSERT(op->obj_id_ == kViewStore);
+    op->ViewUpdate(calc_offset(op->Stride()));
+  }
+}
+
+class VectorDupHelper {
+ public:
+  VectorDupHelper(VectorKernel *kernel, int dup_num, RelocAddr *relocs)
+      : kernel_(kernel), dup_num_(dup_num), dup_idx_(0), block_begin_(0), relocs_(relocs) {
+    uint64_t code_reserve = dup_num * kernel_->ReserveCodeSize();
+    encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve);
+  }
+
+  uint64_t Append(uint64_t core_limit) {
+    ASSERT(dup_idx_ < dup_num_);
+    dup_idx_++;
+    int op_index = 0;
+    for (auto op : kernel_->objects_) {
+      op->Clear(op_index++);
+    }
+    kernel_->PrepareTiling();
+    ASSERT(kernel_->tile_size_);
+    auto code_begin = encoder_.ProgData();
+    uint64_t code_reserve = kernel_->ReserveCodeSize();
+    auto code_end = kernel_->DoCodeGen(core_limit, code_begin, code_reserve);
+    uint64_t code_size = code_end - code_begin;
+    uint64_t block_dim = kernel_->CompactBlockDim(core_limit);
+    ASSERT(kernel_->visit_ == nullptr);
+    auto prog = encoder_.Append(Code::GenEntryV(kernel_->tile_num_, block_dim, code_size), code_size);
+    encoder_.AssignAiv(block_begin_, block_dim, prog);
+    block_begin_ += block_dim;
+    if (dup_idx_ < dup_num_) {
+      for (auto op : kernel_->static_ops_) {
+        auto &r = static_cast<NDAccess *>(op)->addr_;
+        auto bind = relocs_++;
+        bind->Update(r.reloc_);
+        kernel_->code_.BindOpFast(*bind, r);
+      }
+    }
+    return block_dim;
+  }
+
+  void Submit() {
+    ASSERT(dup_idx_ == dup_num_);
+    encoder_.Submit(block_begin_);
+  }
+
+ protected:
+  VectorKernel *kernel_;
+  PCodeEncoder encoder_;
+  int dup_num_;
+  int dup_idx_;
+  uint64_t block_begin_;
+  RelocAddr *relocs_;
+};
+
+int64_t TransGenHelper::FractalCodeGen() {
+  constexpr int64_t min_dim_limit = 6;
+  int h_idx = -1;
+  int64_t item_size = 0;
+  for (size_t i = 0; i < kernel_->load_num_; ++i) {
+    ASSERT(kernel_->static_ops_[i]->obj_id_ == kViewLoad);
+    auto load = static_cast<NDViewLoad *>(kernel_->static_ops_[i]);
+    auto &stride = load->Stride();
+    auto &dims = load->Ndd()->dims;
+    int64_t type_size = ITEM_SIZE[load->type_id_];
+    if (stride[0] != type_size && dims[0] >= min_dim_limit) {
+      if (h_idx == -1) {
+        if (type_size != 2 && type_size != 4) {
+          continue;
+        }
+        for (size_t j = 1; j < stride.size(); ++j) {
+          if (stride[j] == type_size) {
+            if (dims[j] >= min_dim_limit) {
+              h_idx = static_cast<int>(j);
+              item_size = type_size;
+              load->SetFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL);
+            }
+            break;
+          }
+        }
+      } else if (static_cast<size_t>(h_idx) < stride.size() && type_size == item_size && stride[h_idx] == type_size && dims[h_idx] >= min_dim_limit) {
+        load->SetFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL);
+      }
+    }
+  }
+  if (h_idx < 0) {
+    return -1;
+  }
+
+  class FractalDunGen {
+   public:
+    enum { W_FRACTAL = 16 };
+    FractalDunGen(TransGenHelper &gen, int h_idx, uint64_t item_size)
+        : gen_(gen), space_(gen.kernel_->DimSpace()), h_idx_(h_idx) {
+      h_fractal_ = item_size == 2 ? 16 : 8;
+      int64_t w_size = space_[0];
+      w_body_ = w_size / W_FRACTAL;
+      w_tail_ = w_size - w_body_ * W_FRACTAL;
+      int64_t h_size = space_[h_idx];
+      h_body_ = h_size / h_fractal_;
+      h_tail_ = h_size - h_body_ * h_fractal_;
+    }
+    void CodeGen() {
+      int64_t w_npart = w_body_;
+      int64_t h_npart = h_body_;
+      int dup_num;
+      if (h_tail_ && w_tail_) {
+        dup_num = h_body_ && w_body_ ? 4 : (h_body_ || w_body_ ? 2 : 1);
+        w_npart++;
+        h_npart++;
+      } else if (h_tail_) {
+        dup_num = h_body_ ? 2 : 1;
+        h_npart++;
+      } else if (w_tail_) {
+        dup_num = w_body_ ? 2 : 1;
+        w_npart++;
+      } else {
+        dup_num = 1;
+      }
+      gen_.SpaceInit();
+      gen_.SpaceSplit(0, w_npart, W_FRACTAL);
+      h_idx_ += 1;
+      gen_.SpaceTrans(1, h_idx_);
+      gen_.SpaceSplit(1, h_npart, h_fractal_);
+      gen_.SaveSpace();
+      part_total_ = h_npart * w_npart;
+      part_base_ = 1;
+      size_t w_part_dim = h_idx_ + 1;
+      offset_.resize(space_.size(), 0);
+      size_.resize(space_.size());
+      size_[2] = space_[2];
+      for (size_t i = 3; i < space_.size(); ++i) {
+        size_[i] = space_[i];
+        if (i != w_part_dim) {
+          part_base_ *= space_[i];
+        }
+      }
+      free_core_ = g_system.CoreNum();
+      VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 3));
+      if (w_tail_ && h_body_) {
+        GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
+      }
+      if (h_tail_ && w_body_) {
+        GenDup(helper, h_body_, 0, W_FRACTAL, h_tail_, 1, w_body_);
+      }
+      if (w_tail_ && h_tail_) {
+        GenDup(helper, h_body_, w_body_, w_tail_, h_tail_, 1, 1);
+      }
+      if (w_body_ && h_body_) {
+        GenDup(helper, 0, 0, W_FRACTAL, h_fractal_, h_body_, w_body_);
+      }
+      helper.Submit();
+    }
+
+    void GenDup(VectorDupHelper &helper, int64_t h_part_off, int64_t w_part_off, int64_t w_fac_size, int64_t h_fac_size,
+                int64_t h_part_size, int64_t w_part_size) {
+      constexpr int w_factor_dim = 0;
+      constexpr int h_factor_dim = 1;
+      constexpr int h_part_dim = 2;
+      int w_part_dim = h_idx_ + 1;
+      offset_[h_part_dim] = h_part_off;
+      offset_[w_part_dim] = w_part_off;
+      size_[w_factor_dim] = w_fac_size;
+      size_[h_factor_dim] = h_fac_size;
+      size_[h_part_dim] = h_part_size;
+      size_[w_part_dim] = w_part_size;
+      gen_.ApplySubSpace(offset_, size_);
+      uint64_t part_num = h_part_size * w_part_size;
+      uint64_t core_num = std::min(CeilDiv(part_num * free_core_, part_total_), part_base_ * part_num);
+      free_core_ -= helper.Append(core_num);
+      part_total_ -= part_num;
+    };
+
+    TransGenHelper &gen_;
+    const DimArray &space_;
+    int64_t h_fractal_;
+    int64_t w_body_;
+    int64_t w_tail_;
+    int64_t h_body_;
+    int64_t h_tail_;
+    DimArray offset_;
+    DimArray size_;
+    uint64_t part_total_;
+    uint64_t part_base_;
+    uint64_t free_core_;
+    int h_idx_;
+  };
+
+  int64_t result = 0;
+  for (auto op : kernel_->objects_) {
+    if ((op->obj_id_ == ObjectType::kBroadcastTo || op->obj_id_ == ObjectType::kReduce) &&
+        op->lhs_->nd_[0] != op->nd_[0]) {
+      result = -1;
+      break;
+    }
+  }
+  if (!result) {
+    FractalDunGen gen(*this, h_idx, item_size);
+    gen.CodeGen();
+  }
+  for (size_t i = 0; i < kernel_->load_num_; ++i) {
+    auto op = kernel_->static_ops_[i];
+    if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL)) {
+      op->flags_ &= ~OBJ_FLAG_VIEW_LOAD_FRACTAL;
+    }
+  }
+  return result;
+}
+
 VKernelS::~VKernelS() {
   delete stage_kernel_;
+  delete trans_gen_;
   for (auto op : build_ops_) {
     delete op;
   }
@@ -1611,7 +1934,17 @@ uint64_t VKernelS::CodeGen() {
     delete stage_kernel_;
     return BrokerCodeGen(&stage_kernel_);
   }
-  return DoCodeGen(g_system.CoreNum());
+  PrepareTiling();
+  if (unlikely(!tile_size_)) {
+    ProcessIdle();
+    return 0;
+  }
+  if (flags_ & KernelFlag::kOptFractalTrans) {
+    if (auto ret = GetTransGenLazy()->FractalCodeGen(); ret != -1) {
+      return ret;
+    }
+  }
+  return DoCodeGenInner(g_system.CoreNum());
 }
 
 void VKernelS::Append(NDObject *obj) { build_ops_.push_back(obj); }

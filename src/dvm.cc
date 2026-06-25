@@ -941,17 +941,16 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
   VKernel *kernel;
   switch (type) {
     case KernelType::kVector: {
-      bool dynamic = flags & KernelFlag::kDynamic;
       if (flags & KernelFlag::kSpeculate) {
         if (flags & KernelFlag::kPrivate1) {
           kernel = new SpecVecKernel(flags);
-        } else if (dynamic) {
+        } else if (flags & KernelFlag::kDynamic) {
           kernel = new SpecVector<true>();
         } else {
           kernel = new SpecVector<false>();
         }
       } else {
-        kernel = dynamic ? new VKernelD() : new VKernelS();
+        kernel = new VKernelS(flags);
       }
       break;
     }

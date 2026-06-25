@@ -273,6 +273,47 @@ class VectorKernel : public VKernel {
   friend class CodeGenHelper;
 };
 
+class VectorSchedule {
+ public:
+  VectorSchedule(VectorKernel *kernel) : kernel_(kernel) {}
+  void SpaceInit();
+  void SpaceSplit(int dim, int64_t npart, int64_t nfactor);
+  void SpaceTrans(int dim1, int dim2);
+  void SaveSpace();
+  void ApplySubSpace(const DimArray &offset, const DimArray &size);
+
+  struct SpaceRecord {
+    uint32_t bcast_mask;
+    union {
+      NDSpaceData *ndd;
+      NDObject *change_op;
+    };
+    static constexpr uint32_t OP_MASK = 0xffffffffu;
+  };
+  std::vector<SpaceRecord> space_records_;
+  VectorKernel *kernel_;
+};
+
+class TransGenHelper : public VectorSchedule {
+ public:
+  TransGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
+  ~TransGenHelper() { delete []reloc_array_; }
+
+  int64_t FractalCodeGen();
+  RelocAddr *ReserveReloc(size_t size) {
+    if (size > reloc_size_) {
+      delete []reloc_array_;
+      reloc_array_ = new RelocAddr[size];
+      reloc_size_ = size;
+    }
+    return reloc_array_;
+  }
+
+ protected:
+  size_t reloc_size_{0};
+  RelocAddr *reloc_array_{nullptr};
+};
+
 class VKernelS : public VectorKernel {
  public:
   VKernelS(uint32_t flags = 0) : VectorKernel(KernelType::kVector, flags) {}
@@ -305,12 +346,20 @@ class VKernelS : public VectorKernel {
     objects_.clear();
   }
 
+  TransGenHelper *GetTransGenLazy() {
+    if (trans_gen_ == nullptr) {
+      trans_gen_ = new TransGenHelper(this);
+    }
+    return trans_gen_;
+  }
+
   std::vector<NDObject *> build_ops_;
 
  protected:
   int broker_num_{-1};
   int last_broker_;
   VKernel *stage_kernel_{nullptr};
+  TransGenHelper *trans_gen_{nullptr};
 };
 
 class VKernelD : public VKernelS {  // TODO: remove VKernelD

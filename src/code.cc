@@ -365,14 +365,14 @@ void DumpLoadView(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("offset", op.offset, oss);
 }
 
-void _DumpLoadViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpLoadViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vViewLoadX op;
   vViewLoadX::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << op.iter_size;
+  oss << "view_load_x." << op.type_size << '.' << op.iter_size;
   std::vector<uint64_t> dst_strides, src_strides;
   bcodeptr_t var_pc = dump_info.insn + vViewLoadX::VAR_OFFSET;
   if (op.loop_depth > 0) {
-    oss << 'x';
+    oss << '.';
     for (uint64_t i = 0; i < op.loop_depth; ++i) {
       uint64_t loop_size, dst_stride, src_stride;
       vViewLoad::DecodeLoop(*var_pc++, loop_size, dst_stride, src_stride);
@@ -410,16 +410,6 @@ void _DumpLoadViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tail_size", op.tail_size, oss);
   oss << ", ";
   DumpVal("offset", op.offset, oss);
-}
-
-void DumpLoadViewX_B16(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "view_load_x.b16.";
-  _DumpLoadViewX(dump_info, oss);
-}
-
-void DumpLoadViewX_B32(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "view_load_x.b32.";
-  _DumpLoadViewX(dump_info, oss);
 }
 
 void DumpLoadViewT(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -516,14 +506,14 @@ void DumpStoreView(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("offset", op.offset, oss);
 }
 
-void _DumpStoreViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
+void DumpStoreViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
   vViewStoreX op;
   vViewStoreX::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << op.iter_size;
+  oss << "view_store_x." << op.type_size << '.' << op.iter_size;
   std::vector<uint64_t> src_strides, dst_strides;
   bcodeptr_t var_pc = dump_info.insn + vViewStoreX::VAR_OFFSET;
   if (op.loop_depth > 0) {
-    oss << 'x';
+    oss << '.';
     for (uint64_t i = 0; i < op.loop_depth; ++i) {
       uint64_t loop_size, dst_stride, src_stride;
       vViewStore::DecodeLoop(*var_pc++, loop_size, dst_stride, src_stride);
@@ -561,16 +551,6 @@ void _DumpStoreViewX(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("tail_size", op.tail_size, oss);
   oss << ", ";
   DumpVal("offset", op.offset, oss);
-}
-
-void DumpStoreViewX_B16(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "view_store_x.b16.";
-  _DumpStoreViewX(dump_info, oss);
-}
-
-void DumpStoreViewX_B32(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "view_store_x.b32.";
-  _DumpStoreViewX(dump_info, oss);
 }
 
 void DumpExtract(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -878,8 +858,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_LOAD_GATHER_B16, &DumpGatherLoadB16},
   {V_LOAD_GATHER_B32, &DumpGatherLoadB32},
   {V_LOAD_VIEW, &DumpLoadView},
-  {V_LOAD_VIEW_X_B32, &DumpLoadViewX_B32},
-  {V_LOAD_VIEW_X_B16, &DumpLoadViewX_B16},
+  {V_LOAD_VIEW_X, &DumpLoadViewX},
   {V_LOAD_VIEW_TRANS, &DumpLoadViewT},
   {V_SLOAD, &DumpSLoad},
   {V_LOAD_CC, &DumpCLoad},
@@ -895,8 +874,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_STORE_AG, &DumpStoreAG},
   {V_STORE_RS, &DumpStoreRS},
   {V_STORE_VIEW, &DumpStoreView},
-  {V_STORE_VIEW_X_B32, &DumpStoreViewX_B32},
-  {V_STORE_VIEW_X_B16, &DumpStoreViewX_B16},
+  {V_STORE_VIEW_X, &DumpStoreViewX},
   {V_PEER_STORE, &DumpPeerDMA<name_peer_store>},
   {V_PEER_STORE_MIX, &DumpPeerDMA<name_peer_store_mix>},
   {V_SLICE_STORE, &DumpSliceStore},

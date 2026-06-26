@@ -46,8 +46,7 @@ enum vAccInsnID {
   V_LOAD_GATHER_B16, // [c310]
   V_LOAD_GATHER_B32, // [c310]
   V_LOAD_VIEW,
-  V_LOAD_VIEW_X_B32,
-  V_LOAD_VIEW_X_B16,
+  V_LOAD_VIEW_X,
   V_LOAD_VIEW_TRANS, // [c220]
   V_SLOAD,
   V_LOAD_CC, // [c310]
@@ -60,8 +59,7 @@ enum vAccInsnID {
   V_STORE_ATOMIC,
   V_STORE_COND,
   V_STORE_VIEW,
-  V_STORE_VIEW_X_B32, // [c220]
-  V_STORE_VIEW_X_B16, // [c220]
+  V_STORE_VIEW_X, // [c220]
   V_SSTORE,
   V_SLICE_STORE,
   V_STORE_AG,  // [c220] For AllGather
@@ -1240,9 +1238,10 @@ struct vViewLoadX {
   uint64_t tail_size;
   uint64_t loop_depth;
   uint64_t tile_depth;
+  uint64_t type_size;
   // pc[0]: iter_stride(32)
   // pc[1]: tail_size(16) << 48 | iter_size(16) << 32 | offset(32)
-  // pc[2]: ws_size(16) << 48 | reserved(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xd(18) << 18 | ws(18)
+  // pc[2]: ws_size(16) << 48 | type_size(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xd(18) << 18 | ws(18)
   // pc[3]: from(64)
   // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
   // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
@@ -1257,6 +1256,7 @@ struct vViewLoadX {
     op.xd = (data2 >> 18) & 0x3fffful;
     op.tile_depth = (data2 >> 36) & 0xful;
     op.loop_depth = (data2 >> 40) & 0xful;
+    op.type_size = (data2 >> 44) & 0xful;
     op.ws_size = data2 >> 48;
     op.from = pc[3];
   }
@@ -1264,7 +1264,7 @@ struct vViewLoadX {
     uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
     pc[0] = vMakeAccHead(id, op.iter_stride, size);
     pc[1] = op.tail_size << 48 | op.iter_size << 32 | op.offset;
-    pc[2] = op.ws_size << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xd << 18 | op.ws;
+    pc[2] = op.ws_size << 48 | op.type_size << 44 | op.loop_depth << 40 | op.tile_depth << 36 | op.xd << 18 | op.ws;
     pc[3] = op.from;
     return size;
   }
@@ -1396,9 +1396,10 @@ struct vViewStoreX {
   uint64_t tail_size;
   uint64_t loop_depth;
   uint64_t tile_depth;
+  uint64_t type_size;
   // pc[0]: iter_stride(32)
   // pc[1]: tail_size(16) << 48 | iter_size(16) << 32 | offset(32)
-  // pc[2]: ws_size(16) << 48 | reserved(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xn(18) << 18 | ws(18)
+  // pc[2]: ws_size(16) << 48 | type_size(4) << 44 | loop_depth(4) << 40 | tile_depth(4) << 36 | xn(18) << 18 | ws(18)
   // pc[3]: to(64)
   // pc[VAR::loop_depth]: loop_size(16) << 48 | src_stride(16) << 32 | dst_stride(32)  [vViewStore format]
   // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
@@ -1413,6 +1414,7 @@ struct vViewStoreX {
     op.xn = (data2 >> 18) & 0x3fffful;
     op.tile_depth = (data2 >> 36) & 0xful;
     op.loop_depth = (data2 >> 40) & 0xful;
+    op.type_size = (data2 >> 44) & 0xful;
     op.ws_size = data2 >> 48;
     op.to = pc[3];
   }
@@ -1420,7 +1422,7 @@ struct vViewStoreX {
     uint64_t size = VAR_OFFSET + op.loop_depth + op.tile_depth;
     pc[0] = vMakeAccHead(id, op.iter_stride, size);
     pc[1] = op.tail_size << 48 | op.iter_size << 32 | op.offset;
-    pc[2] = op.ws_size << 48 | op.loop_depth << 40 | op.tile_depth << 36 | op.xn << 18 | op.ws;
+    pc[2] = op.ws_size << 48 | op.type_size << 44 | op.loop_depth << 40 | op.tile_depth << 36 | op.xn << 18 | op.ws;
     pc[3] = op.to;
     return size;
   }

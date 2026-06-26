@@ -1090,6 +1090,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
     op.xd = xbuf_;
     op.from = addr_.data;
     op.offset = offset_bytes_;
+    op.type_size = item_size;
     auto last_store = k.static_ops_.back();
     ASSERT(last_store->IsStore());
     op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
@@ -1103,7 +1104,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       op.tail_size = op.tail_size / ndd_[tail_dim_] * tail_size_;
     }
     uint64_t *var_insn = insn_ + vViewLoadX::VAR_OFFSET;
-    uint64_t dst_stride = ndd_.lead_stride();
+    uint64_t dst_stride = ndd_.lead_stride() * item_size;
     for (int i = 1; i < tile_start; ++i, ++var_insn) {
       *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);
       dst_stride *= fold_dim[i];
@@ -1118,7 +1119,7 @@ uint64_t NDViewLoad::Emit(VectorKernel &k) {
       space *= fold_dim[i];
     }
     addr_.Update(insn_ + vViewLoadX::RELOC_OFFSET);
-    return vViewLoadX::Encode(insn_, item_size == 2 ? V_LOAD_VIEW_X_B16 : V_LOAD_VIEW_X_B32, op);
+    return vViewLoadX::Encode(insn_, V_LOAD_VIEW_X, op);
   }
 }
 
@@ -1304,6 +1305,7 @@ uint64_t NDViewStore::Emit(VectorKernel &k) {
     op.xn = lhs_->xbuf_;
     op.to = addr_.data;
     op.offset = offset_bytes_;
+    op.type_size = item_size;
     auto last_store = k.static_ops_.back();
     ASSERT(last_store->IsStore());
     op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
@@ -1332,7 +1334,7 @@ uint64_t NDViewStore::Emit(VectorKernel &k) {
       space *= fold_dim[i];
     }
     addr_.Update(insn_ + vViewStoreX::RELOC_OFFSET);
-    return vViewStoreX::Encode(insn_, item_size == 2 ? V_STORE_VIEW_X_B16 : V_STORE_VIEW_X_B32, op);
+    return vViewStoreX::Encode(insn_, V_STORE_VIEW_X, op);
   }
   vViewStore op;
   uint64_t *var_insn = insn_ + vViewStore::VAR_OFFSET;

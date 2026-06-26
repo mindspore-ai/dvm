@@ -1384,7 +1384,6 @@ __aicore_inline__ void ViewLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-template <typename T>
 __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewLoadX op;
   vViewLoadX::Decode(pc, head, op);
@@ -1406,8 +1405,8 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     return;
   }
   __gm__ uint8_t *src = (__gm__ uint8_t *)(op.from + tile_offset);
-  __ubuf__ T *dst = (__ubuf__ T *)(op.xd);
-  uint64_t loop0_stride = ((op.iter_stride / sizeof(T)) << 20) | 1;
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xd);
+  uint64_t loop0_stride = (op.iter_stride << 20) | 1;
   if (likely(op.loop_depth <= 4)) {
     uint32_t loop_size[4] = {1, 1, 1, 1};
     uint64_t loop_stride[4] = {0, 0, 0, 0};
@@ -1418,7 +1417,7 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         size = op.tail_size;
       }
       loop_size[idx] = static_cast<uint32_t>(size);
-      loop_stride[idx] = ((src_stride / sizeof(T)) << 20) | (dst_stride & 0xfffff);
+      loop_stride[idx] = (src_stride << 20) | (dst_stride & 0xfffff);
     }
     nddma(dst, src, static_cast<uint32_t>(op.iter_size), loop_size[0], loop_size[1], loop_size[2], loop_size[3],
           loop0_stride, loop_stride[0], loop_stride[1], loop_stride[2], loop_stride[3]);
@@ -1902,8 +1901,7 @@ DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_LOAD_GATHER_B16, GatherLoad<uint16_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_GATHER_B32, GatherLoad<uint32_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
-DEF_DISP_LOAD(V_LOAD_VIEW_X_B32, ViewLoadX<uint32_t>(pc, head, tile))
-DEF_DISP_LOAD(V_LOAD_VIEW_X_B16, ViewLoadX<uint16_t>(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_VIEW_X, ViewLoadX(pc, head, tile))
 DEF_DISP_LOAD(V_SLOAD, SLoad(pc, head, tile))
 DEF_DISP_LOAD(V_PINGPONG_LOAD, PingPongLoad(pc, head, tile))
 

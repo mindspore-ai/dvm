@@ -1361,7 +1361,6 @@ __aicore_inline__ void ViewLoadXCustomGather(__ubuf__ T *dst, __ubuf__ T *ws, __
   }
 }
 
-template <typename T>
 __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewLoadX op;
   vViewLoadX::Decode(pc, head, op);
@@ -1383,12 +1382,12 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     return;
   }
   __gm__ uint8_t *src = (__gm__ uint8_t *)(op.from + tile_offset);
-  __ubuf__ T *dst = (__ubuf__ T *)(op.xd);
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xd);
   uint32_t coord[6] = {0};
   uint64_t idx = 0;
   bool pingpong = false;
   set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-  uint64_t item_stride = op.iter_stride / sizeof(T);
+  uint64_t item_stride = op.iter_stride / op.type_size;
   constexpr uint64_t custom_pattern_mask = (1ul << 3) | (1ul << 5) | (1ul << 6) | (1ul << 7);
   bool custom_gather = item_stride < 8 && ((1ul << item_stride) & custom_pattern_mask);
   if (custom_gather) {
@@ -1398,31 +1397,52 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   do {
     if (op.iter_stride > 0) {
       for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
-        __ubuf__ T *ws;
+        __ubuf__ uint8_t *ws;
         if (pingpong) {
           pingpong = false;
           set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
           wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
-          ws = (__ubuf__ T *)(op.ws);
+          ws = (__ubuf__ uint8_t *)(op.ws);
         } else {
           pingpong = true;
           set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
           wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-          ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
+          ws = (__ubuf__ uint8_t *)(op.ws + op.ws_size * 32);
         }
         uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
-        if (custom_gather) {
-          ViewLoadXCustomGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride);
-        } else if (item_stride == 2 || item_stride == 4) {
-          uint8_t pattern_mode = item_stride == 2 ? 1 : 3;
-          ViewLoadXFixedGather(dst, ws, src, iter_offset, iter_size, op.iter_stride, item_stride, pattern_mode);
+        if (op.type_size == 2) {
+          if (custom_gather) {
+            ViewLoadXCustomGather((__ubuf__ uint16_t *)dst, (__ubuf__ uint16_t *)ws, src, iter_offset, iter_size,
+                                  op.iter_stride, item_stride);
+          } else if (item_stride == 2 || item_stride == 4) {
+            uint8_t pattern_mode = item_stride == 2 ? 1 : 3;
+            ViewLoadXFixedGather((__ubuf__ uint16_t *)dst, (__ubuf__ uint16_t *)ws, src, iter_offset, iter_size,
+                                 op.iter_stride, item_stride, pattern_mode);
+          } else {
+            ViewLoadXNormal((__ubuf__ uint16_t *)dst, (__ubuf__ uint16_t *)ws, src, iter_offset, iter_size,
+                           op.iter_stride);
+          }
         } else {
-          ViewLoadXNormal(dst, ws, src, iter_offset, iter_size, op.iter_stride);
+          if (custom_gather) {
+            ViewLoadXCustomGather((__ubuf__ uint32_t *)dst, (__ubuf__ uint32_t *)ws, src, iter_offset, iter_size,
+                                  op.iter_stride, item_stride);
+          } else if (item_stride == 2 || item_stride == 4) {
+            uint8_t pattern_mode = item_stride == 2 ? 1 : 3;
+            ViewLoadXFixedGather((__ubuf__ uint32_t *)dst, (__ubuf__ uint32_t *)ws, src, iter_offset, iter_size,
+                                 op.iter_stride, item_stride, pattern_mode);
+          } else {
+            ViewLoadXNormal((__ubuf__ uint32_t *)dst, (__ubuf__ uint32_t *)ws, src, iter_offset, iter_size,
+                           op.iter_stride);
+          }
         }
       }
     } else {
       set_vector_mask(0, op.iter_size);
-      vector_dup(dst, *(__gm__ T *)src, 1, 1, 1, 8, 8);
+      if (op.type_size == 2) {
+        vector_dup((__ubuf__ uint16_t *)dst, *(__gm__ uint16_t *)src, 1, 1, 1, 8, 8);
+      } else {
+        vector_dup((__ubuf__ uint32_t *)dst, *(__gm__ uint32_t *)src, 1, 1, 1, 8, 8);
+      }
     }
     for (idx = 0; idx < op.loop_depth; ++idx) {
       uint64_t loop_size, dst_stride, src_stride;
@@ -1667,7 +1687,6 @@ __aicore_inline__ void ViewStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-template <typename T>
 __aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vViewStoreX op;
   vViewStoreX::Decode(pc, head, op);
@@ -1692,32 +1711,40 @@ __aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   pipe_barrier(PIPE_V);
   do {
     for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
-      __ubuf__ T *ws;
+      __ubuf__ uint8_t *ws;
       if (pingpong) {
         pingpong = false;
         set_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
         wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID6);
-        ws = (__ubuf__ T *)(op.ws);
+        ws = (__ubuf__ uint8_t *)(op.ws);
       } else {
         pingpong = true;
-        set_flag(PIPE_MTE3, PIPE_V,EVENT_ID6);
+        set_flag(PIPE_MTE3, PIPE_V, EVENT_ID6);
         wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
-        ws = (__ubuf__ T *)(op.ws + op.ws_size * 32);
+        ws = (__ubuf__ uint8_t *)(op.ws + op.ws_size * 32);
       }
       uint64_t chunk_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
       uint64_t repeat = (chunk_size + 7) >> 3;
-      __ubuf__ T *xd = ws;
-      __ubuf__ T *xn = (__ubuf__ T *)src + iter_offset;
+      __ubuf__ uint8_t *xd = ws;
+      __ubuf__ uint8_t *xn = src + iter_offset * op.type_size;
       for (; repeat > 254; repeat -= 254) {
-        vbrcb(xd, xn, 1, VBRCB_NUM, 254);
-        xd += 254 * VBRCB_NUM * (32 / sizeof(T));
-        xn += 254 * VBRCB_NUM;
+        if (op.type_size == 2) {
+          vbrcb((__ubuf__ uint16_t *)xd, (__ubuf__ uint16_t *)xn, 1, VBRCB_NUM, 254);
+        } else {
+          vbrcb((__ubuf__ uint32_t *)xd, (__ubuf__ uint32_t *)xn, 1, VBRCB_NUM, 254);
+        }
+        xd += 254 * VBRCB_NUM * 32;
+        xn += 254 * VBRCB_NUM * op.type_size;
       }
-      vbrcb(xd, xn, 1, VBRCB_NUM, repeat);
+      if (op.type_size == 2) {
+        vbrcb((__ubuf__ uint16_t *)xd, (__ubuf__ uint16_t *)xn, 1, VBRCB_NUM, repeat);
+      } else {
+        vbrcb((__ubuf__ uint32_t *)xd, (__ubuf__ uint32_t *)xn, 1, VBRCB_NUM, repeat);
+      }
       set_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
       wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
       copy_ubuf_to_gm_align_b8(dst + iter_offset * op.iter_stride, (__ubuf__ uint8_t *)ws, 0, chunk_size,
-                                sizeof(T), 0, 0, 0, op.iter_stride - sizeof(T));
+                                op.type_size, 0, 0, 0, op.iter_stride - op.type_size);
       set_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
       wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
     }
@@ -2174,8 +2201,7 @@ DEF_DISP_VISIT(V_VISIT_PIPE_WAIT, VisitPipeWait);
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
-DEF_DISP_LOAD(V_LOAD_VIEW_X_B32, ViewLoadX<uint32_t>(pc, head, tile))
-DEF_DISP_LOAD(V_LOAD_VIEW_X_B16, ViewLoadX<uint16_t>(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_VIEW_X, ViewLoadX(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_TRANS, ViewLoadT(pc, head, tile))
 DEF_DISP_LOAD(V_SLOAD, SLoad(pc, head, tile))
 DEF_DISP_LOAD(V_MULTI_LOAD, MultiLoad(pc, head, tile))
@@ -2192,8 +2218,7 @@ DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
 DEF_DISP_STORE(V_STORE_AG, StoreAG(pc, head, tile))
 DEF_DISP_STORE(V_STORE_RS, StoreRS(pc, head, tile))
 DEF_DISP_STORE(V_STORE_VIEW, ViewStore(pc, head, tile))
-DEF_DISP_STORE(V_STORE_VIEW_X_B32, ViewStoreX<uint32_t>(pc, head, tile))
-DEF_DISP_STORE(V_STORE_VIEW_X_B16, ViewStoreX<uint16_t>(pc, head, tile))
+DEF_DISP_STORE(V_STORE_VIEW_X, ViewStoreX(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE, PeerStore<false>(pc, head, tile))
 DEF_DISP_STORE(V_PEER_STORE_MIX, PeerStore<true>(pc, head, tile))
 

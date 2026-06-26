@@ -194,6 +194,8 @@ enum vSimdInsnID {
   V_LOGICAL_NOT_BOOL, // [c310]
   V_LOGICAL_AND_BOOL, // [c310]
   V_LOGICAL_OR_BOOL, // [c310]
+  V_CMP_BOOL, // [c310]
+  V_CMPS_BOOL, // [c310]
   V_NONE,
 };
 
@@ -556,20 +558,20 @@ struct vCompare {
   uint64_t count;
   uint64_t ws;
   // pc[0]: op(4) << 18 | xn(18)
-  // pc[1]: count(15) << 49 | ws(13) << 36 | xd(18) << 18 | xm(18)
+  // pc[1]: count(16) << 48 | ws(13) << 35 | c_xd(13) << 18 | xm(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCompare &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     op.type = (head >> (V_HEAD_EXT_OFFSET + 18)) & 0xful;
     uint64_t data = pc[1];
     op.xm = data & V_X_MASK;
-    op.xd = (data >> 18) & V_X_MASK;
-    op.ws = vDeCompactX(vGetBitRange(data, 36, 13));
-    op.count = data >> 49;
+    op.xd = vDeCompactX(vGetBitRange(data, 18, 13));
+    op.ws = vDeCompactX(vGetBitRange(data, 35, 13));
+    op.count = data >> 48;
   }
   __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vCompare &op) {
     uint64_t size = 2;
     pc[0] = vMakeSimdHead(id, op.type << 18 | op.xn, size);
-    pc[1] = op.count << 49 | vCompactX(op.ws) << 36 | op.xd << 18 | op.xm;
+    pc[1] = op.count << 48 | vCompactX(op.ws) << 35 | vCompactX(op.xd) << 18 | op.xm;
     return size;
   }
 };

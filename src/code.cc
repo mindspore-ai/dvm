@@ -989,6 +989,8 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_LOGICAL_NOT_BOOL, {&DumpUnary, "LogicalNot", "bool"}},
   {V_LOGICAL_AND_BOOL, {&DumpBinary, "LogicalAnd", "bool"}},
   {V_LOGICAL_OR_BOOL, {&DumpBinary, "LogicalOr", "bool"}},
+  {V_CMP_BOOL, {&DumpCompare, "Compare", "bool"}},
+  {V_CMPS_BOOL, {&DumpCompareS<bool>, "CompareS", "bool"}},
   {V_POW, {&DumpBinaryWS, "Pow", "fp32"}},
   {V_CMP, {&DumpCompare, "Compare", "fp32"}},
   {V_CMP_FP16, {&DumpCompare, "Compare", "fp16"}},

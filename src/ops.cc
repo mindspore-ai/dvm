@@ -46,12 +46,12 @@ static const InsnIdTable unary_id_list[kUnaryTypeEnd] = {
 
 static const InsnIdTable binary_id_list[] = {
   // must keep consistent order with BinaryType
-  {"Equal", {V_NONE, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"NotEqual", {V_NONE, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"Greater", {V_NONE, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"GreaterEqual", {V_NONE, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"Less", {V_NONE, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
-  {"LessEqual", {V_NONE, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
+  {"Equal", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
+  {"NotEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
+  {"Greater", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
+  {"GreaterEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
+  {"Less", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
+  {"LessEqual", {V_CMP_BOOL, V_CMP_FP16, V_CMP_BF16, V_CMP, V_CMP_INT32}},
   {"Add", {V_NONE, V_ADD_FP16, V_ADD_BF16, V_ADD, V_ADD_INT32}},
   {"Sub", {V_NONE, V_SUB_FP16, V_SUB_BF16, V_SUB, V_SUB_INT32}},
   {"Mul", {V_NONE, V_MUL_FP16, V_MUL_BF16, V_MUL, V_MUL_INT32}},
@@ -64,12 +64,12 @@ static const InsnIdTable binary_id_list[] = {
 
 static const InsnIdTable binarys_id_list[] = {
   // must keep consistent order with BinarySOpType
-  {"Equal", {V_NONE, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"NotEqual", {V_NONE, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"Greater", {V_NONE, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"GreaterEqual", {V_NONE, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"Less", {V_NONE, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
-  {"LessEqual", {V_NONE, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
+  {"Equal", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
+  {"NotEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
+  {"Greater", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
+  {"GreaterEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
+  {"Less", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
+  {"LessEqual", {V_CMPS_BOOL, V_CMPS_FP16, V_CMPS_BF16, V_CMPS, V_CMPS_INT32}},
   {"Add", {V_NONE, V_ADDS_FP16, V_ADDS_BF16, V_ADDS, V_ADDS_INT32}},
   {"Mul", {V_NONE, V_MULS_FP16, V_MULS_BF16, V_MULS, V_MULS_INT32}},
   {"Div", {V_NONE, V_DIVS_FP16, V_NONE, V_DIVS, V_NONE}},

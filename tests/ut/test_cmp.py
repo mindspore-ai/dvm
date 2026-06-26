@@ -53,7 +53,7 @@ def test_cmp_s_r(type, op, func):
     a = np.random.randint(1024, size=(1024, 32)).astype(type)
     if type != np.int32 and type != np.bool_:
         a[0] = np.nan
-    b = 30
+    b = True if type == np.bool_ else 30
     x = t.load(a)
     x = t.copy(x)
     z = op(t, x, b)

@@ -1475,8 +1475,8 @@ __aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint64_t pong_va[16];
   uint64_t conv_va[16];
   for (uint64_t i = 0; i < 16; ++i) {
-    ping_va[i] = ping_ws + 32 * i;
-    pong_va[i] = pong_ws + 32 * i;
+    ping_va[i] = ping_ws + op.ws_size * 32 * i;
+    pong_va[i] = pong_ws + op.ws_size * 32 * i;
   }
   if (op.item_size == 2) {
     for (uint64_t i = 0; i < 16; ++i) {
@@ -1502,36 +1502,51 @@ __aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   do {
     for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
       uint64_t iter_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
-      uint64_t conv_stride = iter_size > 1 ? 16 : 0;  // repeat 1 from VA[n] + stride
+      uint64_t conv_stride = iter_size > 1 ? 1 : 0;  // repeat 1 is from VA[n] + stride specially
+      uint64_t conv_dst_stride = iter_size > 1 ? 16 : 0;
       __gm__ uint8_t *iter_src = src + iter_offset * op.iter_stride;
       if (pingpong) {
         pingpong = false;
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
-        for (uint64_t i = 0; i < iter_size; ++i) {
-          copy_gm_to_ubuf_align_b8((__ubuf__ void *)(ping_ws + 512 * i), iter_src, 0, op.w_fractal, op.h_fractal * op.item_size, 0, 0, op.w_gap, 0);
-          iter_src += op.iter_stride;
+        if (op.h_fractal * op.item_size == op.iter_stride) {
+          copy_gm_to_ubuf_align_b8((__ubuf__ void *)ping_ws, iter_src, 0, op.w_fractal,
+                                   op.h_fractal * op.item_size * iter_size, 0, 0,
+                                   op.w_gap - op.iter_stride * (iter_size - 1), op.ws_size - iter_size);
+        } else {
+          for (uint64_t i = 0; i < iter_size; ++i) {
+            copy_gm_to_ubuf_align_b8((__ubuf__ void *)(ping_ws + 32 * i), iter_src, 0, op.w_fractal,
+                                     op.h_fractal * op.item_size, 0, 0, op.w_gap, op.ws_size - 1);
+            iter_src += op.iter_stride;
+          }
         }
         set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
         wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
         if (op.item_size == 2) {
-          scatter_vnchwconv_b16(VA0, VA2, iter_size, conv_stride, conv_stride);
+          scatter_vnchwconv_b16(VA0, VA2, iter_size, conv_dst_stride, conv_stride);
         } else {
-          scatter_vnchwconv_b32(VA0, VA2, iter_size, conv_stride, conv_stride);
+          scatter_vnchwconv_b32(VA0, VA2, iter_size, conv_dst_stride, conv_stride);
         }
         set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
       } else {
         pingpong = true;
         wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
-        for (uint64_t i = 0; i < iter_size; ++i) {
-          copy_gm_to_ubuf_align_b8((__ubuf__ void *)(pong_ws + 512 * i), iter_src, 0, op.w_fractal, op.h_fractal * op.item_size, 0, 0, op.w_gap, 0);
-          iter_src += op.iter_stride;
+        if (op.h_fractal * op.item_size == op.iter_stride) {
+          copy_gm_to_ubuf_align_b8((__ubuf__ void *)pong_ws, iter_src, 0, op.w_fractal,
+                                   op.h_fractal * op.item_size * iter_size, 0, 0,
+                                   op.w_gap - op.iter_stride * (iter_size - 1), op.ws_size - iter_size);
+        } else {
+          for (uint64_t i = 0; i < iter_size; ++i) {
+            copy_gm_to_ubuf_align_b8((__ubuf__ void *)(pong_ws + 32 * i), iter_src, 0, op.w_fractal,
+                                     op.h_fractal * op.item_size, 0, 0, op.w_gap, op.ws_size - 1);
+            iter_src += op.iter_stride;
+          }
         }
         set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
         wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
         if (op.item_size == 2) {
-          scatter_vnchwconv_b16(VA0, VA4, iter_size, conv_stride, conv_stride);
+          scatter_vnchwconv_b16(VA0, VA4, iter_size, conv_dst_stride, conv_stride);
         } else {
-          scatter_vnchwconv_b32(VA0, VA4, iter_size, conv_stride, conv_stride);
+          scatter_vnchwconv_b32(VA0, VA4, iter_size, conv_dst_stride, conv_stride);
         }
         set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
       }
@@ -1540,17 +1555,20 @@ __aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         if (op.h_fractal == 16) {
           copy_ubuf_to_ubuf(dst + iter_offset * 512, (__ubuf__ void *)conv_ws, 0, 1, iter_size * 16, 0, 0);
         } else {
-          copy_ubuf_to_ubuf(dst + iter_offset * op.h_fractal * 32, (__ubuf__ void *)conv_ws, 0, iter_size, op.h_fractal, 16 - op.h_fractal, 0);
+          copy_ubuf_to_ubuf(dst + iter_offset * op.h_fractal * 32, (__ubuf__ void *)conv_ws, 0, iter_size, op.h_fractal,
+                            16 - op.h_fractal, 0);
         }
       } else if (op.w_fractal > 8) {
         if (op.h_fractal == 8) {
           copy_ubuf_to_ubuf(dst + iter_offset * 512, (__ubuf__ void *)conv_ws, 0, 1, iter_size * 16, 0, 0);
         } else {
-          copy_ubuf_to_ubuf(dst + iter_offset * op.h_fractal * 64, (__ubuf__ void *)conv_ws, 0, iter_size, op.h_fractal * 2, 16 - op.h_fractal * 2, 0);
+          copy_ubuf_to_ubuf(dst + iter_offset * op.h_fractal * 64, (__ubuf__ void *)conv_ws, 0, iter_size,
+                            op.h_fractal * 2, 16 - op.h_fractal * 2, 0);
         }
       } else {
         set_vector_mask(0, 8 * op.h_fractal);
-        vcopy((__ubuf__ uint32_t *)(dst + iter_offset * op.h_fractal * 32), (__ubuf__ uint32_t *)conv_ws, iter_size, 1, 2, op.h_fractal, 16);
+        vcopy((__ubuf__ uint32_t *)(dst + iter_offset * op.h_fractal * 32), (__ubuf__ uint32_t *)conv_ws, iter_size, 1,
+              2, op.h_fractal, 16);
       }
       pipe_barrier(PIPE_V);
     }

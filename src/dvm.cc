@@ -1083,14 +1083,13 @@ NDObject *Kernel::Load(void *addr, IntArrayRef *shape, IntArrayRef *stride, Data
   return obj;
 }
 
-NDObject *Kernel::GatherLoad(void *addr, IntArrayRef *shape, NDObject *index, int axis, DataType type) {
+NDObject *Kernel::GatherLoad(void *addr, IntArrayRef *shape, NDObject *index, int axis, DataType type,
+                             GatherMode gather_mode) {
   if (g_system.Arch() != kAiCore_C310) {
     DvmException("GatherLoad only supports C310.");
   }
-  ASSERT(ITEM_SIZE[type] == 2 || ITEM_SIZE[type] == 4);
-  ASSERT(index && index->GetObjectType() == ObjectType::kGlobalAccess);
-  ASSERT(index->type_id_ == kInt32);
-  auto obj = new NDGatherLoad(addr, shape, static_cast<NDAccess *>(index), axis, type);
+  auto mode = gather_mode == kSliceGather ? vGatherLoad::kSliceGather : vGatherLoad::kElementGather;
+  auto obj = new NDGatherLoad(addr, shape, static_cast<NDAccess *>(index), axis, type, mode);
   kernel_->Append(obj);
   return obj;
 }

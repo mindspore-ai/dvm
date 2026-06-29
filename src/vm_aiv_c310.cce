@@ -168,7 +168,7 @@ __simt_vf__ inline void OneHotSimtYTile2(__ubuf__ T *dst, __ubuf__ int32_t *indi
 constexpr uint32_t kGatherLoadSimtNoPadThreadNum = 1024;
 constexpr uint32_t kGatherLoadSimtPadThreadNum = 1024;
 
-template <typename T>
+template <typename T, uint32_t gather_mode>
 __simt_vf__ inline void GatherLoadSimtNoPad(__ubuf__ T *dst, __gm__ T *src, __gm__ int32_t *index,
                                             uint32_t tile_base, uint32_t total, uint32_t inner_size,
                                             uint32_t gather_size, uint32_t gather_dim_size) {
@@ -178,7 +178,11 @@ __simt_vf__ inline void GatherLoadSimtNoPad(__ubuf__ T *dst, __gm__ T *src, __gm
     uint32_t inner_idx = out_idx - gather_linear * inner_size;
     uint32_t outer_idx = gather_linear / gather_size;
     uint32_t gather_idx = gather_linear - outer_idx * gather_size;
-    int32_t src_idx = index[gather_idx];
+    uint32_t index_offset = gather_idx;
+    if constexpr (gather_mode == vGatherLoad::kElementGather) {
+      index_offset = out_idx;
+    }
+    int32_t src_idx = index[index_offset];
     if (src_idx < 0) {
       src_idx += static_cast<int32_t>(gather_dim_size);
     }
@@ -187,7 +191,7 @@ __simt_vf__ inline void GatherLoadSimtNoPad(__ubuf__ T *dst, __gm__ T *src, __gm
   }
 }
 
-template <typename T>
+template <typename T, uint32_t gather_mode>
 __simt_vf__ inline void GatherLoadSimtPad(__ubuf__ T *dst, __gm__ T *src, __gm__ int32_t *index,
                                           uint32_t tile_base, uint32_t total, uint32_t iter_size, uint32_t pad_size,
                                           uint32_t inner_size, uint32_t gather_size, uint32_t gather_dim_size) {
@@ -199,7 +203,11 @@ __simt_vf__ inline void GatherLoadSimtPad(__ubuf__ T *dst, __gm__ T *src, __gm__
     uint32_t inner_idx = out_idx - gather_linear * inner_size;
     uint32_t outer_idx = gather_linear / gather_size;
     uint32_t gather_idx = gather_linear - outer_idx * gather_size;
-    int32_t src_idx = index[gather_idx];
+    uint32_t index_offset = gather_idx;
+    if constexpr (gather_mode == vGatherLoad::kElementGather) {
+      index_offset = out_idx;
+    }
+    int32_t src_idx = index[index_offset];
     if (src_idx < 0) {
       src_idx += static_cast<int32_t>(gather_dim_size);
     }
@@ -1687,15 +1695,39 @@ __aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   uint32_t dup_num = static_cast<uint32_t>(op.body_iter * op.iter_size);
   uint32_t tile_base = dup_num * static_cast<uint32_t>(tile_idx);
   if (op.pad_size == 0) {
-    VfCall<GatherLoadSimtNoPad<T>>(cce::dim3(kGatherLoadSimtNoPadThreadNum), (__ubuf__ T *)(op.xn),
-                                   (__gm__ T *)(op.from), (__gm__ int32_t *)(op.index), tile_base, total,
-                                   static_cast<uint32_t>(op.inner_size), static_cast<uint32_t>(op.gather_size),
-                                   static_cast<uint32_t>(op.gather_dim_size));
+    if (op.gather_mode == vGatherLoad::kElementGather) {
+      VfCall<GatherLoadSimtNoPad<T, vGatherLoad::kElementGather>>(cce::dim3(kGatherLoadSimtNoPadThreadNum),
+                                                          (__ubuf__ T *)(op.xn), (__gm__ T *)(op.from),
+                                                          (__gm__ int32_t *)(op.index), tile_base, total,
+                                                          static_cast<uint32_t>(op.inner_size),
+                                                          static_cast<uint32_t>(op.gather_size),
+                                                          static_cast<uint32_t>(op.gather_dim_size));
+    } else {
+      VfCall<GatherLoadSimtNoPad<T, vGatherLoad::kSliceGather>>(cce::dim3(kGatherLoadSimtNoPadThreadNum),
+                                                             (__ubuf__ T *)(op.xn), (__gm__ T *)(op.from),
+                                                             (__gm__ int32_t *)(op.index), tile_base, total,
+                                                             static_cast<uint32_t>(op.inner_size),
+                                                             static_cast<uint32_t>(op.gather_size),
+                                                             static_cast<uint32_t>(op.gather_dim_size));
+    }
   } else {
-    VfCall<GatherLoadSimtPad<T>>(cce::dim3(kGatherLoadSimtPadThreadNum), (__ubuf__ T *)(op.xn),
-                                 (__gm__ T *)(op.from), (__gm__ int32_t *)(op.index), tile_base, total, iter_size,
-                                 static_cast<uint32_t>(op.pad_size), static_cast<uint32_t>(op.inner_size),
-                                 static_cast<uint32_t>(op.gather_size), static_cast<uint32_t>(op.gather_dim_size));
+    if (op.gather_mode == vGatherLoad::kElementGather) {
+      VfCall<GatherLoadSimtPad<T, vGatherLoad::kElementGather>>(cce::dim3(kGatherLoadSimtPadThreadNum),
+                                                        (__ubuf__ T *)(op.xn), (__gm__ T *)(op.from),
+                                                        (__gm__ int32_t *)(op.index), tile_base, total, iter_size,
+                                                        static_cast<uint32_t>(op.pad_size),
+                                                        static_cast<uint32_t>(op.inner_size),
+                                                        static_cast<uint32_t>(op.gather_size),
+                                                        static_cast<uint32_t>(op.gather_dim_size));
+    } else {
+      VfCall<GatherLoadSimtPad<T, vGatherLoad::kSliceGather>>(cce::dim3(kGatherLoadSimtPadThreadNum),
+                                                           (__ubuf__ T *)(op.xn), (__gm__ T *)(op.from),
+                                                           (__gm__ int32_t *)(op.index), tile_base, total, iter_size,
+                                                           static_cast<uint32_t>(op.pad_size),
+                                                           static_cast<uint32_t>(op.inner_size),
+                                                           static_cast<uint32_t>(op.gather_size),
+                                                           static_cast<uint32_t>(op.gather_dim_size));
+    }
   }
 }
 

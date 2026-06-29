@@ -600,13 +600,12 @@ class NDSimtLoad : public NDLoad {
 class NDGatherLoad : public NDSimtLoad {
  public:
   NDGatherLoad(void *src, IntArrayRef *src_shape_ref, NDAccess *index, int axis, DataType type_id,
-               bool own_index = true)
+               vGatherLoad::GatherMode gather_mode)
       : NDSimtLoad(src, &shape_, type_id, ObjectType::kGatherLoad),
         src_shape_ref_(src_shape_ref),
         index_(index),
         axis_(axis),
-        own_index_(own_index) {}
-  ~NDGatherLoad() override;
+        gather_mode_(gather_mode) {}
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
@@ -620,7 +619,7 @@ class NDGatherLoad : public NDSimtLoad {
   uint64_t gather_size_{1};
   uint64_t gather_dim_size_{0};
   int axis_;
-  bool own_index_;
+  vGatherLoad::GatherMode gather_mode_;
 };
 
 class NDViewLoad : public NDAccess {

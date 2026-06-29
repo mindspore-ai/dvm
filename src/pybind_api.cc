@@ -454,13 +454,12 @@ py::object RtKernelPy::ViewLoad(py::object shape, py::object stride, DataTypePy 
   return ObjToPy(op);
 }
 
-py::object RtKernelPy::GatherLoad(py::object shape, py::object index, DataTypePy type, int axis) {
+py::object RtKernelPy::GatherLoad(py::object shape, py::object index, DataTypePy type, int axis, int gather_mode) {
   auto &info = loads_.emplace_back();
   info.shape = GetVector(shape);
   auto shape_ref = shape_.emplace_back(new IntArrayRef(info.shape));
   auto index_op = PyToObj(index);
-  ASSERT(index_op->GetObjectType() == ObjectType::kGlobalAccess);
-  auto op = kernel_.GatherLoad(nullptr, shape_ref, index_op, axis, type);
+  auto op = kernel_.GatherLoad(nullptr, shape_ref, index_op, axis, type, static_cast<GatherMode>(gather_mode));
   info.op = op;
   return ObjToPy(op);
 }
@@ -859,6 +858,12 @@ py::object RtKernelPy::Clone(py::object base, py::object remap) {
       helper.ref_map_[ref] = clone;
     }
   }
+  for (size_t i = 0; i < other->loads_.size(); ++i) {
+    auto *op = other->loads_[i].op;
+    if (op && op->GetObjectType() == ObjectType::kGlobalAccess) {
+      loads_[i].op = op->CloneUpdate(helper);
+    }
+  }
   kernel_.Clone(other->kernel_, helper);
   for (size_t i = 0; i < other->loads_.size(); ++i) {
     loads_[i].op = helper.GetClone(other->loads_[i].op);
@@ -947,7 +952,8 @@ PYBIND11_MODULE(_dvm_py, m) {
   py::class_<RtKernelPy, KernelPy, std::shared_ptr<RtKernelPy>>(m, "PyKernel")
     .def(py::init<const std::string &, const std::string &, int>())
     .def("global_access", &RtKernelPy::GlobalAccess, "create global access")
-    .def("gather_load", &RtKernelPy::GatherLoad, "gather load array")
+    .def("gather_load", &RtKernelPy::GatherLoad, "gather load array", py::arg("shape"), py::arg("index"),
+         py::arg("type"), py::arg("axis") = 0, py::arg("gather_mode") = static_cast<int>(kElementGather))
     .def("slice_load", &RtKernelPy::SliceLoad, "load array")
     .def("stridedslice_load", &RtKernelPy::StridedSliceLoad, "load array")
     .def("multi_load", &RtKernelPy::MultiLoad, "load array(for reducescatter)")

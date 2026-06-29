@@ -14,9 +14,10 @@
  * limitations under the License.
  */
 
+#include <algorithm>
+#include <cstdint>
 #include <unordered_map>
 #include <vector>
-#include <algorithm>
 #include "acl/acl_rt.h"
 #include "code.h"
 #include "ops.h"
@@ -288,9 +289,7 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
 
 void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
 
-void _DumpGatherLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vGatherLoad op;
-  vGatherLoad::Decode(dump_info.insn, *dump_info.insn, op);
+void _DumpGatherLoad(const DumpInfo &dump_info, const vGatherLoad &op, std::ostringstream &oss) {
   oss << op.iter_size << "x" << op.body_iter;
   oss << " " << reinterpret_cast<void *>(op.xn) << ", " << reinterpret_cast<void *>(op.from) << ", "
       << reinterpret_cast<void *>(op.index);
@@ -301,6 +300,8 @@ void _DumpGatherLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << ", ";
   DumpVal("gather_dim_size", op.gather_dim_size, oss);
   oss << ", ";
+  DumpVal("gather_mode", op.gather_mode, oss);
+  oss << ", ";
   DumpVal("tail_iter", op.tail_iter, oss);
   oss << ", ";
   DumpVal("pad_size", op.pad_size, oss);
@@ -310,14 +311,12 @@ void _DumpGatherLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-void DumpGatherLoadB16(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "gather_load.b16.";
-  _DumpGatherLoad(dump_info, oss);
-}
-
-void DumpGatherLoadB32(const DumpInfo &dump_info, std::ostringstream &oss) {
-  oss << "gather_load.b32.";
-  _DumpGatherLoad(dump_info, oss);
+template <typename T>
+void DumpGatherLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vGatherLoad op;
+  vGatherLoad::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "gather_load.b" << sizeof(T) * 8 << ".";
+  _DumpGatherLoad(dump_info, op, oss);
 }
 
 void DumpLoadView(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -855,8 +854,8 @@ using DumpFunc = void(const DumpInfo &, std::ostringstream &oss);
 std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_LOAD, &DumpLoad},
   {V_LOAD_DUMMY, &DumpLoadDummy},
-  {V_LOAD_GATHER_B16, &DumpGatherLoadB16},
-  {V_LOAD_GATHER_B32, &DumpGatherLoadB32},
+  {V_LOAD_GATHER_B16, &DumpGatherLoad<uint16_t>},
+  {V_LOAD_GATHER_B32, &DumpGatherLoad<uint32_t>},
   {V_LOAD_VIEW, &DumpLoadView},
   {V_LOAD_VIEW_X, &DumpLoadViewX},
   {V_LOAD_VIEW_TRANS, &DumpLoadViewT},

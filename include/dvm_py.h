@@ -103,7 +103,7 @@ class KernelPy {
   virtual py::object Load(py::object shape, DataTypePy type) = 0;
   virtual py::object GlobalAccess(py::object shape, DataTypePy type) = 0;
   virtual py::object ViewLoad(py::object shape, py::object stride, DataTypePy type) = 0;
-  virtual py::object GatherLoad(py::object shape, py::object index, DataTypePy type, int axis) = 0;
+  virtual py::object GatherLoad(py::object shape, py::object index, DataTypePy type, int axis, int gather_mode) = 0;
   virtual py::object Store(py::object obj, DataTypePy type) = 0;
   virtual py::object ViewStore(py::object obj, py::object stride, DataTypePy type) = 0;
 
@@ -284,7 +284,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def("global_access", &KernelPy::GlobalAccess, "create global access")
     .def("view_load", &KernelPy::ViewLoad, "load array")
     .def("gather_load", &KernelPy::GatherLoad, "gather load array", py::arg("shape"), py::arg("index"),
-         py::arg("type"), py::arg("axis") = 0)
+         py::arg("type"), py::arg("axis") = 0, py::arg("gather_mode") = static_cast<int>(kElementGather))
     .def("store", &KernelPy::Store, "store array", py::arg("obj"), py::arg("type") = DataTypePy(kDataTypeEnd))
     .def("view_store", &KernelPy::ViewStore, "store array with stride", py::arg("obj"), py::arg("stride"),
          py::arg("type") = DataTypePy(kDataTypeEnd))

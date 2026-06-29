@@ -32,6 +32,11 @@ enum DataType {
   kDataTypeEnd,
 };
 
+enum GatherMode {
+  kElementGather = 0,
+  kSliceGather = 1,
+};
+
 enum UnaryType {
   kSqrt = 0,
   kAbs,
@@ -296,9 +301,11 @@ class Kernel {
    * @param shape input tensor shape.
    * @param index global access object of index tensor.
    * @param type data type of input tensor.
+   * @param gather_mode gather mode.
    * @return the result gather load operation.
    */
-  NDObject *GatherLoad(void *addr, IntArrayRef *shape, NDObject *index, int axis, DataType type);
+  NDObject *GatherLoad(void *addr, IntArrayRef *shape, NDObject *index, int axis, DataType type,
+                       GatherMode gather_mode = kElementGather);
 
   /**
    * @brief Emit a slice load operation from input tensor. please use incontinuous load.

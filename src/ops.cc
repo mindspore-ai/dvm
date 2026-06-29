@@ -724,32 +724,37 @@ NDObject *NDLoad::Clone(CloneHelper &h) {
 
 void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 
-NDGatherLoad::~NDGatherLoad() {
-  if (own_index_) {
-    delete index_;
-  }
-}
-
 void NDGatherLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(src_shape_ref_->size >= 1);
   ASSERT(index_ && index_->shape_ref_);
   axis_ = axis_ >= 0 ? axis_ : static_cast<int>(src_shape_ref_->size) + axis_;
   auto *index_shape_ref = index_->shape_ref_;
-  shape_.Resize(src_shape_ref_->size - 1 + index_shape_ref->size);
-  size_t out_idx = 0;
   gather_size_ = 1;
   inner_size_ = 1;
-  for (int i = 0; i < axis_; ++i) {
-    shape_[out_idx++] = src_shape_ref_->data[i];
-  }
   gather_dim_size_ = static_cast<uint64_t>(src_shape_ref_->data[axis_]);
-  for (size_t i = 0; i < index_shape_ref->size; ++i) {
-    shape_[out_idx++] = index_shape_ref->data[i];
-    gather_size_ *= static_cast<uint64_t>(index_shape_ref->data[i]);
-  }
-  for (size_t i = axis_ + 1; i < src_shape_ref_->size; ++i) {
-    shape_[out_idx++] = src_shape_ref_->data[i];
-    inner_size_ *= static_cast<uint64_t>(src_shape_ref_->data[i]);
+  if (gather_mode_ == vGatherLoad::kElementGather) {
+    shape_.Resize(index_shape_ref->size);
+    for (size_t i = 0; i < index_shape_ref->size; ++i) {
+      shape_[i] = index_shape_ref->data[i];
+    }
+    gather_size_ = static_cast<uint64_t>(index_shape_ref->data[axis_]);
+    for (size_t i = axis_ + 1; i < src_shape_ref_->size; ++i) {
+      inner_size_ *= static_cast<uint64_t>(src_shape_ref_->data[i]);
+    }
+  } else {
+    shape_.Resize(src_shape_ref_->size - 1 + index_shape_ref->size);
+    size_t out_idx = 0;
+    for (int i = 0; i < axis_; ++i) {
+      shape_[out_idx++] = src_shape_ref_->data[i];
+    }
+    for (size_t i = 0; i < index_shape_ref->size; ++i) {
+      shape_[out_idx++] = index_shape_ref->data[i];
+      gather_size_ *= static_cast<uint64_t>(index_shape_ref->data[i]);
+    }
+    for (size_t i = axis_ + 1; i < src_shape_ref_->size; ++i) {
+      shape_[out_idx++] = src_shape_ref_->data[i];
+      inner_size_ *= static_cast<uint64_t>(src_shape_ref_->data[i]);
+    }
   }
   NDLoad::Normalize(run_ops);
 }
@@ -770,6 +775,7 @@ uint64_t NDGatherLoad::Emit(VectorKernel &k) {
   op.inner_size = inner_size_;
   op.gather_size = gather_size_;
   op.gather_dim_size = gather_dim_size_;
+  op.gather_mode = gather_mode_;
   op.body_iter = static_cast<uint64_t>(ndd_.stride_back()) / lead_align;
   op.iter_size = lead_dim;
   op.pad_size = lead_align - lead_dim;
@@ -788,18 +794,13 @@ uint64_t NDGatherLoad::Emit(VectorKernel &k) {
 NDObject *NDGatherLoad::Clone(CloneHelper &h) {
   auto src_shape_ref = h.GetClone(src_shape_ref_);
   auto index = static_cast<NDAccess *>(h.GetClone(index_));
-  bool own_index = false;
-  if (index == nullptr) {
-    index = static_cast<NDAccess *>(index_->CloneUpdate(h));
-    own_index = true;
-  }
-  return new NDGatherLoad(addr_.gm, src_shape_ref, index, axis_, type_id_, own_index);
+  return new NDGatherLoad(addr_.gm, src_shape_ref, index, axis_, type_id_, gather_mode_);
 }
 
 void NDGatherLoad::Dump(bool verbose, std::ostringstream &oss) {
   oss << "GatherLoad";
   if (verbose) {
-    oss << "<axis=" << axis_ << ">";
+    oss << "<axis=" << axis_ << ", gather_mode=" << gather_mode_ << ">";
   }
 }
 

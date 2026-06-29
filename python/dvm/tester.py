@@ -138,13 +138,11 @@ class Tester(Kernel):
         self.input(op, shape_arr)
         return op
 
-    def gather_load(self, data_arr, index_op, axis=0, dtype=None):
+    def gather_load(self, data_arr, index_op, axis=0, dtype=None, gather_mode=0):
         if not isinstance(data_arr, np.ndarray):
-            return Kernel.gather_load(
-                self, data_arr, index_op, _normalize_dtype(dtype), axis
-            )
+            return Kernel.gather_load(self, data_arr, index_op, _normalize_dtype(dtype), axis, gather_mode)
         data_arr, dtype_id, shape = self._prepare_array_input(data_arr, dtype)
-        op = Kernel.gather_load(self, shape, index_op, dtype_id, axis)
+        op = Kernel.gather_load(self, shape, index_op, dtype_id, axis, gather_mode)
         self.input(op, data_arr)
         return op
 

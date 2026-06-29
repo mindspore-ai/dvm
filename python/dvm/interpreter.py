@@ -1,3 +1,4 @@
+import ast
 import re
 import numpy as np
 import hashlib
@@ -36,9 +37,9 @@ def split_params(params):
     current_param = ''
     bracket_level = 0
     for c in params:
-        if c == '[' or c == '<':
+        if c in '[<({':
             bracket_level += 1
-        elif c == ']' or c == '>':
+        elif c in ']>)}':
             bracket_level -= 1
         if c == ',' and bracket_level == 0:
             param_list.append(current_param.strip())
@@ -48,6 +49,29 @@ def split_params(params):
     if current_param:
         param_list.append(current_param.strip())
     return param_list
+
+
+def parse_axis(axis_str):
+    """
+    安全解析 axis 参数，只接受 None、整数、整数列表或整数元组。
+    """
+    axis_str = axis_str.strip()
+    if axis_str.lower() == 'none':
+        return None
+
+    try:
+        axis_value = ast.literal_eval(axis_str)
+    except (SyntaxError, ValueError) as err:
+        raise ValueError(f"Invalid axis: {axis_str}") from err
+
+    if type(axis_value) is int:
+        return (axis_value,)
+
+    if isinstance(axis_value, (list, tuple)):
+        if all(type(dim) is int for dim in axis_value):
+            return tuple(axis_value)
+
+    raise ValueError(f"Invalid axis: {axis_str}")
 
 
 def parse_variable_def(var_def, allow_extra=False):
@@ -515,7 +539,12 @@ def parse_and_generate_code(block, idx, occurrence_count):
                     if len(scalar_params) == 2:
                         axis_str = scalar_params[0]
                         keepdims_str = scalar_params[1]
-                        axis = tuple(eval(axis_str))
+                        try:
+                            axis = parse_axis(axis_str)
+                        except ValueError as err:
+                            print(err)
+                            i += 1
+                            continue
                         keepdims = True if keepdims_str.lower == 'true' else False
                     else:
                         print(f"Reduce not aixs")

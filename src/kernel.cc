@@ -353,6 +353,31 @@ class CodeGenHelper {
           SimdSync(op->lhs_, op);
           break;
         }
+        case kGenCustom: {
+          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.Push(op->lhs_->xbuf_, op);
+          }
+          if (op->rhs_ && (op->flags_ & OBJ_FLAG_FREE_RHS)) {
+            free_xbuf_.Push(op->rhs_->xbuf_, op);
+          }
+          code_ptr += op->Emit(kernel_);
+          if (anti_dep) {
+            SimdBarrier(anti_dep, op);
+          }
+          if (op->rhs_) {
+            if (op->rhs_->index_ > op->lhs_->index_) {
+              SimdSync(op->rhs_, op);
+              SimdSync(op->lhs_, op);
+            } else {
+              SimdSync(op->lhs_, op);
+              SimdSync(op->rhs_, op);
+            }
+          } else {
+            SimdSync(op->lhs_, op);
+          }
+          break;
+        }
         default:
           ASSERT(0);
           break;

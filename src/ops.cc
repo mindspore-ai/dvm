@@ -439,6 +439,11 @@ void DumpScalarCode(std::ostringstream &oss, scode_t code, DataType type) {
 
 MemPool<512, 8192> NDObject::mem_pool_;
 
+static void CustomDimChanged(NDObject *op) { static_cast<CustomOp *>(op)->DimChanged(); }
+static void CustomFoldProp(NDObject *op, PropRange &r) { static_cast<CustomOp *>(op)->FoldProp(r); }
+static void CustomTileCollect(NDObject *op, TileInfo &t) { static_cast<CustomOp *>(op)->TileCollect(t); }
+static void CustomShapeProp(NDObject *op, int64_t &s) { static_cast<CustomOp *>(op)->ShapeProp(s); }
+
 static constexpr ObjectMeta GenObjectMeta() {
   struct BaseData {
     CodeGenTmpl tmpl;
@@ -490,6 +495,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                               // CompareS
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},  // OneHot
     {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
+    {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
     {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                              // GmmOp
   };
@@ -3139,4 +3145,19 @@ void OneHotOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
     shape[i] = i == axis ? depth : in_shape->data[i];
   }
 }
+
+uint64_t CustomOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(k.LeadAlign());
+  uint64_t payload_size = EmitEx(insn_ + vCustom::PAYLOAD_OFFSET);
+  vCustom op;
+  op.func_addr = func_id_;
+  return vCustom::Encode(insn_, V_CUSTOM, payload_size, op);
+}
+
+void CustomOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Custom"; }
+void CustomOp::DimChanged() {}
+void CustomOp::FoldProp(PropRange &) {}
+void CustomOp::TileCollect(TileInfo &) {}
+void CustomOp::ShapeProp(int64_t &) {}
+uint64_t CustomOp::GetFunction(const std::string &full_name) { return g_system.GetCustomFunc(full_name); }
 }  // namespace dvm

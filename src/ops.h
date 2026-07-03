@@ -66,6 +66,7 @@ enum ObjectType {
   kCompareS,
   kOneHot,
   kPermute,
+  kCustom,
   kCubeOp,
   kGmmOp,
   kObjectBulk
@@ -358,6 +359,7 @@ enum CodeGenTmpl {
   kGenComm,
   kGenFlex,
   kGenSimd3,
+  kGenCustom,
   kGenLoad,
   kGenStore,
 };
@@ -418,7 +420,7 @@ class VectorKernel;
 #define OBJ_FLAG_REDUCE_NO_CUM (1u << 30)
 #define OBJ_FLAG_VIEW_LOAD_FRACTAL (1u << 31)
 
-class NDObject {
+class __export__ NDObject {
  public:
   NDObject(NDObject *lhs, NDObject *rhs, DataType type_id, ObjectType obj_id) : lhs_(lhs), rhs_(rhs), obj_id_(obj_id) {
     type_id_ = type_id;
@@ -1301,6 +1303,30 @@ class OneHotOp : public NDObject {
   IntArrayRef *depth_;
   NDSpaceData ndd_;
   ShapeWithRef shape_;
+};
+
+class __export__ CustomOp : public NDObject {
+ public:
+  CustomOp(NDObject *lhs, NDObject *rhs, DataType type_id)
+      : NDObject(lhs, rhs, type_id, kCustom) {
+    nd_.data = &ndd_;
+    shape_ref_ = &shape_;
+  }
+  uint64_t Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  virtual uint64_t EmitEx(uint64_t *payload) = 0;
+  virtual void DimChanged();
+  virtual void FoldProp(PropRange &);
+  virtual void TileCollect(TileInfo &);
+  virtual void ShapeProp(int64_t &);
+
+  uint64_t GetFunction(const std::string &full_name);
+
+ protected:
+  NDSpaceData ndd_;
+  ShapeWithRef shape_;
+  uint64_t func_id_{0};
 };
 
 class GraphTracker {

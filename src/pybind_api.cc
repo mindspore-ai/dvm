@@ -658,6 +658,50 @@ void RtKernelPy::DryRun(int core_idx, bool cube_core) {
   static_cast<DryRunner *>(runner_)->DryRun(kernel_, workspace_, core_idx, cube_core);
 }
 
+void RtKernelPy::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path, py::object func_list) {
+  static bool promote_scope = false;
+  if (!promote_scope) {
+    promote_scope = true;
+    // Promote _dvm_py.so to the global symbol scope so the runtime-compiled host .so can
+    // resolve dvm symbols (g_system, NDObject::mem_pool_, NDObject vtable, ...) from it./
+    Dl_info info;
+    if (dladdr(reinterpret_cast<void *>(&RtKernelPy::RegCustom), &info) && info.dli_fname) {
+      dlopen(info.dli_fname, RTLD_NOW | RTLD_GLOBAL);
+    }
+  }
+  std::vector<std::pair<std::string, uint64_t>> func_table;
+  py::list functions = py::cast<py::list>(func_list);
+  for (auto f : functions) {
+    py::tuple name_offset = py::cast<py::tuple>(f);
+    func_table.emplace_back(py::cast<std::string>(name_offset[0]), py::cast<uint64_t>(name_offset[1]));
+  }
+  g_system.RegCustom(nspace, so_path, bin_path, func_table);
+}
+
+py::object RtKernelPy::Custom(const std::string &full_name, py::object inputs, py::object attrs) {
+  py::list input_list = py::cast<py::list>(inputs);
+  std::vector<NDObject *> inputs_args;
+  for (auto a : input_list) {
+    inputs_args.push_back(PyToObj(a.cast<py::object>()));
+  }
+  std::vector<ScalarRef> attrs_args;
+  if (py::isinstance<py::int_>(attrs)) {
+    py::list attr_list = py::cast<py::list>(attrs);
+    for (auto a : attr_list) {
+      if (py::isinstance<py::int_>(a)) {
+        attrs_args.emplace_back(a.cast<int64_t>());
+      } else if (py::isinstance<py::float_>(a)) {
+        attrs_args.emplace_back(a.cast<float>());
+      } else {
+        ASSERT(0);
+      }
+    }
+  }
+  auto op = g_system.CreateCustom(full_name, inputs_args, attrs_args);
+  kernel_.GetImpl()->Append(op);
+  return ObjToPy(op);
+}
+
 py::object RtKernelPy::Perf() {
   // warm up
   if (!kernel_.GetImpl()->IsSplit()) {
@@ -964,6 +1008,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("allgather", &RtKernelPy::AllGather, "emit allgather op")
     .def("allgatherv2", &RtKernelPy::AllGatherV2, "emit allgatherv2 op")
     .def("reducescatter", &RtKernelPy::ReduceScatter, "emit reducescatter op")
+    .def("custom", &RtKernelPy::Custom, "custom op", py::arg("full_name"), py::arg("inputs"), py::arg("attrs") = py::none())
     .def("convert_to_bf16", &RtKernelPy::ConvertToBF16, "convert f32 array to bf16 array")
     .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("reset", &RtKernelPy::Reset, "reset eager")
@@ -979,6 +1024,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("msprof", &RtKernelPy::Msprof, "perf test")
     .def("run", &RtKernelPy::Run, "run kernel")
     .def("dry_run", &RtKernelPy::DryRun, "dry run vm")
+    .def_static("reg_custom", &RtKernelPy::RegCustom, "register custom")
     .def_static("init_comm", &RtKernelPy::InitComm, "init communicatior")
     .def_static("set_cube_store_type", &RtKernelPy::SetCubeStoreType, "set sync type")
     .def_static("set_lazy_tuning", &RtKernelPy::SetLazyTuning, "set lazy tuning")

@@ -18,9 +18,10 @@ import sys
 import subprocess
 import csv
 import inspect
+import time
 import numpy as np
 from . import DataType
-from . import PyKernel as Kernel
+from . import PyKernel as Kernel, Device
 
 _DTYPE_NAME_MAP = {
     "bool": DataType.bool,
@@ -351,6 +352,69 @@ class Tester(Kernel):
             self.comm.Barrier()
         else:
             Kernel.barrier()
+
+    @staticmethod
+    def reg_custom(namespace, host_code, dev_code):
+        root = os.path.dirname(os.path.dirname(os.path.dirname(__file__)))
+        custom_dir = os.path.join(os.getcwd(), "custom")
+        if not os.path.exists(custom_dir):
+            os.mkdir(custom_dir)
+        timestamp = str(int(time.time() * 1000))
+        # compile host so
+        src_dir = os.path.join(root, "src")
+        inc_dir = os.path.join(root, "include")
+        cc_path = os.path.join(custom_dir, f"ops_{namespace}_{timestamp}.cc")
+        so_path = os.path.join(custom_dir, f"ops_{namespace}_{timestamp}.so")
+        with open(cc_path, "w") as f:
+            f.write(host_code)
+        cmds = ["g++", "--std=c++17", "-shared", "-fPIC", f"-I{src_dir}", f"-I{inc_dir}", cc_path, "-o", so_path]
+        r = subprocess.run(cmds, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"reg_custom fail: {r.stderr}")
+        # compile device binary
+        cce_path = os.path.join(custom_dir, f"bin_{namespace}_{timestamp}.cce")
+        bin_path = os.path.join(custom_dir, f"bin_{namespace}_{timestamp}.o")
+        with open(cce_path, "w") as f:
+            f.write(f'extern "C" __global__ [aicore] void dvm_custom_{namespace}(uint64_t x) {{ pipe_barrier(PIPE_ALL); }}')
+            f.write(dev_code)
+        cmds = ["ccec", "-c", "-O2", "--std=c++17", "-Wno-int-to-pointer-cast", "--cce-aicore-only", "--cce-auto-sync=off" ]
+        if Device.arch() == "AscendC220":
+            cmds += [
+                 "-mllvm", "-cce-aicore-function-stack-size=16000",
+                 "-mllvm", "-cce-aicore-record-overflow=false",
+                 "-mllvm", "-cce-aicore-addr-transform",
+                 "-mllvm", "-cce-aicore-jump-expand=true",
+                 "-mllvm", "-cce-aicore-mask-opt=false",
+                 "--cce-aicore-arch=dav-c220-vec"]
+        else:
+            cmds += [
+                 "--cce-simd-vf-fusion=true",
+                 "-mllvm", "-cce-aicore-stack-size=0x8000",
+                 "-mllvm", "-cce-aicore-function-stack-size=0x8000",
+                 "-mllvm", "-cce-aicore-addr-transform",
+                 "-mllvm", "-cce-aicore-or-combine=false",
+                 "-mllvm", "-instcombine-code-sinking=false",
+                 "-mllvm", "-cce-aicore-jump-expand=true",
+                 "-mllvm", "-cce-aicore-mask-opt=false",
+                 "-mllvm", "-cce-aicore-dcci-before-kernel-end=false",
+                 "-mllvm", "-cce-aicore-dcci-insert-for-scalar=false",
+                 "--cce-aicore-arch=dav-c310-vec"]
+        cmds += [cce_path, "-o", bin_path]
+        r = subprocess.run(cmds, capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"reg_custom fail: {r.stderr}")
+        # generate func_list
+        r = subprocess.run(["objdump", "-t", bin_path], capture_output=True, text=True)
+        if r.returncode != 0:
+            raise RuntimeError(f"reg_custom fail: {r.stderr}")
+        func_list = []
+        for line in r.stdout.splitlines():
+            if line.startswith("0000"):
+                parts = line.split()
+                if len(parts) == 6 and parts[1] == "g" and parts[2] == "F" and parts[3] == ".text" and not parts[5].startswith("dvm_custom"):
+                    func_list.append((parts[5], int(parts[0], 16)))
+        # final register
+        Kernel.reg_custom(namespace, so_path, bin_path, func_list)
 
 
 class CommScope:

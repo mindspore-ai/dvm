@@ -17,6 +17,7 @@
 #include <dlfcn.h>
 #include <stdexcept>
 #include <sstream>
+#include <fstream>
 #include "acl/acl_rt.h"
 #include "system.h"
 #include "code.h"
@@ -482,6 +483,9 @@ System::~System() {
   if (simt_bin_) {
     std::free(simt_bin_);
   }
+  for (auto b : bins_) {
+    std::free(b);
+  }
 }
 
 void *System::CreateStream() {
@@ -489,6 +493,70 @@ void *System::CreateStream() {
   auto ret = aclrtCreateStream(&stream);
   EXCEPTION_IF(ret != 0, "aclrtCreateStream");
   return stream;
+}
+
+void System::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path,
+                       const std::vector<std::pair<std::string, uint64_t>> &func_table) {
+  std::string nspace_prefix = nspace + "/";
+  void *handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
+  auto op_def = reinterpret_cast<CustomDef *>(dlsym(handle, "__ALL_OPS__"));
+  EXCEPTION_IF(handle == nullptr || op_def == nullptr, "reg_custom op failed");
+  while (op_def->name) {
+    custom_def_[nspace_prefix + op_def->name] = op_def->create_func;
+    op_def++;
+  }
+  std::ifstream fin(bin_path, std::ios::binary | std::ios::ate);
+  EXCEPTION_IF(!fin.is_open(), "RegCustomBin: open bin file failed");
+  size_t bin_size = fin.tellg();
+  fin.seekg(0, std::ios::beg);
+  void *bin_data = std::malloc(bin_size);
+  fin.read(static_cast<char *>(bin_data), bin_size);
+  fin.close();
+  bins_.push_back(bin_data);
+  aclrtBinaryLoadOption opt_data[2];
+  opt_data[0].type = ACL_RT_BINARY_LOAD_OPT_MAGIC;
+  opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_VECTOR_CORE;
+  opt_data[1].type = ACL_RT_BINARY_LOAD_OPT_LAZY_LOAD;
+  opt_data[1].value.isLazyLoad = 0;
+  aclrtBinaryLoadOptions bin_opt;
+  bin_opt.numOpt = 2;
+  bin_opt.options = opt_data;
+  aclrtBinHandle bin_handle;
+  auto err = aclrtBinaryLoadFromData(bin_data, bin_size, &bin_opt, &bin_handle);
+  EXCEPTION_IF(err != ACL_SUCCESS, "RegisterCustom: aclrtBinaryLoadFromData failed");
+  void *func_handle = nullptr;
+  std::string func_name = "dvm_custom_" + nspace;
+  err = aclrtBinaryGetFunction(bin_handle, func_name.c_str(), &func_handle);
+  EXCEPTION_IF(err != ACL_SUCCESS, "RegisterCustom: aclrtBinaryGetFunction failed");
+  void *aic_addr = nullptr;
+  void *aiv_addr = nullptr;
+  err = aclrtGetFunctionAddr(func_handle, &aic_addr, &aiv_addr);
+  EXCEPTION_IF(err != ACL_SUCCESS, "RegisterCustom: aclrtGetFunctionAddr failed");
+  for (const auto &entry : func_table) {
+    custom_funcs_[nspace_prefix + entry.first] = reinterpret_cast<uint64_t>(aiv_addr) + entry.second;
+  }
+}
+
+uint64_t System::GetCustomFunc(const std::string &full_name) const {
+  auto it = custom_funcs_.find(full_name);
+  EXCEPTION_IF(it == custom_funcs_.end(), "custom func not exist");
+  return it->second;
+}
+
+NDObject *System::CreateCustom(const std::string &op_name, const std::vector<NDObject *> &inputs,
+                               const std::vector<ScalarRef> &attrs) const {
+  auto it = custom_def_.find(op_name);
+  EXCEPTION_IF(it == custom_def_.end(), "op_name not exist");
+  return (it->second)(inputs, attrs);
+}
+
+std::string System::GetCustomFuncName(uint64_t func_id) const {
+  for (const auto &pair : custom_funcs_) {
+    if (pair.second == func_id) {
+      return pair.first;
+    }
+  }
+  return "null";
 }
 
 Config &System::SetDeterm() {

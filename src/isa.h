@@ -167,6 +167,7 @@ enum vSimdInsnID {
   V_CAST_BF16_TO_FP32,
   V_CAST_BF16_TO_INT32,
   V_CMP_INT32,
+  V_CUSTOM,
   V_EXTRACT_B32, // [c220]
   V_CAST_INT32_TO_INT64, // [c220,c310]
   V_CAST_INT64_TO_INT32, // [c220,c310]
@@ -1019,6 +1020,23 @@ struct vReshape {
     uint64_t size = 2;
     pc[0] = vMakeSimdHead(id, vCompactX(op.xd) << V_C_X_BITS | vCompactX(op.xn), size);
     pc[1] = op.xd_pad << 56 | op.xn_pad << 48 | op.dup_size << 32 | op.xd_lead << 16 | op.xn_lead;
+    return size;
+  }
+};
+
+struct vCustom {
+  enum { PAYLOAD_OFFSET = 2 };
+  uint64_t func_addr;
+  // pc[0]: reserve(26)
+  // pc[1]: func_addr(64)
+  // pc[2]+: payload
+  __aicore_inline__ void Decode(bcodeptr_t pc, vCustom &op) {
+    op.func_addr = pc[1];
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, uint64_t payload_size, const vCustom &op) {
+    uint64_t size = PAYLOAD_OFFSET + payload_size;
+    pc[0] = vMakeSimdHead(id, 0, size);
+    pc[1] = op.func_addr;
     return size;
   }
 };

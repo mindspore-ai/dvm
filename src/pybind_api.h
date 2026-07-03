@@ -68,6 +68,9 @@ class RtKernelPy : public KernelPy {
   py::object Perf();
   py::object Msprof(const std::string &path, int64_t test_num);
 
+  py::object Custom(const std::string &full_name, py::object inputs, py::object attrs);
+  static void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path, py::object func_list);
+
   static void SetCubeStoreType(int type) { g_system.SetCubeStoreType((CubeStoreType)type); }
   static void SetLazyTuning(bool enable) {
     if (enable) {

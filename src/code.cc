@@ -775,6 +775,19 @@ void DumpOneHot(const DumpInfo &dump_info, std::ostringstream &oss) {
   DumpVal("dup_round", op.dup_round, oss);
 }
 
+void DumpCustom(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vCustom op;
+  vCustom::Decode(dump_info.insn, op);
+  oss << '[' << g_system.GetCustomFuncName(op.func_addr) << "] ";
+  uint64_t size = (*dump_info.insn >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
+  for (size_t i = vCustom::PAYLOAD_OFFSET; i < size; ++i) {
+    oss << reinterpret_cast<void *>(dump_info.insn[i]);
+    if (i < size - 1) {
+      oss << ", ";
+    }
+  }
+}
+
 void DumpStoreAG(const DumpInfo &dump_info, std::ostringstream &oss) {
   vStoreAG op;
   vStoreAG::Decode(dump_info.insn, *dump_info.insn, op);
@@ -1009,6 +1022,7 @@ std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> o
   {V_ATOMICCUM_FP16, {&DumpAtomicCum, "AtomicCum", "fp16"}},
   {V_ONE_HOT, {&DumpOneHot, "OneHot", "b32"}},
   {V_ONE_HOT_B16, {&DumpOneHot, "OneHot", "b16"}},
+  {V_CUSTOM, {&DumpCustom, "Custom", "x"}},
 };
 
 enum vPipe {

@@ -17,6 +17,9 @@
 #ifndef _DVM_SYSTEM_H_
 #define _DVM_SYSTEM_H_
 #include <iostream>
+#include <string>
+#include <vector>
+#include <unordered_map>
 #include "dvm.h"
 
 // rts_runtime
@@ -60,6 +63,8 @@ void DvmException(const char *error_str);
       DvmException(#func); \
     }                      \
   } while (0)
+
+#define __export__  __attribute__((visibility("default")))
 
 enum AiCoreArch {
   kAiCore_C220,
@@ -136,6 +141,12 @@ enum ProfilerLevel {
   Level2,
 };
 
+class NDObject;
+struct CustomDef {
+  typedef NDObject *(*CreateFunc)(const std::vector<NDObject *> &, const std::vector<ScalarRef> &);
+  const char *name;
+  CreateFunc create_func;
+};
 
 class CubeTuner;
 class Code;
@@ -200,6 +211,13 @@ class System : public Config {
   const uint64_t *g_access_func_offset_;
   const uint64_t *g_visit_func_offset_;
 
+  void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path,
+                 const std::vector<std::pair<std::string, uint64_t>> &func_table);
+  uint64_t GetCustomFunc(const std::string &full_name) const;
+  std::string GetCustomFuncName(uint64_t func_id) const;
+  NDObject *CreateCustom(const std::string &op_name, const std::vector<NDObject *> &inputs,
+                         const std::vector<ScalarRef> &attrs) const;
+
  private:
   void DoInit();
   void GetSocConfig();
@@ -221,6 +239,11 @@ class System : public Config {
   void *renamed_bin_{nullptr};
   void *simt_bin_{nullptr};
   void *rt_handle_{nullptr};
+
+  std::unordered_map<std::string, uint64_t> custom_funcs_;
+  std::unordered_map<std::string, CustomDef::CreateFunc> custom_def_;
+
+  std::vector<void *> bins_;   // TODO: simt_bin_ && renamed_bin_ add to here
 
   static int CodeLaunchRT(const System &self, const Code *code, void *extern_ws, void *stream);
   static int CodeLaunchACL_C220(const System &self, const Code *code, void *extern_ws, void *stream);

@@ -949,6 +949,13 @@ __aicore_inline__ void OneHot(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
 }
 
+__aicore_inline__ void Custom(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vCustom op;
+  vCustom::Decode(pc, op);
+  auto func = reinterpret_cast<OpFunc>(op.func_addr);
+  func(pc + vCustom::PAYLOAD_OFFSET, head, tile);
+}
+
 __aicore_inline__ void SliceLoad2D(__ubuf__ uint8_t *dst, __gm__ uint8_t *src, uint64_t begin_m, uint64_t end_m,
                                         uint64_t begin_n, uint64_t end_n, uint64_t slice_n, uint64_t src_n,
                                         uint64_t pad_size, uint64_t type_size) {
@@ -2335,3 +2342,4 @@ DEF_DISP_SIMD(V_CMP_INT32, CompareInt(pc, head, tile))
 DEF_DISP_SIMD(V_EXTRACT_B32, ExtractB32(pc, head, tile))
 DEF_DISP_SIMD(V_PACK_B32, Pack(pc, head, tile))
 DEF_DISP_SIMD(V_BROADCAST_S_B64, BroadcastS_B64(pc, head, tile))
+DEF_DISP_SIMD(V_CUSTOM, Custom(pc, head, tile))

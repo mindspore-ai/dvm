@@ -2358,7 +2358,10 @@ void SplitGraphD::Append(NDObject *op) {
     if (op->rhs_) {
       tracker_.Record(&op->rhs_);
       if (op->flags_ & OBJ_FLAG_XHS) {
-        tracker_.Record(&static_cast<FlexOp *>(op)->xhs_);
+        auto xhs = static_cast<FlexOp *>(op)->xhs_;
+        for (int i = 0; i < xhs->in_num; ++i) {
+          tracker_.Record(&xhs->data[i]);
+        }
       } else if (op->IsCube()) {
         tracker_.Record(&static_cast<CubeOp *>(op)->bias_);
       }

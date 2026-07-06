@@ -393,7 +393,6 @@ class VectorKernel;
 #define OBJ_FLAG_REUSE_RHS 8
 #define OBJ_FLAG_DEAD 16
 
-#define OBJ_FLAG_FLEX_RREE_XHS (1u << 14)
 #define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
 #define OBJ_FLAG_LOAD_FROM_CC (1u << 11)
 #define OBJ_FLAG_LOAD_FROM_CC_ONCE (1u << 12)
@@ -781,19 +780,30 @@ class NDConcatStoreM : public NDConcatStore {
   ShapeWithRef shape_;
 };
 
-class FlexOp : public NDObject {
+class __export__ FlexOp : public NDObject {
  public:
+  struct Xhs {
+    int in_num;
+    uint32_t free_mask;
+    NDObject *data[0];
+  };
+
+  template <int N>
+  struct XhsN : public Xhs {
+    XhsN() { in_num = N; }
+    NDObject *data_ext[N];
+  };
+
   enum { kWsMax = 2 };
   FlexOp(NDObject *lhs, NDObject *rhs, DataType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
     flags_ |= OBJ_FLAG_WORKSPACE;
   }
   ~FlexOp() override = default;
-  void SetXhs(NDObject *xhs) {
+  void SetXhs(Xhs *xhs) {
     xhs_ = xhs;
     flags_ |= OBJ_FLAG_XHS;
   }
-
-  NDObject *xhs_{nullptr};
+  Xhs *xhs_{nullptr};
   int ws_num_{0};
   uint64_t wss_[kWsMax];
 };
@@ -805,7 +815,10 @@ void NDObject::ForInput(const T &func) {
     if (rhs_) {
       func(rhs_);
       if (flags_ & OBJ_FLAG_XHS) {
-        func(static_cast<FlexOp *>(this)->xhs_);
+        auto xhs = static_cast<FlexOp *>(this)->xhs_;
+        for (int i = 0; i < xhs->in_num; ++i) {
+          func(xhs->data[i]);
+        }
       }
     }
   }
@@ -1107,7 +1120,8 @@ class SelectOp : public FlexOp {
       wss_[0] = 0;
     }
     shape_ref_ = &shape_;
-    SetXhs(cond);
+    xhs_data_.data[0] = cond;
+    SetXhs(&xhs_data_);
   }
   ~SelectOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
@@ -1116,6 +1130,7 @@ class SelectOp : public FlexOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  private:
+  XhsN<1> xhs_data_;
   std::vector<NDObject *> stuff_ops_[3];
   ShapeWithRef shape_;
 };
@@ -1305,10 +1320,10 @@ class OneHotOp : public NDObject {
   ShapeWithRef shape_;
 };
 
-class __export__ CustomOp : public NDObject {
+class __export__ CustomOp : public FlexOp {
  public:
   CustomOp(NDObject *lhs, NDObject *rhs, DataType type_id)
-      : NDObject(lhs, rhs, type_id, kCustom) {
+      : FlexOp(lhs, rhs, type_id, kCustom) {
     nd_.data = &ndd_;
     shape_ref_ = &shape_;
   }

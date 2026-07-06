@@ -298,10 +298,10 @@ class CodeGenHelper {
         case kGenSimd3: {
           auto flex = static_cast<FlexOp *>(op);
           code_ptr += GenFlexOpCommon(flex);
-          if (op->flags_ & OBJ_FLAG_FLEX_RREE_XHS) {
-            free_xbuf_.Push(flex->xhs_->xbuf_, op);
+          if (flex->xhs_->free_mask & 1u) {
+            free_xbuf_.Push(flex->xhs_->data[0]->xbuf_, op);
           }
-          NDObject *inputs[3] = {flex->lhs_, flex->rhs_, flex->xhs_};
+          NDObject *inputs[3] = {flex->lhs_, flex->rhs_, flex->xhs_->data[0]};
           if (inputs[0]->index_ < inputs[1]->index_) {
             std::swap(inputs[0], inputs[1]);
           }
@@ -354,28 +354,7 @@ class CodeGenHelper {
           break;
         }
         case kGenCustom: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
-          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.Push(op->lhs_->xbuf_, op);
-          }
-          if (op->rhs_ && (op->flags_ & OBJ_FLAG_FREE_RHS)) {
-            free_xbuf_.Push(op->rhs_->xbuf_, op);
-          }
-          code_ptr += op->Emit(kernel_);
-          if (anti_dep) {
-            SimdBarrier(anti_dep, op);
-          }
-          if (op->rhs_) {
-            if (op->rhs_->index_ > op->lhs_->index_) {
-              SimdSync(op->rhs_, op);
-              SimdSync(op->lhs_, op);
-            } else {
-              SimdSync(op->lhs_, op);
-              SimdSync(op->rhs_, op);
-            }
-          } else {
-            SimdSync(op->lhs_, op);
-          }
+          code_ptr += CustomOpGen(static_cast<CustomOp *>(op));
           break;
         }
         default:
@@ -470,6 +449,51 @@ class CodeGenHelper {
     int size = op->Emit(kernel_);
     for (int i = 0; i < anti_num; ++i) {
       SimdBarrier(anti_ops[i], op);
+    }
+    return size;
+  }
+
+  int CustomOpGen(CustomOp *op) {
+    int size = GenFlexOpCommon(op);
+    if (op->rhs_ == nullptr) {
+      ASSERT(op->lhs_);
+      SimdSync(op->lhs_, op);
+    } else if (op->xhs_ == nullptr) {
+      if (op->rhs_->index_ > op->lhs_->index_) {
+        SimdSync(op->rhs_, op);
+        SimdSync(op->lhs_, op);
+      } else {
+        SimdSync(op->lhs_, op);
+        SimdSync(op->rhs_, op);
+      }
+    } else {
+      auto xhs = op->xhs_;
+      int n = xhs->in_num;
+      for (int i = 0; i < n; ++i) {
+        if (xhs->free_mask & (1u << i)) {
+          free_xbuf_.Push(xhs->data[i]->xbuf_, op);
+        }
+      }
+      constexpr int kMaxXhsInputs = 4;
+      NDObject *inputs[2 + kMaxXhsInputs];
+      inputs[0] = op->lhs_;
+      inputs[1] = op->rhs_;
+      for (int i = 0; i < n; ++i) {
+        inputs[2 + i] = xhs->data[i];
+      }
+      int total = 2 + n;
+      for (int i = 1; i < total; ++i) {
+        auto key = inputs[i];
+        int j = i - 1;
+        while (j >= 0 && inputs[j]->index_ < key->index_) {
+          inputs[j + 1] = inputs[j];
+          --j;
+        }
+        inputs[j + 1] = key;
+      }
+      for (int i = 0; i < total; ++i) {
+        SimdSync(inputs[i], op);
+      }
     }
     return size;
   }
@@ -898,8 +922,11 @@ void DumpRefHelper::Dump(NDObject *op) {
       oss_ << ", ";
       dump_var(GetInput(op->rhs_));
       if (op->flags_ & OBJ_FLAG_XHS) {
-        oss_ << ", ";
-        dump_var(GetInput(static_cast<FlexOp *>(op)->xhs_));
+        auto xhs = static_cast<FlexOp *>(op)->xhs_;
+        for (int i = 0; i < xhs->in_num; ++i) {
+          oss_ << ", ";
+          dump_var(GetInput(xhs->data[i]));
+        }
       } else if (op->IsCube()) {
         auto cube = static_cast<CubeOp *>(op);
         if (cube->bias_) {
@@ -990,8 +1017,11 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
         oss << ", ";
         dump_op(op->rhs_);
         if (op->flags_ & OBJ_FLAG_XHS) {
-          dump_op(static_cast<FlexOp *>(op)->xhs_);
-          oss << ", ";
+          auto xhs = static_cast<FlexOp *>(op)->xhs_;
+          for (int i = 0; i < xhs->in_num; ++i) {
+            oss << ", ";
+            dump_op(xhs->data[i]);
+          }
         }
       }
     }
@@ -1137,9 +1167,15 @@ int64_t VectorKernel::Analyze() {
             cur_live++;
           }
         }
-        if ((op->flags_ & OBJ_FLAG_XHS) && LivenessEnd(op, flex->xhs_)) {
-          cur_live++;
-          flex->flags_ |= OBJ_FLAG_FLEX_RREE_XHS;
+        if (op->flags_ & OBJ_FLAG_XHS) {
+          auto xhs = static_cast<FlexOp *>(op)->xhs_;
+          xhs->free_mask = 0;
+          for (int i = 0; i < xhs->in_num; ++i) {
+            if (LivenessEnd(op, xhs->data[i])) {
+              cur_live++;
+              xhs->free_mask |= (1u << i);
+            }
+          }
         }
         if (cur_live + ws_num > live_peak) {
           live_peak = cur_live + ws_num;

@@ -2261,13 +2261,13 @@ void PowerOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
 
 void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   // recover original input
-  NDObject **input[] = {&lhs_, &rhs_, &xhs_};
+  NDObject **input[] = {&lhs_, &rhs_, &xhs_->data[0]};
   for (size_t i = 0; i < 3; i++) {
     if (!stuff_ops_[i].empty()) {
       *input[i] = stuff_ops_[i][0]->lhs_;
     }
   }
-  auto max_size = std::max({lhs_->shape_ref_->size, rhs_->shape_ref_->size, xhs_->shape_ref_->size});
+  auto max_size = std::max({lhs_->shape_ref_->size, rhs_->shape_ref_->size, xhs_->data[0]->shape_ref_->size});
   shape_.Resize(max_size);
   for (size_t i = 0; i < max_size; ++i) {
     int64_t len[3];
@@ -2281,7 +2281,7 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   // update nd_
   auto &lhs_nd = lhs_->nd_;
   auto &rhs_nd = rhs_->nd_;
-  auto &xhs_nd = xhs_->nd_;
+  auto &xhs_nd = xhs_->data[0]->nd_;
   bool lhs_bc = false;
   bool rhs_bc = false;
   bool xhs_bc = false;
@@ -2304,7 +2304,7 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
     };
     if (lhs_bc) lhs_ = insert_broadcast(lhs_);
     if (rhs_bc) rhs_ = insert_broadcast(rhs_);
-    if (xhs_bc) xhs_ = insert_broadcast(xhs_);
+    if (xhs_bc) xhs_->data[0] = insert_broadcast(xhs_->data[0]);
   } else {
     auto insert_broadcast = [&input, &run_ops, this, &nd](size_t idx) {
       size_t stuff_idx = 0;
@@ -2336,7 +2336,7 @@ uint64_t SelectOp::Emit(VectorKernel &k) {
                                                               V_SEL,  V_SEL_INT32, V_SEL_INT64};
   op.count = nd_.stride_back();
   op.xm = rhs_->xbuf_;
-  op.cond = xhs_->xbuf_;
+  op.cond = xhs_->data[0]->xbuf_;
   op.ws = wss_[0];
   ASSERT(id_list[type_id_] != V_NONE);
   return vSelect::Encode(insn_, id_list[type_id_], op);
@@ -2345,7 +2345,7 @@ uint64_t SelectOp::Emit(VectorKernel &k) {
 NDObject *SelectOp::Clone(CloneHelper &h) {
   auto lhs = stuff_ops_[0].empty() ? lhs_ : stuff_ops_[0].front()->lhs_;
   auto rhs = stuff_ops_[1].empty() ? rhs_ : stuff_ops_[1].front()->lhs_;
-  auto xhs = stuff_ops_[2].empty() ? xhs_ : stuff_ops_[2].front()->lhs_;
+  auto xhs = stuff_ops_[2].empty() ? xhs_->data[0] : stuff_ops_[2].front()->lhs_;
   return new SelectOp(h.GetClone(xhs), h.GetClone(lhs), h.GetClone(rhs));
 }
 

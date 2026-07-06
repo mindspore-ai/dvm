@@ -47,10 +47,7 @@ size_t GetInputsNum(NDObject *obj) {
   if (obj->rhs_ == nullptr) {
     return 1;
   }
-  if (obj->GetObjectType() == ObjectType::kSelect) {
-    return 3;
-  }
-  return 2;
+  return 2 + (obj->CheckFlag(OBJ_FLAG_XHS) ? static_cast<FlexOp *>(obj)->xhs_->in_num : 0);
 }
 
 size_t MaxLive(BasicBlock &bb) {
@@ -152,8 +149,13 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     if (!obj->rhs_->IsLoad()) {
       ++res;
     }
-    if ((obj->flags_ & OBJ_FLAG_XHS) && !static_cast<FlexOp *>(obj)->xhs_->IsLoad()) {
-      ++res;
+    if (obj->flags_ & OBJ_FLAG_XHS) {
+      auto xhs = static_cast<FlexOp *>(obj)->xhs_;
+      for (int i = 0; i < xhs->in_num; ++i) {
+        if (!xhs->data[i]->IsLoad()) {
+          ++res;
+        }
+      }
     }
     return res;
   };
@@ -465,13 +467,19 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
     }
     obj->rhs_ = update;
   } else {
-    // Now only select have more than 2 inputs
+    // ops with extended inputs (xhs_)
     ASSERT(obj->flags_ & OBJ_FLAG_XHS);
-    auto flex = static_cast<FlexOp *>(obj);
-    if (tracker_) {
-      tracker_->Record(&flex->xhs_);
+    auto xhs = static_cast<FlexOp *>(obj)->xhs_;
+    for (int i = 0; i < xhs->in_num; ++i) {
+      if (xhs->data[i] == old) {
+        if (tracker_) {
+          tracker_->Record(&xhs->data[i]);
+        }
+        xhs->data[i] = update;
+        return;
+      }
     }
-    flex->xhs_ = update;
+    ASSERT(false);
   }
 }
 

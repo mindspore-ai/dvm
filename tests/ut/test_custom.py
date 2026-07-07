@@ -69,16 +69,16 @@ CustomDef __ALL_OPS__[] = {{"FusedAddMul", &FusedAddMul::MakeOp}, {nullptr, null
 @pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
 def test_custom_op_multi_inout():
     dev_code = r'''
-extern "C" [aicore] void fuse_mio(__gm__ uint64_t *__restrict__ pc, uint64_t head, uint64_t tile) {
+extern "C" [aicore] void fuse_min(__gm__ uint64_t *__restrict__ pc, uint64_t head, uint64_t tile) {
   uint64_t data = pc[0];
-  __ubuf__ float *a = (__ubuf__ float *)(data >> 48);
-  __ubuf__ float *b = (__ubuf__ float *)((data >> 32) & 0xffffu);
-  __ubuf__ float *c = (__ubuf__ float *)((data >> 16) & 0xffffu);
-  __ubuf__ float *d = (__ubuf__ float *)(data & 0xffffu);
+  __ubuf__ float *a = (__ubuf__ float *)(data >> 40);
+  __ubuf__ float *b = (__ubuf__ float *)((data >> 20) & 0xfffffu);
+  __ubuf__ float *c = (__ubuf__ float *)(data & 0xfffffu);
   uint64_t data1 = pc[1];
-  __ubuf__ float *out = (__ubuf__ float *)(data1 >> 48);
-  __ubuf__ float *ws = (__ubuf__ float *)((data1 >> 32) & 0xffffu);
-  uint64_t count = data1 & 0xffffu;
+  __ubuf__ float *d = (__ubuf__ float *)(data1 >> 40);
+  __ubuf__ float *out = (__ubuf__ float *)((data1 >> 20) & 0xfffffu);
+  __ubuf__ float *ws = (__ubuf__ float *)(data1 & 0xfffffu);
+  uint64_t count = pc[2];
   set_vector_mask(0, count);
   // (a + b) * (c + d)
   vadd(ws, a, b, 1, 1, 1, 1, 8, 8, 8);
@@ -86,14 +86,33 @@ extern "C" [aicore] void fuse_mio(__gm__ uint64_t *__restrict__ pc, uint64_t hea
   pipe_barrier(PIPE_V);
   vmul(out, ws, out, 1, 1, 1, 1, 8, 8, 8);
 }
+
+extern "C" [aicore] void fuse_mout(__gm__ uint64_t *__restrict__ pc, uint64_t head, uint64_t tile) {
+  uint64_t data = pc[0];
+  __ubuf__ float *input = (__ubuf__ float *)(data >> 40);
+  __ubuf__ float *out1 = (__ubuf__ float *)((data >> 20) & 0xfffffu);
+  __ubuf__ float *out2 = (__ubuf__ float *)(data & 0xfffffu);
+  uint64_t data1 = pc[1];
+  __ubuf__ float *out3 = (__ubuf__ float *)(data1 >> 40);
+  uint64_t count = data1 & 0xffffu;
+  // out1 = input + 0.1
+  // out2 = out1 + input
+  // out3 = out2 * 0.7
+  set_vector_mask(0, count);
+  vadds(out1, input, 0.1f, 1, 1, 1, 8, 8);
+  pipe_barrier(PIPE_V);
+  vadd(out2, out1, input, 1, 1, 1, 1, 8, 8, 8);
+  pipe_barrier(PIPE_V);
+  vmuls(out3, out2, 0.7f, 1, 1, 1, 8, 8);
+}
 '''
     host_code = r'''
 #include "ops.h"
 using namespace dvm;
-class FusedMIO : public CustomOp {
+class FusedMin : public CustomOp {
 public:
-  FusedMIO(NDObject *a, NDObject *b, NDObject *c, NDObject *d) : CustomOp(a, b, a->type_id_) {
-    func_id_ = GetFunction("mio/fuse_mio");
+  FusedMin(NDObject *a, NDObject *b, NDObject *c, NDObject *d) : CustomOp(a, b, a->type_id_) {
+    func_id_ = GetFunction("mio/fuse_min");
     xhs_data_.data[0] = c;
     xhs_data_.data[1] = d;
     SetXhs(&xhs_data_);
@@ -104,16 +123,42 @@ public:
     shape_ = *lhs_->shape_ref_;
   }
   uint64_t EmitEx(uint64_t *payload) override {
-    payload[0] = lhs_->xbuf_ << 48 |  rhs_->xbuf_ << 32 | xhs_->data[0]->xbuf_ << 16 | xhs_->data[1]->xbuf_;
-    payload[1] = xbuf_ << 48 | wss_[0] << 32 | nd_.stride_back();
-    return 2;
+    payload[0] = lhs_->xbuf_ << 40 |  rhs_->xbuf_ << 20 | xhs_->data[0]->xbuf_;
+    payload[1] = xhs_->data[1]->xbuf_ << 40 | xbuf_ << 20 | wss_[0];
+    payload[2] = nd_.stride_back();
+    return 3;
   }
   static NDObject *MakeOp(const std::vector<NDObject *> &inputs, const std::vector<ScalarRef> &attrs) {
-    return new FusedMIO(inputs[0], inputs[1], inputs[2], inputs[3]);
+    return new FusedMin(inputs[0], inputs[1], inputs[2], inputs[3]);
   }
   XhsN<2> xhs_data_;
 };
-CustomDef __ALL_OPS__[] = {{"FusedMIO", &FusedMIO::MakeOp}, {nullptr, nullptr}};
+
+class FusedMout : public CustomOp {
+public:
+  FusedMout(NDObject *input) : CustomOp(input, nullptr, input->type_id_), xout_data_(this) {
+    func_id_ = GetFunction("mio/fuse_mout");
+    xout_data_.data[0]->shape_ref_ = shape_ref_;
+    xout_data_.data[1]->shape_ref_ = shape_ref_;
+    SetXOut(&xout_data_);
+  }
+  void Normalize(std::vector<NDObject *> &) override {
+    ndd_.dims = lhs_->nd_.dims();
+    shape_ = *lhs_->shape_ref_;
+    xout_data_.data[0]->nd_ = nd_;
+    xout_data_.data[1]->nd_ = nd_;
+  }
+  uint64_t EmitEx(uint64_t *payload) override {
+    payload[0] = lhs_->xbuf_ << 40 |  xbuf_ << 20 | xout_data_.data[0]->xbuf_;
+    payload[1] = xout_data_.data[1]->xbuf_ << 40 | nd_.stride_back();
+    return 2;
+  }
+  static NDObject *MakeOp(const std::vector<NDObject *> &inputs, const std::vector<ScalarRef> &attrs) {
+    return new FusedMout(inputs[0]);
+  }
+  XOutN<2> xout_data_;
+};
+CustomDef __ALL_OPS__[] = {{"FusedMin", &FusedMin::MakeOp}, {"FusedMout", &FusedMout::MakeOp}, {nullptr, nullptr}};
 '''
     t = Tester()
     Tester.reg_custom("mio", host_code, dev_code)
@@ -125,6 +170,11 @@ CustomDef __ALL_OPS__[] = {{"FusedMIO", &FusedMIO::MakeOp}, {nullptr, nullptr}};
     x1 = t.load(b)
     x2 = t.mul(t.load(c), 0.6)
     x3 = t.load(d)
-    x4 = t.custom("mio/FusedMIO", [x0, x1, x2, x3])
-    t.store_expect(x4, (a + 0.1 + b) * (c * 0.6 + d))
+    x4 = t.custom("mio/FusedMin", [x0, x1, x2, x3])
+    x5 = t.custom("mio/FusedMout", [x4])
+    x6 = t.ext_out(x5, 1)
+    e4 = (a + 0.1 + b) * (c * 0.6 + d)
+    t.store_expect(x4, e4)
+    t.store_expect(x5, e4 + 0.1)
+    t.store_expect(x6, ((e4 + 0.1) + e4) * 0.7)
     assert (t.run_check())

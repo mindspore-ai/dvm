@@ -523,6 +523,14 @@ class Kernel {
   NDObject *ReduceScatter(NDObject *input, const Comm *comm);
 
   /**
+   * @brief Get a external output from a multi-output op.
+   * @param op the multi-output op.
+   * @param index external output index.
+   * @return the result operation for the specified output.
+   */
+  NDObject *ExtOut(NDObject *op, int index);
+
+  /**
    * @brief switch to next speculate stage. support with kVector  with kSpeculate flag.
    */
   void SpecNext();

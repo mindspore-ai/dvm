@@ -698,7 +698,13 @@ py::object RtKernelPy::Custom(const std::string &full_name, py::object inputs, p
     }
   }
   auto op = g_system.CreateCustom(full_name, inputs_args, attrs_args);
-  kernel_.GetImpl()->Append(op);
+  auto kernel = kernel_.GetImpl();
+  kernel->Append(op);
+  if (auto xout = static_cast<CustomOp *>(op)->xout_; xout != nullptr) {
+    for (int i = 0; i < xout->out_num; ++i) {
+      kernel->Append(xout->data[i]);
+    }
+  }
   return ObjToPy(op);
 }
 
@@ -1009,6 +1015,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("allgatherv2", &RtKernelPy::AllGatherV2, "emit allgatherv2 op")
     .def("reducescatter", &RtKernelPy::ReduceScatter, "emit reducescatter op")
     .def("custom", &RtKernelPy::Custom, "custom op", py::arg("full_name"), py::arg("inputs"), py::arg("attrs") = py::none())
+    .def("ext_out", &RtKernelPy::ExtOut, "get item from multi-output op")
     .def("convert_to_bf16", &RtKernelPy::ConvertToBF16, "convert f32 array to bf16 array")
     .def("convert_from_bf16", &RtKernelPy::ConvertFromBF16, "convert bf16 array to f32 array")
     .def("reset", &RtKernelPy::Reset, "reset eager")

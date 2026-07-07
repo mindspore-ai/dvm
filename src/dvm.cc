@@ -1548,6 +1548,12 @@ NDObject *Kernel::GroupedMatMul(NDObject *lhs, NDObject *rhs, bool trans_a, bool
   return obj;
 }
 
+NDObject *Kernel::ExtOut(NDObject *op, int index) {
+  auto custom = static_cast<CustomOp *>(op);
+  ASSERT(op->GetObjectType() == kCustom && custom->xout_ && index < custom->xout_->out_num);
+  return custom->xout_->data[index];
+}
+
 void Kernel::ParallelAdd(KernelType type, uint32_t flags, size_t thread_limit) {
   ASSERT(kernel_->KType() == KernelType::kParallel);
   static_cast<ParallelKernel*>(kernel_)->AddKernel(type, flags, thread_limit);

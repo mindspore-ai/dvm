@@ -454,7 +454,25 @@ class CodeGenHelper {
   }
 
   int CustomOpGen(CustomOp *op) {
+    uint32_t dead_mask = 0;
+    if (auto xout = op->xout_; xout != nullptr) {
+      for (int i = 0; i < xout->out_num; ++i) {
+        if (auto item = xout->data[i]; item->xbuf_ == 0) {
+          AllocDynXBuf(item, item->xbuf_);
+          if (item->flags_ & OBJ_FLAG_DEAD) {
+            dead_mask |= 1u << i;
+          }
+        }
+      }
+    }
     int size = GenFlexOpCommon(op);
+    if (dead_mask) {
+      while (dead_mask) {
+        auto idx = 31 - __builtin_clz(dead_mask);
+        dead_mask &= ~(1ul << idx);
+        free_xbuf_.Push(op->xout_->data[idx]->xbuf_, op);
+      }
+    }
     if (op->rhs_ == nullptr) {
       ASSERT(op->lhs_);
       SimdSync(op->lhs_, op);
@@ -1177,8 +1195,23 @@ int64_t VectorKernel::Analyze() {
             }
           }
         }
-        if (cur_live + ws_num > live_peak) {
-          live_peak = cur_live + ws_num;
+        int flex_live = cur_live;
+        if (op->flags_ & OBJ_FLAG_XOUT) {
+          auto xout = static_cast<CustomOp *>(op)->xout_;
+          for (int i = 0; i < xout->out_num; ++i) {
+            bool is_static = false;
+            for (size_t j = load_num_; j < static_ops_.size(); ++j) {
+              if (xout->data[i] == static_ops_[j]->lhs_) {
+                is_static = true;
+                static_ops_[j]->first_def_ = op->index_; // extend live
+                break;
+              }
+            }
+            if (!is_static) flex_live++;
+          }
+        }
+        if (flex_live + ws_num > live_peak) {
+          live_peak = flex_live + ws_num;
         }
       }  // end flexop
       if (reuse_flag == REUSE_READY) {

@@ -67,6 +67,7 @@ enum ObjectType {
   kOneHot,
   kPermute,
   kCustom,
+  kExtOut,
   kCubeOp,
   kGmmOp,
   kObjectBulk
@@ -356,12 +357,12 @@ enum CodeGenTmpl {
   kGenSimd0 = 0,
   kGenSimd1,
   kGenSimd2,
-  kGenComm,
   kGenFlex,
   kGenSimd3,
-  kGenCustom,
   kGenLoad,
   kGenStore,
+  kGenComm,
+  kGenCustom,
 };
 
 struct ObjectMeta {
@@ -407,6 +408,7 @@ class VectorKernel;
 // static flags
 #define OBJ_FLAG_WORKSPACE (1u << 16)
 #define OBJ_FLAG_XHS (2u << 16)
+#define OBJ_FLAG_XOUT (4u << 16)
 #define OBJ_FLAG_EAGER (8u << 16)
 #define OBJ_FLAG_STAGE_IO (16u << 16)
 
@@ -1320,8 +1322,32 @@ class OneHotOp : public NDObject {
   ShapeWithRef shape_;
 };
 
+class __export__ ExtOutOp : public NDObject {
+ public:
+  ExtOutOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, kExtOut) {}
+  uint64_t Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+  NDObject *Clone(CloneHelper &h) override;
+};
+
 class __export__ CustomOp : public FlexOp {
  public:
+  struct XOut {
+    int out_num;
+    ExtOutOp *data[0];
+  };
+
+  template <int N>
+  struct XOutN : public XOut {
+    XOutN(NDObject *input) {
+      out_num = N;
+      for (int i = 0; i < N; ++i) {
+        data_ext[i] = new ExtOutOp(input);
+      }
+    }
+    ExtOutOp *data_ext[N];
+  };
+
   CustomOp(NDObject *lhs, NDObject *rhs, DataType type_id)
       : FlexOp(lhs, rhs, type_id, kCustom) {
     nd_.data = &ndd_;
@@ -1337,6 +1363,12 @@ class __export__ CustomOp : public FlexOp {
   virtual void ShapeProp(int64_t &);
 
   uint64_t GetFunction(const std::string &full_name);
+  void SetXOut(XOut *xout) {
+    xout_ = xout;
+    flags_ |= OBJ_FLAG_XOUT;
+  }
+
+  XOut *xout_{nullptr};
 
  protected:
   NDSpaceData ndd_;

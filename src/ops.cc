@@ -496,6 +496,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},  // OneHot
     {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
     {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
+    {kGenSimd0, F_NS, nullptr, nullptr, nullptr, nullptr},                                                    // ExtOut 
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
     {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                              // GmmOp
   };
@@ -3145,6 +3146,26 @@ void OneHotOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
     shape[i] = i == axis ? depth : in_shape->data[i];
   }
 }
+
+uint64_t ExtOutOp::Emit(VectorKernel &k) { return vNop::Encode(insn_); }
+
+void ExtOutOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "ExtOut";
+  if (verbose) {
+    int index = -1;
+    auto xout = static_cast<CustomOp *>(lhs_)->xout_;
+    ASSERT(xout != nullptr);
+    for (int i = 0; i < xout->out_num; ++i) {
+      if (xout->data[i] == this) {
+        index = i;
+        break;
+      }
+    }
+    oss << '<' << index << '>';
+  }
+}
+
+NDObject *ExtOutOp::Clone(CloneHelper &h) { return new ExtOutOp(h.GetClone(lhs_)); }
 
 uint64_t CustomOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());

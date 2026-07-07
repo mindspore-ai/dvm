@@ -96,6 +96,49 @@ def test_remove_pad_04():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_remove_pad_05():
+    t = Tester("vector:spec")
+    shape = [80, 204, 204]
+    red_dims = (2,)
+    mask = (np.random.uniform(0, 1, shape) > 0.5).astype(np.bool_)
+    scalar = np.array(-3.4028234663852886e38, dtype=np.float32)
+    inp = np.random.normal(0.0, 1.0, shape).astype(np.float32)
+
+    x_mask = t.load(mask)
+    x_scalar = t.load(scalar)
+    x_inp = t.load(inp)
+
+    x_expand = t.broadcast(x_scalar, shape)
+    x_div = t.div(x_inp, 8.0)
+    x_where = t.select(x_mask, x_expand, x_div)
+    x_amax = t.max(x_where, red_dims, True)
+
+    t.spec_next()
+ 
+    x_expand_amax = t.broadcast(x_amax, shape)
+    x_sub = t.sub(x_where, x_expand_amax)
+    x_exp = t.exp(x_sub)
+    x_sum = t.sum(x_exp, red_dims, True)
+
+    t.spec_next()
+
+    x_expand_sum = t.broadcast(x_sum, shape)
+    x_out = t.div(x_exp, x_expand_sum)
+
+
+    np_where = np.where(mask, scalar, inp / 8.0)
+    np_amax = np.max(np_where, axis=red_dims, keepdims=True)
+    np_exp = np.exp(np_where - np_amax)
+    np_sum = np.sum(np_exp, axis=red_dims, keepdims=True)
+    np_out = np_exp / np_sum
+
+    t.store_expect(x_out, np_out.astype(np.float32), 1e-4)
+    t.set_passes("InsertRemovePad")
+    
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_remove_pad_multi_user():
     t = Tester()
     a0 = np.random.normal(0, 1, [1, 4096, 4]).astype(np.float32)

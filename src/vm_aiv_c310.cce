@@ -1368,14 +1368,20 @@ __aicore_inline__ void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xd = (__ubuf__ T *)(op.xd);
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint16_t repeat = op.repeat;
-  uint32_t dst_offset = op.iter_num;
-  uint32_t simd_width = op.rs << BlockDataShift(T);
+  uint32_t dst_num = op.rs << BlockDataShift(T);
   __VEC_SCOPE__ {
     RegTensor<T> vreg0;
     vector_align ureg;
+    uint32_t sregLower = BlockNum(T);
+    uint16_t count_repeat = op.iter_num / sregLower;
+    uint16_t tail = op.iter_num - count_repeat * sregLower;
     for (uint16_t i = 0; i < repeat; ++i) {
-      vlds(vreg0, xn, i * simd_width, NORM);
-      vstus(ureg, dst_offset, vreg0, xd, POST_UPDATE);
+      for (uint16_t j = 0; j < count_repeat; ++j) {
+        vlds(vreg0, xn, i * dst_num + j * sregLower, NORM);
+        vstus(ureg, sregLower, vreg0, xd, POST_UPDATE);
+      }
+      vlds(vreg0, xn, i * dst_num + count_repeat * sregLower, NORM);
+      vstus(ureg, tail, vreg0, xd, POST_UPDATE);
     }
     vstas(ureg, xd, 0, POST_UPDATE);
   }

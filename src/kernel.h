@@ -280,7 +280,18 @@ class VectorSchedule {
   void SpaceSplit(int dim, int64_t npart, int64_t nfactor);
   void SpaceTrans(int dim1, int dim2);
   void SaveSpace();
-  void ApplySubSpace(const DimArray &offset, const DimArray &size);
+  void ApplySubSpace(const DimArray &size) {
+    for (auto &info : space_records_) {
+      if (info.bcast_mask == SpaceRecord::OP_MASK) {
+        info.change_op->DimChanged();
+      } else {
+        auto &dims = info.ndd->dims;
+        for (size_t i = 0; i < dims.size(); ++i) {
+          dims[i] = (info.bcast_mask >> i) & 1ul ?  1 : size[i];
+        }
+      }
+    }
+  }
 
   struct SpaceRecord {
     uint32_t bcast_mask;
@@ -294,12 +305,22 @@ class VectorSchedule {
   VectorKernel *kernel_;
 };
 
-class TransGenHelper : public VectorSchedule {
+class SchGenHelper : public VectorSchedule {
  public:
-  TransGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
-  ~TransGenHelper() { delete []reloc_array_; }
+  SchGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
+  SchGenHelper(VectorKernel *kernel, NDObject *dom) : VectorSchedule(kernel), sch_dom_(dom) {}
+  ~SchGenHelper() { delete []reloc_array_; }
 
   int64_t FractalCodeGen();
+  int64_t ConcatCodeGen(ConcatOp *concat);
+  int64_t DefaultCodeGen() {
+    if (sch_dom_) {
+      if (sch_dom_->obj_id_ == ObjectType::kConcat) {
+        return ConcatCodeGen(static_cast<ConcatOp *>(sch_dom_));
+      }
+    }
+    return FractalCodeGen();
+  }
   RelocAddr *ReserveReloc(size_t size) {
     if (size > reloc_size_) {
       delete []reloc_array_;
@@ -312,6 +333,7 @@ class TransGenHelper : public VectorSchedule {
  protected:
   size_t reloc_size_{0};
   RelocAddr *reloc_array_{nullptr};
+  NDObject *sch_dom_{nullptr};
 };
 
 class VKernelS : public VectorKernel {
@@ -337,6 +359,7 @@ class VKernelS : public VectorKernel {
   }
 
   void StaticInit(const std::vector<NDObject *> &objects);
+  void SchInit();
   void BrokerInit();
   bool BrokerAffine();
   uint64_t BrokerCodeGen(VKernel **hold_kernel);
@@ -346,20 +369,13 @@ class VKernelS : public VectorKernel {
     objects_.clear();
   }
 
-  TransGenHelper *GetTransGenLazy() {
-    if (trans_gen_ == nullptr) {
-      trans_gen_ = new TransGenHelper(this);
-    }
-    return trans_gen_;
-  }
-
   std::vector<NDObject *> build_ops_;
 
  protected:
   int broker_num_{-1};
   int last_broker_;
   VKernel *stage_kernel_{nullptr};
-  TransGenHelper *trans_gen_{nullptr};
+  SchGenHelper *sch_gen_{nullptr};
 };
 
 class VKernelD : public VKernelS {  // TODO: remove VKernelD

@@ -495,6 +495,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                               // CompareS
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},  // OneHot
     {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
+    {kGenSimd1, F_IP | F_LR, ConcatOp::DimChanged, ConcatOp::FoldProp, ConcatOp::TileCollect, ConcatOp::ShapeProp}, // Concat
     {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
     {kGenSimd0, F_NS, nullptr, nullptr, nullptr, nullptr},                                                    // ExtOut 
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
@@ -1848,6 +1849,120 @@ void ReshapeOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
   for (size_t i = 0; i < dst_shape->size; ++i) {
     shape[i] = dst_shape->data[i];
   }
+}
+
+ConcatOp::ConcatOp(NDObject **inputs, size_t input_num, int cat_axis)
+    : FlexOp(inputs[0], inputs[1], inputs[0]->type_id_, ObjectType::kConcat), cat_axis_ref_(cat_axis) {
+  shape_ref_ = &shape_;
+  nd_.data = &ndd_;
+  slices_.reserve(input_num);
+  slices_.emplace_back(inputs[0]);
+  slices_.emplace_back(inputs[1]);
+  if (auto xhs_num = input_num - 2; xhs_num > 0) {
+    auto xhs = reinterpret_cast<Xhs *>(new char[sizeof(Xhs) + sizeof(NDObject *) + xhs_num]);
+    xhs->in_num = static_cast<int>(xhs_num);
+    xhs->free_mask = 0;
+    for (size_t i = 0; i < xhs_num; ++i) {
+      xhs->data[i] = inputs[i + 2];
+      slices_.emplace_back(inputs[i + 2]);
+    }
+    SetXhs(xhs);
+  }
+}
+
+ConcatOp::~ConcatOp() { delete[] reinterpret_cast<char *>(xhs_); }
+
+void ConcatOp::Normalize(std::vector<NDObject *> &run_ops) {
+  int dim_size = static_cast<int>(lhs_->shape_ref_->size);
+  int axis = cat_axis_ref_ >= 0 ? cat_axis_ref_ : cat_axis_ref_ + dim_size;
+  int64_t cat_size = lhs_->shape_ref_->data[axis] + rhs_->shape_ref_->data[axis];
+  if (xhs_) {
+    for (int i = 0; i < xhs_->in_num; ++i) {
+      cat_size += xhs_->data[i]->shape_ref_->data[axis];
+    }
+  }
+  shape_ = *lhs_->shape_ref_;
+  shape_[axis] = cat_size;
+  ndd_.dims = lhs_->nd_.dims();
+  cat_dim_ = dim_size - 1 - axis;
+  ndd_.dims[cat_dim_] = cat_size;
+}
+
+uint64_t ConcatOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(k.LeadAlign());
+  ASSERT(rhs_ == nullptr);
+  return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
+}
+
+NDObject *ConcatOp::Clone(CloneHelper &h) {
+  std::vector<NDObject *> cloned;
+  cloned.push_back(h.GetClone(lhs_));
+  cloned.push_back(h.GetClone(rhs_));
+  if (xhs_) {
+    cloned.reserve(2 + xhs_->in_num);
+    for (int i = 0; i < xhs_->in_num; ++i) {
+      cloned.push_back(h.GetClone(xhs_->data[i]));
+    }
+  }
+  return new ConcatOp(cloned.data(), cloned.size(), cat_axis_ref_);
+}
+
+void ConcatOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "Concat";
+  if (verbose) {
+    oss << '<' << cat_axis_ref_  << '>';
+  }
+}
+
+void ConcatOp::TileCollect(NDObject *op, TileInfo &info) {
+  auto cat_depth = static_cast<ConcatOp *>(op)->cat_dim_ + 1;
+  if (info.lead_depth > cat_depth) {
+    info.lead_depth = cat_depth;
+  }
+}
+
+void ConcatOp::FoldProp(NDObject *op, PropRange &range) {
+  auto cat_dim = static_cast<ConcatOp *>(op)->cat_dim_;
+  if (range.base > cat_dim) {
+    if (auto depth_len = range.base - cat_dim; depth_len < range.depth) {
+      range.depth = depth_len;
+    }
+  }
+}
+
+void ConcatOp::DimChanged(NDObject *op) {
+  for (size_t i = 0; i < op->nd_.size(); ++i) {
+    if (i >= op->lhs_->nd_.size() || op->lhs_->nd_[i] != op->nd_[i]) {
+      static_cast<ConcatOp *>(op)->cat_dim_ = i;
+      break;
+    }
+  }
+}
+
+void ConcatOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *self = static_cast<ConcatOp *>(op);
+  int axis = self->cat_axis_ref_;
+  if (axis < 0) {
+    axis += static_cast<int>(self->lhs_->shape_ref_->size);
+  }
+  int64_t cat_size = 0;
+  auto lhs_slice = self->lhs_->shape_ref_->data[axis];
+  auto rhs_slice = self->rhs_->shape_ref_->data[axis];
+  if (lhs_slice > 0 && rhs_slice > 0) {
+    cat_size = lhs_slice + rhs_slice;
+    if (auto xhs = self->xhs_) {
+      for (int i = 0; i < xhs->in_num; ++i) {
+        auto size = xhs->data[i]->shape_ref_->data[axis];
+        if (size < 0) {
+          cat_size = 0;
+          break;
+        }
+        cat_size += size;
+      }
+    }
+  }
+  self->shape_ = *(self->lhs_->shape_ref_);
+  self->shape_[axis] = cat_size ? cat_size : sym_dim_next--;
 }
 
 void PermuteOp::Normalize(std::vector<NDObject *> &run_ops) {

@@ -1496,6 +1496,13 @@ NDObject *Kernel::Slice(NDObject *input, int dim, ScalarRef *begin, ScalarRef *e
   return load;
 }
 
+NDObject *Kernel::Concat(NDObject **inputs, size_t input_num, int dim) {
+  ASSERT(input_num >= 2);
+  auto concat = new ConcatOp(inputs, input_num, dim);
+  kernel_->Append(concat);
+  return concat;
+}
+
 NDObject *Kernel::_AllReduce(int op_type, NDObject *input, const Comm *comm) {
   NDObject *obj;
   if (input->type_id_ == DataType::kBFloat16) {

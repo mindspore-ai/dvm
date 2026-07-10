@@ -66,6 +66,7 @@ enum ObjectType {
   kCompareS,
   kOneHot,
   kPermute,
+  kConcat,
   kCustom,
   kExtOut,
   kCubeOp,
@@ -1135,6 +1136,60 @@ class SelectOp : public FlexOp {
   XhsN<1> xhs_data_;
   std::vector<NDObject *> stuff_ops_[3];
   ShapeWithRef shape_;
+};
+
+class ConcatOp : public FlexOp {
+ public:
+  ConcatOp(NDObject **inputs, size_t input_num, int cat_axis);
+  ~ConcatOp() override;
+
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void TileCollect(NDObject *op, TileInfo &info);
+  static void FoldProp(NDObject *op, PropRange &range);
+  static void DimChanged(NDObject *op);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
+  struct Slice {
+    Slice(NDObject *in) : input(in) {}
+    NDObject *input;
+    int64_t size;
+  };
+  struct PartialCtx {
+    NDObject *lhs;
+    NDObject *rhs;
+    uint32_t flags;
+  };
+  PartialCtx PartialInit() {
+    PartialCtx ctx;
+    ctx.lhs = lhs_;
+    ctx.rhs = rhs_;
+    ctx.flags = flags_;
+    rhs_ = nullptr;
+    flags_ &= ~OBJ_FLAG_XHS;
+    for (auto &s : slices_) {
+      s.size = s.input->nd_[cat_dim_];
+    }
+    return ctx;
+  }
+  void PartialRecover(const PartialCtx &ctx) {
+    lhs_ = ctx.lhs;
+    rhs_ = ctx.rhs;
+    flags_ = ctx.flags;
+  }
+  void PartialSet(NDObject *input) { lhs_ = input; }
+  int CatDim() const { return cat_dim_; }
+
+  std::vector<Slice> slices_;
+
+ protected:
+  int cat_axis_ref_;
+  int cat_dim_;
+  ShapeWithRef shape_;
+  NDSpaceData ndd_;
 };
 
 class _BroadcastOp : public NDObject {

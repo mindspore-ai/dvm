@@ -467,6 +467,11 @@ def test_trans_fractal_2d(type, H, W):
     t.view_store_expect(x0, [W, 1], a.T)
     assert (t.run_check())
 
+def _continuous_stride(shape):
+    stride = [1] * len(shape)
+    for i in range(len(stride) - 1, 0, -1):
+        stride[i - 1] = shape[i] * stride[i]
+    return stride
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
@@ -477,11 +482,6 @@ def test_trans_fractal_2d(type, H, W):
     [[10, 200, 1], (1, 2), [10, 200, 128], (1, 2)],  # h broadcast
 ])
 def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2):
-    def _continuous_stride(shape):
-        stride = [1] * len(shape)
-        for i in range(len(stride) - 1, 0, -1):
-            stride[i - 1] = shape[i] * stride[i]
-        return stride
     t = Tester("vector:opt_fractal")
     a = np.random.normal(0, 1, shape1).astype(np.float32)
     b = np.random.normal(0, 1, shape2).astype(np.float32)
@@ -497,4 +497,28 @@ def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2):
     expect = swap_a + swap_b
     store_stride = _continuous_stride(expect.shape)
     t.view_store_expect(x2, store_stride, expect)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape1, shape2, shape3, shape4, axis", [
+    [[3, 400], [3, 600], [3, 200], [3, 1200], 1], # lead
+    [[3, 400, 32], [3, 600, 32], [3, 200, 32], [3, 1, 32], 1], # middle, cat broadcast
+    [[10, 400], [20, 400], [30, 400], [60, 1], 0], # out, no-cat broadcast
+])
+def test_sch_concat(shape1, shape2, shape3, shape4, axis):
+    t = Tester()
+    a0 = np.random.normal(0, 1, shape1).astype(np.float32)
+    a1 = np.random.normal(0, 1, shape2).astype(np.float32)
+    a2 = np.random.normal(0, 1, shape3).astype(np.float32)
+    a3 = np.random.normal(0, 1, shape4).astype(np.float32)
+    x0 = t.view_load(shape1, _continuous_stride(shape1), a0)
+    x1 = t.view_load(shape2, _continuous_stride(shape2), a1)
+    x2 = t.add(x0, 0.1)
+    x3 = t.mul(x1, 0.6)
+    x4 = t.view_load(shape3, _continuous_stride(shape3), a2)
+    x5 = t.concat([x2, x3, x4], axis)
+    x6 = t.add(x5, t.view_load(shape4, _continuous_stride(shape4), a3))
+    expect = np.concatenate([a0 + 0.1, a1 * 0.6, a2], axis=axis) + a3
+    t.view_store_expect(x6, _continuous_stride(expect.shape), expect)
     assert (t.run_check())

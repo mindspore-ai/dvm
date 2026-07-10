@@ -171,6 +171,15 @@ class KernelPy {
     return ObjToPy(kernel_.Slice(PyToObj(input), dim, GetScalarRef(begin), GetScalarRef(end)));
   }
   py::object Copy(py::object input) { return ObjToPy(kernel_.Copy(PyToObj(input))); }
+  py::object Concat(py::sequence inputs, int dim) {
+    std::vector<NDObject *> objs;
+    size_t size = py::len(inputs);
+    objs.reserve(size);
+    for (size_t i = 0; i < size; ++i) {
+      objs.push_back(PyToObj(inputs[i].cast<py::object>()));
+    }
+    return ObjToPy(kernel_.Concat(objs.data(), objs.size(), dim));
+  }
   py::object Broadcast(py::object input, py::object shape) {
     return ObjToPy(kernel_.Broadcast(PyToObj(input), GetShapeRef(shape)));
   }
@@ -335,6 +344,7 @@ static inline void RegDvmPy(const py::module &m) {
     .def("min", &KernelPy::Reduce<ReduceOpType::kMin>, py::arg("input"), py::arg("dims"), py::arg("keepdims") = false,
          "emit min")
     .def("copy", &KernelPy::Copy, "emit copy op")
+    .def("concat", &KernelPy::Concat, "emit concat op")
     .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
          py::arg("trans_b"), py::arg("bias") = py::none())
     .def("grouped_matmul", &KernelPy::GroupedMatMul, "emit grouped_matmul op", py::arg("lhs"), py::arg("rhs"),

@@ -471,6 +471,15 @@ class Kernel {
   NDObject *Copy(NDObject *input);
 
   /**
+   * @brief Emit a concat operation. ONLY for view vector.
+   * @param inputs array of input operations.
+   * @param input_num number of inputs.
+   * @param dim dimension to concatenate along.
+   * @return the result operation.
+   */
+  NDObject *Concat(NDObject **inputs, size_t input_num, int dim);
+
+  /**
    * @brief Emit a OneHot operation.
    * @param indices input indices operation.
    * @param depth depth reference. the size should keep to 1.

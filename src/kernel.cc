@@ -1241,6 +1241,25 @@ void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {
   }
 }
 
+void VKernelS::SchInit() {
+  for (auto op : static_ops_) {
+    if (op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore) {
+      return;
+    }
+  }
+  ASSERT(sch_gen_ == nullptr);
+  if (flags_ & KernelFlag::kOptFractalTrans) {
+    sch_gen_ = new SchGenHelper(this);
+  } else {
+    for (auto op : build_ops_) {
+      if (op->obj_id_ == kConcat) {
+        sch_gen_ = new SchGenHelper(this, op);
+        break;
+      }
+    }
+  }
+}
+
 static inline void SetPdHead(NDObject *op, NDObject *head) { op->insn_ = reinterpret_cast<uint64_t *>(head); }
 static inline NDObject *GetPdHead(NDObject *op) { return reinterpret_cast<NDObject *>(op->insn_); }
 static inline bool IsBroker(NDObject *op) { return op->obj_id_ == kReshape; }
@@ -1779,36 +1798,6 @@ void VectorSchedule::SaveSpace() {
   }
 }
 
-void VectorSchedule::ApplySubSpace(const DimArray &offset, const DimArray &size) {
-  for (auto &info : space_records_) {
-    if (info.bcast_mask == SpaceRecord::OP_MASK) {
-      info.change_op->DimChanged();
-    } else {
-      auto &dims = info.ndd->dims;
-      for (size_t i = 0; i < dims.size(); ++i) {
-        dims[i] = (info.bcast_mask >> i) & 1ul ?  1 : size[i];
-      }
-    }
-  }
-  auto calc_offset = [&offset](const DimArray &stride) {
-    uint64_t off = 0;
-    for (size_t i = 0; i < stride.size(); ++i) {
-      off += offset[i] * stride[i];
-    }
-    return off;
-  };
-  for (size_t i = 0; i < kernel_->load_num_; ++i) {
-    auto op = static_cast<NDViewLoad *>(kernel_->static_ops_[i]);
-    ASSERT(op->obj_id_ == kViewLoad);
-    op->ViewUpdate(calc_offset(op->Stride()));
-  }
-  for (size_t i = kernel_->load_num_; i < kernel_->static_ops_.size(); ++i) {
-    auto op = static_cast<NDViewStore *>(kernel_->static_ops_[i]);
-    ASSERT(op->obj_id_ == kViewStore);
-    op->ViewUpdate(calc_offset(op->Stride()));
-  }
-}
-
 class VectorDupHelper {
  public:
   VectorDupHelper(VectorKernel *kernel, int dup_num, RelocAddr *relocs)
@@ -1860,7 +1849,7 @@ class VectorDupHelper {
   RelocAddr *relocs_;
 };
 
-int64_t TransGenHelper::FractalCodeGen() {
+int64_t SchGenHelper::FractalCodeGen() {
   constexpr int64_t min_dim_limit = 6;
   int h_idx = -1;
   int64_t item_size = 0;
@@ -1897,7 +1886,7 @@ int64_t TransGenHelper::FractalCodeGen() {
   class FractalDunGen {
    public:
     enum { W_FRACTAL = 16 };
-    FractalDunGen(TransGenHelper &gen, int h_idx, uint64_t item_size)
+    FractalDunGen(SchGenHelper &gen, int h_idx, uint64_t item_size)
         : gen_(gen), space_(gen.kernel_->DimSpace()), h_idx_(h_idx) {
       h_fractal_ = item_size == 2 ? 16 : 8;
       int64_t w_size = space_[0];
@@ -1933,7 +1922,6 @@ int64_t TransGenHelper::FractalCodeGen() {
       part_total_ = h_npart * w_npart;
       part_base_ = 1;
       size_t w_part_dim = h_idx_ + 1;
-      offset_.resize(space_.size(), 0);
       size_.resize(space_.size());
       size_[2] = space_[2];
       for (size_t i = 3; i < space_.size(); ++i) {
@@ -1965,27 +1953,39 @@ int64_t TransGenHelper::FractalCodeGen() {
       constexpr int h_factor_dim = 1;
       constexpr int h_part_dim = 2;
       int w_part_dim = h_idx_ + 1;
-      offset_[h_part_dim] = h_part_off;
-      offset_[w_part_dim] = w_part_off;
       size_[w_factor_dim] = w_fac_size;
       size_[h_factor_dim] = h_fac_size;
       size_[h_part_dim] = h_part_size;
       size_[w_part_dim] = w_part_size;
-      gen_.ApplySubSpace(offset_, size_);
+      gen_.ApplySubSpace(size_);
+      auto load_num = gen_.kernel_->load_num_;
+      auto &static_ops = gen_.kernel_->static_ops_;
+      // TODO: consider broadcast
+      for (size_t i = 0; i < load_num; ++i) {
+        auto op = static_cast<NDViewLoad *>(static_ops[i]);
+        ASSERT(op->obj_id_ == kViewLoad);
+        auto &stride = op->Stride();
+        op->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
+      }
+      for (size_t i = load_num; i < static_ops.size(); ++i) {
+        auto op = static_cast<NDViewStore *>(static_ops[i]);
+        ASSERT(op->obj_id_ == kViewStore);
+        auto &stride = op->Stride();
+        op->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
+      }
       uint64_t part_num = h_part_size * w_part_size;
       uint64_t core_num = std::min(CeilDiv(part_num * free_core_, part_total_), part_base_ * part_num);
       free_core_ -= helper.Append(core_num);
       part_total_ -= part_num;
     };
 
-    TransGenHelper &gen_;
+    SchGenHelper &gen_;
     const DimArray &space_;
     int64_t h_fractal_;
     int64_t w_body_;
     int64_t w_tail_;
     int64_t h_body_;
     int64_t h_tail_;
-    DimArray offset_;
     DimArray size_;
     uint64_t part_total_;
     uint64_t part_base_;
@@ -2014,9 +2014,51 @@ int64_t TransGenHelper::FractalCodeGen() {
   return result;
 }
 
+int64_t SchGenHelper::ConcatCodeGen(ConcatOp *concat) {
+  SpaceInit();
+  SaveSpace();
+  DimArray size = concat->nd_.dims();
+  int cat_dim = concat->CatDim();
+  int64_t cat_total = size[cat_dim];
+  size_t load_num = kernel_->load_num_;
+  auto &static_ops = kernel_->static_ops_;
+  uint64_t cat_out_mask = 0;
+  for (size_t i = 0; i < static_ops.size(); ++i) {
+    if (static_ops[i]->nd_[cat_dim] == cat_total) {
+      cat_out_mask |= 1ull << i;
+    }
+  }
+  int dup_num = concat->slices_.size();
+  VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num));
+  int64_t free_core = g_system.CoreNum();
+  size_t cat_offset = 0;
+  auto ctx = concat->PartialInit();
+  for (auto &slice : concat->slices_) {
+    auto cat_size = slice.size;
+    size[cat_dim] = cat_size;
+    concat->PartialSet(slice.input);
+    ApplySubSpace(size);
+    for (size_t i = 0; i < load_num; ++i) {
+      auto op = static_cast<NDViewLoad *>(static_ops[i]);
+      op->ViewUpdate((cat_out_mask >> i) & 1ull ? op->Stride()[cat_dim] * cat_offset : 0);
+    }
+    for (size_t i = load_num; i < static_ops.size(); ++i) {
+      auto op = static_cast<NDViewStore *>(static_ops[i]);
+      op->ViewUpdate((cat_out_mask >> i) & 1ull ? op->Stride()[cat_dim] * cat_offset : 0);
+    }
+    cat_offset += cat_size;
+    auto core_num = CeilDiv(cat_size * free_core, cat_total);
+    cat_total -= cat_size;
+    free_core -= helper.Append(core_num);
+  }
+  concat->PartialRecover(ctx);
+  helper.Submit();
+  return 0;
+}
+
 VKernelS::~VKernelS() {
   delete stage_kernel_;
-  delete trans_gen_;
+  delete sch_gen_;
   for (auto op : build_ops_) {
     delete op;
   }
@@ -2033,8 +2075,8 @@ uint64_t VKernelS::CodeGen() {
     ProcessIdle();
     return 0;
   }
-  if (flags_ & KernelFlag::kOptFractalTrans) {
-    if (auto ret = GetTransGenLazy()->FractalCodeGen(); ret != -1) {
+  if (sch_gen_) {
+    if (auto ret = sch_gen_->DefaultCodeGen(); ret != -1) {
       return ret;
     }
   }
@@ -2048,6 +2090,7 @@ bool VKernelS::NormBuild() {
     Clear();
     if (static_ops_.empty()) {
       StaticInit(build_ops_);
+      SchInit();
     }
     if (!Normalize(true)) {
       return false;
@@ -2058,6 +2101,7 @@ bool VKernelS::NormBuild() {
     }
     Optimize(build_ops_, nullptr);
     StaticInit(objects_);
+    SchInit();
   }
   BuildDomain();
   return true;

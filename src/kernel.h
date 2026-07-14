@@ -340,6 +340,7 @@ class ConcatSchGen : public SchGenHelper {
     int slice;
   };
   std::vector<SliceIO> slice_ios_;
+  size_t load_num_;
 };
 
 class SplitSchGen : public SchGenHelper {

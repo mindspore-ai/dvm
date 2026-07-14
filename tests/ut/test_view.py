@@ -524,6 +524,32 @@ def test_sch_concat(shape1, shape2, shape3, shape4, axis):
     assert (t.run_check())
 
 
+def test_sch_concat_dyn():
+    t = Tester("vector:dyn")
+    x0 = t.load([-1], "float32")
+    x1 = t.load([-1], "float32")
+    x2 = t.add(x0, 0.1)
+    x3 = t.mul(x1, 0.6)
+    x4 = t.load([-1], "float32")
+    x5 = t.concat([x2, x3, x4], 1)
+    x6 = t.add(x5, 0.2)
+    strides = t.int_array()
+    x7 = t.view_store(x6, strides)
+    iters = [[[3, 300], [3, 400],[3, 200]], [[3, 300, 16], [3, 400, 16],[3, 200, 16]], [[10, 1000], [10, 800],[10, 200]]]
+    for shape1, shape2, shape3 in iters:
+        a0 = np.random.normal(0, 1, shape1).astype(np.float32)
+        a1 = np.random.normal(0, 1, shape2).astype(np.float32)
+        a2 = np.random.normal(0, 1, shape3).astype(np.float32)
+        t.input(x0, a0)
+        t.input(x1, a1)
+        t.input(x4, a2)
+        expect = np.concatenate([a0 + 0.1, a1 * 0.6, a2], axis=1) + 0.2
+        strides.update(_continuous_stride(expect.shape))
+        t.set_output(x7, np.ascontiguousarray(np.zeros_like(expect)))
+        t.run()
+        assert(t.check(x7, expect))
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("shape, split_size, dim", [
     ([3, 900], 300, 1),    # lead, evenly divisible

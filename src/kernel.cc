@@ -2056,6 +2056,7 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
     EXCEPTION_IF(op->reuse_dep_ < 0 && op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore,
                  "concat output expect viewload and viewstore");
   }
+  load_num_ = kernel->load_num_;
 }
 
 int64_t ConcatSchGen::CodeGen() {
@@ -2064,7 +2065,6 @@ int64_t ConcatSchGen::CodeGen() {
   DimArray size = concat_->nd_.dims();
   int cat_dim = concat_->CatDim();
   int64_t cat_total = size[cat_dim];
-  size_t load_num = kernel_->load_num_;
   auto &static_ops = kernel_->static_ops_;
   for (auto &s : slice_ios_) {
     if (s.slice < 0) {
@@ -2083,7 +2083,7 @@ int64_t ConcatSchGen::CodeGen() {
     concat_->PartialSet(slice.input);
     ApplySubSpace(size);
     static_ops.clear();
-    for (size_t i = 0; i < load_num; ++i) {
+    for (size_t i = 0; i < load_num_; ++i) {
       auto &s = slice_ios_[i];
       if (s.slice < 0) {
         auto load = static_cast<NDViewLoad *>(s.op);
@@ -2094,7 +2094,7 @@ int64_t ConcatSchGen::CodeGen() {
       static_ops.push_back(s.op);
     }
     kernel_->load_num_ = static_ops.size();
-    for (size_t i = load_num; i < slice_ios_.size(); ++i) {
+    for (size_t i = load_num_; i < slice_ios_.size(); ++i) {
       auto &s = slice_ios_[i];
       if (s.slice < 0) {
         auto store = static_cast<NDViewStore *>(s.op);
@@ -2132,6 +2132,7 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
       op->reuse_dep_ = input_idx;
     }
   }
+  // TODO: side away load/store
   slice_ios_.resize(kernel->static_ops_.size());
   for (size_t i = 0; i < slice_ios_.size(); ++i) {
     auto op = kernel->static_ops_[i];

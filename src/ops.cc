@@ -496,6 +496,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},  // OneHot
     {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
     {kGenSimd1, F_IP | F_LR, ConcatOp::DimChanged, ConcatOp::FoldProp, ConcatOp::TileCollect, ConcatOp::ShapeProp}, // Concat
+    {kGenSimd1, F_IP | F_LR, SplitOp::DimChanged, SplitOp::FoldProp, SplitOp::TileCollect, SplitOp::ShapeProp},  // SplitOp
     {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
     {kGenSimd0, F_NS, nullptr, nullptr, nullptr, nullptr},                                                    // ExtOut 
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
@@ -1963,6 +1964,105 @@ void ConcatOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
   }
   self->shape_ = *(self->lhs_->shape_ref_);
   self->shape_[axis] = cat_size ? cat_size : sym_dim_next--;
+}
+
+uint64_t SplitOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(k.LeadAlign());
+  return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
+}
+
+NDObject *SplitOp::Clone(CloneHelper &h) {
+  auto main = static_cast<SplitOpM *>(h.GetClone(main_));
+  return main->AddSibling();
+}
+
+void SplitOp::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "Split";
+  if (verbose) {
+    oss << '<' << slice_idx_ << '>';
+  }
+}
+
+void SplitOp::TileCollect(NDObject *op, TileInfo &info) {
+  if (static_cast<SplitOp *>(op)->slice_idx_ == 0) {
+    auto split_depth = static_cast<SplitOpM *>(op)->split_dim_ + 1;
+    if (info.lead_depth > split_depth) {
+      info.lead_depth = split_depth;
+    }
+  }
+}
+
+void SplitOp::FoldProp(NDObject *op, PropRange &range) {
+  if (static_cast<SplitOp *>(op)->slice_idx_ == 0) {
+    auto split_dim = static_cast<SplitOpM *>(op)->split_dim_;
+    if (range.base > split_dim) {
+      if (auto depth_len = range.base - split_dim; depth_len < range.depth) {
+        range.depth = depth_len;
+      }
+    }
+  }
+}
+
+void SplitOp::DimChanged(NDObject *op) {
+  if (static_cast<SplitOp *>(op)->slice_idx_ == 0) {
+    auto &dims = op->nd_.dims();
+    auto &in_dims = op->lhs_->nd_.dims();
+    for (size_t i = 0; i < op->nd_.size(); ++i) {
+      if (i >= in_dims.size() || in_dims[i] != dims[i]) {
+        static_cast<SplitOpM *>(op)->split_dim_ = i;
+        break;
+      }
+    }
+  }
+}
+
+void SplitOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  if (static_cast<SplitOp *>(op)->slice_idx_ == 0) {
+    auto *main = static_cast<SplitOpM *>(op);
+    int dim_size = static_cast<int>(main->lhs_->shape_ref_->size);
+    int axis = main->split_axis_ref_ >= 0 ? main->split_axis_ref_ : main->split_axis_ref_ + dim_size;
+    main->split_dim_ = dim_size - 1 - axis;
+    auto input_shape = main->lhs_->shape_ref_;
+    if (int64_t input_dim = input_shape->data[axis]; input_dim > 0) {
+      for (size_t i = 0; i < main->siblings_.size(); ++i) {
+        auto op = main->siblings_[i];
+        op->shape_ = *input_shape;
+        op->shape_[axis] = main->split_size_;
+      }
+      auto op = main->siblings_.back();
+      op->shape_[axis] = input_dim - main->split_size_ * (main->siblings_.size() - 1);
+    } else {
+      auto main_sym = sym_dim_next--;
+      for (size_t i = 0; i < main->siblings_.size(); ++i) {
+        auto op = main->siblings_[i];
+        op->shape_ = *input_shape;
+        op->shape_[axis] = main_sym;
+      }
+      auto op = main->siblings_.back();
+      op->shape_[axis] = sym_dim_next--;
+    }
+  }
+}
+
+void SplitOpM::Normalize(std::vector<NDObject *> &run_ops) {
+  int dim_size = static_cast<int>(lhs_->shape_ref_->size);
+  int axis = split_axis_ref_ >= 0 ? split_axis_ref_ : split_axis_ref_ + dim_size;
+  split_dim_ = dim_size - 1 - axis;
+  for (size_t i = 0; i < siblings_.size(); ++i) {
+    auto op = siblings_[i];
+    op->shape_ = *lhs_->shape_ref_;
+    op->shape_[axis] = split_size_;
+    op->ndd_.dims = lhs_->nd_.dims();
+    op->ndd_.dims[split_dim_] = split_size_;
+  }
+  auto tail_size = lhs_->shape_ref_->data[axis] - split_size_ * (siblings_.size() - 1);
+  auto op = siblings_.back();
+  op->shape_[axis] = tail_size;
+  op->ndd_.dims[split_dim_] = tail_size;
+}
+
+NDObject *SplitOpM::Clone(CloneHelper &h) {
+  return new SplitOpM(h.GetClone(lhs_), split_axis_ref_, split_size_, siblings_.size());
 }
 
 void PermuteOp::Normalize(std::vector<NDObject *> &run_ops) {

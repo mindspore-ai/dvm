@@ -1241,19 +1241,19 @@ void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {
   }
 }
 
-void VKernelS::SchInit() {
-  for (auto op : static_ops_) {
-    if (op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore) {
-      return;
-    }
-  }
+void VKernelS::SchInit(const std::vector<NDObject *> &objects) {
   ASSERT(sch_gen_ == nullptr);
   if (flags_ & KernelFlag::kOptFractalTrans) {
-    sch_gen_ = new SchGenHelper(this);
+    sch_gen_ = new FractalSchGen(this);
   } else {
     for (auto op : build_ops_) {
       if (op->obj_id_ == kConcat) {
-        sch_gen_ = new SchGenHelper(this, op);
+        sch_gen_ = new ConcatSchGen(this, static_cast<ConcatOp *>(op), objects);
+        break;
+      }
+      if (op->obj_id_ == kSplitOp) {
+        ASSERT(static_cast<SplitOpM *>(op)->main_ == op); // first is splitm
+        sch_gen_ = new SplitSchGen(this, static_cast<SplitOpM *>(op), objects);
         break;
       }
     }
@@ -1806,13 +1806,16 @@ class VectorDupHelper {
     encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve);
   }
 
-  uint64_t Append(uint64_t core_limit) {
-    ASSERT(dup_idx_ < dup_num_);
-    dup_idx_++;
+  void Reset() {
     int op_index = 0;
     for (auto op : kernel_->objects_) {
       op->Clear(op_index++);
     }
+  }
+
+  uint64_t DoAppend(uint64_t core_limit) {
+    ASSERT(dup_idx_ < dup_num_);
+    dup_idx_++;
     kernel_->PrepareTiling();
     ASSERT(kernel_->tile_size_);
     auto code_begin = encoder_.ProgData();
@@ -1824,8 +1827,8 @@ class VectorDupHelper {
     auto prog = encoder_.Append(Code::GenEntryV(kernel_->tile_num_, block_dim, code_size), code_size);
     encoder_.AssignAiv(block_begin_, block_dim, prog);
     block_begin_ += block_dim;
-    if (dup_idx_ < dup_num_) {
-      for (auto op : kernel_->static_ops_) {
+    for (auto op : kernel_->static_ops_) {
+      if (!(op->flags_ & OBJ_FLAG_DEAD)) {
         auto &r = static_cast<NDAccess *>(op)->addr_;
         auto bind = relocs_++;
         bind->Update(r.reloc_);
@@ -1833,6 +1836,11 @@ class VectorDupHelper {
       }
     }
     return block_dim;
+  }
+
+  uint64_t Append(uint64_t core_limit) {
+    Reset();
+    return DoAppend(core_limit);
   }
 
   void Submit() {
@@ -1849,7 +1857,15 @@ class VectorDupHelper {
   RelocAddr *relocs_;
 };
 
-int64_t SchGenHelper::FractalCodeGen() {
+SchGenHelper::~SchGenHelper() { delete []reloc_array_; }
+
+FractalSchGen::FractalSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {
+  for (auto op : kernel->static_ops_) {
+    EXCEPTION_IF(op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore, "fractal expect viewload and viewstore");
+  }
+}
+
+int64_t FractalSchGen::CodeGen() {
   constexpr int64_t min_dim_limit = 6;
   int h_idx = -1;
   int64_t item_size = 0;
@@ -1931,7 +1947,7 @@ int64_t SchGenHelper::FractalCodeGen() {
         }
       }
       free_core_ = g_system.CoreNum();
-      VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 3));
+      VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 4));
       if (w_tail_ && h_body_) {
         GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
       }
@@ -2014,45 +2030,169 @@ int64_t SchGenHelper::FractalCodeGen() {
   return result;
 }
 
-int64_t SchGenHelper::ConcatCodeGen(ConcatOp *concat) {
+ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::vector<NDObject *> &objects)
+    : SchGenHelper(kernel), concat_(concat) {
+  for (auto op : objects) {
+    op->reuse_dep_ = -1;
+  }
+  auto &slices = concat->slices_;
+  for (int i = 0; i < static_cast<int>(slices.size()); ++i) {
+    slices[i].input->reuse_dep_ = i;
+  }
+  for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+    auto op = *it;
+    if (int slice_idx = op->reuse_dep_; slice_idx >= 0) {
+      op->ForInput([slice_idx](NDObject *in) {
+        in->reuse_dep_ = slice_idx;
+      });
+    }
+  }
+  // TODO: side away load/store
+  slice_ios_.resize(kernel->static_ops_.size());
+  for (size_t i = 0; i < slice_ios_.size(); ++i) {
+    auto op = kernel->static_ops_[i];
+    slice_ios_[i].op = op;
+    slice_ios_[i].slice = op->reuse_dep_;
+    EXCEPTION_IF(op->reuse_dep_ < 0 && op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore,
+                 "concat output expect viewload and viewstore");
+  }
+}
+
+int64_t ConcatSchGen::CodeGen() {
   SpaceInit();
   SaveSpace();
-  DimArray size = concat->nd_.dims();
-  int cat_dim = concat->CatDim();
+  DimArray size = concat_->nd_.dims();
+  int cat_dim = concat_->CatDim();
   int64_t cat_total = size[cat_dim];
   size_t load_num = kernel_->load_num_;
   auto &static_ops = kernel_->static_ops_;
-  uint64_t cat_out_mask = 0;
-  for (size_t i = 0; i < static_ops.size(); ++i) {
-    if (static_ops[i]->nd_[cat_dim] == cat_total) {
-      cat_out_mask |= 1ull << i;
+  for (auto &s : slice_ios_) {
+    if (s.slice < 0) {
+      s.slice = s.op->nd_[cat_dim] == 1 ? -2 : -1;
     }
   }
-  int dup_num = concat->slices_.size();
+  int dup_num = concat_->slices_.size();
   VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num));
   int64_t free_core = g_system.CoreNum();
   size_t cat_offset = 0;
-  auto ctx = concat->PartialInit();
-  for (auto &slice : concat->slices_) {
+  auto ctx = concat_->PartialInit();
+  for (int cat_idx = 0; cat_idx < dup_num; ++cat_idx) {
+    auto &slice = concat_->slices_[cat_idx];
     auto cat_size = slice.size;
     size[cat_dim] = cat_size;
-    concat->PartialSet(slice.input);
+    concat_->PartialSet(slice.input);
     ApplySubSpace(size);
+    static_ops.clear();
     for (size_t i = 0; i < load_num; ++i) {
-      auto op = static_cast<NDViewLoad *>(static_ops[i]);
-      op->ViewUpdate((cat_out_mask >> i) & 1ull ? op->Stride()[cat_dim] * cat_offset : 0);
+      auto &s = slice_ios_[i];
+      if (s.slice < 0) {
+        auto load = static_cast<NDViewLoad *>(s.op);
+        load->ViewUpdate(s.slice == -1 ? load->Stride()[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
+      } else if (s.slice != cat_idx) {
+        continue;
+      }
+      static_ops.push_back(s.op);
     }
-    for (size_t i = load_num; i < static_ops.size(); ++i) {
-      auto op = static_cast<NDViewStore *>(static_ops[i]);
-      op->ViewUpdate((cat_out_mask >> i) & 1ull ? op->Stride()[cat_dim] * cat_offset : 0);
+    kernel_->load_num_ = static_ops.size();
+    for (size_t i = load_num; i < slice_ios_.size(); ++i) {
+      auto &s = slice_ios_[i];
+      if (s.slice < 0) {
+        auto store = static_cast<NDViewStore *>(s.op);
+        store->ViewUpdate(s.slice == -1 ? store->Stride()[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
+      } else if (s.slice != cat_idx) {
+        continue;
+      }
+      static_ops.push_back(s.op);
     }
     cat_offset += cat_size;
     auto core_num = CeilDiv(cat_size * free_core, cat_total);
     cat_total -= cat_size;
     free_core -= helper.Append(core_num);
   }
-  concat->PartialRecover(ctx);
+  concat_->PartialRecover(ctx);
   helper.Submit();
+  return 0;
+}
+
+SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vector<NDObject *> &objects)
+    : SchGenHelper(kernel), split_(split) {
+  ASSERT(split_->slice_idx_ == 0);
+  for (auto op : objects) {
+    if (op->IsLoad()) {
+      op->reuse_dep_ = -1;
+    } else if (op->obj_id_ == kSplitOp) {
+      op->reuse_dep_ = static_cast<SplitOp *>(op)->slice_idx_;
+    } else {
+      int input_idx = -1;
+      op->ForInput([&input_idx](NDObject *in) {
+        if (in->reuse_dep_ >= 0) {
+          input_idx = in->reuse_dep_;
+        }
+      });
+      op->reuse_dep_ = input_idx;
+    }
+  }
+  slice_ios_.resize(kernel->static_ops_.size());
+  for (size_t i = 0; i < slice_ios_.size(); ++i) {
+    auto op = kernel->static_ops_[i];
+    slice_ios_[i].op = op;
+    slice_ios_[i].slice = op->reuse_dep_;
+    EXCEPTION_IF(op->reuse_dep_ < 0 && op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore,
+                 "split input expect viewload and viewstore");
+  }
+}
+
+int64_t SplitSchGen::CodeGen() {
+  SpaceInit();
+  SaveSpace();
+  int split_dim = split_->split_dim_;
+  for (auto &s : slice_ios_) {
+    if (s.slice < 0) {
+      s.slice = s.op->nd_[split_dim] == 1 ? -2 : -1;
+    }
+  }
+  int slice_num = static_cast<int>(split_->siblings_.size());
+  VectorDupHelper helper(kernel_, slice_num, ReserveReloc(slice_ios_.size() * slice_num));
+  size_t load_num = kernel_->load_num_;
+  auto &static_ops = kernel_->static_ops_;
+  int64_t split_dim_size = split_->lhs_->nd_[split_dim];
+  int64_t free_core = g_system.CoreNum();
+  int64_t split_offset = 0;
+  DimArray size = split_->nd_.dims();
+  for (int slice_idx = 0; slice_idx < slice_num; ++slice_idx) {
+    int64_t split_size = slice_idx < slice_num - 1 ? split_->split_size_ : split_dim_size - split_->split_size_ * (slice_num - 1);
+    size[split_dim] = split_size;
+    ApplySubSpace(size);
+    helper.Reset();
+    static_ops.resize(load_num);
+    for (size_t i = 0; i < load_num; ++i) {
+      if (auto &s = slice_ios_[i]; s.slice < 0) {
+        auto load = static_cast<NDViewLoad *>(s.op);
+        load->ViewUpdate(s.slice == -1 ? load->Stride()[split_dim] * static_cast<uint64_t>(split_offset) : 0);
+      }
+    }
+    for (size_t i = load_num; i < slice_ios_.size(); ++i) {
+      auto &s = slice_ios_[i];
+      if (s.slice < 0) {
+        static_ops.push_back(s.op);
+        auto store = static_cast<NDViewStore *>(s.op);
+        store->ViewUpdate(s.slice == -1 ? store->Stride()[split_dim] * static_cast<uint64_t>(split_offset) : 0);
+      } else if (s.slice == slice_idx) {
+        static_ops.push_back(s.op);
+        s.op->flags_ &= ~OBJ_FLAG_DEAD;
+      } else {
+        s.op->flags_ |= OBJ_FLAG_DEAD;
+      }
+    }
+    auto core_num = CeilDiv(split_size * free_core, split_dim_size - split_offset);
+    split_offset += split_size;
+    free_core -= helper.DoAppend(core_num);
+  }
+  helper.Submit();
+  static_ops.resize(load_num);
+  for (size_t i = load_num; i < slice_ios_.size(); ++i) {
+    static_ops.push_back(slice_ios_[i].op);
+  }
   return 0;
 }
 
@@ -2076,7 +2216,7 @@ uint64_t VKernelS::CodeGen() {
     return 0;
   }
   if (sch_gen_) {
-    if (auto ret = sch_gen_->DefaultCodeGen(); ret != -1) {
+    if (auto ret = sch_gen_->CodeGen(); ret != -1) {
       return ret;
     }
   }
@@ -2090,7 +2230,7 @@ bool VKernelS::NormBuild() {
     Clear();
     if (static_ops_.empty()) {
       StaticInit(build_ops_);
-      SchInit();
+      SchInit(build_ops_);
     }
     if (!Normalize(true)) {
       return false;
@@ -2101,7 +2241,7 @@ bool VKernelS::NormBuild() {
     }
     Optimize(build_ops_, nullptr);
     StaticInit(objects_);
-    SchInit();
+    SchInit(objects_);
   }
   BuildDomain();
   return true;

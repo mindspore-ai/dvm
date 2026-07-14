@@ -180,6 +180,14 @@ class KernelPy {
     }
     return ObjToPy(kernel_.Concat(objs.data(), objs.size(), dim));
   }
+  py::list Split(py::object input, int dim, int64_t split_size, size_t split_num) {
+    auto objs = kernel_.Split(PyToObj(input), dim, split_size, split_num);
+    py::tuple out(split_num);
+    for (size_t i = 0; i < split_num; ++i) {
+      out[i] = ObjToPy(objs[i]);
+    }
+    return out;
+  }
   py::object Broadcast(py::object input, py::object shape) {
     return ObjToPy(kernel_.Broadcast(PyToObj(input), GetShapeRef(shape)));
   }
@@ -345,6 +353,7 @@ static inline void RegDvmPy(const py::module &m) {
          "emit min")
     .def("copy", &KernelPy::Copy, "emit copy op")
     .def("concat", &KernelPy::Concat, "emit concat op")
+    .def("split", &KernelPy::Split, "emit split op")
     .def("matmul", &KernelPy::MatMul, "emit matmul op", py::arg("lhs"), py::arg("rhs"), py::arg("trans_a"),
          py::arg("trans_b"), py::arg("bias") = py::none())
     .def("grouped_matmul", &KernelPy::GroupedMatMul, "emit grouped_matmul op", py::arg("lhs"), py::arg("rhs"),

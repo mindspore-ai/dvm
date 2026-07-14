@@ -67,6 +67,7 @@ enum ObjectType {
   kOneHot,
   kPermute,
   kConcat,
+  kSplitOp,
   kCustom,
   kExtOut,
   kCubeOp,
@@ -1190,6 +1191,55 @@ class ConcatOp : public FlexOp {
   int cat_dim_;
   ShapeWithRef shape_;
   NDSpaceData ndd_;
+};
+
+class SplitOpM;
+class SplitOp : public NDObject {
+ public:
+  SplitOp(NDObject *input, int slice_idx)
+      : NDObject(input, nullptr, input->type_id_, ObjectType::kSplitOp), slice_idx_(slice_idx) {
+    shape_ref_ = &shape_;
+    nd_.data = &ndd_;
+  }
+
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+  static void TileCollect(NDObject *op, TileInfo &info);
+  static void FoldProp(NDObject *op, PropRange &range);
+  static void DimChanged(NDObject *op);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
+  int slice_idx_;
+  SplitOpM *main_;
+  ShapeWithRef shape_;
+  NDSpaceData ndd_;
+};
+
+class SplitOpM : public SplitOp {
+ public:
+  SplitOpM(NDObject *input, int split_axis, int64_t split_size, size_t split_num)
+      : SplitOp(input, 0), split_axis_ref_(split_axis), split_size_(split_size) {
+    main_ = this;
+    siblings_.reserve(split_num);
+    siblings_.push_back(this);
+  }
+
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  NDObject *Clone(CloneHelper &h) override;
+
+  SplitOp *AddSibling() {
+    auto sib = new SplitOp(lhs_, static_cast<int>(siblings_.size()));
+    sib->main_ = this;
+    siblings_.push_back(sib);
+    return sib;
+  }
+
+  int split_axis_ref_;
+  int split_dim_{0};
+  int64_t split_size_;
+  std::vector<SplitOp *> siblings_;
 };
 
 class _BroadcastOp : public NDObject {

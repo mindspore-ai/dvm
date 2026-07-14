@@ -308,19 +308,8 @@ class VectorSchedule {
 class SchGenHelper : public VectorSchedule {
  public:
   SchGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
-  SchGenHelper(VectorKernel *kernel, NDObject *dom) : VectorSchedule(kernel), sch_dom_(dom) {}
-  ~SchGenHelper() { delete []reloc_array_; }
-
-  int64_t FractalCodeGen();
-  int64_t ConcatCodeGen(ConcatOp *concat);
-  int64_t DefaultCodeGen() {
-    if (sch_dom_) {
-      if (sch_dom_->obj_id_ == ObjectType::kConcat) {
-        return ConcatCodeGen(static_cast<ConcatOp *>(sch_dom_));
-      }
-    }
-    return FractalCodeGen();
-  }
+  virtual ~SchGenHelper();
+  virtual int64_t CodeGen() = 0;
   RelocAddr *ReserveReloc(size_t size) {
     if (size > reloc_size_) {
       delete []reloc_array_;
@@ -329,11 +318,41 @@ class SchGenHelper : public VectorSchedule {
     }
     return reloc_array_;
   }
-
  protected:
   size_t reloc_size_{0};
   RelocAddr *reloc_array_{nullptr};
-  NDObject *sch_dom_{nullptr};
+};
+
+class FractalSchGen : public SchGenHelper {
+ public:
+  FractalSchGen(VectorKernel *kernel);
+  int64_t CodeGen() override;
+};
+
+class ConcatSchGen : public SchGenHelper {
+ public:
+  ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::vector<NDObject *> &objects);
+  int64_t CodeGen() override;
+ protected:
+  ConcatOp *concat_;
+  struct SliceIO {
+    NDObject *op;
+    int slice;
+  };
+  std::vector<SliceIO> slice_ios_;
+};
+
+class SplitSchGen : public SchGenHelper {
+ public:
+  SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vector<NDObject *> &objects);
+  int64_t CodeGen() override;
+ protected:
+  SplitOpM *split_;
+  struct SliceIO {
+    NDObject *op;
+    int slice;
+  };
+  std::vector<SliceIO> slice_ios_;
 };
 
 class VKernelS : public VectorKernel {
@@ -359,7 +378,7 @@ class VKernelS : public VectorKernel {
   }
 
   void StaticInit(const std::vector<NDObject *> &objects);
-  void SchInit();
+  void SchInit(const std::vector<NDObject *> &objects);
   void BrokerInit();
   bool BrokerAffine();
   uint64_t BrokerCodeGen(VKernel **hold_kernel);

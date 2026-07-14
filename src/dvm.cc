@@ -1503,6 +1503,16 @@ NDObject *Kernel::Concat(NDObject **inputs, size_t input_num, int dim) {
   return concat;
 }
 
+NDObject **Kernel::Split(NDObject *input, int dim, int64_t split_size, size_t split_num) {
+  ASSERT(split_size > 0);
+  auto main = new SplitOpM(input, dim, split_size, split_num);
+  kernel_->Append(main);
+  for (size_t i = 1; i < split_num; ++i) {
+    kernel_->Append(main->AddSibling());
+  }
+  return reinterpret_cast<NDObject **>(main->siblings_.data());
+}
+
 NDObject *Kernel::_AllReduce(int op_type, NDObject *input, const Comm *comm) {
   NDObject *obj;
   if (input->type_id_ == DataType::kBFloat16) {

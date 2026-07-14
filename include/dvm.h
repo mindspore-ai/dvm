@@ -480,6 +480,16 @@ class Kernel {
   NDObject *Concat(NDObject **inputs, size_t input_num, int dim);
 
   /**
+   * @brief Emit a split operation. Split with equal-sized chunks along `dim` (the last chunk may be smaller).
+   * @param input the input to split.
+   * @param dim dimension to split along.
+   * @param split_size size of each chunk along `dim`.
+   * @param split_num number of chunk.
+   * @return pointer to the output array.
+   */
+  NDObject **Split(NDObject *input, int dim, int64_t split_size, size_t split_num);
+
+  /**
    * @brief Emit a OneHot operation.
    * @param indices input indices operation.
    * @param depth depth reference. the size should keep to 1.

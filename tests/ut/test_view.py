@@ -512,13 +512,34 @@ def test_sch_concat(shape1, shape2, shape3, shape4, axis):
     a1 = np.random.normal(0, 1, shape2).astype(np.float32)
     a2 = np.random.normal(0, 1, shape3).astype(np.float32)
     a3 = np.random.normal(0, 1, shape4).astype(np.float32)
-    x0 = t.view_load(shape1, _continuous_stride(shape1), a0)
-    x1 = t.view_load(shape2, _continuous_stride(shape2), a1)
+    x0 = t.load(a0)
+    x1 = t.load(a1)
     x2 = t.add(x0, 0.1)
     x3 = t.mul(x1, 0.6)
-    x4 = t.view_load(shape3, _continuous_stride(shape3), a2)
+    x4 = t.load(a2)
     x5 = t.concat([x2, x3, x4], axis)
     x6 = t.add(x5, t.view_load(shape4, _continuous_stride(shape4), a3))
     expect = np.concatenate([a0 + 0.1, a1 * 0.6, a2], axis=axis) + a3
     t.view_store_expect(x6, _continuous_stride(expect.shape), expect)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape, split_size, dim", [
+    ([3, 900], 300, 1),    # lead, evenly divisible
+    ([3, 500, 32], 200, 1),    # middle, body + tail
+])
+def test_sch_split(shape, split_size, dim):
+    split_num = (shape[dim] + split_size - 1) // split_size
+    t = Tester()
+    a = np.random.normal(0, 1, shape).astype(np.float32)
+    x0 = t.view_load(shape, _continuous_stride(shape), a)
+    x1 = t.mul(x0, 0.7)
+    xout = t.split(x1, dim, split_size, split_num)
+    expects = np.split(a * 0.7, [split_size * (i + 1) for i in range(split_num - 1)], dim)
+    for i, s in enumerate(xout):
+        val = 0.1 * (i + 1)
+        y = t.add(s, val)
+        e = expects[i] + val
+        t.store_expect(y, e)
     assert (t.run_check())

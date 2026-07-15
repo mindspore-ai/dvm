@@ -1179,6 +1179,11 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
     }
     return obj;
   } else {
+    if constexpr (op_type == BinaryType::kLogicalAnd || op_type == BinaryType::kLogicalOr) {
+      if (lhs->type_id_ != rhs->type_id_) {
+        return Binary<op_type>(FromBoolOp(this, lhs, kBool), FromBoolOp(this, rhs, kBool));
+      }
+    }
     switch (lhs->type_id_) {
       case kBool:
         return BoolBinaryPromotion<op_type>(this, lhs, rhs);

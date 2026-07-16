@@ -589,7 +589,7 @@ py::object RtKernelPy::ConvertFromBF16(py::object input) {
 }
 
 void RtKernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
-  static_cast<VectorKernel *>(kernel_.GetImpl())->SetTile(start, end, num, factor);
+  static_cast<VKernelS *>(kernel_.GetImpl())->SetTile(start, end, num, factor);
 }
 
 void RtKernelPy::CodeGen(py::object pass_names) {

@@ -28,10 +28,9 @@ namespace dvm {
 class MsprofHelper;
 class IdleCleanWrap;
 
-enum KernelFlagEx {
-  kExtBegin = KernelFlag::kSpeculate,
-  kKernelSimt = kExtBegin << 1,
-};
+#define K_FLAG_BEGIN ((uint32_t)KernelFlag::kSpeculate)
+#define K_FLAG_SIMT (K_FLAG_BEGIN << 1)
+#define K_FLAG_DIS_DUP_TILING (K_FLAG_BEGIN << 2)
 
 class VKernel {
  public:
@@ -107,7 +106,7 @@ class VectorKernel : public VKernel {
       return visit->ws_size_;
     }
     code_.block_dim_ = CompactBlockDim(core_limit);
-    code_.UpdateV(tile_num_, flags_ & kKernelSimt);
+    code_.UpdateV(tile_num_, flags_ & K_FLAG_SIMT);
     return 0;
   }
   uint64_t DoCodeGen(uint64_t core_limit) {
@@ -119,6 +118,23 @@ class VectorKernel : public VKernel {
     return DoCodeGenInner(core_limit);
   }
 
+  uint8_t *DoTileGen(int64_t live_peak, uint8_t *code_ptr, uint64_t code_reserve);
+  uint64_t TileGen(int64_t live_peak, uint64_t core_limit) {
+    auto code_reserve = ReserveCodeSize();
+    code_.Alloc(code_reserve + code_.HeadSize());
+    code_.block_dim_ = core_limit;
+    auto code_end = DoTileGen(live_peak, code_.data_ + code_.HeadSize(), code_reserve);
+    code_.data_size_ = code_end - code_.data_;
+    if (auto visit = GetVisitor<RedVisitCoder>(); visit != nullptr) {
+      code_.block_dim_ = CeilDiv<uint32_t>(visit->block_num_, 2);
+      code_.UpdateVE(visit);
+      return visit->ws_size_;
+    }
+    code_.block_dim_ = CompactBlockDim(core_limit);
+    code_.UpdateV(tile_num_, flags_ & K_FLAG_SIMT);
+    return 0;
+  }
+
   void Shard(const ShardParam &sp) {
     for (auto op : objects_) {
       op->Shard(sp);
@@ -126,10 +142,6 @@ class VectorKernel : public VKernel {
     shard_ = &sp;
   }
   void ClearShard() { shard_ = nullptr; }
-
-  void SetTile(int start, int end, int64_t num, int64_t factor) {
-    tiles_.emplace_back(DimTile{start, end, num, factor});
-  }
 
   int MaxType() const { return max_type_; }
   int MinType() const { return min_type_; }
@@ -196,32 +208,34 @@ class VectorKernel : public VKernel {
   size_t load_num_{0};
   std::vector<NDObject *> static_ops_;
 
+  struct TileRegion {
+    void Add(int start, int64_t space, int64_t num, int64_t tile) {
+      last_num = num;
+      last_tile = tile;
+      starts[depth] = start;
+      spaces[depth] = space;
+      depth++;
+    }
+    int64_t tile_num;
+    int64_t tile_size;
+    int64_t last_num;
+    int64_t last_tile;
+    int depth{0};
+    int starts[DimArray::kMaxDimSize];
+    int64_t spaces[DimArray::kMaxDimSize];
+  };
+
  protected:
   int64_t Analyze();
-  void ShapeTiling(int64_t size_limit, int64_t core_limit);
-  int64_t BodyTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, const PropRange &range, TileParam &tp);
-  void LeadTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, TileParam &tp);
-  void ManualTiling();
+  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileRegion &range);
   void Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker);
+  void ApplyTiling(const TileRegion &tr);
+  void AlignSimd(int64_t tile_size_limit);
 
-  void TileProp(const TileParam tp) {
+  void TileProp(const TileParam &tp) {
     for (auto op : objects_) {
       op->Tile(tp);
     }
-  }
-
-  int64_t Tile(const TileParam tp, int64_t space) {
-    TileProp(tp);
-    tile_size_ = tile_size_ / space * tp.tile;
-    tile_num_ *= tp.num;
-    return tile_size_;
-  }
-  int64_t TileLead(const TileParam tp, int64_t lead_align) {
-    TileProp(tp);
-    tile_size_ = RoundUp<int64_t>(tp.tile, lead_align);
-    align_space_ = tile_size_;
-    tile_num_ *= tp.num;
-    return tile_size_;
   }
 
   int64_t TileSizeLimit(int64_t live_peak) {
@@ -262,14 +276,6 @@ class VectorKernel : public VKernel {
 
   int max_type_;
   int min_type_;
-
-  struct DimTile {
-    int start;
-    int end;
-    int64_t num;
-    int64_t factor;
-  };
-  std::vector<DimTile> tiles_;
   friend class CodeGenHelper;
 };
 
@@ -309,7 +315,7 @@ class SchGenHelper : public VectorSchedule {
  public:
   SchGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
   virtual ~SchGenHelper();
-  virtual int64_t CodeGen() = 0;
+  virtual int64_t CodeGen();
   RelocAddr *ReserveReloc(size_t size) {
     if (size > reloc_size_) {
       delete []reloc_array_;
@@ -356,6 +362,12 @@ class SplitSchGen : public SchGenHelper {
   std::vector<SliceIO> slice_ios_;
 };
 
+class DupTilingSchGen : public SchGenHelper {
+ public:
+  explicit DupTilingSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {}
+  int64_t DupCodeGen(int split_dim, int64_t truck_size);
+};
+
 class VKernelS : public VectorKernel {
  public:
   VKernelS(uint32_t flags = 0) : VectorKernel(KernelType::kVector, flags) {}
@@ -383,19 +395,35 @@ class VKernelS : public VectorKernel {
   void BrokerInit();
   bool BrokerAffine();
   uint64_t BrokerCodeGen(VKernel **hold_kernel);
+  int64_t DupTilingGen(const TileRegion &region, int64_t tile_size_limit);
 
   void Clear() {
     code_.Clear();
     objects_.clear();
   }
 
+  void SetTile(int start, int end, int64_t num, int64_t factor) {
+    tiles_.emplace_back(DimTile{start, end, num, factor});
+  }
+
   std::vector<NDObject *> build_ops_;
 
  protected:
+  void ManualTiling();
+
   int broker_num_{-1};
   int last_broker_;
   VKernel *stage_kernel_{nullptr};
   SchGenHelper *sch_gen_{nullptr};
+  DupTilingSchGen *dup_gen_{nullptr};
+
+  struct DimTile {
+    int start;
+    int end;
+    int64_t num;
+    int64_t factor;
+  };
+  std::vector<DimTile> tiles_;
 };
 
 class VKernelD : public VKernelS {  // TODO: remove VKernelD

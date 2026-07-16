@@ -681,10 +681,10 @@ void VectorKernel::PrepareTiling() {
   local_mem_size_ = g_system.LocalMemSize() - g_system.UbWorkspaceSize() - tile_info_.ext_ws;
   if (g_system.Arch() == AiCoreArch::kAiCore_C310) {
     if (tile_info_.flags & ObjectMeta::kSimt) {
-      flags_ |= kKernelSimt;
+      flags_ |= K_FLAG_SIMT;
       local_mem_size_ -= g_system.SimtWorkspace();
     } else {
-      flags_ &= ~kKernelSimt;
+      flags_ &= ~K_FLAG_SIMT;
     }
   }
   align_space_ = 1;
@@ -697,34 +697,178 @@ void VectorKernel::PrepareTiling() {
   }
 }
 
-void VectorKernel::ManualTiling() {
-  auto &dims = DimSpace();
-  TileParam tp;
-  for (auto &t : tiles_) {
-    int64_t space = dims[t.start];
-    for (int i = t.start + 1; i <= t.end; ++i) {
-      space *= dims[i];
+class ShapeTilingHelper {
+ public:
+  ShapeTilingHelper(int64_t size_limit, int64_t core_limit, int64_t tile_size, VectorKernel::TileRegion &range)
+      : size_limit_(size_limit), core_limit_(core_limit), tile_size_(tile_size), range_(range) {}
+  int64_t GetDivision(int64_t val, int64_t min) {
+    int64_t div = min;
+    int64_t factor = val / div;
+    while (div <= factor) {
+      if (div * factor == val) {
+        return div;
+      }
+      div++;
+      factor = val / div;
     }
-    tp.start = t.start;
-    tp.end = t.end;
-    tp.num = t.num;
-    tp.tile = t.factor ? t.factor : CeilDiv(space, t.num);
-    tp.tail = space % tp.tile;
-    if (t.start > 0) {
-      Tile(tp, space);
-    } else {
-      TileLead(tp, LeadAlign());
+    while (div <= val) {
+      div = val / (val / div);
+      if (val % div == 0) {
+        return div;
+      }
+      div++;
     }
+    ASSERT(0);
+    return -1;
   }
-}
 
-void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit) {
+  bool BodyTiling(int start, const PropRange &range) {
+    auto cost_measure = [this](int64_t factor, int64_t tile_num) -> int64_t {
+      return CeilDiv(tile_num, core_limit_) * (factor + 2);
+    };
+    // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
+    // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
+    // floor(a/b) <= c --> b >= floor(a/c)
+    // floor(tile_size_/tile_num) <= tile_size_limit_ --> tile_num >= floor(tile_size_/tile_size_limit_)
+    // (tile_size / space) * floor(space /tile_num) <= tile_size_limit_) --> tile_num >= floor(space/max_factor)
+    // EQUAL TO:
+    //  int64_t tile_num = (space + max_factor - 1) / max_factor;
+    //  while (tile_num < space && ((space + tile_num - 1) / tile_num) > max_factor) {
+    //    tile_num++;
+    //  }
+    int64_t space = range.space;
+    int64_t init_tile_num = 1;
+    if (tile_size_ > size_limit_) {
+      int64_t min_tile_size = tile_size_ / space;
+      int64_t max_factor = size_limit_ / min_tile_size;
+      if (max_factor <= 1) {
+        tile_size_ = min_tile_size;
+        tile_num_ *= space;
+        range_.Add(start, space, space, 1);
+        return true;
+      }
+      init_tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(size_limit_, tile_size_));
+    }
+    int64_t num, tile;
+    if (tile_num_ > 1) {  // avoid tile range pad
+      num = GetDivision(space, init_tile_num);
+      tile = space / num;
+      if (num < space && range.affine < PropRange::REDUCE) {
+        int64_t tile_num_base = tile_num_;
+        int64_t cost = cost_measure(tile, num * tile_num_base);
+        int64_t div_tile = num;
+        while (div_tile < space) {
+          div_tile = GetDivision(space, div_tile + 1);
+          int64_t factor = space / div_tile;
+          int64_t div_cost = cost_measure(factor, div_tile * tile_num_base);
+          if (div_cost >= cost) break;
+          cost = div_cost;
+          num = div_tile;
+          tile = factor;
+        }
+      }
+    } else {
+      int64_t factor = CeilDiv(space, init_tile_num);
+      num = init_tile_num;
+      tile = factor;
+      int64_t best_cost = cost_measure(factor, init_tile_num);
+      int64_t start_num = init_tile_num + 1;
+      while (factor > 1) {
+        int64_t align_tile = RoundUp(start_num, core_limit_);
+        start_num = align_tile + core_limit_;
+        int64_t align_factor = CeilDiv(space, align_tile);
+        if (align_factor >= factor) continue;
+        factor = align_factor;
+        int64_t t_num = CeilDiv(space, factor);
+        int64_t cost = cost_measure(factor, t_num);
+        if (cost < best_cost) {
+          best_cost = cost;
+          num = t_num;
+          tile = factor;
+        }
+        if (align_tile > core_limit_ * 4) break;
+      }
+    }
+    if (num > 1) {
+      tile_size_ = tile_size_ / space * tile;
+      tile_num_ *= num;
+      range_.Add(start, space, num, tile);
+      if (tile == 1) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  bool LeadTiling(int64_t block_size, int64_t space, int affine) {
+    auto cost_measure = [this](int64_t block_num, int64_t tile_num_inner) -> int64_t {
+      int64_t core_tile = CeilDiv(tile_num_inner * tile_num_, core_limit_);
+      return core_tile * (CeilDiv(block_num, 8L) + 2);
+    };
+    int64_t num, tile;
+    if (tile_num_ > 1) {  // avoid tile range pad
+      num = GetDivision(space, CeilDiv(tile_size_, size_limit_));
+      tile = space / num;
+      if (num < space && affine < PropRange::REDUCE) {
+        int64_t best_cost = cost_measure(CeilDiv(tile, block_size), num);
+        int64_t div_tile = num;
+        while (div_tile < space) {
+          div_tile = GetDivision(space, div_tile + 1);
+          int64_t factor = space / div_tile;
+          int64_t cost = cost_measure(CeilDiv(factor, block_size), div_tile);
+          if (cost >= best_cost) break;
+          best_cost = cost;
+          num = div_tile;
+          tile = factor;
+        }
+      }
+    } else {
+      constexpr int64_t min_factor = 512L;
+      int64_t align_width = space > min_factor ? block_size : space;
+      auto factor = RoundDown(std::min(space, size_limit_), align_width);
+      auto tile_num = CeilDiv(space, factor);
+      auto best_cost = cost_measure(factor / block_size, tile_num);
+      num = tile_num;
+      tile = factor;
+      auto align_num = RoundUp(tile_num + 1, core_limit_);
+      while (align_num < core_limit_ * 5) {
+        auto factor_min = CeilDiv(space, align_num);
+        if (auto align_factor = RoundUp(factor_min, align_width); align_factor < factor) {
+          if (align_factor < min_factor) break;
+          factor = align_factor;
+          tile_num = CeilDiv(space, factor);
+          auto cost = cost_measure(factor / block_size, tile_num);
+          if (cost < best_cost) {
+            best_cost = cost;
+            num = tile_num;
+            tile = factor;
+          }
+        }
+        align_num = RoundUp(align_num + core_limit_, core_limit_);
+      }
+    }
+    if (num > 1) {
+      tile_size_ = RoundUp<int64_t>(tile, block_size);
+      tile_num_ *= num;
+      range_.Add(0, space, num, tile);
+    }
+    return false;
+  }
+
+  int64_t size_limit_;
+  int64_t core_limit_;
+  int64_t tile_size_;
+  int64_t tile_num_{1};
+  VectorKernel::TileRegion &range_;
+};
+
+void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit, TileRegion &range) {
   int align_depth = tile_info_.lead_depth;
   PropRange fold;
   fold.base = DimSpace().size() - 1;
-  int64_t tile_size = tile_size_;
-  TileParam tp;
-  do {
+  ShapeTilingHelper helper(size_limit, core_limit, tile_size_, range);
+  bool running = true;
+  while (running) {
     if (fold.base + 1 > align_depth) {
       if (shard_ && fold.base > shard_->base) {
         int partial_end = shard_->base + ShardParam::PARTIAL_SIZE;
@@ -741,179 +885,21 @@ void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit) {
           fold.space *= dom_->nd_[fold.base - i];
         }
       }
-      tp.start = fold.base + 1 - fold.depth;
-      ASSERT(tp.start > 0);
-      if (tp.start < align_depth) {  // axis of 1
-        tp.start = align_depth;
+      int start = fold.base + 1 - fold.depth;
+      ASSERT(start > 0);
+      if (start < align_depth) {  // fold crosses into lead region, clamp to lead boundary
+        start = align_depth;
       }
       if (fold.space > 1) {
-        tp.end = fold.base;
-        tile_size = BodyTiling(tile_size, size_limit, core_limit, fold, tp);
+        running = helper.BodyTiling(start, fold);
       }
-      fold.base = tp.start - 1;
+      fold.base = start - 1;
     } else {
-      tp.start = 0;
-      tp.end = fold.base;
-      LeadTiling(tile_size, size_limit, core_limit, tp);
-      return;
+      running = helper.LeadTiling(block_align_, align_space_, tile_info_.lead_affine);
     }
-  } while (tile_size > size_limit || (tp.num > 1 && tp.num == fold.space));
-  if (align_depth > 1) {
-    TileParam tp;
-    tp.start = 0;
-    tp.end = align_depth - 1;
-    tp.num = 1;
-    tp.tile = align_space_;
-    tp.tail = 0;
-    TileProp(tp);
   }
-}
-
-static int64_t GetDivision(int64_t val, int64_t min) {
-  int64_t div = min;
-  int64_t factor = val / div;
-  while (div <= factor) {
-    if (div * factor == val) {
-      return div;
-    }
-    div++;
-    factor = val / div;
-  }
-  while (div <= val) {
-    div = val / (val / div);
-    if (val % div == 0) {
-      return div;
-    }
-    div++;
-  }
-  ASSERT(0);
-  return -1;
-}
-
-int64_t VectorKernel::BodyTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, const PropRange &range,
-                                 TileParam &tp) {
-  auto cost_measure = [core_limit](int64_t factor, int64_t tile_num) -> int64_t {
-    return CeilDiv(tile_num, core_limit) * (factor + 2);
-  };
-  // ceil(a/b) <= c --> b >= ceil(a/(c+1))+1
-  // floor(a/b) = ceil((a-1)/b)  <= c-1 --> b >= ceil((a-1)/(c-1 + 1))+1
-  // floor(a/b) <= c --> b >= floor(a/c)
-  // floor(tile_size_/tile_num) <= tile_size_limit_ --> tile_num >= floor(tile_size_/tile_size_limit_)
-  // (tile_size / space) * floor(space /tile_num) <= tile_size_limit_) --> tile_num >= floor(space/max_factor)
-  // EQUAL TO:
-  //  int64_t tile_num = (space + max_factor - 1) / max_factor;
-  //  while (tile_num < space && ((space + tile_num - 1) / tile_num) > max_factor) {
-  //    tile_num++;
-  //  }
-  int64_t space = range.space;
-  int64_t init_tile_num;
-  if (tile_size > size_limit) {
-    int64_t max_factor = size_limit / (tile_size / space);
-    if (max_factor <= 1) {
-      tp.num = space;
-      tp.tile = 1;
-      tp.tail = 0;
-      return Tile(tp, space);
-    }
-    init_tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(size_limit, tile_size));
-  } else {
-    init_tile_num = 1;
-  }
-  if (tile_num_ > 1) {  // avoid tile range pad
-    tp.num = GetDivision(space, init_tile_num);
-    tp.tile = space / tp.num;
-    if (tp.num < space && range.affine < PropRange::REDUCE) {
-      int64_t tile_num_base = tile_num_;
-      int64_t cost = cost_measure(tp.tile, tp.num * tile_num_base);
-      int64_t div_tile = tp.num;
-      while (div_tile < space) {
-        div_tile = GetDivision(space, div_tile + 1);
-        int64_t factor = space / div_tile;
-        int64_t div_cost = cost_measure(factor, div_tile * tile_num_base);
-        if (div_cost >= cost) break;
-        cost = div_cost;
-        tp.num = div_tile;
-        tp.tile = factor;
-      }
-    }
-    tp.tail = 0;
-  } else {
-    int64_t factor = CeilDiv(space, init_tile_num);
-    tp.num = init_tile_num;
-    tp.tile = factor;
-    int64_t best_cost = cost_measure(factor, init_tile_num);
-    int64_t start_num = init_tile_num + 1;
-    while (factor > 1) {
-      int64_t align_tile = RoundUp(start_num, core_limit);
-      start_num = align_tile + core_limit;
-      int64_t align_factor = CeilDiv(space, align_tile);
-      if (align_factor >= factor) continue;
-      factor = align_factor;
-      int64_t t_num = CeilDiv(space, factor);
-      int64_t cost = cost_measure(factor, t_num);
-      if (cost < best_cost) {
-        best_cost = cost;
-        tp.num = t_num;
-        tp.tile = factor;
-      }
-      if (align_tile > core_limit * 4) break;
-    }
-    tp.tail = space % tp.tile;
-  }
-  return tp.num > 1 ? Tile(tp, space) : tile_size;
-}
-
-void VectorKernel::LeadTiling(int64_t tile_size, int64_t size_limit, int64_t core_limit, TileParam &tp) {
-  auto cost_measure = [this, core_limit](int64_t block_num, int64_t tile_num) -> int64_t {
-    int64_t core_tile = CeilDiv(tile_num * tile_num_, core_limit);
-    return core_tile * (CeilDiv(block_num, 8L) + 2);
-  };
-  int64_t block_size = block_align_;
-  int64_t space = align_space_;
-  if (tile_num_ > 1) {  // avoid tile range pad
-    tp.num = GetDivision(space, CeilDiv(tile_size, size_limit));
-    tp.tile = space / tp.num;
-    if (tp.num < space && tile_info_.lead_affine < PropRange::REDUCE) {
-      int64_t best_cost = cost_measure(CeilDiv(tp.tile, block_size), tp.num);
-      int64_t div_tile = tp.num;
-      while (div_tile < space) {
-        div_tile = GetDivision(space, div_tile + 1);
-        int64_t factor = space / div_tile;
-        int64_t cost = cost_measure(CeilDiv(factor, block_size), div_tile);
-        if (cost >= best_cost) break;
-        best_cost = cost;
-        tp.num = div_tile;
-        tp.tile = factor;
-      }
-    }
-    tp.tail = 0;
-  } else {
-    constexpr int64_t min_factor = 512L;
-    int64_t align_width = space > min_factor ? block_size : space;
-    auto factor = RoundDown(std::min(space, size_limit), align_width);
-    auto tile_num = CeilDiv(space, factor);
-    auto best_cost = cost_measure(factor / block_size, tile_num);
-    tp.num = tile_num;
-    tp.tile = factor;
-    auto align_num = RoundUp(tile_num + 1, core_limit);
-    while (align_num < core_limit * 5) {
-      auto factor_min = CeilDiv(space, align_num);
-      if (auto align_factor = RoundUp(factor_min, align_width); align_factor < factor) {
-        if (align_factor < min_factor) break;
-        factor = align_factor;
-        tile_num = CeilDiv(space, factor);
-        auto cost = cost_measure(factor / block_size, tile_num);
-        if (cost < best_cost) {
-          best_cost = cost;
-          tp.num = tile_num;
-          tp.tile = factor;
-        }
-      }
-      align_num = RoundUp(align_num + core_limit, core_limit);
-    }
-    tp.tail = space % tp.tile;
-  }
-  TileLead(tp, block_size);
+  range.tile_size = helper.tile_size_;
+  range.tile_num = helper.tile_num_;
 }
 
 void DumpRefHelper::Dump(NDObject *op) {
@@ -985,31 +971,75 @@ std::string &VKernel::DisAssemble() {
   return dump_str_;
 }
 
+void VectorKernel::ApplyTiling(const TileRegion &tr) {
+  TileParam tp;
+  bool lead_fold = tile_info_.lead_depth > 1;
+  if (tr.depth) {
+    tp.end = DimSpace().size() - 1;
+    if (tr.depth > 1) {
+      tp.tile = 1;
+      tp.tail = 0;
+      for (int i = 0; i < tr.depth - 1; ++i) {
+        tp.start = tr.starts[i];
+        tp.num = tr.spaces[i];
+        TileProp(tp);
+        tp.end = tp.start - 1;
+      }
+    } else {
+      int64_t full_space = tr.last_num * tr.last_tile;
+      tp.tail = full_space == tr.spaces[tr.depth - 1] ? 0 : tr.spaces[tr.depth - 1] + tr.last_tile - full_space;
+    }
+    tp.start = tr.starts[tr.depth - 1];
+    tp.num = tr.last_num;
+    tp.tile = tr.last_tile;
+    TileProp(tp);
+    lead_fold = lead_fold && tp.start > 1;
+  }
+  if (lead_fold) {
+    tp.start = 0;
+    tp.end = tile_info_.lead_depth - 1;
+    tp.num = 1;
+    tp.tile = align_space_;
+    tp.tail = 0;
+    TileProp(tp);
+  }
+  tile_size_ = tr.tile_size;
+  tile_num_ = tr.tile_num;
+}
+
+void VectorKernel::AlignSimd(int64_t tile_size_limit) {
+  int64_t lead_dim = DimSpace()[0];
+  int64_t block_sw = block_align_;
+  int64_t block_lead = RoundUp(lead_dim, block_sw);
+  int64_t tile_outer = tile_size_ / block_lead;
+  int64_t lead_limit = tile_size_limit / tile_outer;
+  int64_t simd_width = std::min(static_cast<int64_t>(ITEM_SIMD_WIDTH_MAX[max_type_]), block_lead);
+  while (simd_width > block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
+    simd_width -= block_sw;
+  }
+  lead_align_ = simd_width;
+  tile_size_ = RoundUp(lead_dim, simd_width) * tile_outer;
+}
+
 uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve) {
   int64_t live_peak = Analyze();
   int64_t tile_size_limit = TileSizeLimit(live_peak);
-  // tiling
-  if (likely(tiles_.empty())) {
-    ShapeTiling(tile_size_limit, core_limit);
-  } else {
-    ManualTiling();
-  }
+  TileRegion tr;
+  ShapeTiling(tile_size_limit, core_limit, tr);
+  ApplyTiling(tr);
   // simd_width
   if (tile_info_.flags & ObjectMeta::kSimdDim) {
-    int64_t lead_dim = DimSpace()[0];
-    int64_t block_sw = block_align_;
-    int64_t block_lead = RoundUp(lead_dim, block_sw);
-    int64_t tile_outer = tile_size_ / block_lead;
-    int64_t lead_limit = tile_size_limit / tile_outer;
-    int64_t simd_width = std::min(static_cast<int64_t>(ITEM_SIMD_WIDTH_MAX[max_type_]), block_lead);
-    while (simd_width > block_sw && RoundUp(lead_dim, simd_width) > lead_limit) {
-      simd_width -= block_sw;
-    }
-    lead_align_ = simd_width;
-    tile_size_ = RoundUp(lead_dim, simd_width) * tile_outer;
+    AlignSimd(tile_size_limit);
   }
   // codegen
   code_.block_dim_ = core_limit;
+  CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
+  auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
+  ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
+  return code_end;
+}
+
+uint8_t *VectorKernel::DoTileGen(int64_t live_peak, uint8_t *code_ptr, uint64_t code_reserve) {
   CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
   auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
@@ -1858,6 +1888,7 @@ class VectorDupHelper {
 };
 
 SchGenHelper::~SchGenHelper() { delete []reloc_array_; }
+int64_t SchGenHelper::CodeGen() { return -1; }
 
 FractalSchGen::FractalSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {
   for (auto op : kernel->static_ops_) {
@@ -2197,9 +2228,51 @@ int64_t SplitSchGen::CodeGen() {
   return 0;
 }
 
+int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
+  DimArray dim_space = kernel_->DimSpace();
+  int64_t split_size = dim_space[split_dim];
+  int64_t body_size = split_size / truck_size * truck_size;
+  int64_t tail_size = split_size - body_size;
+  ASSERT(body_size > 0 && tail_size > 0);
+  auto &static_ops = kernel_->static_ops_;
+  uint64_t bcast_mask = 0;
+  for (size_t i = 0; i < static_ops.size(); ++i) {
+    if (static_ops[i]->nd_[split_dim] == 1) {
+      bcast_mask |= 1ull << i;
+    }
+  }
+  auto reloc_ios = [this, &static_ops, split_dim, bcast_mask](int64_t offset) {
+    auto load_num = kernel_->load_num_;
+    for (size_t i = 0; i < load_num; ++i) {
+      auto op = static_cast<NDViewLoad *>(static_ops[i]);
+      op->ViewUpdate(bcast_mask >> i & 1ull ? 0 : op->Stride()[split_dim] * offset);
+    }
+    for (size_t i = load_num; i < static_ops.size(); ++i) {
+      auto op = static_cast<NDViewStore *>(static_ops[i]);
+      op->ViewUpdate(bcast_mask >> i & 1ull ? 0 : op->Stride()[split_dim] * offset);
+    }
+  };
+  SpaceInit();
+  SaveSpace();
+  VectorDupHelper helper(kernel_, 2, ReserveReloc(static_ops.size() * 2));
+  uint64_t free_core = g_system.CoreNum();
+  uint64_t tail_core = CeilDiv<uint64_t>(free_core * tail_size, split_size);
+  dim_space[split_dim] = tail_size;
+  ApplySubSpace(dim_space);
+  reloc_ios(body_size);
+  free_core -= helper.Append(tail_core);
+  dim_space[split_dim] = body_size;
+  ApplySubSpace(dim_space);
+  reloc_ios(0);
+  helper.Append(free_core);
+  helper.Submit();
+  return 0;
+}
+
 VKernelS::~VKernelS() {
   delete stage_kernel_;
   delete sch_gen_;
+  delete dup_gen_;
   for (auto op : build_ops_) {
     delete op;
   }
@@ -2221,7 +2294,67 @@ uint64_t VKernelS::CodeGen() {
       return ret;
     }
   }
-  return DoCodeGenInner(g_system.CoreNum());
+  uint64_t core_limit = g_system.CoreNum();
+  int64_t live_peak = Analyze();
+  int64_t tile_size_limit = TileSizeLimit(live_peak);
+  if (likely(tiles_.empty())) {
+    TileRegion tr;
+    ShapeTiling(tile_size_limit, core_limit, tr);
+    if (tr.tile_size * 8 < tile_size_limit && tr.tile_num > 256 && tr.depth > 1 && !(flags_ & K_FLAG_DIS_DUP_TILING)) {
+      if (auto ret = DupTilingGen(tr, tile_size_limit); ret != -1) {
+        return ret;
+      }
+    }
+    ApplyTiling(tr);
+  } else {
+    ManualTiling();
+  }
+  // simd_width
+  if (tile_info_.flags & ObjectMeta::kSimdDim) {
+    AlignSimd(tile_size_limit);
+  }
+  return TileGen(live_peak, core_limit);
+}
+
+int64_t VKernelS::DupTilingGen(const TileRegion &region, int64_t tile_size_limit) {
+  if (dup_gen_ == nullptr) {
+    for (size_t i = 0; i < load_num_; ++i) {
+      if (static_ops_[i]->obj_id_ != kViewLoad) {
+        flags_ |= K_FLAG_DIS_DUP_TILING;
+        return -1;
+      }
+    }
+    for (size_t i = load_num_; i < static_ops_.size(); ++i) {
+      auto op = static_ops_[i];
+      if (op->obj_id_ != kViewStore) {
+        flags_ |= K_FLAG_DIS_DUP_TILING;
+        return -1;
+      }
+      ASSERT(op->lhs_->obj_id_ != kReduce && op->lhs_->obj_id_ != kRemovePad);
+    }
+    if (comm_op_) {
+      flags_ |= K_FLAG_DIS_DUP_TILING;
+      return -1;
+    }
+    dup_gen_ = new DupTilingSchGen(this);
+  }
+  int split_dim = region.starts[region.depth - 1];
+  if (int end = region.starts[region.depth - 2] - 1; end > split_dim) {
+    TileParam tp;
+    tp.start = split_dim;
+    tp.end = end;
+    tp.num = 1;
+    tp.tile = region.spaces[region.depth - 1];
+    tp.tail = 0;
+    TileProp(tp);
+  }
+  int64_t truck_size;
+  if (split_dim == 0) {
+    truck_size = tile_size_limit / block_align_ * block_align_;
+  } else {
+    truck_size = tile_size_limit / (region.tile_size / region.last_tile);
+  }
+  return dup_gen_->DupCodeGen(split_dim, truck_size);
 }
 
 void VKernelS::Append(NDObject *obj) { build_ops_.push_back(obj); }
@@ -2261,6 +2394,31 @@ void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
   }
   DumpRefHelper helper(oss);
   helper.DumpGraph(indent, "vec", build_ops_);
+}
+
+void VKernelS::ManualTiling() {
+  auto &dims = DimSpace();
+  TileParam tp;
+  for (auto &t : tiles_) {
+    int64_t space = dims[t.start];
+    for (int i = t.start + 1; i <= t.end; ++i) {
+      space *= dims[i];
+    }
+    tp.start = t.start;
+    tp.end = t.end;
+    tp.num = t.num;
+    tp.tile = t.factor ? t.factor : CeilDiv(space, t.num);
+    tp.tail = space % tp.tile;
+    TileProp(tp);
+    if (t.start > 0) {
+      tile_size_ = tile_size_ / space * tp.tile;
+      tile_num_ *= tp.num;
+    } else {
+      tile_size_ = RoundUp<int64_t>(tp.tile, LeadAlign());
+      align_space_ = tile_size_;
+      tile_num_ *= tp.num;
+    }
+  }
 }
 
 _SpecVector::~_SpecVector() {

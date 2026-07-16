@@ -569,3 +569,21 @@ def test_sch_split(shape, split_size, dim):
         e = expects[i] + val
         t.store_expect(y, e)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape1, shape2", [
+    ([3, 18911], [3, 1]),    # lead
+    ([2, 18911, 3], [2, 1, 3]), # middle
+    ([3, 15401, 3], [3, 1, 1]), # fold
+])
+def test_sch_dup_tiling(shape1, shape2):
+    t = Tester()
+    a = np.random.normal(0, 1, shape1).astype(np.float32)
+    b = np.random.normal(0, 1, shape2).astype(np.float32)
+    x0 = t.view_load(shape1, _continuous_stride(shape1), a)
+    x1 = t.view_load(shape2, _continuous_stride(shape2), b)
+    x2 = t.add(x0, x1)
+    expect = a + b
+    t.view_store_expect(x2, _continuous_stride(expect.shape), expect)
+    assert (t.run_check())

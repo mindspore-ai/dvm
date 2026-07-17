@@ -27,12 +27,12 @@ inline constexpr uint64_t BLOCK_SIZE = 16;
 #define V_PINGPONG_FLAG_STORE 0x2ul
 #define V_PINGPONG_FLAG_GROUP_MSG 0x4ul
 
-#define V_GMM_BLOCK_OFF_OFFSET 32
-#define V_GMM_BLOCK_OFF_BIT 32
-#define V_GMM_LAST_OFFSET 8
+#define V_GMM_BLOCK_OFF_OFFSET 36
+#define V_GMM_BLOCK_OFF_BIT 28
+#define V_GMM_LAST_OFFSET 12
 #define V_GMM_LAST_BIT 24
 #define V_GMM_G_SIZE_OFFSET 0
-#define V_GMM_G_SIZE_BITS 8
+#define V_GMM_G_SIZE_BITS 12
 
 template <typename T>
 __aicore_inline__ void Swap(T &x, T &y) {

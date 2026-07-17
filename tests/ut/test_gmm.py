@@ -159,6 +159,24 @@ def test_gmm_bias_bf16(m, n, k, group_list):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
+@pytest.mark.parametrize("group_count", [255, 256, 1024])
+def test_gmm_group_count_encoding_bf16(group_count):
+    m, n, k = 2048, 64, 64
+    group_list = np.arange(1, group_count + 1, dtype=np.int64) * m // group_count
+    x = Tester.fast_random_normal(0, 0.01, [m, k]).astype(np.float32)
+    w = Tester.fast_random_normal(0, 0.01, [group_count, k, n]).astype(np.float32)
+    expect = np_gmm_split_m(x, w, None, group_list)
+    t = Tester("mix")
+    x_d = t.load(x, "bfloat16")
+    w_d = t.load(w, "bfloat16")
+    group_list_d = t.load(group_list)
+    res = t.grouped_matmul(x_d, w_d, False, False, None, group_list_d, 0)
+    t.store_expect(res, expect, 3e-3)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
 def test_dyn_gmm_type0():
     t = Tester("mix:dyn")
     x = t.load([-1, 256], "float16")

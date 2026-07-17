@@ -566,7 +566,13 @@ class SpecVecBase : public VKernelS {
   void InitMeta(NDObject *op) { op->insn_ = reinterpret_cast<uint64_t *>(-1); }
   OpMeta *__restrict__ GetMeta(NDObject *op) const { return reinterpret_cast<OpMeta *__restrict__ >(&op->insn_); }
 
-  int64_t LazyTileLimit() { return tile_limit_ >= 0 ? tile_limit_ : tile_limit_ = TileSizeLimit(Analyze()); }
+  int64_t LazyTileLimit() {
+    if (tile_limit_ < 0) {
+      live_peak_ = Analyze();
+      tile_limit_ = TileSizeLimit(live_peak_);
+    }
+    return tile_limit_;
+  }
 
   void SplitPlan(size_t cut_begin);
   void SplitAppend(NDObject *op) {
@@ -580,6 +586,7 @@ class SpecVecBase : public VKernelS {
   void PermPropUpdate(int prop, const DimArray &perm);
 
   SpecVecContext &ctx_;
+  int64_t live_peak_;
   int64_t tile_limit_;
   uint32_t fall_opt_;
   static constexpr uint32_t FALL_BROADCAST = 1;

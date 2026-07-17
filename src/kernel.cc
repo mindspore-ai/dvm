@@ -1830,8 +1830,9 @@ void VectorSchedule::SaveSpace() {
 
 class VectorDupHelper {
  public:
-  VectorDupHelper(VectorKernel *kernel, int dup_num, RelocAddr *relocs)
-      : kernel_(kernel), dup_num_(dup_num), dup_idx_(0), block_begin_(0), relocs_(relocs) {
+  VectorDupHelper(VectorKernel *kernel, int dup_num, RelocAddr *relocs, uint64_t total_quota)
+      : kernel_(kernel), dup_num_(dup_num), dup_idx_(0), block_begin_(0), relocs_(relocs),
+        free_core_(g_system.CoreNum()), remain_quota_(total_quota) {
     uint64_t code_reserve = dup_num * kernel_->ReserveCodeSize();
     encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve);
   }
@@ -1843,13 +1844,18 @@ class VectorDupHelper {
     }
   }
 
-  uint64_t DoAppend(uint64_t core_limit) {
+  void DoAppend(uint64_t quota, uint64_t cap_core = 0) {
     ASSERT(dup_idx_ < dup_num_);
     dup_idx_++;
     kernel_->PrepareTiling();
     ASSERT(kernel_->tile_size_);
     auto code_begin = encoder_.ProgData();
     uint64_t code_reserve = kernel_->ReserveCodeSize();
+    uint64_t core_limit = CeilDiv(quota * free_core_, remain_quota_);
+    if (cap_core != 0 && core_limit > cap_core) {
+      core_limit = cap_core;
+    }
+    remain_quota_ -= quota;
     auto code_end = kernel_->DoCodeGen(core_limit, code_begin, code_reserve);
     uint64_t code_size = code_end - code_begin;
     uint64_t block_dim = kernel_->CompactBlockDim(core_limit);
@@ -1865,12 +1871,12 @@ class VectorDupHelper {
         kernel_->code_.BindOpFast(*bind, r);
       }
     }
-    return block_dim;
+    free_core_ -= block_dim;
   }
 
-  uint64_t Append(uint64_t core_limit) {
+  void Append(uint64_t quota, uint64_t cap_core = 0) {
     Reset();
-    return DoAppend(core_limit);
+    DoAppend(quota, cap_core);
   }
 
   void Submit() {
@@ -1885,6 +1891,8 @@ class VectorDupHelper {
   int dup_idx_;
   uint64_t block_begin_;
   RelocAddr *relocs_;
+  uint64_t free_core_;
+  uint64_t remain_quota_;
 };
 
 SchGenHelper::~SchGenHelper() { delete []reloc_array_; }
@@ -1966,7 +1974,6 @@ int64_t FractalSchGen::CodeGen() {
       gen_.SpaceTrans(1, h_idx_);
       gen_.SpaceSplit(1, h_npart, h_fractal_);
       gen_.SaveSpace();
-      part_total_ = h_npart * w_npart;
       part_base_ = 1;
       size_t w_part_dim = h_idx_ + 1;
       size_.resize(space_.size());
@@ -1977,8 +1984,8 @@ int64_t FractalSchGen::CodeGen() {
           part_base_ *= space_[i];
         }
       }
-      free_core_ = g_system.CoreNum();
-      VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 4));
+      VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 4),
+                             h_npart * w_npart);
       if (w_tail_ && h_body_) {
         GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
       }
@@ -2021,9 +2028,7 @@ int64_t FractalSchGen::CodeGen() {
         op->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
       }
       uint64_t part_num = h_part_size * w_part_size;
-      uint64_t core_num = std::min(CeilDiv(part_num * free_core_, part_total_), part_base_ * part_num);
-      free_core_ -= helper.Append(core_num);
-      part_total_ -= part_num;
+      helper.Append(part_num, part_base_ * part_num);
     };
 
     SchGenHelper &gen_;
@@ -2034,9 +2039,7 @@ int64_t FractalSchGen::CodeGen() {
     int64_t h_body_;
     int64_t h_tail_;
     DimArray size_;
-    uint64_t part_total_;
     uint64_t part_base_;
-    uint64_t free_core_;
     int h_idx_;
   };
 
@@ -2095,7 +2098,6 @@ int64_t ConcatSchGen::CodeGen() {
   SaveSpace();
   DimArray size = concat_->nd_.dims();
   int cat_dim = concat_->CatDim();
-  int64_t cat_total = size[cat_dim];
   auto &static_ops = kernel_->static_ops_;
   for (auto &s : slice_ios_) {
     if (s.slice < 0) {
@@ -2103,8 +2105,7 @@ int64_t ConcatSchGen::CodeGen() {
     }
   }
   int dup_num = concat_->slices_.size();
-  VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num));
-  int64_t free_core = g_system.CoreNum();
+  VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num), size[cat_dim]);
   size_t cat_offset = 0;
   auto ctx = concat_->PartialInit();
   for (int cat_idx = 0; cat_idx < dup_num; ++cat_idx) {
@@ -2136,9 +2137,7 @@ int64_t ConcatSchGen::CodeGen() {
       static_ops.push_back(s.op);
     }
     cat_offset += cat_size;
-    auto core_num = CeilDiv(cat_size * free_core, cat_total);
-    cat_total -= cat_size;
-    free_core -= helper.Append(core_num);
+    helper.Append(cat_size);
   }
   concat_->PartialRecover(ctx);
   helper.Submit();
@@ -2184,11 +2183,10 @@ int64_t SplitSchGen::CodeGen() {
     }
   }
   int slice_num = static_cast<int>(split_->siblings_.size());
-  VectorDupHelper helper(kernel_, slice_num, ReserveReloc(slice_ios_.size() * slice_num));
+  int64_t split_dim_size = split_->lhs_->nd_[split_dim];
+  VectorDupHelper helper(kernel_, slice_num, ReserveReloc(slice_ios_.size() * slice_num), split_dim_size);
   size_t load_num = kernel_->load_num_;
   auto &static_ops = kernel_->static_ops_;
-  int64_t split_dim_size = split_->lhs_->nd_[split_dim];
-  int64_t free_core = g_system.CoreNum();
   int64_t split_offset = 0;
   DimArray size = split_->nd_.dims();
   for (int slice_idx = 0; slice_idx < slice_num; ++slice_idx) {
@@ -2216,9 +2214,8 @@ int64_t SplitSchGen::CodeGen() {
         s.op->flags_ |= OBJ_FLAG_DEAD;
       }
     }
-    auto core_num = CeilDiv(split_size * free_core, split_dim_size - split_offset);
     split_offset += split_size;
-    free_core -= helper.DoAppend(core_num);
+    helper.DoAppend(split_size);
   }
   helper.Submit();
   static_ops.resize(load_num);
@@ -2254,17 +2251,15 @@ int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
   };
   SpaceInit();
   SaveSpace();
-  VectorDupHelper helper(kernel_, 2, ReserveReloc(static_ops.size() * 2));
-  uint64_t free_core = g_system.CoreNum();
-  uint64_t tail_core = CeilDiv<uint64_t>(free_core * tail_size, split_size);
+  VectorDupHelper helper(kernel_, 2, ReserveReloc(static_ops.size() * 2), split_size);
   dim_space[split_dim] = tail_size;
   ApplySubSpace(dim_space);
   reloc_ios(body_size);
-  free_core -= helper.Append(tail_core);
+  helper.Append(tail_size);
   dim_space[split_dim] = body_size;
   ApplySubSpace(dim_space);
   reloc_ios(0);
-  helper.Append(free_core);
+  helper.Append(body_size);
   helper.Submit();
   return 0;
 }
@@ -2487,9 +2482,8 @@ void _SpecVector::Dump(std::ostringstream &oss, const std::string &indent) {
 
 template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::CodeGen() {
-  auto reduce_fall_check = [this]() ->  bool {
+  auto reduce_fall_check = [this](int64_t tile_size_limit) -> bool {
     if (!post_reduces_.empty()) {
-      int tile_size_limit = TileSizeLimit(Analyze());
       auto ndd = dom_->nd_.data;
       const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
       for (auto op : post_reduces_) {
@@ -2502,6 +2496,8 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     }
     return false;
   };
+  int64_t live_peak = 0;
+  int64_t tile_size_limit = 0;
   if constexpr (dyn_shape) {
     Clear();
     if (static_ops_.empty()) {
@@ -2512,7 +2508,9 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     }
     BuildDomain();
     PrepareTiling();
-    if (reduce_fall_check()) {
+    live_peak = Analyze();
+    tile_size_limit = TileSizeLimit(live_peak);
+    if (reduce_fall_check(tile_size_limit)) {
       return FallCodeGen();
     }
   } else {
@@ -2524,7 +2522,9 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     StaticInit(objects_);
     BuildDomain();
     PrepareTiling();
-    if (reduce_fall_check()) {
+    live_peak = Analyze();
+    tile_size_limit = TileSizeLimit(live_peak);
+    if (reduce_fall_check(tile_size_limit)) {
       tracker.Recover();
       return FallCodeGen();
     }
@@ -2534,7 +2534,14 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     ProcessIdle();
     return 0;
   }
-  return DoCodeGenInner(g_system.CoreNum());
+  uint64_t core_limit = g_system.CoreNum();
+  TileRegion tr;
+  ShapeTiling(tile_size_limit, core_limit, tr);
+  ApplyTiling(tr);
+  if (tile_info_.flags & ObjectMeta::kSimdDim) {
+    AlignSimd(tile_size_limit);
+  }
+  return TileGen(live_peak, core_limit);
 }
 
 template <typename T>
@@ -2708,7 +2715,17 @@ SpecVecContext::~SpecVecContext() {
   }
 }
 
-uint64_t SpecVecBase::CodeGen() { return DoCodeGenInner(g_system.CoreNum()); }
+uint64_t SpecVecBase::CodeGen() {
+  auto tile_size_limit = LazyTileLimit();
+  uint64_t core_limit = g_system.CoreNum();
+  TileRegion tr;
+  ShapeTiling(tile_size_limit, core_limit, tr);
+  ApplyTiling(tr);
+  if (tile_info_.flags & ObjectMeta::kSimdDim) {
+    AlignSimd(tile_size_limit);
+  }
+  return TileGen(live_peak_, core_limit);
+}
 
 bool SpecVecBase::SpecBuild() {
   if (fall_opt_ & FALL_CUSTOM_SPLIT) {

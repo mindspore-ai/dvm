@@ -272,6 +272,10 @@ void CompactPeakLiveness(BasicBlock &bb);
 /// ----------
 void EliminateReshape(BasicBlock &bb);
 
+/// @brief Fuse supported C310 static pointwise subgraphs into a JIT Custom op.
+/// The pass is gated by the default-off Config VF fusion switch.
+void VfFusion(BasicBlock &bb);
+
 /// @brief Optimize memory transfer operations, especially from UB (Unified Buffer) to GM (Global Memory), by
 /// reorganizing non-continuous memory segments within the UB into a continuous memory layout. This significantly speeds
 /// up the data transfer process to the GM.
@@ -279,6 +283,7 @@ void InsertRemovePad(BasicBlock &block);
 
 using Pass = void (*)(BasicBlock &);
 extern std::vector<Pass> passes;
+
 }  // namespace dvm::pass
 
 #endif  // _DVM_PASS_H_

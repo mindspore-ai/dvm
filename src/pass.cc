@@ -377,6 +377,11 @@ std::vector<NDObject *> BasicBlock::ToVector() {
   return res;
 }
 
+// ToVector is defined in this translation unit.  Keep the non-reindexing
+// specialization available to pass implementations in other translation
+// units as well.
+template std::vector<NDObject *> BasicBlock::ToVector<false>();
+
 void BasicBlock::Export(std::vector<NDObject *> &objects) {
   auto iter = begin();
   objects.clear();
@@ -636,5 +641,7 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&EliminateReshape, &CompactPeakLiveness, &ReorderLoad, &ReorderStore, &InsertRemovePad};
+std::vector<Pass> passes = {&VfFusion, &EliminateReshape, &CompactPeakLiveness,
+                            &ReorderLoad, &ReorderStore, &InsertRemovePad};
+
 }  // namespace dvm::pass

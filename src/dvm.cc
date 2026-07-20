@@ -335,6 +335,7 @@ class CompareScalarRefOp : public CompareScalarOp {
     return CompareScalarOp::Emit(k);
   }
   NDObject *Clone(CloneHelper &h) override { return new CompareScalarRefOp(cmp_op_, h.GetClone(lhs_), h.GetClone(scalar_ref_)); }
+  bool IsScalarRef() const override { return true; }
 
  private:
   ScalarRef *scalar_ref_;
@@ -350,6 +351,7 @@ class BinaryScalarRefOp : public BinaryScalarOp {
     return BinaryScalarOp::Emit(k);
   }
   NDObject *Clone(CloneHelper &h) override { return new BinaryScalarRefOp(op_type_, h.GetClone(lhs_), h.GetClone(scalar_ref_)); }
+  bool IsScalarRef() const override { return true; }
 
  private:
   ScalarRef *scalar_ref_;

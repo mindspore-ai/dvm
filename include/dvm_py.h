@@ -229,6 +229,13 @@ class KernelPy {
       Config::Instance().UnsetOnlineTuner();
     }
   }
+  static void SetVfFusion(bool enable) {
+    if (enable) {
+      Config::Instance().SetVfFusion();
+    } else {
+      Config::Instance().UnsetVfFusion();
+    }
+  }
 
   static constexpr int K_VEC = KernelType::kVector;
   static constexpr int K_CUBE = KernelType::kCube;
@@ -378,7 +385,8 @@ static inline void RegDvmPy(const py::module &m) {
     .def_readonly_static("F_OPT_FRAC", &KernelPy::F_OPT_FRAC)
     .def_readonly_static("F_PRIV1", &KernelPy::F_PRIV1)
     .def_static("set_deterministic", &KernelPy::SetDeterm, "set deterministic")
-    .def_static("set_online_tuning", &KernelPy::SetOnlineTuning, "set online tuning");
+    .def_static("set_online_tuning", &KernelPy::SetOnlineTuning, "set online tuning")
+    .def_static("set_vf_fusion", &KernelPy::SetVfFusion, "set C310 VF fusion");
 }
 }  // namespace dvm
 #endif  // _DVM_PY_API_H_

@@ -167,6 +167,8 @@ class System : public Config {
   Config &UnsetOnlineTuner() override;
   Config &SetLazyTuner() override;
   Config &UnsetLazyTuner() override;
+  Config &SetVfFusion() override;
+  Config &UnsetVfFusion() override;
 
   // hardware config
   AiCoreArch Arch() const { return arch_; }
@@ -196,6 +198,7 @@ class System : public Config {
   // features config
 
   bool deterministic_{false};
+  bool vf_fusion_{false};
   bool enable_profile_{false};
   ProfilerLevel profiler_level_{Level0};
   CubeTuner *online_tuner_{nullptr};
@@ -213,6 +216,8 @@ class System : public Config {
   const uint64_t *g_visit_func_offset_;
 
   void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path,
+                 const std::vector<std::pair<std::string, uint64_t>> &func_table);
+  void RegCustom(const std::string &nspace, const std::string &bin_path,
                  const std::vector<std::pair<std::string, uint64_t>> &func_table);
   uint64_t GetCustomFunc(const std::string &full_name) const;
   std::string GetCustomFuncName(uint64_t func_id) const;

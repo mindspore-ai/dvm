@@ -321,6 +321,12 @@ void System::GetSocConfig() {
 }
 
 void System::DoInit() {
+#ifdef VK_SIM_MODEL
+  // The model runtime must be available before the first ACL query.  System
+  // configuration can be queried before DevRunner is constructed.
+  void *sim_handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
+  EXCEPTION_IF(sim_handle == nullptr, dlerror());
+#endif
   GetSocConfig();
   event_num_ = 8;
   vector_core_num_ = cube_core_num_ * 2;
@@ -355,8 +361,6 @@ void System::DoInit() {
   }
   inited_ = true;
 #ifdef VK_SIM_MODEL
-  void *sim_handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);
-  EXCEPTION_IF(sim_handle == nullptr, dlerror());
   auto set_device_ret = aclrtSetDevice(0);
   EXCEPTION_IF(set_device_ret != ACL_SUCCESS, "aclrtSetDevice failed");
   std::atexit([]() {
@@ -497,22 +501,32 @@ void *System::CreateStream() {
 
 void System::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path,
                        const std::vector<std::pair<std::string, uint64_t>> &func_table) {
-  std::string nspace_prefix = nspace + "/";
+  const std::string nspace_prefix = nspace + "/";
   void *handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
-  auto op_def = reinterpret_cast<CustomDef *>(dlsym(handle, "__ALL_OPS__"));
+  auto op_def = handle == nullptr ? nullptr : reinterpret_cast<CustomDef *>(dlsym(handle, "__ALL_OPS__"));
   EXCEPTION_IF(handle == nullptr || op_def == nullptr, "reg_custom op failed");
-  while (op_def->name) {
+  while (op_def->name != nullptr) {
     custom_def_[nspace_prefix + op_def->name] = op_def->create_func;
-    op_def++;
+    ++op_def;
   }
+
+  RegCustom(nspace, bin_path, func_table);
+}
+
+void System::RegCustom(const std::string &nspace, const std::string &bin_path,
+                       const std::vector<std::pair<std::string, uint64_t>> &func_table) {
+  const std::string nspace_prefix = nspace + "/";
+
   std::ifstream fin(bin_path, std::ios::binary | std::ios::ate);
   EXCEPTION_IF(!fin.is_open(), "RegCustomBin: open bin file failed");
-  size_t bin_size = fin.tellg();
+  const size_t bin_size = static_cast<size_t>(fin.tellg());
   fin.seekg(0, std::ios::beg);
   void *bin_data = std::malloc(bin_size);
+  EXCEPTION_IF(bin_data == nullptr, "RegCustomBin: allocate bin buffer failed");
   fin.read(static_cast<char *>(bin_data), bin_size);
   fin.close();
   bins_.push_back(bin_data);
+
   aclrtBinaryLoadOption opt_data[2];
   opt_data[0].type = ACL_RT_BINARY_LOAD_OPT_MAGIC;
   opt_data[0].value.magic = ACL_RT_BINARY_MAGIC_ELF_VECTOR_CORE;
@@ -525,7 +539,7 @@ void System::RegCustom(const std::string &nspace, const std::string &so_path, co
   auto err = aclrtBinaryLoadFromData(bin_data, bin_size, &bin_opt, &bin_handle);
   EXCEPTION_IF(err != ACL_SUCCESS, "RegisterCustom: aclrtBinaryLoadFromData failed");
   void *func_handle = nullptr;
-  std::string func_name = "dvm_custom_" + nspace;
+  const std::string func_name = "dvm_custom_" + nspace;
   err = aclrtBinaryGetFunction(bin_handle, func_name.c_str(), &func_handle);
   EXCEPTION_IF(err != ACL_SUCCESS, "RegisterCustom: aclrtBinaryGetFunction failed");
   void *aic_addr = nullptr;
@@ -592,6 +606,16 @@ Config &System::SetLazyTuner() {
 Config &System::UnsetLazyTuner() {
   delete lazy_tuner_;
   lazy_tuner_ = nullptr;
+  return *this;
+}
+
+Config &System::SetVfFusion() {
+  vf_fusion_ = true;
+  return *this;
+}
+
+Config &System::UnsetVfFusion() {
+  vf_fusion_ = false;
   return *this;
 }
 

@@ -73,6 +73,20 @@ __aicore_inline__ MaskReg UpdateMask(uint32_t &scalar) {
 }
 
 template <typename T>
+__aicore_inline__ MaskReg SetMask(uint32_t scalar) {
+  MaskReg reg;
+  if constexpr (sizeof(T) == 1) {
+    reg = plt_b8(scalar, POST_UPDATE);
+  } else if constexpr (sizeof(T) == 2) {
+    reg = plt_b16(scalar, POST_UPDATE);
+  } else if constexpr (sizeof(T) == 4) {
+    reg = plt_b32(scalar, POST_UPDATE);
+  } else if constexpr (sizeof(T) == 8) {
+    reg = plt_b32(scalar, POST_UPDATE);
+  }
+  return reg;
+}
+template <typename T>
 __aicore_inline__ MaskReg MoveMask() {
   if constexpr (sizeof(T) == 2) {
     return movp_b16();
@@ -973,8 +987,9 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   __VEC_SCOPE__ {
     RegTensor<T> vreg0;
-    vector_bool stPreg;
     uint32_t sregLower = BlockNum(T);
+    uint32_t max_block = min(sregLower, static_cast<uint32_t>(op.count));
+    vector_bool stPreg = SetMask<T>(max_block);
     constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();
     for (uint16_t k = 0; k < (uint16_t)op.iter_num; k++) {
       for (uint16_t i = 0; i < (uint16_t)op.lead_num; i++) {
@@ -986,12 +1001,28 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
         } else {
           vlds(vreg0, xn, xn_offset, BRC_B8);
         }
-        uint32_t count = op.count;
-        uint16_t repeat = CeilDiv(count, sregLower);
-        for (uint16_t j = 0; j < repeat; j++) {
-          stPreg = UpdateMask<T>(count);
-          vsts(vreg0, xd, k * op.count * op.lead_num + i * op.count + j * sregLower, distValue, stPreg);
-        }
+        uint32_t xd_offset = k * op.count * op.lead_num + i * op.count;
+        vsts(vreg0, xd, xd_offset, distValue, stPreg);
+      }
+    }
+  }
+
+  if (op.count > BlockNum(T)) {
+    mem_bar(VST_VLD);
+    uint32_t block_num = 1 << BlockDataShift(T);
+    uint32_t count_blocks = op.count >> BlockDataShift(T);
+    for (uint16_t k = 0; k < (uint16_t)op.iter_num; k++) {
+      __ubuf__ T *row = xd + k * op.count * op.lead_num;
+      uint32_t copied_blocks = 8;
+      while ((copied_blocks << 1) <= count_blocks) {
+        copy_ubuf_to_ubuf(row + copied_blocks * block_num, row, 0, op.lead_num, copied_blocks,
+                          count_blocks - copied_blocks, count_blocks - copied_blocks);
+        copied_blocks <<= 1;
+      }
+      if (copied_blocks < count_blocks) {
+        uint32_t tail_blocks = count_blocks - copied_blocks;
+        copy_ubuf_to_ubuf(row + copied_blocks * block_num, row, 0, op.lead_num, tail_blocks,
+                          count_blocks - tail_blocks, count_blocks - tail_blocks);
       }
     }
   }

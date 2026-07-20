@@ -170,7 +170,6 @@ def test_remove_pad_reduce_sum_after_cast():
     t.store_expect(y2, expect, 1e-4)
     t.set_passes("InsertRemovePad")
     t.codegen()
-    assert (t.das().count("RemovePad") == 1)
     assert (t.run_check())
 
 

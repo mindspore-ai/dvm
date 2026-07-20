@@ -522,6 +522,10 @@ void ReorderLoad(BasicBlock &block) {
 }
 
 void InsertRemovePad(BasicBlock &block) {
+  if (g_system.Arch() == kAiCore_C310) {
+    return;
+  }
+
   size_t max_depth = 1;
   auto min_type_id = kDataTypeEnd;
   for (auto &op : block) {

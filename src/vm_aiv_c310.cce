@@ -112,10 +112,6 @@ constexpr __aicore_inline__ DistVST DistSTValue() {
   return DistVST::DIST_NORM_B32;
 }
 
-constexpr __aicore_inline__ uint32_t B64BlockNum() {
-  return BlockNum(int64_t) * 2;
-}
-
 template <auto funcPtr, typename... Args>
 __aicore__ inline void VfCall(cce::dim3 thread_nums, Args &&...args) {
   cce::async_invoke<funcPtr>(thread_nums, args...);
@@ -243,10 +239,17 @@ __simt_vf__ inline void GatherLoadSimtPad(__ubuf__ T *dst, __gm__ T *src, __gm__
       constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();                           \
       for (uint16_t i = 0; i < repeat; ++i) {                                                                   \
         stPreg = UpdateMask<T>(count);                                                                          \
-        vlds(vreg0, src0, i *sregLower, NORM);                                                                  \
-        vlds(vreg1, src1, i *sregLower, NORM);                                                                  \
-        builtin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);                                                     \
-        vsts(vreg2, dst, i *sregLower, distValue, stPreg);                                                      \
+        if constexpr (sizeof(T) == 8) {                                                                         \
+          vlds(vreg0, src0, i * sregLower);                                                                     \
+          vlds(vreg1, src1, i * sregLower);                                                                     \
+          builtin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);                                                   \
+          vsts(vreg2, dst, i * sregLower, stPreg);                                                              \
+        } else {                                                                                                 \
+          vlds(vreg0, src0, i * sregLower, NORM);                                                               \
+          vlds(vreg1, src1, i * sregLower, NORM);                                                               \
+          builtin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);                                                   \
+          vsts(vreg2, dst, i * sregLower, distValue, stPreg);                                                   \
+        }                                                                                                        \
       }                                                                                                         \
     }                                                                                                           \
   }
@@ -483,9 +486,7 @@ __aicore_inline__ void cast_count(__ubuf__ DST_TYPE *dst, __ubuf__ SRC_TYPE *src
     RegTensor<SRC_TYPE> vreg0;
     RegTensor<DST_TYPE> vreg1;
     vector_bool exPreg;
-    uint32_t sregLower = (sizeof(DST_TYPE) == 8 || sizeof(SRC_TYPE) == 8)
-                              ? B64BlockNum()
-                              : 256 / max(sizeof(DST_TYPE), sizeof(SRC_TYPE));
+    uint32_t sregLower = min(BlockNum(DST_TYPE), BlockNum(SRC_TYPE));
     uint16_t repeat = CeilDiv(count, sregLower);
     constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<DST_TYPE>()>();
     for (uint16_t i = 0; i < repeat; ++i) {
@@ -549,7 +550,11 @@ __aicore_inline__ void VectorDupCount(__ubuf__ T *dst, T scalar, uint32_t count)
     vbr(vreg0, scalar);
     for (uint16_t i = 0; i < repeat; ++i) {
       stPreg = UpdateMask<T>(count);
-      vsts(vreg0, dst, i * sregLower, distValue, stPreg);
+      if constexpr (sizeof(T) == 8) {
+        vsts(vreg0, dst, i * sregLower, stPreg);
+      } else {
+        vsts(vreg0, dst, i * sregLower, distValue, stPreg);
+      }
     }
   }
 }
@@ -658,31 +663,6 @@ __aicore_inline__ void BinCompare(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
-#define BINARY_B64(pc, builtin, head, tile)                       \
-  do {                                                            \
-    vBinary op;                                                   \
-    vBinary::Decode(pc, head, op);                                \
-    __ubuf__ int64_t *xm = (__ubuf__ int64_t *)(op.xm);           \
-    __ubuf__ int64_t *xd = (__ubuf__ int64_t *)(op.xd);           \
-    __ubuf__ int64_t *xn = (__ubuf__ int64_t *)(op.xn);           \
-    __VEC_SCOPE__ {                                               \
-      RegTensor<int64_t> vreg0;                                   \
-      RegTensor<int64_t> vreg1;                                   \
-      RegTensor<int64_t> vreg2;                                   \
-      vector_bool stPreg;                                         \
-      uint32_t count = static_cast<uint32_t>(op.count);           \
-      uint32_t sregLower = B64BlockNum();                         \
-      uint16_t repeat = CeilDiv(count, sregLower);                \
-      for (uint16_t i = 0; i < repeat; ++i) {                     \
-        stPreg = UpdateMask<int64_t>(count);                      \
-        vlds(vreg0, xn, i * sregLower);                           \
-        vlds(vreg1, xm, i * sregLower);                           \
-        builtin(vreg2, vreg0, vreg1, stPreg, MODE_ZEROING);       \
-        vsts(vreg2, xd, i * sregLower, stPreg);                   \
-      }                                                           \
-    }                                                             \
-  } while (0)
-
 __aicore_inline__ void BinCompareB64(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 #define CMP_B64_DISPATCH(op_type, builtin)                        \
   case op_type:                                                   \
@@ -695,7 +675,7 @@ __aicore_inline__ void BinCompareB64(bcodeptr_t pc, uint64_t head, uint64_t tile
         RegTensor<int32_t> scalar1;                               \
         vector_bool stPreg;                                       \
         uint32_t count = static_cast<uint32_t>(op.count);         \
-        uint32_t sregLower = B64BlockNum();                       \
+        uint32_t sregLower = BlockNum(int64_t);                   \
         uint16_t repeat = CeilDiv(count, sregLower);              \
         vbr(scalar0, (int32_t)0);                                 \
         vbr(scalar1, (int32_t)1);                                 \
@@ -965,16 +945,25 @@ __aicore_inline__ void BroadcastS_B64(bcodeptr_t pc, uint64_t head, uint64_t til
   __ubuf__ int64_t *xd = (__ubuf__ int64_t *)(op.xd);
   uint64_t raw_value = (op.high << 32) | op.scalar;
   int64_t val = static_cast<int64_t>(raw_value);
-  __VEC_SCOPE__ {
-    RegTensor<int64_t> vreg0;
-    vector_bool stPreg;
-    uint32_t count = static_cast<uint32_t>(op.count);
-    uint32_t sregLower = B64BlockNum();
-    uint16_t repeat = CeilDiv(count, sregLower);
-    vbr(vreg0, val);
-    for (uint16_t i = 0; i < repeat; ++i) {
-      stPreg = UpdateMask<int64_t>(count);
-      vsts(vreg0, xd, i * sregLower, stPreg);
+  VectorDupCount(xd, val, op.count);
+}
+
+template <typename T>
+__aicore_inline__ void ExpandBroadcastX(__ubuf__ T *xd, const vBroadcastX &op) {
+  uint32_t block_size = 32 / sizeof(T);
+  uint32_t count_blocks = static_cast<uint32_t>(op.count) / block_size;
+  for (uint16_t k = 0; k < (uint16_t)op.iter_num; k++) {
+    __ubuf__ T *row = xd + k * op.count * op.lead_num;
+    uint32_t copied_blocks = sizeof(T) == 8 ? 16 : 8;
+    while ((copied_blocks << 1) <= count_blocks) {
+      copy_ubuf_to_ubuf(row + copied_blocks * block_size, row, 0, op.lead_num, copied_blocks,
+                        count_blocks - copied_blocks, count_blocks - copied_blocks);
+      copied_blocks <<= 1;
+    }
+    if (copied_blocks < count_blocks) {
+      uint32_t tail_blocks = count_blocks - copied_blocks;
+      copy_ubuf_to_ubuf(row + copied_blocks * block_size, row, 0, op.lead_num, tail_blocks,
+                        count_blocks - tail_blocks, count_blocks - tail_blocks);
     }
   }
 }
@@ -1008,23 +997,7 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 
   if (op.count > BlockNum(T)) {
-    mem_bar(VST_VLD);
-    uint32_t block_num = 1 << BlockDataShift(T);
-    uint32_t count_blocks = op.count >> BlockDataShift(T);
-    for (uint16_t k = 0; k < (uint16_t)op.iter_num; k++) {
-      __ubuf__ T *row = xd + k * op.count * op.lead_num;
-      uint32_t copied_blocks = 8;
-      while ((copied_blocks << 1) <= count_blocks) {
-        copy_ubuf_to_ubuf(row + copied_blocks * block_num, row, 0, op.lead_num, copied_blocks,
-                          count_blocks - copied_blocks, count_blocks - copied_blocks);
-        copied_blocks <<= 1;
-      }
-      if (copied_blocks < count_blocks) {
-        uint32_t tail_blocks = count_blocks - copied_blocks;
-        copy_ubuf_to_ubuf(row + copied_blocks * block_num, row, 0, op.lead_num, tail_blocks,
-                          count_blocks - tail_blocks, count_blocks - tail_blocks);
-      }
-    }
+    ExpandBroadcastX<T>(xd, op);
   }
 }
 
@@ -1036,21 +1009,22 @@ __aicore_inline__ void BroadcastXB64(bcodeptr_t pc, uint64_t head, uint64_t tile
   __ubuf__ int32_t *xn_b32 = (__ubuf__ int32_t *)(xn);
   __VEC_SCOPE__ {
     RegTensor<int64_t> vreg0;
-    vector_bool stPreg;
-    uint32_t sregLower = B64BlockNum();
+    uint32_t sregLower = BlockNum(int64_t);
+    uint32_t max_block = min(sregLower, static_cast<uint32_t>(op.count));
+    vector_bool stPreg = SetMask<int64_t>(max_block);
     for (uint16_t k = 0; k < (uint16_t)op.iter_num; k++) {
       for (uint16_t i = 0; i < (uint16_t)op.lead_num; i++) {
         uint32_t xn_offset = k * (op.lead_num + op.lead_pad) + i;
         vlds(vreg0.val[0], xn_b32, xn_offset * 2, BRC_B32);
         vlds(vreg0.val[1], xn_b32, xn_offset * 2 + 1, BRC_B32);
-        uint32_t count = op.count;
-        uint16_t repeat = CeilDiv(count, sregLower);
-        for (uint16_t j = 0; j < repeat; j++) {
-          stPreg = UpdateMask<int64_t>(count);
-          vsts(vreg0, xd, k * op.count * op.lead_num + i * op.count + j * sregLower, stPreg);
-        }
+        uint32_t xd_offset = k * op.count * op.lead_num + i * op.count;
+        vsts(vreg0, xd, xd_offset, stPreg);
       }
     }
+  }
+
+  if (op.count > BlockNum(int64_t)) {
+    ExpandBroadcastX<int64_t>(xd, op);
   }
 }
 
@@ -1278,7 +1252,7 @@ __aicore_inline__ void SelectB64(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     RegTensor<int32_t> vreg2;
     vector_bool stPreg;
     uint32_t count = static_cast<uint32_t>(op.count);
-    uint32_t sregLower = B64BlockNum();
+    uint32_t sregLower = BlockNum(int64_t);
     uint16_t repeat = CeilDiv(count, sregLower);
     for (uint16_t i = 0; i < repeat; ++i) {
       stPreg = UpdateMask<int64_t>(count);
@@ -2340,8 +2314,8 @@ DEF_DISP_STORE(V_SLICE_STORE, SliceStore(pc, head, tile))
 /************** low priority **************/
 DEF_DISP_SIMD(V_ONE_HOT, OneHot<uint32_t>(pc, head, tile))
 DEF_DISP_SIMD(V_ONE_HOT_B16, OneHot<uint16_t>(pc, head, tile))
-DEF_DISP_SIMD(V_ADD_INT64, BINARY_B64(pc, vadd, head, tile))
-DEF_DISP_SIMD(V_SUB_INT64, BINARY_B64(pc, vsub, head, tile))
+DEF_DISP_SIMD(V_ADD_INT64, BINARY(pc, vadd, head, tile, int64_t))
+DEF_DISP_SIMD(V_SUB_INT64, BINARY(pc, vsub, head, tile, int64_t))
 DEF_DISP_SIMD(V_ELEMENT_ANY, ElementAny<float>(pc, head, tile))
 DEF_DISP_SIMD(V_BROADCAST_X_B64, BroadcastXB64(pc, head, tile))
 DEF_DISP_SIMD(V_BROADCAST_S_B64, BroadcastS_B64(pc, head, tile))

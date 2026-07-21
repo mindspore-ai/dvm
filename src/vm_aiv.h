@@ -23,7 +23,7 @@
 #define SIMD_WIDTH_SHIFT(x) (IS_FLOAT(x) ? 3 : 4)
 #define TYPE_SHIFT(x) (32 / sizeof(x))
 #define BlockDataShift(x) (5 - sizeof(x) / 2)  // 1B - 5, 2B - 4, 4B - 3, 8B - not support
-#define BlockNum(x) (256 / sizeof(x))
+#define BlockNum(x) ((sizeof(x) == 8) ? 64 : (256 / sizeof(x)))
 #define MaxRepeat(num, x) ((num + BlockNum(x) - 1) / BlockNum(x))
 #define ALIGN_UP(x, align) (((x) + ((align) - 1)) & ~((align) - 1))
 

@@ -148,6 +148,7 @@ class System : public Config {
       DoInit();
     }
   }
+  bool IsInitialized() const { return inited_; }
 
   Config &SetDeterm() override;
   Config &UnsetDeterm() override;

@@ -1607,4 +1607,6 @@ const char *Kernel::Das() const {
 }
 
 Config &Config::Instance() { return g_system; }
+
+bool Config::IsInitialized() const { return g_system.IsInitialized(); }
 }  // namespace dvm

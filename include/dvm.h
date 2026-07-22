@@ -693,6 +693,7 @@ class Config {
   Config() = default;
   ~Config() = default;
   static Config &Instance();
+  bool IsInitialized() const;
   virtual Config &SetDeterm() = 0;
   virtual Config &UnsetDeterm() = 0;
   virtual Config &SetOnlineTuner() = 0;

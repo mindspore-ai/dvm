@@ -21,7 +21,7 @@ import inspect
 import time
 import numpy as np
 from . import DataType
-from . import PyKernel as Kernel, Device
+from . import PyKernel as Kernel, Device, TileBuilder
 
 _DTYPE_NAME_MAP = {
     "bool": DataType.bool,
@@ -463,3 +463,66 @@ class HcclScope(CommScope):
     def __init__(self, *ids):
         self.ids = ids
         self.comm_type = "hccl"
+
+
+class TileBuilderTester(TileBuilder):
+    """Tester for the TileBuilder code path.
+
+    Examples:
+        >>> from dvm.tester import TileBuilderTester
+        >>> t = TileBuilderTester()
+        >>> a = np.full([1024], 2.0, np.float32)  # prod(shape) * prod(tile) = 64 * 16
+        >>> x0 = t.load(a, shape=[64], tile=[16])
+        >>> x1 = t.add(x0, x0)
+        >>> x2 = t.sqrt(x1)
+        >>> t.store_expect(x2, tile=[16], expect=2.0)
+        >>> t.codegen(tile_space_size=16)
+        >>> assert t.run(verbose=True)
+    """
+
+    def __init__(self, dev_id=None):
+        if dev_id is None:
+            dev_id = int(os.getenv("DEVICE_ID", "0"))
+        TileBuilder.__init__(self, dev_id)
+        self.expects = []  # [(store_op, expect, eps)]
+
+    def load(self, arr, tshape, tspace):
+        op = TileBuilder.load(self, _normalize_dtype(str(arr.dtype)), tshape, tspace)
+        TileBuilder.input(self, op, arr)
+        return op
+
+    def store_expect(self, x, tspace, expect, eps=None):
+        op = TileBuilder.store(self, x, tspace)
+        out = np.zeros(expect.shape, dtype=expect.dtype)
+        TileBuilder.set_output(self, op, out)
+        self.expects.append([op, expect, eps])
+        return op
+
+    def codegen(self, tile_space_size, block_dim=0, verbose=False):
+        if verbose:
+            print("******* before codegen *******")
+            print(self.dump())
+        TileBuilder.codegen(self, tile_space_size, block_dim)
+        if verbose:
+            print("******* after run *******")
+            print(self.dump())
+            print("********* bytecode *********")
+            print(self.das())
+
+    def run_check(self, verbose=False):
+        TileBuilder.run(self)
+        ok = True
+        for op, expect, eps in self.expects:
+            out = TileBuilder.output(self, op)
+            if eps is None:
+                if out.dtype == np.float32:
+                    eps = 1e-5
+                elif out.dtype == np.float16:
+                    eps = 1e-3
+                else:
+                    eps = 0
+            if not np.allclose(out, expect, rtol=eps, atol=eps, equal_nan=True):
+                ok = False
+                if verbose:
+                    print("check failed: expect {}, got {}".format(expect, out))
+        return ok

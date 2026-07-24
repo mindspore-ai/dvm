@@ -20,6 +20,7 @@
 #include "pybind11/numpy.h"
 #include "code.h"
 #include "dvm_py.h"
+#include "tile_builder.h"
 
 namespace dvm {
 class KernelRunner;
@@ -117,5 +118,76 @@ class RtKernelPy : public KernelPy {
   KernelRunner *runner_;
 };
 using RtKernelPyPtr = std::shared_ptr<RtKernelPy>;
+
+class TObjectPy {
+ public:
+  explicit TObjectPy(TObject *obj = nullptr) : obj_(obj) {}
+  TObject *Get() const { return obj_; }
+
+ private:
+  TObject *obj_;
+};
+using TObjPyPtr = std::shared_ptr<TObjectPy>;
+
+class TileBuilderPy {
+ public:
+  struct LoadInfo {
+    TObject *op{nullptr};
+    GmRef dev{nullptr};
+    py::array host;
+    std::vector<int64_t> shape_vec;
+    IntArrayRef shape_ref;
+    TileRef tile_ref;
+  };
+  struct StoreInfo {
+    TObject *op{nullptr};
+    GmRef dev{nullptr};
+    py::array host;
+    size_t size{0};
+    bool set_host{false};
+    TileRef tile_ref;
+  };
+
+  explicit TileBuilderPy(int dev_id);
+  ~TileBuilderPy();
+
+  TObjPyPtr Load(DataTypePy dtype, py::object shape, py::object tile);
+  TObjPyPtr Store(TObjPyPtr input, py::object tile);
+
+  template <UnaryOpType op_type>
+  py::object Unary(py::object input) {
+    return ObjToPy(impl_.Unary<op_type>(PyToObj(input)));
+  }
+
+  template <BinaryOpType op_type>
+  py::object Binary(py::object lhs, py::object rhs) {
+    return ObjToPy(impl_.Binary<op_type>(PyToObj(lhs), PyToObj(rhs)));
+  }
+
+  void Input(TObjPyPtr op, py::array val);
+  void SetOutput(TObjPyPtr store, py::array val);
+  py::array Output(TObjPyPtr store);
+
+  void CodeGen(int64_t tile_space_size, int64_t block_dim);
+  void Run();
+
+  const char *Dump() const;
+  const char *Das() const;
+  int64_t MaxTileSize() const;
+
+ protected:
+  TObject *PyToObj(py::object obj) { return obj.cast<TObjPyPtr>()->Get(); }
+  py::object ObjToPy(TObject *obj) { return py::cast(std::make_shared<TObjectPy>(obj)); }
+  LoadInfo *FindLoadInfo(TObject *op);
+  StoreInfo *FindStoreInfo(TObject *op);
+  void ParseTileRef(py::object tile, TileRef &tile_ref);
+
+  TileBuilder impl_;
+  void *stream_{nullptr};
+  std::vector<LoadInfo *> loads_;
+  std::vector<StoreInfo *> stores_;
+  std::vector<void *> dev_mems_;
+};
+using TileBuilderPyPtr = std::shared_ptr<TileBuilderPy>;
 }  // namespace dvm
 #endif  // _DVM_PYBIND_API_H_

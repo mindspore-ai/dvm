@@ -981,6 +981,131 @@ int RtKernelPy::RankId() { return g_mpc.rank_id; }
 
 int RtKernelPy::RankSize() { return g_mpc.rank_size; }
 
+TileBuilderPy::TileBuilderPy(int dev_id) {
+  static void *stream = nullptr;
+  if (!stream) {
+    ERROR_CHECK(aclrtSetDevice(dev_id));
+    ERROR_CHECK(aclrtCreateStream(&stream));
+    g_system.Init();
+  }
+  stream_ = stream;
+}
+
+TileBuilderPy::~TileBuilderPy() {
+  for (auto mem : dev_mems_) {
+    ERROR_CHECK(aclrtFree(mem));
+  }
+  for (auto info : loads_) {
+    delete info;
+  }
+  for (auto info : stores_) {
+    delete info;
+  }
+}
+
+void TileBuilderPy::ParseTileRef(py::object tile, TileRef &tile_ref) {
+  py::list tile_list = py::cast<py::list>(tile);
+  size_t size = tile_list.size();
+  ASSERT(size <= TileRef::MAX_TILE_DIM);
+  tile_ref.dim_size = size;
+  for (size_t i = 0; i < size; ++i) {
+    tile_ref.dims[i] = py::cast<int64_t>(tile_list[i]);
+  }
+}
+
+TileBuilderPy::LoadInfo *TileBuilderPy::FindLoadInfo(TObject *op) {
+  for (auto info : loads_) {
+    if (info->op == op) {
+      return info;
+    }
+  }
+  ASSERT(0);
+  return nullptr;
+}
+
+TileBuilderPy::StoreInfo *TileBuilderPy::FindStoreInfo(TObject *op) {
+  for (auto info : stores_) {
+    if (info->op == op) {
+      return info;
+    }
+  }
+  ASSERT(0);
+  return nullptr;
+}
+
+TObjPyPtr TileBuilderPy::Load(DataTypePy dtype, py::object shape, py::object tile) {
+  auto info = new LoadInfo();
+  loads_.push_back(info);
+  info->shape_vec = GetVector(shape);
+  info->shape_ref = info->shape_vec;
+  ParseTileRef(tile, info->tile_ref);
+  info->op = impl_.Load(dtype, &info->dev, &info->shape_ref, &info->tile_ref);
+  return std::make_shared<TObjectPy>(info->op);
+}
+
+TObjPyPtr TileBuilderPy::Store(TObjPyPtr input, py::object tile) {
+  auto info = new StoreInfo();
+  stores_.push_back(info);
+  ParseTileRef(tile, info->tile_ref);
+  info->op = impl_.Store(input->Get(), &info->dev, &info->tile_ref);
+  return std::make_shared<TObjectPy>(info->op);
+}
+
+void TileBuilderPy::Input(TObjPyPtr op, py::array val) {
+  auto info = FindLoadInfo(op->Get());
+  auto buf = val.request();
+  size_t size = buf.itemsize * buf.size;
+  if (size == 0) {
+    return;
+  }
+  void *dev = nullptr;
+  ERROR_CHECK(aclrtMalloc(&dev, size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+  ERROR_CHECK(aclrtMemcpy(dev, size, buf.ptr, size, ACL_MEMCPY_HOST_TO_DEVICE));
+  dev_mems_.push_back(dev);
+  info->dev = dev;
+  info->host = val;
+}
+
+void TileBuilderPy::SetOutput(TObjPyPtr store, py::array val) {
+  auto info = FindStoreInfo(store->Get());
+  info->host = val;
+  info->size = val.nbytes();
+  info->set_host = true;
+  auto buf = info->host.request();
+  std::memset(buf.ptr, 0, info->size);
+  void *dev = nullptr;
+  ERROR_CHECK(aclrtMalloc(&dev, info->size, ACL_MEM_TYPE_HIGH_BAND_WIDTH));
+  ERROR_CHECK(aclrtMemcpy(dev, info->size, buf.ptr, info->size, ACL_MEMCPY_HOST_TO_DEVICE));
+  dev_mems_.push_back(dev);
+  info->dev = dev;
+}
+
+py::array TileBuilderPy::Output(TObjPyPtr store) {
+  auto info = FindStoreInfo(store->Get());
+  if (info->size > 0) {
+    auto buf = info->host.request();
+    ERROR_CHECK(aclrtMemcpy(buf.ptr, info->size, info->dev, info->size, ACL_MEMCPY_DEVICE_TO_HOST));
+  }
+  return info->host;
+}
+
+void TileBuilderPy::CodeGen(int64_t tile_space_size, int64_t block_dim) {
+  impl_.CodeGen(tile_space_size, block_dim);
+}
+
+void TileBuilderPy::Run() {
+  int ret = impl_.Launch(true, stream_);
+  if (ret != 0) {
+    std::string err = "TileBuilder Launch Exception:" + std::to_string(ret);
+    DvmException(err.c_str());
+  }
+  ERROR_CHECK(aclrtSynchronizeStream(stream_));
+}
+
+const char *TileBuilderPy::Dump() const { return impl_.Dump(); }
+const char *TileBuilderPy::Das() const { return impl_.Das(); }
+int64_t TileBuilderPy::MaxTileSize() const { return impl_.MaxTileSize(); }
+
 class DevicePy {
  public:
   static std::string Arch() {
@@ -1045,5 +1170,46 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def_static("arch", &DevicePy::Arch, "Get system architecture")
     .def_static("core_num", &DevicePy::CoreNum, "Get soc core number")
     .def_static("soc_name", &DevicePy::SocName, "Get soc name");
+
+  (void)py::class_<TObjectPy, std::shared_ptr<TObjectPy>>(m, "TObject");
+
+  py::class_<TileBuilderPy, std::shared_ptr<TileBuilderPy>>(m, "TileBuilder")
+    .def(py::init<int>(), py::arg("dev_id") = 0)
+    .def("load", &TileBuilderPy::Load, "load array", py::arg("arr"), py::arg("shape"), py::arg("tile"))
+    .def("store", &TileBuilderPy::Store, "store array", py::arg("input"), py::arg("tile"))
+    .def("input", &TileBuilderPy::Input, "set input data", py::arg("op"), py::arg("val"))
+    .def("output", &TileBuilderPy::Output, "get output data", py::arg("store"))
+    .def("set_output", &TileBuilderPy::SetOutput, "set output buffer", py::arg("store"), py::arg("val"))
+    .def("sqrt", &TileBuilderPy::Unary<UnaryOpType::kSqrt>, "emit sqrt")
+    .def("abs", &TileBuilderPy::Unary<UnaryOpType::kAbs>, "emit abs")
+    .def("log", &TileBuilderPy::Unary<UnaryOpType::kLog>, "emit log")
+    .def("exp", &TileBuilderPy::Unary<UnaryOpType::kExp>, "emit exp")
+    .def("reciprocal", &TileBuilderPy::Unary<UnaryOpType::kReciprocal>, "emit reciprocal")
+    .def("isfinite", &TileBuilderPy::Unary<UnaryOpType::kIsFinite>, "emit isfinite")
+    .def("logical_not", &TileBuilderPy::Unary<UnaryOpType::kLogicalNot>, "emit logical_not")
+    .def("round", &TileBuilderPy::Unary<UnaryOpType::kRound>, "emit round")
+    .def("floor", &TileBuilderPy::Unary<UnaryOpType::kFloor>, "emit floor")
+    .def("ceil", &TileBuilderPy::Unary<UnaryOpType::kCeil>, "emit ceil")
+    .def("trunc", &TileBuilderPy::Unary<UnaryOpType::kTrunc>, "emit trunc")
+    .def("equal", &TileBuilderPy::Binary<BinaryOpType::kEqual>, "emit equal")
+    .def("not_equal", &TileBuilderPy::Binary<BinaryOpType::kNotEqual>, "emit equal")
+    .def("greater", &TileBuilderPy::Binary<BinaryOpType::kGreater>, "emit greater")
+    .def("greater_equal", &TileBuilderPy::Binary<BinaryOpType::kGreaterEqual>, "emit greater_equal")
+    .def("less", &TileBuilderPy::Binary<BinaryOpType::kLess>, "emit less")
+    .def("less_equal", &TileBuilderPy::Binary<BinaryOpType::kLessEqual>, "emit less_equal")
+    .def("add", &TileBuilderPy::Binary<BinaryOpType::kAdd>, "emit add")
+    .def("sub", &TileBuilderPy::Binary<BinaryOpType::kSub>, "emit sub")
+    .def("mul", &TileBuilderPy::Binary<BinaryOpType::kMul>, "emit mul")
+    .def("div", &TileBuilderPy::Binary<BinaryOpType::kDiv>, "emit div")
+    .def("pow", &TileBuilderPy::Binary<BinaryOpType::kPow>, "emit pow")
+    .def("maximum", &TileBuilderPy::Binary<BinaryOpType::kMaximum>, "emit maximum")
+    .def("minimum", &TileBuilderPy::Binary<BinaryOpType::kMinimum>, "emit minimum")
+    .def("logical_and", &TileBuilderPy::Binary<BinaryOpType::kLogicalAnd>, "emit logical_add")
+    .def("logical_or", &TileBuilderPy::Binary<BinaryOpType::kLogicalOr>, "emit logical_or")
+    .def("codegen", &TileBuilderPy::CodeGen, py::arg("tile_space_size"), py::arg("block_dim") = 0)
+    .def("run", &TileBuilderPy::Run)
+    .def("dump", &TileBuilderPy::Dump)
+    .def("das", &TileBuilderPy::Das)
+    .def("max_tile_size", &TileBuilderPy::MaxTileSize);
 }
 }  // namespace dvm

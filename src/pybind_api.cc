@@ -982,13 +982,8 @@ int RtKernelPy::RankId() { return g_mpc.rank_id; }
 int RtKernelPy::RankSize() { return g_mpc.rank_size; }
 
 TileBuilderPy::TileBuilderPy(int dev_id) {
-  static void *stream = nullptr;
-  if (!stream) {
-    ERROR_CHECK(aclrtSetDevice(dev_id));
-    ERROR_CHECK(aclrtCreateStream(&stream));
-    g_system.Init();
-  }
-  stream_ = stream;
+  runner_ = RunnerManager::Instance().Get("dev", dev_id);
+  g_system.Init();
 }
 
 TileBuilderPy::~TileBuilderPy() {
@@ -1001,10 +996,18 @@ TileBuilderPy::~TileBuilderPy() {
   for (auto info : stores_) {
     delete info;
   }
+  runner_->Reset();
 }
 
 void TileBuilderPy::ParseTileRef(py::object tile, TileRef &tile_ref) {
-  py::list tile_list = py::cast<py::list>(tile);
+  py::list tile_list;
+  if (py::isinstance<py::tuple>(tile)) {
+    auto tuple = py::cast<py::tuple>(tile);
+    tile_list = tuple[0];
+    tile_ref.SetTail(py::cast<int64_t>(tuple[1]));
+  } else {
+    tile_list = py::cast<py::list>(tile);
+  }
   size_t size = tile_list.size();
   ASSERT(size <= TileRef::MAX_TILE_DIM);
   tile_ref.dim_size = size;
@@ -1094,12 +1097,13 @@ void TileBuilderPy::CodeGen(int64_t tile_space_size, int64_t block_dim) {
 }
 
 void TileBuilderPy::Run() {
-  int ret = impl_.Launch(true, stream_);
+  auto stream = runner_->Stream();
+  int ret = impl_.Launch(true, stream);
   if (ret != 0) {
     std::string err = "TileBuilder Launch Exception:" + std::to_string(ret);
     DvmException(err.c_str());
   }
-  ERROR_CHECK(aclrtSynchronizeStream(stream_));
+  ERROR_CHECK(aclrtSynchronizeStream(stream));
 }
 
 const char *TileBuilderPy::Dump() const { return impl_.Dump(); }

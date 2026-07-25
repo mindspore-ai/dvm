@@ -19,16 +19,24 @@ from tests.mark_utils import arg_mark
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_tb_basic():
+@pytest.mark.parametrize('shape, tile_space, tile_shape', [
+    [[4096], [16], [256]],
+    [[5000], ([20], 136), [256]],
+    [[40, 1000], [20], [2, 1000]],
+])
+def test_tb_basic(shape, tile_space, tile_shape):
     t = TileBuilderTester()
-    a = np.random.normal(0.0, 0.03, [4096]).astype(np.float32)
-    tile_space = [16]
-    tile_shape = [256]
-    tile_space_size = 16
+    tile_list = tile_space if isinstance(tile_space, list) else tile_space[0]
+    tile_space_size = 1
+    for x in tile_list:
+        tile_space_size *= x
+    a = np.random.normal(1.0, 0.03, shape).astype(np.float32)
+    b = np.random.normal(1.0, 0.03, shape).astype(np.float32)
     x0 = t.load(a, tile_shape, tile_space)
-    x1 = t.add(x0, x0)
-    x2 = t.sqrt(x1)
-    t.store_expect(x2, tile_space, expect=np.sqrt(a + a))
+    x1 = t.load(b, tile_shape, tile_space)
+    x2 = t.add(x0, x1)
+    x3 = t.sqrt(x2)
+    t.store_expect(x3, tile_space, expect=np.sqrt(a + b))
     max_tile_size = t.max_tile_size()
     assert max_tile_size > 0
     t.codegen(tile_space_size, 0, True)

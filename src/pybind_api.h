@@ -183,7 +183,7 @@ class TileBuilderPy {
   void ParseTileRef(py::object tile, TileRef &tile_ref);
 
   TileBuilder impl_;
-  void *stream_{nullptr};
+  KernelRunner *runner_;
   std::vector<LoadInfo *> loads_;
   std::vector<StoreInfo *> stores_;
   std::vector<void *> dev_mems_;

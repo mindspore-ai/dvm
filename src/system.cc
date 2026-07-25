@@ -270,23 +270,23 @@ int System::CodeLaunchACL_C310(const System &self, const Code *code, void *exter
   auto launch = reinterpret_cast<LaunchHostArgFunc>(self.kernel_launch_func_);
   aclrtLaunchKernelAttr attr;
   aclrtLaunchKernelCfg cfg;
+  aclrtLaunchKernelCfg *cfg_ptr = nullptr;
   if (code->target_ == Code::kTargetSimtVec) {
     attr.id = ACL_RT_LAUNCH_KERNEL_ATTR_DYN_UBUF_SIZE;
     attr.value.dynUBufSize = self.local_mem_size_ - self.SimtWorkspace();
     cfg.attrs = &attr;
     cfg.numAttrs = 1;
-  } else {
-    cfg.numAttrs = 0;
+    cfg_ptr = &cfg;
   }
   if (likely(code->data_size_ <= PARAM_TABLE_LIMIT)) {
-    return launch(func_handle, code->block_dim_, stream, &cfg, code->data_, code->data_size_, nullptr, 0);
+    return launch(func_handle, code->block_dim_, stream, cfg_ptr, code->data_, code->data_size_, nullptr, 0);
   }
   auto data_dev = reinterpret_cast<uint8_t *>(extern_ws);
   auto ret =
     aclrtMemcpyAsync(data_dev, code->data_size_, code->data_, code->data_size_, ACL_MEMCPY_HOST_TO_DEVICE, stream);
   EXCEPTION_IF(ret != 0, "aclrtMemcpyAsync error");
   uint64_t args[] = {reinterpret_cast<uint64_t>(data_dev), *(reinterpret_cast<uint64_t *>(code->data_) + 1)};
-  return launch(func_handle, code->block_dim_, stream, &cfg, args, sizeof(args), nullptr, 0);
+  return launch(func_handle, code->block_dim_, stream, cfg_ptr, args, sizeof(args), nullptr, 0);
 }
 
 void System::GetSocConfig() {

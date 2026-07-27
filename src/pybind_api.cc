@@ -184,7 +184,8 @@ class DevRunner : public KernelRunner {
     ASSERT(static_cast<uint32_t>(dev_id) < dev_count);
 #endif
     ERROR_CHECK(aclrtSetDevice(dev_id));
-    ERROR_CHECK(aclrtCreateStream(&stream_));
+    ERROR_CHECK(
+      aclrtCreateStreamWithConfig(&stream_, 0, ACL_STREAM_FAST_LAUNCH | ACL_STREAM_FAST_SYNC));
     dev_id_ = dev_id;
   }
   ~DevRunner() override {

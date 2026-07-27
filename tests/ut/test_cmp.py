@@ -232,3 +232,16 @@ def test_cmp_int64_s_l(op, func):
     y = op(t, 1000, x)
     t.store_expect(y, func(1000, a))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sequential_run_with_different_kernel_args():
+    def run_copy(dtype):
+        t = Tester()
+        data = np.random.randint(1024, size=(1024, 2000)).astype(dtype)
+        out = t.copy(t.load(data))
+        t.store_expect(out, data)
+        assert t.run_check()
+
+    run_copy(np.int32)
+    run_copy(np.float16)

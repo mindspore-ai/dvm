@@ -188,13 +188,6 @@ class System : public Config {
   void SetCubeStoreType(CubeStoreType type) { cube_store_type_ = type; }
   CubeStoreType GetCubeStoreType() { return Arch() == kAiCore_C310 ? cube_store_type_ : kCubeStoreGM; }
 
-  void *CommStream() {
-    if (comm_stream_ == nullptr) {
-      comm_stream_ = CreateStream();
-    }
-    return comm_stream_;
-  }
-
   // features config
 
   bool deterministic_{false};
@@ -210,7 +203,6 @@ class System : public Config {
   void *get_ffts_addr_func_{nullptr};
   void *kernel_launch_func_{nullptr};
 
-  void *CreateStream();
   const uint64_t *g_simd_func_offset_;
   const uint64_t *g_access_func_offset_;
   const uint64_t *g_visit_func_offset_;
@@ -241,7 +233,6 @@ class System : public Config {
   SocType soc_name_{kSocUnknow};
   bool inited_{false};
   CubeStoreType cube_store_type_{kCubeStoreGM};
-  void *comm_stream_{nullptr};
   void *renamed_bin_{nullptr};
   void *simt_bin_{nullptr};
   void *rt_handle_{nullptr};

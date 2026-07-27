@@ -107,8 +107,6 @@ class ReduceScatterOp : public CommOp {
   bool multi_load_;
 
  private:
-  int tail_dim_{-1};
-  int tail_size_{0};
   ShapeWithRef shape_;
   vSimdInsnID add_id_;
   DimArray round_tile_;
@@ -118,12 +116,9 @@ class AllReduceOpBase : public CommOp {
  public:
   AllReduceOpBase(int op_type, NDObject *input, const Communicator *comm);
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  void Tile(const TileParam &tp) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
-  int tail_dim_{-1};
-  int tail_size_{0};
   bool use_twoshot_{false};
   vSimdInsnID insn_id_;
 };
@@ -144,7 +139,6 @@ class AllGatherOp : public CommOp {
   AllGatherOp(NDObject *input, const Communicator *comm);
   ~AllGatherOp() override = default;
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  void Tile(const TileParam &tp) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -154,10 +148,6 @@ class AllGatherOp : public CommOp {
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
   DimArray round_tile_;
-
- protected:
-  int tail_dim_{-1};
-  int tail_size_{0};
 
  private:
   ShapeWithRef shape_;
@@ -171,10 +161,6 @@ class AllGatherV2Op : public CommOp {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
-
- protected:
-  int tail_dim_{-1};
-  int tail_size_{0};
 
  private:
   ShapeWithRef shape_;

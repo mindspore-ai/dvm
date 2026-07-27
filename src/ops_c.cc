@@ -22,7 +22,7 @@
 namespace dvm {
 void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
   auto dims = shape_ref_->size;
-  ndd_.dims.resize(dims);
+  ndd_.Reset(dims);
   gap_ = ITEM_SIZE[type_id_];
   for (size_t i = 0; i < shape_ref_->size; i++) {
     ndd_.dims[i] = shape_ref_->data[dims - i - 1];
@@ -30,9 +30,6 @@ void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
   }
   gap_ = gap_ / comm_->GetRankSize();
   ndd_.dims[shape_ref_->size - 1] /= comm_->GetRankSize();
-  tail_dim_ = -1;
-  tail_size_ = 0;
-  round_tile_.resize(0);
 }
 
 uint64_t NDMultiLoad::Emit(VectorKernel &k) {
@@ -49,7 +46,7 @@ uint64_t NDMultiLoad::Emit(VectorKernel &k) {
   op.xn = xbuf_;
   op.tile_stride = src_tile_stride_ * ITEM_SIZE[type_id_];
   op.body_iter = ndd_.stride_back() / lead_align;
-  op.tail_iter = tail_dim_ <= ndd_.lead_idx() ? op.body_iter : op.body_iter / ndd_[tail_dim_] * tail_size_;
+  op.tail_iter = op.body_iter;
   op.iter_size = ndd_.lead_dim() * ITEM_SIZE[type_id_];
   op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
   op.round_rank = 0;
@@ -105,7 +102,7 @@ void ReduceScatterOp::Normalize(std::vector<NDObject *> &run_ops) {
     shape_[0] = comm_->GetRankSize();
     shape_[1] /= shape_[0];
   }
-  ndd_.dims = lhs_->nd_.dims();
+  ndd_.Reset(lhs_->nd_.dims());
   if (multi_load_) {
     shape_[0] /= comm_->GetRankSize();
   } else {
@@ -147,11 +144,7 @@ NDObject *ReduceScatterOp::Clone(CloneHelper &h) { return new ReduceScatterOp(h.
 void ReduceScatterOp::Dump(bool verbose, std::ostringstream &oss) { oss << "ReduceScatter"; }
 
 void ReduceScatterOp::Tile(const TileParam &tp) {
-  if (CollectRoundTile(ndd_.dims, tp, round_tile_) && tp.tail > 0) {
-    ASSERT(tail_dim_ == -1);  // restrict: only one unalign tile
-    tail_dim_ = tp.start;
-    tail_size_ = tp.tail;
-  }
+  CollectRoundTile(ndd_.dims, tp, round_tile_);
   NDObject::Tile(tp);
 }
 
@@ -164,7 +157,7 @@ uint64_t ReduceScatterOp::Emit(VectorKernel &k) {
   uint64_t rounds[2];
   ASSERT(!round_tile_.empty());
   BuildDimRounds(round_tile_, rounds);
-
+  int64_t tail_size = k.GetTailSize(&ndd_);
   // TODO: support matmul post fusion ReduceScatter
   auto store_id = mix_ ? vAccInsnID::V_PEER_STORE_MIX : vAccInsnID::V_PEER_STORE;
   auto load_id = mix_ ? vAccInsnID::V_PEER_LOAD_MIX : vAccInsnID::V_PEER_LOAD;
@@ -222,7 +215,7 @@ uint64_t ReduceScatterOp::Emit(VectorKernel &k) {
     p_load.xn = rhs;
     p_load.tile_stride = tile_stride_size;
     p_load.lenburst = GetBlocks(tile_stride);
-    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[tail_dim_] * tail_size_);
+    p_load.tail_lenburst = tail_size == 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[k.GetTailDim()] * tail_size);
     p_load.round_rank = 2;
     p_load.rank_id = rank_id;
     p_load.event_id = backward_event2;
@@ -265,6 +258,7 @@ uint64_t ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
   uint64_t backward_event2 = backward_event - 1;
   int code_size = 0;
   uint64_t *current_insn{nullptr};
+  int64_t tail_size = k.GetTailSize(&ndd_);
 
   code_size += vNop::Encode(insn_);
   *insn_ |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
@@ -281,7 +275,7 @@ uint64_t ReduceScatterOp::MultiLoadEmit(VectorKernel &k) {
     p_load.xn = rhs;
     p_load.tile_stride = tile_stride_size * (rank_size - 1);
     p_load.lenburst = GetBlocks(tile_stride);
-    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[tail_dim_] * tail_size_);
+    p_load.tail_lenburst = tail_size == 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[k.GetTailDim()] * tail_size);
     p_load.rank_id = rank_id;
     p_load.event_id = backward_event2;
     if (!is_begin && rank_size - i > 1) {
@@ -345,19 +339,10 @@ AllReduceOpBase::AllReduceOpBase(int op_type, NDObject *input, const Communicato
   max_type_ = type_id_ == kBFloat16 ? kFloat32 : type_id_;
 }
 
-void AllReduceOpBase::Tile(const TileParam &tp) {
-  if (tp.tail > 0) {
-    // ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
-    tail_dim_ = tp.start;
-    tail_size_ = tp.tail;
-  }
-  NDObject::Tile(tp);
-}
-
 void AllReduceOpBase::Dump(bool verbose, std::ostringstream &oss) { oss << "AllReduce"; }
 
 void AllReduceOpBase::Normalize(std::vector<NDObject *> &run_ops) {
-  ndd_.dims = lhs_->nd_.dims();
+  ndd_.Reset(lhs_->nd_.dims());
   if (ndd_.dims.prod() > 128 * static_cast<uint32_t>(comm_->GetRankSize())) {
     use_twoshot_ = true;
   }
@@ -391,6 +376,8 @@ uint64_t AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
   uint64_t forward_event = g_system.EventNum() - 1;
   uint64_t backward_event = g_system.EventNum() - 1;
   uint64_t backward_event2 = backward_event - 1;
+
+  int64_t tail_size = k.GetTailSize(&ndd_);
 
   // nop
   code_size += vNop::Encode(insn_);
@@ -588,7 +575,7 @@ uint64_t AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
       pp_load.tile_stride = tile_stride_size;
       pp_load.body_iter = ndd_.stride_back() / lead_align;
       pp_load.tail_iter =
-        tail_dim_ <= ndd_.lead_idx() ? pp_load.body_iter : pp_load.body_iter / ndd_[tail_dim_] * tail_size_;
+        (tail_size == 0 || k.GetTailDim() <= ndd_.lead_idx()) ? pp_load.body_iter : pp_load.body_iter / ndd_[k.GetTailDim()] * tail_size;
       pp_load.iter_size = ndd_.lead_dim() * ITEM_SIZE[type_id_];
       pp_load.pad_size = lead_align * ITEM_SIZE[type_id_] - pp_load.iter_size;
       pp_load.pingpong = 0;
@@ -674,6 +661,8 @@ uint64_t AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
   uint64_t forward_event = g_system.EventNum() - 1;
   uint64_t backward_event = g_system.EventNum() - 1;
   uint64_t backward_event2 = backward_event - 1;
+
+  int64_t tail_size = k.GetTailSize(&ndd_);
   int code_size = 0;
   uint64_t *current_insn{nullptr};
 
@@ -889,7 +878,7 @@ uint64_t AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
       p_load.xn = rhs;
       p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
       p_load.lenburst = GetBlocks(tile_stride);
-      p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[tail_dim_] * tail_size_);
+      p_load.tail_lenburst = tail_size == 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[k.GetTailDim()] * tail_size);
       p_load.round_rank = 0;
       p_load.event_id = backward_event2;
       if (!is_begin && rank_size - i > 1) {
@@ -968,7 +957,7 @@ void AllGatherOp::Normalize(std::vector<NDObject *> &run_ops) {
   for (size_t i = 0; i < size; i++) {
     shape_[i] = lhs_->shape_ref_->data[i];
   }
-  ndd_.dims.resize(size + 1);
+  ndd_.Reset(size + 1);
   for (size_t i = 0; i < size; i++) {
     ndd_.dims[i] = shape_[size - i - 1];
   }
@@ -978,15 +967,6 @@ void AllGatherOp::Normalize(std::vector<NDObject *> &run_ops) {
   xbuf_reserve_ = 2;
   code_reserve_ = sizeof(uint64_t) * (5 * (comm_->GetRankSize() + 1) + 6);
   round_tile_.resize(0);
-}
-
-void AllGatherOp::Tile(const TileParam &tp) {
-  if (tp.tail > 0) {
-    // ASSERT(tail_dim_ == -1); // restrict: only one unalign tile
-    tail_dim_ = tp.start;
-    tail_size_ = tp.tail;
-  }
-  NDObject::Tile(tp);
 }
 
 void AllGatherOp::FoldProp(NDObject *op, PropRange &range) {
@@ -1015,10 +995,12 @@ uint64_t AllGatherOp::Emit(VectorKernel &k) {
   uint64_t forward_event = g_system.EventNum() - 1;
   uint64_t backward_event = g_system.EventNum() - 1;
 
+  int64_t tail_size = k.GetTailSize(&ndd_);
+
   // TODO: If we do not consider prologue fusion of AllGather, then we can find load in this way.
   // But if we consider prologue fusion, this is not a general way to get round_tile_ of load.
   auto load = static_cast<NDLoad *>(this->lhs_);
-  round_tile_ = load->round_tile_;
+  BuildRoundTile(k, load->ndd_, (load->flags_ & OBJ_FLAG_LOAD_SHARD_ROUND) != 0, round_tile_);
   uint64_t rounds[2];
   if (!round_tile_.empty()) {
     BuildDimRounds(round_tile_, rounds);
@@ -1067,7 +1049,7 @@ uint64_t AllGatherOp::Emit(VectorKernel &k) {
     p_load.xn = ub_addr;
     p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
     p_load.lenburst = GetBlocks(tile_stride);
-    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[tail_dim_] * tail_size_);
+    p_load.tail_lenburst = tail_size == 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[k.GetTailDim()] * tail_size);
     p_load.round_rank = round_tile_.size();
     p_load.event_id = 0;
     current_insn = insn_ + code_size;
@@ -1134,7 +1116,7 @@ void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
   }
   shape_[0] *= comm_->GetRankSize();
 
-  ndd_.dims = lhs_->nd_.dims();
+  ndd_.Reset(lhs_->nd_.dims());
   xbuf_reserve_ = comm_->GetRankSize();
   code_reserve_ = 5 * sizeof(uint64_t) * (comm_->GetRankSize() + 1);
 }
@@ -1193,7 +1175,7 @@ uint64_t AllGatherV2Op::Emit(VectorKernel &k) {
     p_load.xn = ub_addr;
     p_load.tile_stride = tile_stride * ITEM_SIZE[type_id_];
     p_load.lenburst = GetBlocks(tile_stride);
-    p_load.tail_lenburst = tail_dim_ < 0 ? p_load.lenburst : GetBlocks(tile_stride / ndd_[tail_dim_] * tail_size_);
+    p_load.tail_lenburst = p_load.lenburst;
     p_load.round_rank = 0;
     p_load.event_id = 0;
     current_insn = insn_ + code_size;

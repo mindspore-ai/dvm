@@ -246,6 +246,15 @@ class NDSpaceData {
   NDSpaceData() = default;
   ~NDSpaceData() = default;
 
+  void Reset() { pointwise_tile_mask = 0; }
+  void Reset(size_t dim_size) {
+    dims.resize(dim_size);
+    pointwise_tile_mask = 0;
+  }
+  void Reset(const DimArray &dm) {
+    dims = dm;
+    pointwise_tile_mask = 0;
+  }
   void UpdateStride(uint64_t simd_width) {
     strides.resize(dims.size());
     size_t i = 0;
@@ -274,10 +283,13 @@ class NDSpaceData {
   int lead_idx() const { return lidx; }
   int64_t lead_stride() const { return strides[lidx]; }
   int64_t lead_dim() const { return dims[lidx]; }
+  bool PointwiseTile(int start, int end) const { return (pointwise_tile_mask >> start) & ((2u << (end - start)) - 1); }
+  bool PointwiseTile(int idx) const { return (pointwise_tile_mask >> idx) & 1u; }
 
   DimArray dims;
   DimArray strides;
   int lidx;
+  uint32_t pointwise_tile_mask;
 };
 
 class NDSpace {
@@ -577,19 +589,13 @@ class NDLoad : public NDAccess {
       : NDAccess(src, nullptr, type_id, ObjectType::kLoad) {
     shape_ref_ = shape_ref;
     nd_.data = &ndd_;
-    MESS(tail_dim_, 100);
-    MESS(tail_size_, 10000);
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
-  void Tile(const TileParam &tp) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  int tail_dim_;
-  int tail_size_;
-  DimArray round_tile_;
   NDSpaceData ndd_;
 };
 
@@ -641,13 +647,7 @@ class NDViewLoad : public NDAccess {
   void Dump(bool verbose, std::ostringstream &oss) override;
   DimArray &Stride() { return src_stride_; }
 
-  void ViewUpdate(uint64_t offset) {
-    int dim_size = ndd_.dims.size();
-    tail_dim_ = dim_size;
-    tail_size_ = 0;
-    offset_bytes_ = offset;
-    tile_.resize(dim_size);
-  }
+  void ViewUpdate(uint64_t offset) { offset_bytes_ = offset; }
 
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
@@ -657,9 +657,6 @@ class NDViewLoad : public NDAccess {
   DimArray src_stride_;
 
  protected:
-  DimArray tile_;
-  int tail_dim_;
-  int tail_size_;
   NDSpaceData ndd_;
   uint64_t offset_bytes_{0};
 };
@@ -669,24 +666,12 @@ class NDStore : public NDAccess {
   NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) { shape_ref_ = src->shape_ref_; }
   NDStore(void *dst, NDObject *src) : NDAccess(dst, src, src->type_id_, ObjectType::kStore) {
     shape_ref_ = src->shape_ref_;
-    MESS(tail_dim_, 100);
-    MESS(tail_size_, 10000);
-    MESS(elem_dim_mask_, 0);
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   void Shard(const ShardParam &sp) override;
-  void Tile(const TileParam &tp) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
-
-  static void DimChanged(NDObject *op);
-
- private:
-  int tail_dim_;
-  int tail_size_;
-  uint32_t elem_dim_mask_;
-  DimArray round_tile_;
 };
 
 class NDViewStore : public NDAccess {
@@ -701,8 +686,7 @@ class NDViewStore : public NDAccess {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   DimArray &Stride() { return dst_stride_; }
-
-  void ViewUpdate(uint64_t offset);
+  void ViewUpdate(uint64_t offset) { offset_bytes_ = offset; }
 
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);
@@ -712,10 +696,6 @@ class NDViewStore : public NDAccess {
   DimArray dst_stride_;
 
  protected:
-  DimArray tile_;
-  int tail_dim_;
-  int tail_size_;
-  uint32_t elem_dim_mask_;
   uint64_t offset_bytes_{0};
 };
 
@@ -926,11 +906,8 @@ class ElementAnyOp : public NDObject {
     shape_ref_data_.size = 1;
     shape_ref_ = &shape_ref_data_;
     nd_.data = &ndd_;
-    MESS(tail_dim_, 100);
-    MESS(tail_size_, 10000);
   }
   uint64_t Emit(VectorKernel &k) override;
-  void Tile(const TileParam &tp) override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -938,8 +915,6 @@ class ElementAnyOp : public NDObject {
  private:
   int64_t shape_{1};
   IntArrayRef shape_ref_data_;
-  int tail_dim_;
-  int tail_size_;
   NDSpaceData ndd_;
 };
 
@@ -1317,10 +1292,7 @@ class _ReduceOp : public FlexOp {
     nd_.data = &ndd_;
     MESS(start_dim_, 100);
     MESS(end_dim_, 80);
-    MESS(tail_dim_, 100);
-    MESS(tail_size_, 10000);
   }
-  void Tile(const TileParam &tp) override;
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
@@ -1330,7 +1302,6 @@ class _ReduceOp : public FlexOp {
   void SetRange(int start, int end) {
     start_dim_ = start;
     end_dim_ = end;
-    tail_dim_ = -1;
   }
   bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
   int EndDim() const { return end_dim_; }
@@ -1343,8 +1314,6 @@ class _ReduceOp : public FlexOp {
  protected:
   int start_dim_;
   int end_dim_;
-  int tail_dim_;
-  int64_t tail_size_;
 };
 
 class AtomicCleanWrap;
@@ -1515,6 +1484,7 @@ void BroadReduceTileCollect(const DimArray &small_dim, const DimArray &big_dim, 
 
 bool CollectRoundTile(const DimArray &nd, const TileParam &tp, DimArray &round_tile);
 void BuildDimRounds(const DimArray &round_tile, uint64_t rounds[]);
+void BuildRoundTile(const VectorKernel &k, const NDSpaceData &ndd, bool sharded_round, DimArray &round_tile);
 
 vSimdInsnID GetBinaryInsnID(BinaryType op, DataType dtype);
 vSimdInsnID GetCastInsnID(DataType from, DataType to);

@@ -862,7 +862,9 @@ class ShapeTilingHelper {
   VectorKernel::TileRegion &range_;
 };
 
-void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit, TileRegion &range) {
+void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update) {
+  TileRegion &range = tile_region_;
+  range.Reset();
   int align_depth = tile_info_.lead_depth;
   PropRange fold;
   fold.base = DimSpace().size() - 1;
@@ -898,8 +900,16 @@ void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit, TileRegio
       running = helper.LeadTiling(block_align_, align_space_, tile_info_.lead_affine);
     }
   }
-  range.tile_size = helper.tile_size_;
-  range.tile_num = helper.tile_num_;
+  update.tile_size = helper.tile_size_;
+  update.tile_num = helper.tile_num_;
+  if (range.depth == 1) {
+    int64_t full_space = range.last_num * range.last_tile;
+    int64_t real_space = range.spaces[0];
+    if (full_space != real_space) {
+      range.tail_size = real_space + range.last_tile - full_space;
+      range.tail_dim = range.starts[0];
+    }
+  }
 }
 
 void DumpRefHelper::Dump(NDObject *op) {
@@ -971,7 +981,8 @@ std::string &VKernel::DisAssemble() {
   return dump_str_;
 }
 
-void VectorKernel::ApplyTiling(const TileRegion &tr) {
+void VectorKernel::ApplyTiling(const TileUpdate &update) {
+  TileRegion &tr = tile_region_;
   TileParam tp;
   bool lead_fold = tile_info_.lead_depth > 1;
   if (tr.depth) {
@@ -986,8 +997,7 @@ void VectorKernel::ApplyTiling(const TileRegion &tr) {
         tp.end = tp.start - 1;
       }
     } else {
-      int64_t full_space = tr.last_num * tr.last_tile;
-      tp.tail = full_space == tr.spaces[tr.depth - 1] ? 0 : tr.spaces[tr.depth - 1] + tr.last_tile - full_space;
+      tp.tail = tr.tail_size;
     }
     tp.start = tr.starts[tr.depth - 1];
     tp.num = tr.last_num;
@@ -1003,8 +1013,8 @@ void VectorKernel::ApplyTiling(const TileRegion &tr) {
     tp.tail = 0;
     TileProp(tp);
   }
-  tile_size_ = tr.tile_size;
-  tile_num_ = tr.tile_num;
+  tile_size_ = update.tile_size;
+  tile_num_ = update.tile_num;
 }
 
 void VectorKernel::AlignSimd(int64_t tile_size_limit) {
@@ -1024,9 +1034,9 @@ void VectorKernel::AlignSimd(int64_t tile_size_limit) {
 uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_t code_reserve) {
   int64_t live_peak = Analyze();
   int64_t tile_size_limit = TileSizeLimit(live_peak);
-  TileRegion tr;
-  ShapeTiling(tile_size_limit, core_limit, tr);
-  ApplyTiling(tr);
+  TileUpdate update;
+  ShapeTiling(tile_size_limit, core_limit, update);
+  ApplyTiling(update);
   // simd_width
   if (tile_info_.flags & ObjectMeta::kSimdDim) {
     AlignSimd(tile_size_limit);
@@ -1698,7 +1708,9 @@ void VectorKernel::InOutReusePlan(const DimArray *dom) {
     if (!op->InplaceProp()) {
       op->io_reuse_mask_ = 0;
     } else if (op->obj_id_ == ObjectType::kLoad) {
-      bool flatten = dom != nullptr ? *dom == op->nd_.dims() : static_cast<NDLoad *>(op)->round_tile_.empty();
+      bool flatten = dom != nullptr
+                       ? *dom == op->nd_.dims()
+                       : static_cast<NDLoad *>(op)->ndd_.pointwise_tile_mask == dom_->nd_.data->pointwise_tile_mask;
       op->io_reuse_mask_ = i < 64 && flatten ? 1ull << i : 0;
     } else {
       uint64_t mask = 0;
@@ -2293,14 +2305,15 @@ uint64_t VKernelS::CodeGen() {
   int64_t live_peak = Analyze();
   int64_t tile_size_limit = TileSizeLimit(live_peak);
   if (likely(tiles_.empty())) {
-    TileRegion tr;
-    ShapeTiling(tile_size_limit, core_limit, tr);
-    if (tr.tile_size * 8 < tile_size_limit && tr.tile_num > 256 && tr.depth > 1 && !(flags_ & K_FLAG_DIS_DUP_TILING)) {
-      if (auto ret = DupTilingGen(tr, tile_size_limit); ret != -1) {
+    TileUpdate update;
+    ShapeTiling(tile_size_limit, core_limit, update);
+    if (update.tile_size * 8 < tile_size_limit && update.tile_num > 256 && tile_region_.depth > 1 &&
+        !(flags_ & K_FLAG_DIS_DUP_TILING)) {
+      if (auto ret = DupTilingGen(tile_region_, update.tile_size, tile_size_limit); ret != -1) {
         return ret;
       }
     }
-    ApplyTiling(tr);
+    ApplyTiling(update);
   } else {
     ManualTiling();
   }
@@ -2311,7 +2324,7 @@ uint64_t VKernelS::CodeGen() {
   return TileGen(live_peak, core_limit);
 }
 
-int64_t VKernelS::DupTilingGen(const TileRegion &region, int64_t tile_size_limit) {
+int64_t VKernelS::DupTilingGen(const TileRegion &region, int64_t tile_size, int64_t tile_size_limit) {
   if (dup_gen_ == nullptr) {
     for (size_t i = 0; i < load_num_; ++i) {
       if (static_ops_[i]->obj_id_ != kViewLoad) {
@@ -2347,7 +2360,7 @@ int64_t VKernelS::DupTilingGen(const TileRegion &region, int64_t tile_size_limit
   if (split_dim == 0) {
     truck_size = tile_size_limit / block_align_ * block_align_;
   } else {
-    truck_size = tile_size_limit / (region.tile_size / region.last_tile);
+    truck_size = tile_size_limit / (tile_size / region.last_tile);
   }
   return dup_gen_->DupCodeGen(split_dim, truck_size);
 }
@@ -2394,6 +2407,7 @@ void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
 void VKernelS::ManualTiling() {
   auto &dims = DimSpace();
   TileParam tp;
+  tile_region_.Reset();
   for (auto &t : tiles_) {
     int64_t space = dims[t.start];
     for (int i = t.start + 1; i <= t.end; ++i) {
@@ -2412,6 +2426,11 @@ void VKernelS::ManualTiling() {
       tile_size_ = RoundUp<int64_t>(tp.tile, LeadAlign());
       align_space_ = tile_size_;
       tile_num_ *= tp.num;
+    }
+    tile_region_.Add(t.start, space, t.num, tp.tile);
+    if (tp.tail && tiles_.size() == 1) {
+      tile_region_.tail_size = tp.tail;
+      tile_region_.tail_dim = t.start;
     }
   }
 }
@@ -2535,9 +2554,9 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     return 0;
   }
   uint64_t core_limit = g_system.CoreNum();
-  TileRegion tr;
-  ShapeTiling(tile_size_limit, core_limit, tr);
-  ApplyTiling(tr);
+  TileUpdate update;
+  ShapeTiling(tile_size_limit, core_limit, update);
+  ApplyTiling(update);
   if (tile_info_.flags & ObjectMeta::kSimdDim) {
     AlignSimd(tile_size_limit);
   }
@@ -2718,9 +2737,9 @@ SpecVecContext::~SpecVecContext() {
 uint64_t SpecVecBase::CodeGen() {
   auto tile_size_limit = LazyTileLimit();
   uint64_t core_limit = g_system.CoreNum();
-  TileRegion tr;
-  ShapeTiling(tile_size_limit, core_limit, tr);
-  ApplyTiling(tr);
+  TileUpdate update;
+  ShapeTiling(tile_size_limit, core_limit, update);
+  ApplyTiling(update);
   if (tile_info_.flags & ObjectMeta::kSimdDim) {
     AlignSimd(tile_size_limit);
   }
@@ -3184,10 +3203,7 @@ struct _SpecSwapLoad : public NDLoad {
   _SpecSwapLoad(NDAccess *store)
       : NDLoad(store->addr_.gm, store->shape_ref_, store->type_id_), store_(store) {}
   void Normalize(std::vector<NDObject *> &run_ops) override {
-    ndd_.dims = store_->nd_.dims();
-    tail_dim_ = -1;
-    tail_size_ = 0;
-    round_tile_.resize(0);
+    ndd_.Reset(store_->nd_.dims());
   }
   void Dump(bool verbose, std::ostringstream &oss) override { oss << "SwapLoad"; }
   NDAccess *store_;

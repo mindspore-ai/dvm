@@ -208,6 +208,10 @@ class VectorKernel : public VKernel {
   size_t load_num_{0};
   std::vector<NDObject *> static_ops_;
 
+  struct TileUpdate {
+    int64_t tile_num;
+    int64_t tile_size;
+  };
   struct TileRegion {
     void Add(int start, int64_t space, int64_t num, int64_t tile) {
       last_num = num;
@@ -216,20 +220,34 @@ class VectorKernel : public VKernel {
       spaces[depth] = space;
       depth++;
     }
-    int64_t tile_num;
-    int64_t tile_size;
+    void Reset() {
+      depth = 0;
+      last_num = 0;
+      last_tile = 0;
+      tail_size = 0;
+      tail_dim = -1;
+    }
     int64_t last_num;
     int64_t last_tile;
-    int depth{0};
+    int64_t tail_size;
+    int tail_dim;
+    int depth;
     int starts[DimArray::kMaxDimSize];
     int64_t spaces[DimArray::kMaxDimSize];
   };
 
+  TileRegion tile_region_;
+
+  int64_t GetTailSize(const NDSpaceData *ndd) const {
+    return ndd->pointwise_tile_mask >> tile_region_.tail_dim ? tile_region_.tail_size : 0;
+  }
+  int GetTailDim() const { return tile_region_.tail_dim; }
+
  protected:
   int64_t Analyze();
-  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileRegion &range);
+  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
   void Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker);
-  void ApplyTiling(const TileRegion &tr);
+  void ApplyTiling(const TileUpdate &update);
   void AlignSimd(int64_t tile_size_limit);
 
   void TileProp(const TileParam &tp) {
@@ -395,7 +413,7 @@ class VKernelS : public VectorKernel {
   void BrokerInit();
   bool BrokerAffine();
   uint64_t BrokerCodeGen(VKernel **hold_kernel);
-  int64_t DupTilingGen(const TileRegion &region, int64_t tile_size_limit);
+  int64_t DupTilingGen(const TileRegion &region, int64_t tile_size, int64_t tile_size_limit);
 
   void Clear() {
     code_.Clear();

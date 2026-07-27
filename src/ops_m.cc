@@ -639,7 +639,9 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
 }
 
 void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
-  auto stream = g_system.CreateStream();
+  aclrtStream stream;
+  ERROR_CHECK(
+    aclrtCreateStreamWithConfig(&stream, 0, ACL_STREAM_FAST_LAUNCH | ACL_STREAM_FAST_SYNC));
   ManualCubeTuner tuner(parameter);
   static_cast<MixKernel *>(td.kernel.GetImpl())->SetTuner(&tuner);
   td.kernel.CodeGen();

@@ -464,9 +464,6 @@ void System::DoInit() {
 }
 
 System::~System() {
-  if (comm_stream_) {
-    aclrtDestroyStream(comm_stream_);
-  }
   if (online_tuner_) {
     delete online_tuner_;
   }
@@ -482,13 +479,6 @@ System::~System() {
   if (simt_bin_) {
     std::free(simt_bin_);
   }
-}
-
-void *System::CreateStream() {
-  aclrtStream stream;
-  auto ret = aclrtCreateStream(&stream);
-  EXCEPTION_IF(ret != 0, "aclrtCreateStream");
-  return stream;
 }
 
 Config &System::SetDeterm() {

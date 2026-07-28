@@ -396,7 +396,6 @@ class Tester(Kernel):
                  "-mllvm", "-instcombine-code-sinking=false",
                  "-mllvm", "-cce-aicore-jump-expand=true",
                  "-mllvm", "-cce-aicore-mask-opt=false",
-                 "-mllvm", "-cce-aicore-dcci-before-kernel-end=false",
                  "-mllvm", "-cce-aicore-dcci-insert-for-scalar=false",
                  "--cce-aicore-arch=dav-c310-vec"]
         cmds += [cce_path, "-o", bin_path]

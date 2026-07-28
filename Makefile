@@ -24,7 +24,6 @@ CCE_FLGAS_C310 = --std=c++17 -Wno-int-to-pointer-cast\
                  -mllvm -instcombine-code-sinking=false \
                  -mllvm -cce-aicore-jump-expand=true \
                  -mllvm -cce-aicore-mask-opt=false \
-                 -mllvm -cce-aicore-dcci-before-kernel-end=false \
                  -mllvm -cce-aicore-dcci-insert-for-scalar=false
 
 

@@ -1197,8 +1197,6 @@ void VfFusionCompiler::CompileAndRegister(const VfPartition &partition) {
     "-mllvm",
     "-cce-aicore-mask-opt=false",
     "-mllvm",
-    "-cce-aicore-dcci-before-kernel-end=false",
-    "-mllvm",
     "-cce-aicore-dcci-insert-for-scalar=false",
     "--cce-aicore-arch=dav-c310-vec",
     cce_path,

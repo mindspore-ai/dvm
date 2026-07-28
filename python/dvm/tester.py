@@ -354,7 +354,6 @@ class Tester(Kernel):
         else:
             Kernel.barrier()
 
-
 class CommScope:
     """
     Create an comm domain scope.

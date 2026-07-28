@@ -5,6 +5,13 @@ import dvm
 from tests.mark_utils import arg_mark
 
 
+@pytest.fixture
+def reset_cube_options():
+    yield
+    Tester.set_cube_store_type(0)
+    Tester.set_online_tuning(False)
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 def test_matmul_basic():
@@ -355,6 +362,7 @@ def test_sync_out_limit():
     [[256, 256], [256, 256]],  # same shape
     [[256, 1, 1000], [1000, 256]],  # batch fold
 ])
+@pytest.mark.usefixtures("reset_cube_options")
 def test_tuning_matmul(shape_a, shape_b):
     np_a = Tester.fast_random_normal(0, 0.1, shape_a).astype(np.float16)
     np_b = Tester.fast_random_normal(0, 0.1, shape_b).astype(np.float16)
@@ -366,7 +374,6 @@ def test_tuning_matmul(shape_a, shape_b):
     res = t.matmul(mat_a, mat_b, False, False)
     t.store_expect(res, expect, 2e-3)
     assert (t.run_check())
-    Tester.set_online_tuning(False)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -570,6 +577,7 @@ def test_batch_fold_broadcast():
     [[1024, 128], [128, 1024]],
     [[301, 256], [256, 401]],
 ])
+@pytest.mark.usefixtures("reset_cube_options")
 def test_matmul_post_fusion_cc_ub_sync_0(shape_a, shape_b):
     t = Tester("mix")
     Tester.set_cube_store_type(1)
@@ -597,6 +605,7 @@ def test_matmul_post_fusion_cc_ub_sync_0(shape_a, shape_b):
     [[1024, 128], [128, 1024]],
     [[301, 256], [256, 401]],
 ])
+@pytest.mark.usefixtures("reset_cube_options")
 def test_matmul_post_fusion_cc_ub_sync_1(shape_a, shape_b):
     t = Tester("mix")
     Tester.set_cube_store_type(1)
@@ -625,6 +634,7 @@ def test_matmul_post_fusion_cc_ub_sync_1(shape_a, shape_b):
     [[1024, 128], [128, 1024]],
     [[301, 256], [256, 401]],
 ])
+@pytest.mark.usefixtures("reset_cube_options")
 def test_matmul_post_fusion_cc_ub_sync_2(shape_a, shape_b):
     t = Tester("mix")
     Tester.set_cube_store_type(2)

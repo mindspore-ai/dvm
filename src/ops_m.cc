@@ -135,8 +135,9 @@ void CubeOp::InferTactics(Tactics &t) const {
   t.rhs_pad_size = 0;
   t.enable_splitk = false;
   t.enable_bias_cast = false;
-  auto GetPad = [&t, this](int64_t pad_size, int64_t &pad) {
-    if (pad_size % ALIGN_128 == 0 || (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
+  auto GetPad = [&t](int64_t pad_size, int64_t &pad) {
+    if (g_system.Arch() == kAiCore_C310 || pad_size % ALIGN_128 == 0 ||
+        (pad_size <= ALIGN_256 && pad_size % ALIGN_32 == 0)) {
       return;
     }
     pad = ALIGN_256 - pad_size % ALIGN_256;

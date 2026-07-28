@@ -159,7 +159,6 @@ def test_unaligned_matmul(shape_a, shape_b):
     res = t.matmul(mat_a, mat_b, False, False)
     t.store_expect(res, expect)
     assert (t.run_check())
-    assert (t.das().count("slice_store") > 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -233,7 +232,6 @@ def test_unaligned_matmul_post_fusion(shape_a, shape_b):
     res = t.add(res, 2.5)
     t.store_expect(res, expect, 2e-3)
     assert (t.run_check())
-    assert (t.das().count("slice_store") > 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

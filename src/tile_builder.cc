@@ -264,6 +264,7 @@ class VectorBuilder : public TBuilder {
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   void Init();
   void CodeGen(int64_t tile_num, int64_t block_num);
+  int64_t MaxTileSize();
   std::vector<TObject *> objects_;
   std::vector<TAccess *> access_;
   int64_t max_tile_size_{0};
@@ -487,6 +488,13 @@ void VectorBuilder::Init() {
   max_tile_size_ = initializer.Run(code_);
 }
 
+int64_t VectorBuilder::MaxTileSize() {
+  if (code_.data_ == nullptr) {
+    Init();
+  }
+  return max_tile_size_;
+}
+
 void VectorBuilder::Dump(std::ostringstream &oss, const std::string &indent) {
   auto dump_tensor = [&oss](TObject *t) {
     oss << "%" << t->index_ << t->nd_ << "<" << DTYPE_NAMES[t->dtype_] << ">";
@@ -580,7 +588,10 @@ int TileBuilder::Launch(bool reloc, void *stream) {
   return impl_->code_.Launch(nullptr, stream);
 }
 
-int64_t TileBuilder::MaxTileSize() const { return static_cast<VectorBuilder *>(impl_)->max_tile_size_; }
+int64_t TileBuilder::MaxTileSize() {
+  g_system.Init();
+  return static_cast<VectorBuilder *>(impl_)->MaxTileSize();
+}
 
 const char *TileBuilder::Dump() const { return impl_->DumpGraph().c_str(); }
 

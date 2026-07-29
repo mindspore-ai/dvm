@@ -57,7 +57,7 @@ class TileBuilder {
   void CodeGen(int64_t tile_space_size, int64_t block_dim = 0);
   int Launch(bool reloc, void *stream);
 
-  int64_t MaxTileSize() const;
+  int64_t MaxTileSize();
 
   const char *Dump() const;
   const char *Das() const;

@@ -173,7 +173,7 @@ class TileBuilderPy {
 
   const char *Dump() const;
   const char *Das() const;
-  int64_t MaxTileSize() const;
+  int64_t MaxTileSize();
 
  protected:
   TObject *PyToObj(py::object obj) { return obj.cast<TObjPyPtr>()->Get(); }

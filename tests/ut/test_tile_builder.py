@@ -29,6 +29,8 @@ def test_tb_basic():
     x1 = t.add(x0, x0)
     x2 = t.sqrt(x1)
     t.store_expect(x2, tile_space, expect=np.sqrt(a + a))
+    max_tile_size = t.max_tile_size()
+    assert max_tile_size > 0
     t.codegen(tile_space_size, 0, True)
+    assert t.max_tile_size() == max_tile_size
     assert(t.run_check())
- 

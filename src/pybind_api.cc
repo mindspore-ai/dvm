@@ -1104,7 +1104,7 @@ void TileBuilderPy::Run() {
 
 const char *TileBuilderPy::Dump() const { return impl_.Dump(); }
 const char *TileBuilderPy::Das() const { return impl_.Das(); }
-int64_t TileBuilderPy::MaxTileSize() const { return impl_.MaxTileSize(); }
+int64_t TileBuilderPy::MaxTileSize() { return impl_.MaxTileSize(); }
 
 class DevicePy {
  public:

@@ -428,6 +428,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
   set_padding((uint64_t)0);
   uint64_t config = 0x1;
   set_nd_para(config);
+  SetMMRowMajor();
   MatMul<T> mat(op, blockidx);
   TileVisitor<MatMul<T>> visit(op, blockidx, blocknum, tile_end, mat);
   if (mat.flags & V_CUBE_FLAG_ATOMIC_ADD) {
@@ -614,6 +615,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID0);
   wait_flag(PIPE_M, PIPE_MTE1, EVENT_ID1);
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID4);
+  SetMMColumnMajor();
 }
 
 extern "C"  __global__ __aicore__ void dvm_mix_aic(uint64_t ffts_addr, uint64_t entry) {

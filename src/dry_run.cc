@@ -101,6 +101,10 @@ struct CallTracer {
 void pipe_barrier(pipe_t) {}
 void set_flag(int, int, int) {}
 void wait_flag(int, int, int) {}
+uint64_t get_ctrl() { return 0; }
+uint64_t sbitset1(uint64_t value, uint64_t bit) { return value | (1ul << bit); }
+uint64_t sbitset0(uint64_t value, uint64_t bit) { return value & ~(1ul << bit); }
+void set_ctrl(uint64_t) {}
 
 #define set_atomic_none CCE_CALL(set_atomic_none)
 #define set_mask_norm CCE_CALL(set_mask_norm)

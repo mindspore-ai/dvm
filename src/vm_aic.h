@@ -22,6 +22,15 @@ inline constexpr uint64_t L0_PINGPONG_BUFFER_SIZE = 32768;   // 64KB / 2
 inline constexpr uint64_t L1_PINGPONG_BUFFER_SIZE = 262144;  // 512KB / 2
 inline constexpr uint64_t BIAS_ADDR = 0;
 inline constexpr uint64_t BLOCK_SIZE = 16;
+inline constexpr uint64_t MM_LAYOUT_MODE_BIT = 51;
+
+__aicore_inline__ void SetMMRowMajor() {
+  set_ctrl(sbitset1(get_ctrl(), MM_LAYOUT_MODE_BIT));
+}
+
+__aicore_inline__ void SetMMColumnMajor() {
+  set_ctrl(sbitset0(get_ctrl(), MM_LAYOUT_MODE_BIT));
+}
 
 #define V_PINGPONG_FLAG_EVENT 0x1ul
 #define V_PINGPONG_FLAG_STORE 0x2ul

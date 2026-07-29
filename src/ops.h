@@ -551,7 +551,15 @@ class NDAccess : public NDObject {
     ASSERT(flags_ & OBJ_FLAG_LOAD_BIND);
     return static_cast<NDAccess *>(addr_.gm);
   }
+  bool IsSupportView() const;
+  void ViewUpdate(uint64_t offset) { offset_bytes_ = offset; }
+
+  static void TileCollect(NDObject *op, TileInfo &info);
+  static void FoldProp(NDObject *op, PropRange &range);
+
   RelocAddr addr_;
+  DimArray *stride_{nullptr};
+  uint64_t offset_bytes_{0};
 };
 
 class NDGlobalAccess : public NDAccess {
@@ -597,6 +605,9 @@ class NDLoad : public NDAccess {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
   NDSpaceData ndd_;
+
+ protected:
+  uint64_t EmitView(VectorKernel &k);
 };
 
 class NDSimtLoad : public NDLoad {
@@ -633,32 +644,22 @@ class NDGatherLoad : public NDSimtLoad {
   vGatherLoad::GatherMode gather_mode_;
 };
 
-class NDViewLoad : public NDAccess {
+class NDViewLoad : public NDLoad {
  public:
   NDViewLoad(void *src, IntArrayRef *shape, IntArrayRef *stride, DataType dtype)
-      : NDAccess(src, nullptr, dtype, ObjectType::kViewLoad), src_stride_ref_(stride) {
-    shape_ref_ = shape;
-    nd_.data = &ndd_;
+      : NDLoad(src, shape, dtype), src_stride_ref_(stride) {
+    obj_id_ = ObjectType::kViewLoad;
+    stride_ = &src_stride_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  void Tile(const TileParam &tp) override;
-  uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   DimArray &Stride() { return src_stride_; }
 
-  void ViewUpdate(uint64_t offset) { offset_bytes_ = offset; }
-
-  static void TileCollect(NDObject *op, TileInfo &info);
-  static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
   IntArrayRef *src_stride_ref_;
   DimArray src_stride_;
-
- protected:
-  NDSpaceData ndd_;
-  uint64_t offset_bytes_{0};
 };
 
 class NDStore : public NDAccess {
@@ -672,31 +673,27 @@ class NDStore : public NDAccess {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+ protected:
+  uint64_t EmitView(VectorKernel &k);
 };
 
-class NDViewStore : public NDAccess {
+class NDViewStore : public NDStore {
  public:
   NDViewStore(void *dst, NDObject *src, IntArrayRef *stride)
-      : NDAccess(dst, src, src->type_id_, ObjectType::kViewStore), dst_stride_ref_(stride) {
-    shape_ref_ = src->shape_ref_;
+      : NDStore(dst, src), dst_stride_ref_(stride) {
+    obj_id_ = ObjectType::kViewStore;
+    stride_ = &dst_stride_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  void Tile(const TileParam &tp) override;
-  uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   DimArray &Stride() { return dst_stride_; }
-  void ViewUpdate(uint64_t offset) { offset_bytes_ = offset; }
 
-  static void TileCollect(NDObject *op, TileInfo &info);
-  static void FoldProp(NDObject *op, PropRange &range);
   static void DimChanged(NDObject *op);
 
   IntArrayRef *dst_stride_ref_;
   DimArray dst_stride_;
-
- protected:
-  uint64_t offset_bytes_{0};
 };
 
 class NDPadStore : public NDAccess {

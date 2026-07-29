@@ -239,7 +239,8 @@ class VectorKernel : public VKernel {
   TileRegion tile_region_;
 
   int64_t GetTailSize(const NDSpaceData *ndd) const {
-    return ndd->pointwise_tile_mask >> tile_region_.tail_dim ? tile_region_.tail_size : 0;
+    auto tail_dim = tile_region_.tail_dim;
+    return tail_dim >= 0 && (ndd->pointwise_tile_mask >> tail_dim) ? tile_region_.tail_size : 0;
   }
   int GetTailDim() const { return tile_region_.tail_dim; }
 
@@ -300,6 +301,7 @@ class VectorKernel : public VKernel {
 class VectorSchedule {
  public:
   VectorSchedule(VectorKernel *kernel) : kernel_(kernel) {}
+  virtual ~VectorSchedule() = default;
   void SpaceInit();
   void SpaceSplit(int dim, int64_t npart, int64_t nfactor);
   void SpaceTrans(int dim1, int dim2);
@@ -309,6 +311,7 @@ class VectorSchedule {
       if (info.bcast_mask == SpaceRecord::OP_MASK) {
         info.change_op->DimChanged();
       } else {
+        info.ndd->Reset();
         auto &dims = info.ndd->dims;
         for (size_t i = 0; i < dims.size(); ++i) {
           dims[i] = (info.bcast_mask >> i) & 1ul ?  1 : size[i];
@@ -332,7 +335,7 @@ class VectorSchedule {
 class SchGenHelper : public VectorSchedule {
  public:
   SchGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
-  virtual ~SchGenHelper();
+  ~SchGenHelper() override;
   virtual int64_t CodeGen();
   RelocAddr *ReserveReloc(size_t size) {
     if (size > reloc_size_) {
@@ -343,6 +346,20 @@ class SchGenHelper : public VectorSchedule {
     return reloc_array_;
   }
  protected:
+  void AllocStride(NDAccess *acc);
+  void ResetStrides() {
+    for (size_t i = 0; i < ext_stride_used_; ++i) {
+      ext_strides_[i].acc->stride_ = nullptr;
+    }
+    ext_stride_used_ = 0;
+  }
+
+  struct ExtStride {
+    NDAccess *acc;
+    DimArray stride;
+  };
+  size_t ext_stride_used_{0};
+  std::vector<ExtStride> ext_strides_;
   size_t reloc_size_{0};
   RelocAddr *reloc_array_{nullptr};
 };

@@ -475,13 +475,13 @@ def _continuous_stride(shape):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
-@pytest.mark.parametrize("shape1, swap1, shape2, swap2", [
-    [[10, 64, 200], (1, 2), [10, 64, 200], (1, 2)], # 3d. neighbor axis
-    [[4, 70, 20, 200], (1, 3), [1, 70, 20, 200], (1, 3)], # 4d. no neighbor axis
-    [[10, 1, 200], (1, 2), [10, 128, 200], (1, 2)],  # w broadcast
-    [[10, 200, 1], (1, 2), [10, 200, 128], (1, 2)],  # h broadcast
+@pytest.mark.parametrize("shape1, swap1, shape2, swap2, view", [
+    [[10, 64, 200], (1, 2), [10, 64, 200], (1, 2), True], # 3d. neighbor axis
+    [[4, 70, 20, 200], (1, 3), [1, 70, 20, 200], (1, 3), False], # 4d. no neighbor axis
+    [[10, 1, 200], (1, 2), [10, 128, 200], (1, 2), True],  # w broadcast
+    [[10, 200, 1], (1, 2), [10, 200, 128], (1, 2), False],  # h broadcast
 ])
-def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2):
+def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2, view):
     t = Tester("vector:opt_fractal")
     a = np.random.normal(0, 1, shape1).astype(np.float32)
     b = np.random.normal(0, 1, shape2).astype(np.float32)
@@ -495,18 +495,21 @@ def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2):
     x1 = t.view_load(swap_b.shape, stride2, b)
     x2 = t.add(x0, x1)
     expect = swap_a + swap_b
-    store_stride = _continuous_stride(expect.shape)
-    t.view_store_expect(x2, store_stride, expect)
+    if view:
+        store_stride = _continuous_stride(expect.shape)
+        t.view_store_expect(x2, store_stride, expect)
+    else:
+        t.store_expect(x2, expect)
     assert (t.run_check())
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.parametrize("shape1, shape2, shape3, shape4, axis", [
-    [[3, 400], [3, 600], [3, 200], [3, 1200], 1], # lead
-    [[3, 400, 32], [3, 600, 32], [3, 200, 32], [3, 1, 32], 1], # middle, cat broadcast
-    [[10, 400], [20, 400], [30, 400], [60, 1], 0], # out, no-cat broadcast
+@pytest.mark.parametrize("shape1, shape2, shape3, shape4, axis, view", [
+    [[3, 400], [3, 600], [3, 200], [3, 1200], 1, False], # lead
+    [[3, 400, 32], [3, 600, 32], [3, 200, 32], [3, 1, 32], 1, True], # middle, cat broadcast
+    [[10, 400], [20, 400], [30, 400], [60, 1], 0, False], # out, no-cat broadcast
 ])
-def test_sch_concat(shape1, shape2, shape3, shape4, axis):
+def test_sch_concat(shape1, shape2, shape3, shape4, axis, view):
     t = Tester()
     a0 = np.random.normal(0, 1, shape1).astype(np.float32)
     a1 = np.random.normal(0, 1, shape2).astype(np.float32)
@@ -518,13 +521,18 @@ def test_sch_concat(shape1, shape2, shape3, shape4, axis):
     x3 = t.mul(x1, 0.6)
     x4 = t.load(a2)
     x5 = t.concat([x2, x3, x4], axis)
-    x6 = t.add(x5, t.view_load(shape4, _continuous_stride(shape4), a3))
     expect = np.concatenate([a0 + 0.1, a1 * 0.6, a2], axis=axis) + a3
-    t.view_store_expect(x6, _continuous_stride(expect.shape), expect)
+    if view:
+        x6 = t.add(x5, t.view_load(shape4, _continuous_stride(shape4), a3))
+        t.view_store_expect(x6, _continuous_stride(expect.shape), expect)
+    else:
+        x6 = t.add(x5, t.load(a3))
+        t.store_expect(x6, expect)
     assert (t.run_check())
 
 
-def test_sch_concat_dyn():
+@pytest.mark.parametrize("view", [True, False])
+def test_sch_concat_dyn(view):
     t = Tester("vector:dyn")
     x0 = t.load([-1], "float32")
     x1 = t.load([-1], "float32")
@@ -533,8 +541,11 @@ def test_sch_concat_dyn():
     x4 = t.load([-1], "float32")
     x5 = t.concat([x2, x3, x4], 1)
     x6 = t.add(x5, 0.2)
-    strides = t.int_array()
-    x7 = t.view_store(x6, strides)
+    if view:
+        strides = t.int_array()
+        x7 = t.view_store(x6, strides)
+    else:
+        x7 = t.store(x6)
     iters = [[[3, 300], [3, 400],[3, 200]], [[3, 300, 16], [3, 400, 16],[3, 200, 16]], [[10, 1000], [10, 800],[10, 200]]]
     for shape1, shape2, shape3 in iters:
         a0 = np.random.normal(0, 1, shape1).astype(np.float32)
@@ -544,22 +555,26 @@ def test_sch_concat_dyn():
         t.input(x1, a1)
         t.input(x4, a2)
         expect = np.concatenate([a0 + 0.1, a1 * 0.6, a2], axis=1) + 0.2
-        strides.update(_continuous_stride(expect.shape))
-        t.set_output(x7, np.ascontiguousarray(np.zeros_like(expect)))
+        if view:
+            strides.update(_continuous_stride(expect.shape))
+            t.set_output(x7, np.ascontiguousarray(np.zeros_like(expect)))
         t.run()
         assert(t.check(x7, expect))
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.parametrize("shape, split_size, dim", [
-    ([3, 900], 300, 1),    # lead, evenly divisible
-    ([3, 500, 32], 200, 1),    # middle, body + tail
+@pytest.mark.parametrize("shape, split_size, dim, view", [
+    ([3, 900], 300, 1, False),    # lead, evenly divisible
+    ([3, 500, 32], 200, 1, True),    # middle, body + tail
 ])
-def test_sch_split(shape, split_size, dim):
+def test_sch_split(shape, split_size, dim, view):
     split_num = (shape[dim] + split_size - 1) // split_size
     t = Tester()
     a = np.random.normal(0, 1, shape).astype(np.float32)
-    x0 = t.view_load(shape, _continuous_stride(shape), a)
+    if view:
+        x0 = t.view_load(shape, _continuous_stride(shape), a)
+    else:
+        x0 = t.load(a)
     x1 = t.mul(x0, 0.7)
     xout = t.split(x1, dim, split_size, split_num)
     expects = np.split(a * 0.7, [split_size * (i + 1) for i in range(split_num - 1)], dim)
@@ -577,13 +592,21 @@ def test_sch_split(shape, split_size, dim):
     ([2, 18911, 3], [2, 1, 3]), # middle
     ([3, 15401, 3], [3, 1, 1]), # fold
 ])
-def test_sch_dup_tiling(shape1, shape2):
+@pytest.mark.parametrize("view", [True, False])
+def test_sch_dup_tiling(shape1, shape2, view):
     t = Tester()
     a = np.random.normal(0, 1, shape1).astype(np.float32)
     b = np.random.normal(0, 1, shape2).astype(np.float32)
-    x0 = t.view_load(shape1, _continuous_stride(shape1), a)
-    x1 = t.view_load(shape2, _continuous_stride(shape2), b)
+    if view:
+        x0 = t.view_load(shape1, _continuous_stride(shape1), a)
+        x1 = t.view_load(shape2, _continuous_stride(shape2), b)
+    else:
+        x0 = t.load(a)
+        x1 = t.load(b)
     x2 = t.add(x0, x1)
     expect = a + b
-    t.view_store_expect(x2, _continuous_stride(expect.shape), expect)
+    if view:
+        t.view_store_expect(x2, _continuous_stride(expect.shape), expect)
+    else:
+        t.store_expect(x2, expect)
     assert (t.run_check())

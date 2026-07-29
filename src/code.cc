@@ -1537,6 +1537,7 @@ void Code::Free() {
 }
 
 void Code::DisAssemble(std::ostringstream &oss) {
+  if (data_ == nullptr) return;
   if (wrap_) {
     wrap_->DasWrap(oss);
   } else {

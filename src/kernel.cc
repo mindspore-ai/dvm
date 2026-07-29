@@ -1790,11 +1790,8 @@ void VectorSchedule::SpaceSplit(int dim, int64_t npart, int64_t nfactor) {
       }
     }
   }
-  for (size_t i = 0; i < kernel_->static_ops_.size(); ++i) {
-    auto op =  kernel_->static_ops_[i];
-    DimArray &stride = i < kernel_->load_num_
-                           ? static_cast<NDViewLoad *>(op)->Stride()
-                           : static_cast<NDViewStore *>(op)->Stride();
+  for (auto op : kernel_->static_ops_) {
+    DimArray &stride = *static_cast<NDAccess *>(op)->stride_;
     if (stride.size() < space_size) stride.resize(space_size, 0);
     int64_t orig_stride = stride[dim];
     size_t n = stride.size();
@@ -1817,11 +1814,8 @@ void VectorSchedule::SpaceTrans(int dim1, int dim2) {
     }
   }
   size_t nd_size = space.size();
-  for (size_t i = 0; i < kernel_->static_ops_.size(); ++i) {
-    auto op =  kernel_->static_ops_[i];
-    DimArray &stride = i < kernel_->load_num_
-                           ? static_cast<NDViewLoad *>(op)->Stride()
-                           : static_cast<NDViewStore *>(op)->Stride();
+  for (auto op : kernel_->static_ops_) {
+    DimArray &stride = *static_cast<NDAccess *>(op)->stride_;
     if (stride.size() < nd_size) stride.resize(nd_size, 0);
     std::swap(stride[dim1], stride[dim2]);
   }
@@ -1844,7 +1838,7 @@ class VectorDupHelper {
  public:
   VectorDupHelper(VectorKernel *kernel, int dup_num, RelocAddr *relocs, uint64_t total_quota)
       : kernel_(kernel), dup_num_(dup_num), dup_idx_(0), block_begin_(0), relocs_(relocs),
-        free_core_(g_system.CoreNum()), remain_quota_(total_quota) {
+        free_core_(RoundUp(static_cast<uint64_t>(dup_num), g_system.CoreNum())), remain_quota_(total_quota) {
     uint64_t code_reserve = dup_num * kernel_->ReserveCodeSize();
     encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve);
   }
@@ -1910,9 +1904,26 @@ class VectorDupHelper {
 SchGenHelper::~SchGenHelper() { delete []reloc_array_; }
 int64_t SchGenHelper::CodeGen() { return -1; }
 
+void SchGenHelper::AllocStride(NDAccess *acc) {
+  if (ext_strides_.empty()) {
+    ext_strides_.resize(kernel_->static_ops_.size());
+  }
+  auto &ext = ext_strides_[ext_stride_used_++];
+  ext.acc = acc;
+  acc->stride_ = &ext.stride;
+  auto &dims = acc->nd_.dims();
+  auto n = dims.size();
+  ext.stride.resize(n);
+  int64_t cur_stride = ITEM_SIZE[acc->type_id_];
+  for (size_t i = 0; i < n; ++i) {
+    ext.stride[i] = cur_stride;
+    cur_stride *= dims[i];
+  }
+}
+
 FractalSchGen::FractalSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {
   for (auto op : kernel->static_ops_) {
-    EXCEPTION_IF(op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore, "fractal expect viewload and viewstore");
+    EXCEPTION_IF(!static_cast<NDAccess *>(op)->IsSupportView(), "unsupport view op");
   }
 }
 
@@ -1921,9 +1932,11 @@ int64_t FractalSchGen::CodeGen() {
   int h_idx = -1;
   int64_t item_size = 0;
   for (size_t i = 0; i < kernel_->load_num_; ++i) {
-    ASSERT(kernel_->static_ops_[i]->obj_id_ == kViewLoad);
-    auto load = static_cast<NDViewLoad *>(kernel_->static_ops_[i]);
-    auto &stride = load->Stride();
+    auto load = static_cast<NDAccess *>(kernel_->static_ops_[i]);
+    if (load->stride_ == nullptr) {
+      continue;
+    }
+    auto &stride = *load->stride_;
     auto &dims = load->Ndd()->dims;
     int64_t type_size = ITEM_SIZE[load->type_id_];
     if (stride[0] != type_size && dims[0] >= min_dim_limit) {
@@ -2024,20 +2037,11 @@ int64_t FractalSchGen::CodeGen() {
       size_[h_part_dim] = h_part_size;
       size_[w_part_dim] = w_part_size;
       gen_.ApplySubSpace(size_);
-      auto load_num = gen_.kernel_->load_num_;
-      auto &static_ops = gen_.kernel_->static_ops_;
       // TODO: consider broadcast
-      for (size_t i = 0; i < load_num; ++i) {
-        auto op = static_cast<NDViewLoad *>(static_ops[i]);
-        ASSERT(op->obj_id_ == kViewLoad);
-        auto &stride = op->Stride();
-        op->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
-      }
-      for (size_t i = load_num; i < static_ops.size(); ++i) {
-        auto op = static_cast<NDViewStore *>(static_ops[i]);
-        ASSERT(op->obj_id_ == kViewStore);
-        auto &stride = op->Stride();
-        op->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
+      for (auto op : gen_.kernel_->static_ops_) {
+        auto acc = static_cast<NDAccess *>(op);
+        auto &stride = *acc->stride_;
+        acc->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
       }
       uint64_t part_num = h_part_size * w_part_size;
       helper.Append(part_num, part_base_ * part_num);
@@ -2064,8 +2068,15 @@ int64_t FractalSchGen::CodeGen() {
     }
   }
   if (!result) {
+    for (auto op : kernel_->static_ops_) {
+      auto acc = static_cast<NDAccess *>(op);
+      if (acc->stride_ == nullptr) {
+        AllocStride(acc);
+      }
+    }
     FractalDunGen gen(*this, h_idx, item_size);
     gen.CodeGen();
+    ResetStrides();
   }
   for (size_t i = 0; i < kernel_->load_num_; ++i) {
     auto op = kernel_->static_ops_[i];
@@ -2099,8 +2110,8 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
     auto op = kernel->static_ops_[i];
     slice_ios_[i].op = op;
     slice_ios_[i].slice = op->reuse_dep_;
-    EXCEPTION_IF(op->reuse_dep_ < 0 && op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore,
-                 "concat output expect viewload and viewstore");
+    EXCEPTION_IF(op->reuse_dep_ < 0 && !static_cast<NDAccess *>(op)->IsSupportView(),
+                 "concat output expect viewload/viewstore or load/store");
   }
   load_num_ = kernel->load_num_;
 }
@@ -2114,6 +2125,9 @@ int64_t ConcatSchGen::CodeGen() {
   for (auto &s : slice_ios_) {
     if (s.slice < 0) {
       s.slice = s.op->nd_[cat_dim] == 1 ? -2 : -1;
+      if (auto acc = static_cast<NDAccess *>(s.op); acc->stride_ == nullptr) {
+        AllocStride(acc);
+      }
     }
   }
   int dup_num = concat_->slices_.size();
@@ -2130,8 +2144,8 @@ int64_t ConcatSchGen::CodeGen() {
     for (size_t i = 0; i < load_num_; ++i) {
       auto &s = slice_ios_[i];
       if (s.slice < 0) {
-        auto load = static_cast<NDViewLoad *>(s.op);
-        load->ViewUpdate(s.slice == -1 ? load->Stride()[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
+        auto load = static_cast<NDAccess *>(s.op);
+        load->ViewUpdate(s.slice == -1 ? (*load->stride_)[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
       } else if (s.slice != cat_idx) {
         continue;
       }
@@ -2141,8 +2155,8 @@ int64_t ConcatSchGen::CodeGen() {
     for (size_t i = load_num_; i < slice_ios_.size(); ++i) {
       auto &s = slice_ios_[i];
       if (s.slice < 0) {
-        auto store = static_cast<NDViewStore *>(s.op);
-        store->ViewUpdate(s.slice == -1 ? store->Stride()[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
+        auto store = static_cast<NDAccess *>(s.op);
+        store->ViewUpdate(s.slice == -1 ? (*store->stride_)[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
       } else if (s.slice != cat_idx) {
         continue;
       }
@@ -2153,6 +2167,7 @@ int64_t ConcatSchGen::CodeGen() {
   }
   concat_->PartialRecover(ctx);
   helper.Submit();
+  ResetStrides();
   return 0;
 }
 
@@ -2180,8 +2195,8 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
     auto op = kernel->static_ops_[i];
     slice_ios_[i].op = op;
     slice_ios_[i].slice = op->reuse_dep_;
-    EXCEPTION_IF(op->reuse_dep_ < 0 && op->obj_id_ != kViewLoad && op->obj_id_ != kViewStore,
-                 "split input expect viewload and viewstore");
+    EXCEPTION_IF(op->reuse_dep_ < 0 && !static_cast<NDAccess *>(op)->IsSupportView(),
+                 "split input expect viewload/viewstore or load/store");
   }
 }
 
@@ -2192,6 +2207,9 @@ int64_t SplitSchGen::CodeGen() {
   for (auto &s : slice_ios_) {
     if (s.slice < 0) {
       s.slice = s.op->nd_[split_dim] == 1 ? -2 : -1;
+      if (auto acc = static_cast<NDAccess *>(s.op); acc->stride_ == nullptr) {
+        AllocStride(acc);
+      }
     }
   }
   int slice_num = static_cast<int>(split_->siblings_.size());
@@ -2209,16 +2227,16 @@ int64_t SplitSchGen::CodeGen() {
     static_ops.resize(load_num);
     for (size_t i = 0; i < load_num; ++i) {
       if (auto &s = slice_ios_[i]; s.slice < 0) {
-        auto load = static_cast<NDViewLoad *>(s.op);
-        load->ViewUpdate(s.slice == -1 ? load->Stride()[split_dim] * static_cast<uint64_t>(split_offset) : 0);
+        auto load = static_cast<NDAccess *>(s.op);
+        load->ViewUpdate(s.slice == -1 ? (*load->stride_)[split_dim] * static_cast<uint64_t>(split_offset) : 0);
       }
     }
     for (size_t i = load_num; i < slice_ios_.size(); ++i) {
       auto &s = slice_ios_[i];
       if (s.slice < 0) {
         static_ops.push_back(s.op);
-        auto store = static_cast<NDViewStore *>(s.op);
-        store->ViewUpdate(s.slice == -1 ? store->Stride()[split_dim] * static_cast<uint64_t>(split_offset) : 0);
+        auto store = static_cast<NDAccess *>(s.op);
+        store->ViewUpdate(s.slice == -1 ? (*store->stride_)[split_dim] * static_cast<uint64_t>(split_offset) : 0);
       } else if (s.slice == slice_idx) {
         static_ops.push_back(s.op);
         s.op->flags_ &= ~OBJ_FLAG_DEAD;
@@ -2234,6 +2252,7 @@ int64_t SplitSchGen::CodeGen() {
   for (size_t i = load_num; i < slice_ios_.size(); ++i) {
     static_ops.push_back(slice_ios_[i].op);
   }
+  ResetStrides();
   return 0;
 }
 
@@ -2242,23 +2261,26 @@ int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
   int64_t split_size = dim_space[split_dim];
   int64_t body_size = split_size / truck_size * truck_size;
   int64_t tail_size = split_size - body_size;
-  ASSERT(body_size > 0 && tail_size > 0);
+  if (tail_size == 1) { // avoid x view
+    body_size = split_size / 2;
+    tail_size = split_size  - body_size;
+  }
+  ASSERT(body_size > 1 && tail_size > 1);
   auto &static_ops = kernel_->static_ops_;
   uint64_t bcast_mask = 0;
   for (size_t i = 0; i < static_ops.size(); ++i) {
-    if (static_ops[i]->nd_[split_dim] == 1) {
+    auto acc = static_cast<NDAccess *>(static_ops[i]);
+    if (acc->nd_[split_dim] == 1) {
       bcast_mask |= 1ull << i;
     }
-  }
-  auto reloc_ios = [this, &static_ops, split_dim, bcast_mask](int64_t offset) {
-    auto load_num = kernel_->load_num_;
-    for (size_t i = 0; i < load_num; ++i) {
-      auto op = static_cast<NDViewLoad *>(static_ops[i]);
-      op->ViewUpdate(bcast_mask >> i & 1ull ? 0 : op->Stride()[split_dim] * offset);
+    if (acc->stride_ == nullptr) {
+      AllocStride(acc);
     }
-    for (size_t i = load_num; i < static_ops.size(); ++i) {
-      auto op = static_cast<NDViewStore *>(static_ops[i]);
-      op->ViewUpdate(bcast_mask >> i & 1ull ? 0 : op->Stride()[split_dim] * offset);
+  }
+  auto reloc_ios = [&static_ops, split_dim, bcast_mask](int64_t offset) {
+    for (size_t i = 0; i < static_ops.size(); ++i) {
+      auto acc = static_cast<NDAccess *>(static_ops[i]);
+      acc->ViewUpdate(bcast_mask >> i & 1ull ? 0 : (*acc->stride_)[split_dim] * offset);
     }
   };
   SpaceInit();
@@ -2273,6 +2295,7 @@ int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
   reloc_ios(0);
   helper.Append(body_size);
   helper.Submit();
+  ResetStrides();
   return 0;
 }
 
@@ -2326,21 +2349,13 @@ uint64_t VKernelS::CodeGen() {
 
 int64_t VKernelS::DupTilingGen(const TileRegion &region, int64_t tile_size, int64_t tile_size_limit) {
   if (dup_gen_ == nullptr) {
-    for (size_t i = 0; i < load_num_; ++i) {
-      if (static_ops_[i]->obj_id_ != kViewLoad) {
+    for (auto op : static_ops_) {
+      if (!static_cast<NDAccess *>(op)->IsSupportView()) {
         flags_ |= K_FLAG_DIS_DUP_TILING;
         return -1;
       }
     }
-    for (size_t i = load_num_; i < static_ops_.size(); ++i) {
-      auto op = static_ops_[i];
-      if (op->obj_id_ != kViewStore) {
-        flags_ |= K_FLAG_DIS_DUP_TILING;
-        return -1;
-      }
-      ASSERT(op->lhs_->obj_id_ != kReduce && op->lhs_->obj_id_ != kRemovePad);
-    }
-    if (comm_op_) {
+    if (comm_op_ || shard_) {
       flags_ |= K_FLAG_DIS_DUP_TILING;
       return -1;
     }

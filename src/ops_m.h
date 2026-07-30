@@ -36,7 +36,7 @@ class CubeOp : public NDObject {
   static constexpr uint32_t DEFAULT_DIAGONAL_SWIZZLE_COUNT = 8;
   static constexpr int64_t MAX_SPLIT_K = 20480;
   static constexpr int64_t MIN_SPLIT_K = 4096;
-  static constexpr int64_t ALIGN_256 = 128;
+  static constexpr int64_t ALIGN_256 = 256;
   static constexpr int64_t ALIGN_128 = 128;
   static constexpr int64_t ALIGN_32 = 32;
   struct Tactics {

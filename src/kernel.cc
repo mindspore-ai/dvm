@@ -3117,8 +3117,7 @@ static bool IsRangeSplited(const DimArray &inv_perm, const DimArray &small, cons
 };
 
 bool SpecVecBase::PermPropCheck(int prop, const DimArray &inv_perm) {
-  constexpr uint64_t black_mask =
-    1ull << kGatherLoad | 1ull << kLoad | 1ull << kPadStore | 1ull << kStore | 1ull << kPermute;
+  constexpr uint64_t black_mask = 1ull << kGatherLoad | 1ull << kLoad | 1ull << kStore | 1ull << kPermute;
   for (auto obj : objects_) {
     if (obj->prop_id_ != prop) continue;
     if ((1ull << obj->obj_id_) & black_mask) {

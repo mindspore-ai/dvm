@@ -119,6 +119,7 @@ public:
     ws_num_ = 1;
   }
   void Normalize(std::vector<NDObject *> &) override {
+    ndd_.Reset();
     ndd_.dims = lhs_->nd_.dims();
     shape_ = *lhs_->shape_ref_;
   }
@@ -143,6 +144,7 @@ public:
     SetXOut(&xout_data_);
   }
   void Normalize(std::vector<NDObject *> &) override {
+    ndd_.Reset();
     ndd_.dims = lhs_->nd_.dims();
     shape_ = *lhs_->shape_ref_;
     xout_data_.data[0]->nd_ = nd_;

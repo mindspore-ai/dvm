@@ -531,6 +531,7 @@ def test_sch_concat(shape1, shape2, shape3, shape4, axis, view):
     assert (t.run_check())
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("view", [True, False])
 def test_sch_concat_dyn(view):
     t = Tester("vector:dyn")

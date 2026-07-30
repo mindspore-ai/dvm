@@ -481,7 +481,6 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenLoad, F_IP, nullptr, nullptr, NDSimtLoad::TileCollect},                                         // GatherLoad
     {kGenLoad, 0, NDViewLoad::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},                    // ViewLoad
     {kGenLoad, F_IP, nullptr, NDAccess::FoldProp, NDAccess::TileCollect},                                // Load
-    {kGenStore, F_NS | F_LD, nullptr, NDPadStore::FoldProp, NDPadStore::TileCollect},                    // PadStore
     {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},        // ViewStore
     {kGenStore, F_IP | F_NS | F_LD, nullptr, NDAccess::FoldProp, NDAccess::TileCollect},                 // Store
     {kGenComm, F_LR | F_LD, nullptr, ReduceScatterOp::FoldProp, ReduceScatterOp::TileCollect,
@@ -1227,46 +1226,22 @@ void NDPadStore::Normalize(std::vector<NDObject *> &run_ops) {
     shape_[i] = lhs_->shape_ref_->data[i];
   }
   shape_[size - 1] += pad_size_;
-  nd_ = lhs_->nd_;
-}
-
-void NDPadStore::TileCollect(NDObject *op, TileInfo &info) { info.lead_depth = 1; }
-
-void NDPadStore::FoldProp(NDObject *op, PropRange &range) {
-  if (range.depth == range.base + 1) range.depth--;
-}
-
-uint64_t NDPadStore::Emit(VectorKernel &k) {
-  uint64_t lead_align = nd_.lead_stride();
-  uint64_t src_tile_stride_ = nd_.stride_back() / lead_align * nd_.lead_dim();
-  vSliceSL op;
-  auto size = shape_ref_->size;
-  op.gm = addr_.gm;
-  op.xn = lhs_->xbuf_;
-  op.tile_stride = src_tile_stride_;
-  op.pad_size = lead_align - nd_.lead_dim();
-  op.slice_m = 1;
-  op.src_m = 1;
-  op.src_n = shape_ref_->data[size - 1];
-  for (size_t i = 0; i + 1 < size; i++) {
-    op.src_m *= shape_ref_->data[i];
+  dst_stride_data_.Resize(size);
+  dst_stride_data_[size - 1] = 1;
+  for (size_t i = size - 1; i > 0; --i) {
+    dst_stride_data_[i - 1] = dst_stride_data_[i] * shape_[i];
   }
-  op.slice_n = lhs_->shape_ref_->data[size - 1];
-  op.type_size = ITEM_SIZE[type_id_];
-  op.offset = 0;
-  op.one_flag = 0;
-  if (op.slice_n == 1 && nd_.lead_idx() != 0) {
-    op.pad_size = 0;
-    op.one_flag = 1;
-  }
-  op.round_rank = 0;
-  addr_.Update(insn_ + vSliceSL::RELOC_OFFSET);
-  return vSliceSL::Encode(insn_, vAccInsnID::V_SLICE_STORE, op, nullptr);
+  NDViewStore::Normalize(run_ops);
 }
 
 NDObject *NDPadStore::Clone(CloneHelper &h) { return new NDPadStore(h.GetClone(lhs_), pad_size_); }
 
-void NDPadStore::Dump(bool verbose, std::ostringstream &oss) { oss << "PadStore"; }
+void NDPadStore::Dump(bool verbose, std::ostringstream &oss) {
+  oss << "PadStore";
+  if (verbose) {
+    oss << "<" << pad_size_ << ">";
+  }
+}
 
 void NDConcatStore::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(main_->dst_stride_data_.size == lhs_->shape_ref_->size);

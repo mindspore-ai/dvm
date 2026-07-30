@@ -299,7 +299,6 @@ def test_matmul_col_nopad():
     res = t.matmul(mat_a, mat_b, False, True)
     t.store_expect(res, np_c)
     assert (t.run_check())
-    assert (t.das().count("slice_store") == 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -320,7 +319,6 @@ def test_batchmatmul_col_nopad():
     res = t.matmul(mat_a, mat_b, False, True)
     t.store_expect(res, np_c)
     assert (t.run_check())
-    assert (t.das().count("slice_store") == 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

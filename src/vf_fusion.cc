@@ -851,7 +851,7 @@ VfFusionOp::VfFusionOp(const VfPartition &partition, uint64_t func_id)
 }
 
 void VfFusionOp::Normalize(std::vector<NDObject *> &) {
-  ndd_.dims = lhs_->nd_.dims();
+  ndd_.Reset(lhs_->nd_.dims());
   shape_ = *lhs_->shape_ref_;
   for (int i = 0; i < xout_data_.out_num; ++i) {
     auto *output = xout_data_.data[i];

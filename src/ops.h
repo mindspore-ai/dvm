@@ -36,7 +36,6 @@ enum ObjectType {
   kLoad,
 
   // Store
-  kPadStore,
   kViewStore,
   kStore,
 
@@ -696,23 +695,20 @@ class NDViewStore : public NDStore {
   DimArray dst_stride_;
 };
 
-class NDPadStore : public NDAccess {
+class NDPadStore : public NDViewStore {
  public:
   NDPadStore(NDObject *src, int64_t pad_size)
-      : NDAccess(nullptr, src, src->type_id_, ObjectType::kPadStore), pad_size_(pad_size) {
+      : NDViewStore(nullptr, src, &dst_stride_data_), pad_size_(pad_size) {
     shape_ref_ = &shape_;
   }
   NDPadStore(void *dst, NDObject *src, int64_t pad_size) : NDPadStore(src, pad_size) { addr_.gm = dst; }
 
   void Normalize(std::vector<NDObject *> &run_ops) override;
-  uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
-  static void TileCollect(NDObject *op, TileInfo &info);
-  static void FoldProp(NDObject *op, PropRange &range);
-
  private:
+  ShapeWithRef dst_stride_data_;
   ShapeWithRef shape_;
   int64_t pad_size_;
 };

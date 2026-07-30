@@ -125,17 +125,6 @@ void DumpAtomicCum(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-void DumpSliceStore(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vSliceSL op;
-  vSliceSL::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "slice_store " << op.type_size << "x" << op.tile_stride << " " << reinterpret_cast<void *>(op.xn) << ", "
-      << reinterpret_cast<void *>(op.gm);
-  oss << " //";
-  DumpVal("pad_size", op.pad_size, oss);
-  oss << ", ";
-  DumpVal("one_flag", op.one_flag, oss);
-}
-
 void DumpLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   vLoad op;
   vLoad::Decode(dump_info.insn, *dump_info.insn, op);
@@ -889,7 +878,6 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_STORE_VIEW_X, &DumpStoreViewX},
   {V_PEER_STORE, &DumpPeerDMA<name_peer_store>},
   {V_PEER_STORE_MIX, &DumpPeerDMA<name_peer_store_mix>},
-  {V_SLICE_STORE, &DumpSliceStore},
 };
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
@@ -1537,7 +1525,6 @@ void Code::Free() {
 }
 
 void Code::DisAssemble(std::ostringstream &oss) {
-  if (data_ == nullptr) return;
   if (wrap_) {
     wrap_->DasWrap(oss);
   } else {
@@ -1593,7 +1580,11 @@ uint64_t Code::ReserveCodeSpace(uint64_t workspace_size) {
 int Code::LaunchWrap(void *workspace, void *stream) { return DoLaunch(workspace, stream); }
 
 void Code::CombineWrap(Code *code, uint64_t ws_base) {}
-void Code::DasWrap(std::ostringstream &oss) { DisAssembler(oss).Run(this, "vmain"); }
+void Code::DasWrap(std::ostringstream &oss) {
+  if (data_ != nullptr) {
+    DisAssembler(oss).Run(this, "vmain");
+  }
+}
 void Code::CollectWrap(std::vector<Code *> &codes) { codes.push_back(this); }
 
 CodeLaunchGuard::CodeLaunchGuard(Code &root) {

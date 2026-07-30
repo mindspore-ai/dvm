@@ -713,50 +713,6 @@ class NDPadStore : public NDViewStore {
   int64_t pad_size_;
 };
 
-class NDConcatStoreM;
-class NDConcatStore : public NDViewStore {
- public:
-  NDConcatStore(void *dst, IntArrayRef *stride, NDObject *input, NDConcatStoreM *main)
-      : NDViewStore(dst, input, stride), main_(main) {}
-  void Normalize(std::vector<NDObject *> &run_ops) override;
-  uint64_t Emit(VectorKernel &k) override;
-  NDObject *Clone(CloneHelper &h) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-
-  NDConcatStoreM *main_;
-  friend NDConcatStoreM;
-};
-
-class NDConcatStoreM : public NDConcatStore {
- public:
-  NDConcatStoreM(void *dst, NDObject *input, int concat_dim)
-   : NDConcatStore(dst, &dst_stride_data_, input, this), concat_dim_(concat_dim) {
-    shape_ref_ = &shape_;
-  }
-  void Normalize(std::vector<NDObject *> &run_ops) override;
-  NDObject *Clone(CloneHelper &h) override;
-
-  NDConcatStore *AddSibling(NDObject *input) {
-    ASSERT(input->type_id_ == type_id_);
-    auto op = new NDConcatStore(addr_.gm, &dst_stride_data_, input, this);
-    sibling_.push_back(op);
-    return op;
-  }
-  void NormUpdate() {
-    if (++group_sync_ == sibling_.size()) {
-      group_sync_ = 0;
-      _NormUpdate();
-    }
-  }
-  void _NormUpdate();
-
-  int concat_dim_;
-  uint32_t group_sync_{0};
-  std::vector<NDConcatStore *> sibling_;
-  ShapeWithRef dst_stride_data_;
-  ShapeWithRef shape_;
-};
-
 class __export__ FlexOp : public NDObject {
  public:
   struct Xhs {

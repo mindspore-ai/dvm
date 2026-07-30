@@ -41,7 +41,6 @@ class RtKernelPy : public KernelPy {
   py::object StridedSliceLoad(py::object shape, py::object start, py::object end, py::object step, DataTypePy type);
   py::object MultiLoad(py::object shape, DataTypePy type);
   py::object PadStore(py::object obj, int64_t pad_shape);
-  py::object ConcatStore(py::object inputs, int dim);
   py::object OneHot(py::object indices, int depth, int axis, py::object on_value, py::object off_value,
                     DataTypePy dtype);
   py::object AllReduce(const std::string &type, py::object input);

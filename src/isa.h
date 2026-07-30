@@ -346,18 +346,22 @@ __aicore_inline__ T CeilDiv(T a, T b) {
 
 template <typename T>
 __aicore_inline__ T RoundUp(T num, T rnd) {
-  if (rnd == 0) {
-    return 0;
-  }
   return (num + rnd - 1) / rnd * rnd;
 }
 
 template <typename T>
 __aicore_inline__ T RoundDown(T num, T rnd) {
-  if (rnd == 0) {
-    return 0;
-  }
   return num / rnd * rnd;
+}
+
+template <typename T>
+__aicore_inline__ T RoundUpSafe(T num, T rnd) {
+  return rnd == 0 ? 0 : RoundUp(num, rnd);
+}
+
+template <typename T>
+__aicore_inline__ T RoundDownSafe(T num, T rnd) {
+  return rnd == 0 ? 0 : RoundDown(num, rnd);
 }
 
 template <typename T>

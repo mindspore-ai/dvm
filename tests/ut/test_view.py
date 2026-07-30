@@ -434,20 +434,6 @@ def test_view_store_x_transpose():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_concat_single_vector():
-    t = Tester()
-    a0 = np.random.normal(0, 1, [20, 512]).astype(np.float32)
-    a1 = np.random.normal(0, 1, [20, 512]).astype(np.float32)
-    a2 = np.random.normal(0, 1, [20, 1]).astype(np.float32)
-    x0 = t.mul(t.load(a0), 0.5)
-    x1 = t.load(a1)
-    x2 = t.add(x1, t.load(a2))
-    out = t.concat_store([x0, x1, x2], 0)
-    t.run()
-    t.check(out, np.concatenate((a0 * 0.5, a1, a1 + a2), axis=0))
-
-
-@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 @pytest.mark.parametrize("H, W", [

@@ -34,3 +34,22 @@ def test_tb_basic():
     t.codegen(tile_space_size, 0, True)
     assert t.max_tile_size() == max_tile_size
     assert(t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_tb_fp32_stride_alignment():
+    t = TileBuilderTester()
+    a = np.random.normal(0.0, 0.03, [100]).astype(np.float32)
+    b = np.random.normal(0.0, 0.03, [100]).astype(np.float32)
+    tile_space = [1]
+    tile_shape = [100]
+    x0 = t.load(a, tile_shape, tile_space)
+    x1 = t.load(b, tile_shape, tile_space)
+    add = t.add(x0, x1)
+    t.store_expect(add, tile_space, expect=a + b)
+
+    t.codegen(tile_space_size=1, block_dim=1)
+    das = t.das()
+    # UpdateStride works in elements: one 32-byte block is 8 FP32 elements.
+    assert "Add.fp32.104" in das
+    assert(t.run_check())

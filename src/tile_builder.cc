@@ -110,11 +110,11 @@ class TLoad : public TAccess {
     for (size_t i = 0; i < shape_->size; ++i) {
       ndd_.dims[i] = shape_->data[shape_->size - i - 1];
     }
-    ndd_.UpdateStride(SIMD_BLOCK_SIZE);
+    uint64_t item_size = ITEM_SIZE[dtype_];
+    ndd_.UpdateStride(SIMD_BLOCK_SIZE / item_size);
     int64_t lead_align = nd_.lead_stride();
     int64_t lead_dim = nd_.lead_dim();
     uint64_t src_tile_stride = ndd_.stride_back() / lead_align * lead_dim;
-    uint64_t item_size = ITEM_SIZE[dtype_];
     uint64_t tail_size = tile_->GetTail();
     vLoad op;
     op.from = *gm_ref_;

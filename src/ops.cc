@@ -808,13 +808,14 @@ void NDViewLoad::DimChanged(NDObject *op) {
   view->tail_dim_ = dim_size;
   int64_t acc_nd = 0;
   int64_t acc_ref = 0;
-  int64_t acc_stride = 1;
+  int64_t acc_stride = ITEM_SIZE[view->type_id_];
   for (size_t i = 0; i < dim_size; ++i) {
     if (dims[i] == 1) {
-      stride[i] = i > 0 ? stride[i - 1] : ITEM_SIZE[view->type_id_];
+      if (i > 0) {
+        acc_stride *= dims[i - 1];
+      }
     } else if (!acc_nd) {
-      acc_stride = ref_stride[ref_idx];
-      stride[i] = acc_stride * ITEM_SIZE[view->type_id_];
+      acc_stride = ref_stride[ref_idx] * ITEM_SIZE[view->type_id_];
       if (dims[i] != ref_shape[ref_idx]) {
         acc_nd = dims[i];
         acc_ref = ref_shape[ref_idx];
@@ -822,7 +823,6 @@ void NDViewLoad::DimChanged(NDObject *op) {
       ref_idx--;
     } else {
       acc_stride *= dims[i - 1];
-      stride[i] = acc_stride * ITEM_SIZE[view->type_id_];
       acc_nd *= dims[i];
       while (acc_ref < acc_nd) {
         acc_ref *= ref_shape[ref_idx--];
@@ -831,6 +831,7 @@ void NDViewLoad::DimChanged(NDObject *op) {
         acc_nd = 0;
       }
     }
+    stride[i] = acc_stride;
   }
 }
 
@@ -887,7 +888,7 @@ void NDViewLoad::Normalize(std::vector<NDObject *> &run_ops) {
     src_stride_[0] = ndd_.dims[0] == 1 ? item_size : src_stride_ref_->data[dim_size - 1] * item_size;
     for (size_t i = 1; i < dim_size; i++) {
       ndd_.dims[i] = shape_ref_->data[dim_size - i - 1];
-      src_stride_[i] = ndd_.dims[i] == 1 ? src_stride_[i - 1] : src_stride_ref_->data[dim_size - i - 1] * item_size;
+      src_stride_[i] = ndd_.dims[i] == 1 ? src_stride_[i - 1] * ndd_.dims[i - 1] : src_stride_ref_->data[dim_size - i - 1] * item_size;
     }
   }
   tail_dim_ = dim_size;
@@ -1070,14 +1071,15 @@ void NDViewStore::DimChanged(NDObject *op) {
   stride.resize(dim_size);
   int64_t acc_nd = 0;
   int64_t acc_ref = 0;
-  int64_t acc_stride = 1;
+  int64_t acc_stride = ITEM_SIZE[store->type_id_];
   int ref_idx = ref_shape->size - 1;
   for (size_t i = 0; i < dim_size; ++i) {
     if (dims[i] == 1) {
-      stride[i] = i > 0 ? stride[i - 1] : ITEM_SIZE[store->type_id_];
+      if (i > 0) {
+        acc_stride *= dims[i - 1];
+      }
     } else if (!acc_nd) {
-      acc_stride = ref_stride->data[ref_idx];
-      stride[i] = acc_stride * ITEM_SIZE[store->type_id_];
+      acc_stride = ref_stride->data[ref_idx] * ITEM_SIZE[store->type_id_];
       if (dims[i] != ref_shape->data[ref_idx]) {
         acc_nd = dims[i];
         acc_ref = ref_shape->data[ref_idx];
@@ -1085,7 +1087,6 @@ void NDViewStore::DimChanged(NDObject *op) {
       ref_idx--;
     } else {
       acc_stride *= dims[i - 1];
-      stride[i] = acc_stride * ITEM_SIZE[store->type_id_];
       acc_nd *= dims[i];
       while (acc_ref < acc_nd) {
         acc_ref *= ref_shape->data[ref_idx--];
@@ -1094,6 +1095,7 @@ void NDViewStore::DimChanged(NDObject *op) {
         acc_nd = 0;
       }
     }
+    stride[i] = acc_stride;
   }
   store->elem_dim_mask_ = GetPointwiseMask(dims.dims());
 }
@@ -1149,7 +1151,7 @@ void NDViewStore::Normalize(std::vector<NDObject *> &run_ops) {
     auto item_size = ITEM_SIZE[type_id_];
     dst_stride_[0] = nd_[0] == 1 ? item_size : dst_stride_ref_->data[dim_size - 1] * item_size;
     for (size_t i = 1; i < dim_size; i++) {
-      dst_stride_[i] = nd_[i] == 1 ? dst_stride_[i - 1] : dst_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
+      dst_stride_[i] = nd_[i] == 1 ? dst_stride_[i - 1] * nd_[i - 1] : dst_stride_ref_->data[dim_size - i - 1] * ITEM_SIZE[type_id_];
     }
   }
   tail_dim_ = dim_size;

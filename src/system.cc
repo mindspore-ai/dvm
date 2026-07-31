@@ -169,6 +169,14 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9599", kAscend910_9599, kAiCore_C310, 36, 128 * MB},
 };
 
+static void GetAclCoreCount(int device_id, uint64_t *aic, uint64_t *aiv) {
+  int64_t reported_aic = 0;
+  auto aic_ret = aclGetDeviceCapability(device_id, ACL_DEVICE_INFO_AI_CORE_NUM, &reported_aic);
+  if (aic_ret != ACL_SUCCESS || reported_aic <= 0) return;
+  *aic = static_cast<uint64_t>(reported_aic);
+  *aiv = *aic * 2;
+}
+
 static bool RegKernelWithRT(void *reg_binary_func, void *reg_function_func, const unsigned char *bin_data,
                             unsigned int bin_len, void *func_handles[3]) {
   auto reg_binary = reinterpret_cast<rtError_t (*)(const rtDevBinary_t *, void **)>(reg_binary_func);
@@ -295,6 +303,7 @@ void System::DoInit() {
     code_launch_ = CodeLaunchNone;
     return;
   }
+  GetAclCoreCount(device_id, &cube_core_num_, &vector_core_num_);
   inited_ = true;
 #ifdef VK_SIM_MODEL
   RegKernelWithRT(rtDevBinaryRegister, rtFunctionRegister, g_vkernel_bin, g_vkernel_bin_len, func_handles_);

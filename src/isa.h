@@ -47,7 +47,7 @@ enum vAccInsnID {
   V_LOAD_GATHER_B32, // [c310]
   V_LOAD_VIEW,
   V_LOAD_VIEW_X,
-  V_LOAD_VIEW_TRANS, // [c220]
+  V_LOAD_VIEW_TRANS,
   V_SLOAD,
   V_LOAD_CC, // [c310]
   V_MULTI_LOAD, // [c220]

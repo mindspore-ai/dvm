@@ -1700,6 +1700,94 @@ __aicore_inline__ void ViewLoadX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 }
 
 template <typename T>
+__aicore_inline__ void ViewLoadTImpl(bcodeptr_t pc, const vViewLoadT &op, uint64_t tile_offset, bool is_last_tile) {
+  __gm__ uint8_t *src = (__gm__ uint8_t *)(op.from + tile_offset);
+  __ubuf__ uint8_t *dst = (__ubuf__ uint8_t *)(op.xd);
+  uint32_t iter_size = static_cast<uint32_t>(op.iter_size);
+  if (op.loop_depth == 0 && is_last_tile) {
+    iter_size = static_cast<uint32_t>(op.tail_size);
+  }
+
+  // w_gap is encoded as an unsigned 32-bit delta. Keep the 32-bit wrap so a
+  // broadcast W stride (w_gap == -H * sizeof(T)) is reconstructed as zero.
+  uint32_t w_stride_bytes = static_cast<uint32_t>(op.w_gap + op.h_fractal * sizeof(T));
+  constexpr uint64_t block_items = 32 / sizeof(T);
+  uint64_t dst_w_stride = CeilDiv(op.w_fractal, block_items) * block_items;
+  uint64_t w_stride = ((static_cast<uint64_t>(w_stride_bytes) / sizeof(T)) << 20) | 1;
+  uint64_t h_stride = (1UL << 20) | dst_w_stride;
+  uint64_t iter_stride = ((op.iter_stride / sizeof(T)) << 20) | (dst_w_stride * op.h_fractal);
+
+  uint32_t loop_size[2] = {1, 1};
+  uint64_t loop_stride[2] = {0, 0};
+  for (uint64_t idx = 0; idx < op.loop_depth && idx < 2; ++idx) {
+    uint64_t size, dst_stride, src_stride;
+    vViewLoad::DecodeLoop(pc[vViewLoadT::VAR_OFFSET + idx], size, dst_stride, src_stride);
+    if (idx == op.loop_depth - 1 && is_last_tile) {
+      size = op.tail_size;
+    }
+    loop_size[idx] = static_cast<uint32_t>(size);
+    loop_stride[idx] = ((src_stride / sizeof(T)) << 20) | ((dst_stride / sizeof(T)) & 0xfffff);
+  }
+
+  if (likely(op.loop_depth <= 2)) {
+    nddma((__ubuf__ T *)dst, (__gm__ T *)src, static_cast<uint32_t>(op.w_fractal),
+          static_cast<uint32_t>(op.h_fractal), iter_size, loop_size[0], loop_size[1], w_stride, h_stride, iter_stride,
+          loop_stride[0], loop_stride[1]);
+    return;
+  }
+
+  uint32_t coord[6] = {0};
+  uint64_t idx = 2;
+  do {
+    nddma((__ubuf__ T *)dst, (__gm__ T *)src, static_cast<uint32_t>(op.w_fractal),
+          static_cast<uint32_t>(op.h_fractal), iter_size, loop_size[0], loop_size[1], w_stride, h_stride, iter_stride,
+          loop_stride[0], loop_stride[1]);
+    for (idx = 2; idx < op.loop_depth; ++idx) {
+      uint64_t size, dst_stride, src_stride;
+      vViewLoad::DecodeLoop(pc[vViewLoadT::VAR_OFFSET + idx], size, dst_stride, src_stride);
+      if (idx == op.loop_depth - 1 && is_last_tile) {
+        size = op.tail_size;
+      }
+      if (coord[idx] + 1 < size) {
+        coord[idx] += 1;
+        dst += dst_stride;
+        src += src_stride;
+        idx = 2;
+        break;
+      }
+      coord[idx] = 0;
+      dst -= (size - 1) * dst_stride;
+      src -= (size - 1) * src_stride;
+    }
+  } while (idx < op.loop_depth);
+}
+
+__aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewLoadT op;
+  vViewLoadT::Decode(pc, head, op);
+  bool is_last_tile = IsLastTile(tile);
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  uint64_t tile_space = 0;
+  uint64_t tile_depth = op.tile_depth;
+  for (; tile_depth > 0 && tile_idx > 0; --tile_depth) {
+    uint64_t stride;
+    vViewLoad::DecodeTile(pc[vViewLoadT::VAR_OFFSET - 1 + op.loop_depth + tile_depth], tile_space, stride);
+    uint64_t factor = tile_idx / tile_space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * tile_space;
+  }
+  if (tile_space > 1 && tile_depth == 0 && tile_idx > 0 && !IsBeginTile(tile) && !IsSkipTile(tile)) {
+    return;
+  }
+  if (op.item_size == sizeof(uint16_t)) {
+    ViewLoadTImpl<uint16_t>(pc, op, tile_offset, is_last_tile);
+  } else {
+    ViewLoadTImpl<uint32_t>(pc, op, tile_offset, is_last_tile);
+  }
+}
+
+template <typename T>
 __aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vGatherLoad op;
   vGatherLoad::Decode(pc, head, op);
@@ -2150,6 +2238,7 @@ DEF_DISP_LOAD(V_LOAD_GATHER_B16, GatherLoad<uint16_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_GATHER_B32, GatherLoad<uint32_t>(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_X, ViewLoadX(pc, head, tile))
+DEF_DISP_LOAD(V_LOAD_VIEW_TRANS, ViewLoadT(pc, head, tile))
 DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
 DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))

@@ -434,7 +434,6 @@ def test_view_store_x_transpose():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
 @pytest.mark.parametrize('type', [np.float16, np.float32])
 @pytest.mark.parametrize("H, W", [
   (1024, 2048),  # body
@@ -460,7 +459,6 @@ def _continuous_stride(shape):
     return stride
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
 @pytest.mark.parametrize("shape1, swap1, shape2, swap2, view", [
     [[10, 64, 200], (1, 2), [10, 64, 200], (1, 2), True], # 3d. neighbor axis
     [[4, 70, 20, 200], (1, 3), [1, 70, 20, 200], (1, 3), False], # 4d. no neighbor axis

@@ -1965,13 +1965,13 @@ int64_t FractalSchGen::CodeGen() {
 
   class FractalDunGen {
    public:
-    enum { W_FRACTAL = 16 };
     FractalDunGen(SchGenHelper &gen, int h_idx, uint64_t item_size)
         : gen_(gen), space_(gen.kernel_->DimSpace()), h_idx_(h_idx) {
+      w_fractal_ = g_system.Arch() == AiCoreArch::kAiCore_C310 ? 128 : 16;
       h_fractal_ = item_size == 2 ? 16 : 8;
       int64_t w_size = space_[0];
-      w_body_ = w_size / W_FRACTAL;
-      w_tail_ = w_size - w_body_ * W_FRACTAL;
+      w_body_ = w_size / w_fractal_;
+      w_tail_ = w_size - w_body_ * w_fractal_;
       int64_t h_size = space_[h_idx];
       h_body_ = h_size / h_fractal_;
       h_tail_ = h_size - h_body_ * h_fractal_;
@@ -1994,7 +1994,7 @@ int64_t FractalSchGen::CodeGen() {
         dup_num = 1;
       }
       gen_.SpaceInit();
-      gen_.SpaceSplit(0, w_npart, W_FRACTAL);
+      gen_.SpaceSplit(0, w_npart, w_fractal_);
       h_idx_ += 1;
       gen_.SpaceTrans(1, h_idx_);
       gen_.SpaceSplit(1, h_npart, h_fractal_);
@@ -2015,13 +2015,13 @@ int64_t FractalSchGen::CodeGen() {
         GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
       }
       if (h_tail_ && w_body_) {
-        GenDup(helper, h_body_, 0, W_FRACTAL, h_tail_, 1, w_body_);
+        GenDup(helper, h_body_, 0, w_fractal_, h_tail_, 1, w_body_);
       }
       if (w_tail_ && h_tail_) {
         GenDup(helper, h_body_, w_body_, w_tail_, h_tail_, 1, 1);
       }
       if (w_body_ && h_body_) {
-        GenDup(helper, 0, 0, W_FRACTAL, h_fractal_, h_body_, w_body_);
+        GenDup(helper, 0, 0, w_fractal_, h_fractal_, h_body_, w_body_);
       }
       helper.Submit();
     }
@@ -2050,6 +2050,7 @@ int64_t FractalSchGen::CodeGen() {
     SchGenHelper &gen_;
     const DimArray &space_;
     int64_t h_fractal_;
+    int64_t w_fractal_;
     int64_t w_body_;
     int64_t w_tail_;
     int64_t h_body_;

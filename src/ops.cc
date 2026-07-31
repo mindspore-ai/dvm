@@ -922,11 +922,16 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     if (tail_size) {
       op.tail_size = op.tail_size / ndd_[tail_dim] * tail_size;
     }
-    auto last_store = k.static_ops_.back();
-    ASSERT(last_store->IsStore());
-    op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
-    op.ws_size = std::min((g_system.LocalMemSize() - op.ws) / (512 * 3), op.iter_size);
-    ASSERT(op.ws_size);
+    if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
+      auto last_store = k.static_ops_.back();
+      ASSERT(last_store->IsStore());
+      op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
+      op.ws_size = std::min((g_system.LocalMemSize() - op.ws) / (512 * 3), op.iter_size);
+      ASSERT(op.ws_size);
+    } else {
+      op.ws = 0;
+      op.ws_size = 0;
+    }
     uint64_t *var_insn = insn_ + vViewLoadT::VAR_OFFSET;
     if (op.loop_depth) {
       uint64_t dst_stride = ndd_.stride(2) * item_size;

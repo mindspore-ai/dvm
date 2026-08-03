@@ -1666,7 +1666,7 @@ ConcatOp::ConcatOp(NDObject **inputs, size_t input_num, int cat_axis)
   slices_.emplace_back(inputs[0]);
   slices_.emplace_back(inputs[1]);
   if (auto xhs_num = input_num - 2; xhs_num > 0) {
-    auto xhs = reinterpret_cast<Xhs *>(new char[sizeof(Xhs) + sizeof(NDObject *) + xhs_num]);
+    auto xhs = reinterpret_cast<Xhs *>(new char[sizeof(Xhs) + sizeof(NDObject *) * xhs_num]);
     xhs->in_num = static_cast<int>(xhs_num);
     xhs->free_mask = 0;
     for (size_t i = 0; i < xhs_num; ++i) {

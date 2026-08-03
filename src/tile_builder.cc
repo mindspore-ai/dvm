@@ -14,6 +14,9 @@
  * limitations under the License.
  */
 
+#include <algorithm>
+#include <limits>
+#include <unordered_map>
 #include <vector>
 #include "tile_builder.h"
 #include "ops.h"  // DimArray
@@ -262,6 +265,7 @@ class VectorBuilder : public TBuilder {
   TObject *Append(TObject *obj) override;
   void Reloc() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void ReorderLoads();
   void Init();
   void CodeGen(int64_t tile_num, int64_t block_num);
   int64_t MaxTileSize();
@@ -483,7 +487,72 @@ void VectorBuilder::CodeGen(int64_t tile_num, int64_t block_num) {
   code_.UpdateV(tile_num, false);
 }
 
+void VectorBuilder::ReorderLoads() {
+  struct LoadUsage {
+    size_t first_use;
+    size_t last_use;
+    size_t original_order;
+    TObject *load;
+  };
+
+  const auto unused = std::numeric_limits<size_t>::max();
+  std::vector<LoadUsage> loads;
+  std::unordered_map<TObject *, size_t> load_indices;
+  for (auto obj : objects_) {
+    if (obj->IsLoad()) {
+      load_indices.emplace(obj, loads.size());
+      loads.push_back({unused, unused, loads.size(), obj});
+    }
+  }
+  if (loads.size() < 2) {
+    return;
+  }
+
+  auto record_use = [&loads, &load_indices, unused](TObject *input, size_t position) {
+    auto found = load_indices.find(input);
+    if (found == load_indices.end()) {
+      return;
+    }
+    auto &usage = loads[found->second];
+    if (usage.first_use == unused) {
+      usage.first_use = position;
+    }
+    usage.last_use = position;
+  };
+  for (size_t position = 0; position < objects_.size(); ++position) {
+    auto obj = objects_[position];
+    record_use(obj->lhs_, position);
+    record_use(obj->rhs_, position);
+  }
+
+  std::stable_sort(loads.begin(), loads.end(), [](const LoadUsage &lhs, const LoadUsage &rhs) {
+    if (lhs.first_use != rhs.first_use) {
+      return lhs.first_use < rhs.first_use;
+    }
+    if (lhs.last_use != rhs.last_use) {
+      return lhs.last_use < rhs.last_use;
+    }
+    return lhs.original_order < rhs.original_order;
+  });
+
+  std::vector<TObject *> reordered;
+  reordered.reserve(objects_.size());
+  for (const auto &usage : loads) {
+    reordered.push_back(usage.load);
+  }
+  for (auto obj : objects_) {
+    if (!obj->IsLoad()) {
+      reordered.push_back(obj);
+    }
+  }
+  objects_.swap(reordered);
+  for (size_t index = 0; index < objects_.size(); ++index) {
+    objects_[index]->index_ = static_cast<int>(index);
+  }
+}
+
 void VectorBuilder::Init() {
+  ReorderLoads();
   SlotInitializer initializer(objects_);
   max_tile_size_ = initializer.Run(code_);
 }

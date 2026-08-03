@@ -53,3 +53,50 @@ def test_tb_fp32_stride_alignment():
     # UpdateStride works in elements: one 32-byte block is 8 FP32 elements.
     assert "Add.fp32.104" in das
     assert(t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_tb_reorder_load_tied_first_use_by_last_use():
+    """An input that dies earlier should be loaded first when first uses tie."""
+    t = TileBuilderTester()
+    x = np.full([256], 1.25, np.float32)
+    y = np.full([256], 2.0, np.float32)
+    tile_space = [1]
+    tile_shape = [256]
+    load_x = t.load(x, tile_shape, tile_space)
+    load_y = t.load(y, tile_shape, tile_space)
+    value = t.add(load_x, load_y)
+    value = t.mul(value, load_y)
+    value = t.sub(value, load_x)
+    value = t.abs(value)
+    value = t.sqrt(value)
+    value = t.div(value, load_y)
+    value = t.exp(value)
+    value = t.mul(value, load_x)
+    expected = np.exp(np.sqrt(np.abs((x + y) * y - x)) / y) * x
+    t.store_expect(value, tile_space, expect=expected)
+
+    t.codegen(tile_space_size=1, block_dim=1)
+    dump = t.dump()
+    # load_y becomes %0 and load_x becomes %1. Arithmetic dependencies must
+    # remain unchanged because reordering moves TObject pointers, not operands.
+    assert "Binary<68<(%1[256]<float32>, %0[256]<float32>)" in dump
+    assert "Binary<82<(%" in dump
+    das = t.das()
+    div_begin = das.index("Div.fp32")
+    exp_begin = das.index("Exp.fp32")
+    final_mul_begin = das.rindex("Mul.fp32")
+    store_begin = das.index("store.u8")
+
+    def load_release_event(section):
+        marker = "simd_load_sync(set, "
+        begin = section.index(marker) + len(marker)
+        end = section.index(")", begin)
+        return int(section[begin:end])
+
+    div_event = load_release_event(das[div_begin:exp_begin])
+    final_mul_event = load_release_event(das[final_mul_begin:store_begin])
+    # Event IDs are allocator details; only distinct, correctly placed release
+    # events matter for overlapping the next tile's Loads with current SIMD.
+    assert {div_event, final_mul_event} == {0, 1}
+    assert(t.run_check())

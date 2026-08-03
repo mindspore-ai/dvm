@@ -59,7 +59,7 @@ enum vAccInsnID {
   V_STORE_ATOMIC,
   V_STORE_COND,
   V_STORE_VIEW,
-  V_STORE_VIEW_X, // [c220]
+  V_STORE_VIEW_X,
   V_SSTORE,
   V_STORE_AG,  // [c220] For AllGather
   V_STORE_RS,  // [c220] For ReduceScatter

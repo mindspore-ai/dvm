@@ -20,7 +20,7 @@ from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 test code uses C220-only vector intrinsics")
 def test_custom_op_basic():
     dev_code = r'''
 extern "C" [aicore] void fuse_addmul(__gm__ uint64_t *__restrict__ pc, uint64_t head, uint64_t tile) {
@@ -66,7 +66,7 @@ CustomDef __ALL_OPS__[] = {{"FusedAddMul", &FusedAddMul::MakeOp}, {nullptr, null
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
+@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 test code uses C220-only vector intrinsics")
 def test_custom_op_multi_inout():
     dev_code = r'''
 extern "C" [aicore] void fuse_min(__gm__ uint64_t *__restrict__ pc, uint64_t head, uint64_t tile) {

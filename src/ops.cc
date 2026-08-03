@@ -1483,11 +1483,16 @@ uint64_t NDStore::EmitView(VectorKernel &k) {
     op.to = addr_.data;
     op.offset = offset_bytes_;
     op.type_size = item_size;
-    auto last_store = k.static_ops_.back();
-    ASSERT(last_store->IsStore());
-    op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
-    auto ws_block_num = (g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
-    op.ws_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
+    if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
+      auto last_store = k.static_ops_.back();
+      ASSERT(last_store->IsStore());
+      op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
+      auto ws_block_num = (g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
+      op.ws_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
+    } else {
+      op.ws = 0;
+      op.ws_size = 0;
+    }
     op.iter_size = fold_dim[0];
     op.iter_stride = fold_stride[0];
     op.loop_depth = tile_start - 1;

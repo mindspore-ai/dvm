@@ -1923,6 +1923,47 @@ __aicore_inline__ void ViewStore(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+__aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vViewStoreX op;
+  vViewStoreX::Decode(pc, head, op);
+  if (op.loop_depth == 0 && IsLastTile(tile)) {
+    op.iter_size = op.tail_size;
+  }
+  uint64_t tile_idx = TileIdx(tile);
+  uint64_t tile_offset = op.offset;
+  for (uint64_t i = op.tile_depth; i > 0 && tile_idx > 0; --i) {
+    uint64_t space, stride;
+    vViewStore::DecodeTile(pc[vViewStoreX::VAR_OFFSET - 1 + op.loop_depth + i], space, stride);
+    uint64_t factor = tile_idx / space;
+    tile_offset += stride * factor;
+    tile_idx -= factor * space;
+  }
+  __gm__ uint8_t *dst = (__gm__ uint8_t *)(op.to + tile_offset);
+  __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
+  uint32_t coord[6] = {0};
+  uint64_t idx = 0;
+  do {
+    copy_ubuf_to_gm_align_v2(dst, src, 0, op.iter_size, op.type_size, 0, op.iter_stride, op.type_size);
+    for (idx = 0; idx < op.loop_depth; ++idx) {
+      uint64_t loop_size, dst_stride, src_stride;
+      vViewStore::DecodeLoop(pc[vViewStoreX::VAR_OFFSET + idx], loop_size, dst_stride, src_stride);
+      if (idx == op.loop_depth - 1 && IsLastTile(tile)) {
+        loop_size = op.tail_size;
+      }
+      if (coord[idx] + 1 < loop_size) {
+        coord[idx] += 1;
+        dst += dst_stride;
+        src += src_stride;
+        idx = 0;
+        break;
+      }
+      coord[idx] = 0;
+      dst -= (loop_size - 1) * dst_stride;
+      src -= (loop_size - 1) * src_stride;
+    }
+  } while (idx < op.loop_depth);
+}
+
 __aicore_inline__ void Store(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vStore op;
   vStore::Decode(pc, head, op);
@@ -2243,6 +2284,7 @@ DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
 DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
 DEF_DISP_STORE(V_STORE_VIEW, ViewStore(pc, head, tile))
+DEF_DISP_STORE(V_STORE_VIEW_X, ViewStoreX(pc, head, tile))
 
 DEF_DISP_SIMD(V_COPY, Copy(pc, head))
 DEF_DISP_SIMD(V_NOP,  ;)

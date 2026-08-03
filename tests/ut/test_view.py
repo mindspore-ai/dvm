@@ -411,7 +411,6 @@ def test_view_store_broadcast_3d(slice_shape, out_shape, broadcast_shape):
 
 
 @pytest.mark.parametrize("dtype", [np.float16, np.float32])
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
 def test_view_store_x(dtype):
     t = Tester()
     a = np.random.normal(0, 1, [400, 600]).astype(dtype)
@@ -424,7 +423,6 @@ def test_view_store_x(dtype):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() == 'AscendC310', reason="C310 temporarily does not support ViewStoreX")
 def test_view_store_x_transpose():
     t = Tester()
     a = np.random.normal(0, 1, [2000, 4000]).astype(np.float32)

@@ -473,37 +473,12 @@ bool SameShapeAndNdd(const NDObject *lhs, const NDObject *rhs) {
   return true;
 }
 
-size_t EstimatePeakVregs(const VfPartition &partition) {
-  std::array<bool, kDataTypeEnd> compare_types{};
-  size_t scalar_division_regs = 0;
-  size_t cast_temp_regs = 0;
-  for (auto *node : partition.nodes) {
-    if (node->GetObjectType() == kCompare || node->GetObjectType() == kCompareS) {
-      compare_types[node->type_id_] = true;
-    } else if (node->GetObjectType() == kBinaryS) {
-      const auto type = static_cast<BinaryScalarOp *>(node)->GetOpType();
-      scalar_division_regs += type == kDivs || type == ksDiv ? 1 : 0;
-    } else if (node->GetObjectType() == kCast && node->lhs_->type_id_ == kInt32 && node->type_id_ == kFloat16) {
-      ++cast_temp_regs;
-    }
-  }
-  size_t compare_scalar_regs = 0;
-  for (bool used : compare_types) {
-    compare_scalar_regs += used ? 2 : 0;
-  }
-  // The initial code generator keeps SSA values live inside one Vec scope.
-  // This deliberately conservative bound prevents CCEC register pressure from
-  // turning an otherwise valid graph rewrite into a runtime compilation risk.
-  return partition.inputs.size() + partition.nodes.size() + compare_scalar_regs + scalar_division_regs + cast_temp_regs;
-}
-
 bool WithinLimits(BasicBlock &bb, const VfPartition &partition) {
-  if (partition.nodes.size() < VfFusionLimits::kMinOps || partition.inputs.size() > VfFusionLimits::kMaxInputs ||
-      partition.outputs.empty() || partition.outputs.size() > VfFusionLimits::kMaxOutputs ||
-      partition.inputs.size() + partition.outputs.size() > VfFusionLimits::kMaxEndpoints ||
+  if (partition.nodes.size() < VfFusionLimits::kMinOps || partition.inputs.empty() || partition.outputs.empty() ||
+      partition.inputs.size() + partition.outputs.size() > VfFusionLimits::kMaxIO ||
       (partition.inputs.size() + partition.outputs.size() + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord >
         kMaxPayloadWords ||
-      EstimatePeakVregs(partition) > VfFusionLimits::kMaxLiveVregs || !SameShapeAndNdd(partition)) {
+      !SameShapeAndNdd(partition)) {
     return false;
   }
 
@@ -829,8 +804,8 @@ VfFusionOp::VfFusionOp(const VfPartition &partition, uint64_t func_id)
       output_count_(partition.outputs.size()),
       payload_(input_count_, output_count_),
       xout_data_(this, output_count_ - 1) {
-  ASSERT(input_count_ > 0 && input_count_ <= VfFusionLimits::kMaxInputs);
-  ASSERT(output_count_ > 0 && output_count_ <= VfFusionLimits::kMaxOutputs);
+  ASSERT(input_count_ > 0 && output_count_ > 0);
+  ASSERT(input_count_ + output_count_ <= VfFusionLimits::kMaxIO);
   func_id_ = func_id;
   if (input_count_ > 2) {
     xhs_data_.in_num = static_cast<int>(input_count_ - 2);

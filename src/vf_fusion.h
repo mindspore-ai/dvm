@@ -36,10 +36,7 @@ class BasicBlock;
 // splitter can use exactly the same admission criteria as the first version.
 struct VfFusionLimits {
   static constexpr size_t kMinOps = 2;
-  static constexpr size_t kMaxLiveVregs = 16;
-  static constexpr size_t kMaxInputs = 6;
-  static constexpr size_t kMaxOutputs = 8;
-  static constexpr size_t kMaxEndpoints = 14;
+  static constexpr size_t kMaxIO = 16;
 };
 
 enum class VfOverflowPolicy {
@@ -81,9 +78,9 @@ constexpr uint64_t kPayloadSlotBits = 20;
 constexpr uint64_t kPayloadSlotMask = (1ull << kPayloadSlotBits) - 1;
 constexpr size_t kPayloadSlotsPerWord = 3;
 constexpr size_t kMaxPayloadWords =
-  (VfFusionLimits::kMaxEndpoints + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord;
-constexpr int kMaxVfExtraInputs = static_cast<int>(VfFusionLimits::kMaxInputs - 2);
-constexpr int kMaxVfExtraOutputs = static_cast<int>(VfFusionLimits::kMaxOutputs - 1);
+  (VfFusionLimits::kMaxIO + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord;
+constexpr int kMaxVfExtraInputs = static_cast<int>(VfFusionLimits::kMaxIO - 3);
+constexpr int kMaxVfExtraOutputs = static_cast<int>(VfFusionLimits::kMaxIO - 2);
 
 struct VfInstruction {
   NDObject *node;

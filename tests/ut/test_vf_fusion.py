@@ -107,7 +107,7 @@ def test_gelu_codegen(request, vf_fusion_dir):
     if run_codegen(request):
         return
     dvm.Kernel.set_vf_fusion(True)
-    t = Tester(run_mode="das")
+    t = Tester()
     t.set_passes("VfFusion")
     make_gelu_graph(t)
 
@@ -131,7 +131,7 @@ def test_f16_tail_codegen(request, vf_fusion_dir):
     y_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
     z_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
 
-    t = Tester(run_mode="das")
+    t = Tester()
     t.set_passes("VfFusion")
     x = t.load(input_np, "float16")
     y = t.load(y_np)
@@ -159,11 +159,11 @@ def test_long_chain_codegen(request, vf_fusion_dir):
     dvm.Kernel.set_vf_fusion(True)
     input_np = np.random.normal(-1.0, 1.0, (1024, 1024)).astype(np.float32)
 
-    t = Tester(run_mode="das")
+    t = Tester()
     t.set_passes("VfFusion")
     value = t.load(input_np)
     expect = input_np
-    for _ in range(9):
+    for _ in range(24):
         value = t.abs(value)
         expect = np.abs(expect)
     t.store_expect(value, expect)

@@ -514,6 +514,23 @@ def test_sch_concat(shape1, shape2, shape3, shape4, axis, view):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_concat_exceed_core():
+    t = Tester()
+    slice_num = 70
+    cat_np, cat_ops = [], []
+    for i in range(slice_num):
+        a = np.random.normal(0, 1, [2, 32]).astype(np.float32)
+        x0 = t.load(a)
+        x1 = t.add(x0, 0.1)
+        cat_np.append(a + 0.1)
+        cat_ops.append(x1)
+    x2 = t.concat(cat_ops, 0)
+    x3 = t.mul(x2, 0.5)
+    t.store_expect(x3, np.concatenate(cat_np, axis=0) * 0.5)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("view", [True, False])
 def test_sch_concat_dyn(view):
     t = Tester("vector:dyn")

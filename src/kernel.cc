@@ -1840,7 +1840,7 @@ class VectorDupHelper {
       : kernel_(kernel), dup_num_(dup_num), dup_idx_(0), block_begin_(0), relocs_(relocs),
         free_core_(RoundUp(static_cast<uint64_t>(dup_num), g_system.CoreNum())), remain_quota_(total_quota) {
     uint64_t code_reserve = dup_num * kernel_->ReserveCodeSize();
-    encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve);
+    encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve, free_core_);
   }
 
   void Reset() {

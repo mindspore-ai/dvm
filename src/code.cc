@@ -1144,12 +1144,12 @@ class DisAssembler {
         DasVecEx(entry, bcode, bcode_size, "");
       }
     } else if (ktype == V_ENTRY_TYPE_P) {
-      DasParallel(entry, bcode, bcode_size, code->target_, "");
+      DasParallel(entry, bcode, bcode_size, code->target_, code->block_dim_, "");
     } else if (ktype == V_ENTRY_TYPE_C) {
       DasCube(entry, bcode, bcode_size, "");
     } else {
       ASSERT(0);  // removed
-      DasStages(entry, bcode, bcode_size, "");
+      DasStages(entry, bcode, bcode_size, code->block_dim_, "");
     }
   }
 
@@ -1356,7 +1356,7 @@ class DisAssembler {
     oss << indent << "}";
   }
 
-  void DasParallel(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, int target, const std::string &indent) {
+  void DasParallel(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, int target, uint64_t block_num, const std::string &indent) {
     struct ProgInfo {
       vProgEntry prog;
       uint32_t core_begin;
@@ -1381,11 +1381,11 @@ class DisAssembler {
     std::vector<ProgInfo> aic_programs, aiv_programs;
     if (!Code::IsVector(target)) {
       auto lookup = (entry >> V_ENTRY_P_AIC_LKUP_OFFSET) & V_ENTRY_P_LKUP_MASK;
-      get_programs(g_system.CoreNum(CoreType::kAIC), lookup, aic_programs);
+      get_programs(block_num, lookup, aic_programs);
     }
     if (target != Code::kTargetCube) {
       auto lookup = (entry >> V_ENTRY_P_AIV_LKUP_OFFSET) & V_ENTRY_P_LKUP_MASK;
-      get_programs(g_system.CoreNum(CoreType::kAIV), lookup, aiv_programs);
+      get_programs(Code::IsVector(target) ? block_num : block_num * 2, lookup, aiv_programs);
     }
     oss << indent << "parallel() {" << std::endl;
     auto child_indent = indent + "  ";
@@ -1426,7 +1426,7 @@ class DisAssembler {
     oss << indent << "}";
   }
 
-  void DasStages(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, const std::string &indent) {
+  void DasStages(uint64_t entry, uint8_t *bcode, uint64_t bcode_size, uint64_t block_num, const std::string &indent) {
     oss << indent << "stages() {" << std::endl;
     int stage_idx = 0;
     uint8_t *bcode_end = bcode + bcode_size;
@@ -1444,7 +1444,7 @@ class DisAssembler {
           DasVecEx(entry, bcode, stage_size, indent + "  ");
         }
       } else if (ktype == V_ENTRY_TYPE_P) {
-        DasParallel(entry, bcode, stage_size, Code::kTargetVec, indent + "  ");
+        DasParallel(entry, bcode, stage_size, Code::kTargetVec, block_num, indent + "  ");
       } else {
         ASSERT(ktype == V_ENTRY_TYPE_C);
         DasCube(entry, bcode, stage_size, indent + "  ");
@@ -1623,8 +1623,16 @@ int CodeLaunchGuard::LaunchWrap(void *workspace, void *stream) {
   return CodeLaunch(codes_[launch_idx_++], workspace, stream);
 }
 
-void PCodeEncoder::Reset(Code *code, int target, int max_prog_num, uint64_t code_reserve) {
-  uint64_t reserve_size = Code::HeadSize() + g_system.CoreNum(CoreType::kAIC) * 3 +
+void PCodeEncoder::Reset(Code *code, int target, int max_prog_num, uint64_t code_reserve, uint64_t core_reserve) {
+  uint64_t aic_num, aiv_num;
+  if (Code::IsVector(target)) {
+    aic_num = 0;
+    aiv_num = core_reserve > 0 ? core_reserve : g_system.CoreNum(CoreType::kAIV);
+  } else {
+    aic_num = core_reserve > 0 ? core_reserve : g_system.CoreNum(CoreType::kAIC);
+    aiv_num = target == Code::kTargetCube ? 0 : aic_num * 2;
+  }
+  uint64_t reserve_size = Code::HeadSize() + aic_num + aiv_num +
                           vProgEntry::CODE_SIZE * sizeof(uint64_t) * max_prog_num + code_reserve;
   code->Alloc(reserve_size);
   code->target_ = target;
@@ -1635,14 +1643,14 @@ void PCodeEncoder::Reset(Code *code, int target, int max_prog_num, uint64_t code
   auto code_body = code->data_ + Code::HeadSize();
   prog_data_ = code_body;
   uint64_t head_data = 0;
-  if (!Code::IsVector(target)) {
+  if (aic_num > 0) {
     aic_lookup_ = prog_data_;
-    prog_data_ += g_system.CoreNum(CoreType::kAIC);
+    prog_data_ += aic_num;
     head_data |= (aic_lookup_ - code_body) << V_ENTRY_P_AIC_LKUP_OFFSET;
   }
-  if (target != Code::kTargetCube) {
+  if (aiv_num > 0) {
     aiv_lookup_ = prog_data_;
-    prog_data_ += g_system.CoreNum(CoreType::kAIV);
+    prog_data_ += aiv_num;
     head_data |= (aiv_lookup_ - code_body) << V_ENTRY_P_AIV_LKUP_OFFSET;
   }
   constexpr uint64_t align_size = 8;

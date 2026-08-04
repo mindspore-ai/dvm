@@ -272,7 +272,7 @@ class PCodeEncoder {
   PCodeEncoder() = default;
   ~PCodeEncoder() = default;
 
-  void Reset(Code *code, int target, int max_prog_num, uint64_t code_reserve);
+  void Reset(Code *code, int target, int max_prog_num, uint64_t code_reserve, uint64_t core_reserve = 0);
   uint64_t *Append(uint64_t entry, uint64_t code_size) {
     auto prog = prog_entry_;
     prog_entry_ += vProgEntry::Encode(prog, entry, prog_data_ - (code_->data_ + Code::HeadSize()));

@@ -1745,14 +1745,6 @@ void VectorKernel::ProcessIdle() {
   UpdateIdle(cleans);
 }
 
-void VectorKernel::Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker) {
-  auto bb = pass::BasicBlock(objects_, build_ops, tracker);
-  for (auto pass : pass::passes) {
-    pass(bb);
-  }
-  bb.Export(objects_);
-}
-
 void VectorSchedule::SpaceInit() {
   space_records_.clear();
   for (auto op : kernel_->objects_) {
@@ -2389,6 +2381,7 @@ bool VKernelS::NormBuild() {
     if (static_ops_.empty()) {
       StaticInit(build_ops_);
       SchInit(build_ops_);
+      Optimize<true>(build_ops_, nullptr);
     }
     if (!Normalize(true)) {
       return false;
@@ -2397,7 +2390,7 @@ bool VKernelS::NormBuild() {
     if (!Normalize(true)) {
       return false;
     }
-    Optimize(build_ops_, nullptr);
+    Optimize<false>(build_ops_, nullptr);
     StaticInit(objects_);
     SchInit(objects_);
   }
@@ -2537,6 +2530,7 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     Clear();
     if (static_ops_.empty()) {
       StaticInit(build_ops_);
+      Optimize<true>(build_ops_, nullptr);
     }
     if (!Normalize(true)) {
       return FallCodeGen();
@@ -2553,7 +2547,7 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       return FallCodeGen();
     }
     GraphTracker tracker;
-    Optimize(build_ops_, &tracker);
+    Optimize<false>(build_ops_, &tracker);
     StaticInit(objects_);
     BuildDomain();
     PrepareTiling();

@@ -23,6 +23,7 @@
 #include "code.h"
 #include "ops_m.h"
 #include "profiling/prof_api.h"
+#include "pass.h"
 
 // rts_runtime
 #if defined(__cplusplus)
@@ -466,9 +467,11 @@ void System::DoInit() {
   err |= get_function(bin_handle, "dvm", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
   code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchACL_C220 : CodeLaunchACL_C310;
+  pass_opt_ = pass::CreateOptimizer(arch_);
 }
 
 System::~System() {
+  delete pass_opt_;
   if (online_tuner_) {
     delete online_tuner_;
   }

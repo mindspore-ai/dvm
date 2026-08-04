@@ -582,11 +582,31 @@ void RtKernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
 }
 
 void RtKernelPy::CodeGen(py::object pass_names) {
-  const static std::unordered_map<std::string, pass::Pass> pass_map = {
-    {"PrintPeakLive", pass::PrintPeakLive},       {"ReorderStore", pass::ReorderStore},
-    {"ReorderLoad", pass::ReorderLoad},           {"CompactPeakLiveness", pass::CompactPeakLiveness},
-    {"EliminateReshape", pass::EliminateReshape}, {"InsertRemovePad", pass::InsertRemovePad},
-    {"VfFusion", pass::VfFusion}};
+  class _PassOptimizer : public pass::PassOptimizer {
+   public:
+    _PassOptimizer(py::list pass_list) : names_(pass_list.cast<std::vector<std::string>>()) {}
+    void RunPass(pass::BasicBlock &bb, bool dyn_shape) override {
+      struct PassInfo {
+        pass::Pass pass;
+        bool shape_sensitive;
+      };
+      const static std::unordered_map<std::string, PassInfo> pass_map = {
+        {"PrintPeakLive", {pass::PrintPeakLive, false}},
+        {"ReorderStore", {pass::ReorderStore, false}},
+        {"ReorderLoad", {pass::ReorderLoad, false}},
+        {"CompactPeakLiveness", {pass::CompactPeakLiveness, false}},
+        {"EliminateReshape", {pass::EliminateReshape, true}},
+        {"InsertRemovePad", {pass::InsertRemovePad, true}},
+        {"VfFusion", {pass::VfFusion, true}}};
+      for (auto &name : names_) {
+        auto pass = pass_map.find(name);
+        if (pass != pass_map.end() && !(dyn_shape && pass->second.shape_sensitive)) {
+          pass->second.pass(bb);
+        }
+      }
+    }
+    std::vector<std::string> names_;
+  };
   if (kernel_.GetImpl()->IsSplit()) {
     std::vector<RelocEntry> relocs;
     relocs.reserve(loads_.size() + stores_.size());
@@ -603,14 +623,11 @@ void RtKernelPy::CodeGen(py::object pass_names) {
   }
   uint64_t workspace_size;
   if (py::isinstance<py::list>(pass_names)) {
-    std::vector<pass::Pass> old_passes;
-    std::swap(old_passes, pass::passes);
-    auto names = py::cast<py::list>(pass_names).cast<std::vector<std::string>>();
-    for (auto name : names) {
-      pass::passes.push_back(pass_map.at(name));
-    }
+    _PassOptimizer opt(py::cast<py::list>(pass_names));
+    auto old = g_system.pass_opt_;
+    g_system.pass_opt_ = &opt;
     workspace_size = kernel_.CodeGen();
-    std::swap(old_passes, pass::passes);
+    g_system.pass_opt_ = old;
   } else {
     workspace_size = kernel_.CodeGen();
   }

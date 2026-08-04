@@ -148,6 +148,9 @@ struct CustomDef {
   CreateFunc create_func;
 };
 
+namespace pass {
+class PassOptimizer;
+}
 class CubeTuner;
 class Code;
 class System : public Config {
@@ -196,6 +199,7 @@ class System : public Config {
   ProfilerLevel profiler_level_{Level0};
   CubeTuner *online_tuner_{nullptr};
   CubeTuner *lazy_tuner_{nullptr};
+  pass::PassOptimizer *pass_opt_{nullptr};
 
   // runtime api
   int (*code_launch_)(const System &self, const Code *code, void *extern_ws, void *stream){nullptr};

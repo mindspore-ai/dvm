@@ -54,8 +54,8 @@ using NodeIndex = std::unordered_map<NDObject *, size_t>;
 std::vector<NDObject *> CollectObjects(BasicBlock &bb) {
   std::vector<NDObject *> objects;
   objects.reserve(bb.size());
-  for (auto it = bb.begin(); it != bb.end(); ++it) {
-    objects.push_back(it.get());
+  for (NDObject *it = bb.Begin(); it != bb.End(); it = bb.Next(it)) {
+    objects.push_back(it);
   }
   return objects;
 }
@@ -1341,10 +1341,9 @@ bool RewritePartition(BasicBlock &bb, const VfPartition &partition) {
     DeleteUnownedCustom(custom);
     return false;
   }
-  auto insert = bb.Insert(BasicBlock::iterator(insertion_point), custom);
+  NDObject *insert = bb.Insert(insertion_point, custom);
   for (size_t i = 1; i < replacements.size(); ++i) {
-    auto next = insert;
-    ++next;
+    NDObject *next = bb.Next(insert);
     insert = bb.Insert(next, replacements[i]);
   }
 
@@ -1457,7 +1456,7 @@ std::vector<VfPartition> SplitOverLimit(const VfPartition &, const VfFusionLimit
 }
 
 void VfFusion(BasicBlock &bb) {
-  if (!g_system.vf_fusion_ || g_system.Arch() != kAiCore_C310 || !detail::IsAcyclic(bb)) {
+  if (!g_system.vf_fusion_ || !detail::IsAcyclic(bb)) {
     return;
   }
 

@@ -13,6 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
+import pytest
 import numpy as np
 from dvm.tester import Tester
 from tests.mark_utils import arg_mark
@@ -27,8 +28,9 @@ def assert_liveness_compacked(capfd):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_elemwise_1(capfd):
-    t = Tester()
+@pytest.mark.parametrize('ktype', ["vector", "vector:dyn"])
+def test_elemwise_1(capfd, ktype):
+    t = Tester(ktype)
     a = np.full([128, 32], 2, np.float16)
     x0 = t.load(a)
     x1 = t.exp(x0)

@@ -18,12 +18,9 @@
 #define _DVM_PASS_H_
 
 #include <vector>
-#include <unordered_set>
-#include <unordered_map>
 #include "ops.h"
 
 namespace dvm::pass {
-class BasicBlock;
 class ObjectList {
  public:
   ObjectList() : sentinel_(kDataTypeEnd) {}
@@ -57,95 +54,30 @@ class ObjectList {
   static void SetNext(NDObject *obj, NDObject *next) { obj->insn_ = reinterpret_cast<uint64_t *>(next); }
   static void SetPrev(NDObject *obj, NDObject *prev) { obj->tail_insn_ = reinterpret_cast<uint64_t *>(prev); }
 
-  template <bool reverse>
-  class Iterator {
-   public:
-    // these alias is used in <algorithm>
-    using value_type = NDObject;
-    using pointer = NDObject *;
-    using reference = NDObject &;
-    using iterator_category = std::bidirectional_iterator_tag;
-    using difference_type = std::ptrdiff_t;
-
-    explicit Iterator(pointer ptr) : ptr_(ptr) {}
-
-    Iterator &operator++() {
-      ptr_ = reverse ? ObjectList::Prev(ptr_) : ObjectList::Next(ptr_);
-      return *this;
-    }
-
-    Iterator operator++(int) {
-      Iterator tmp = *this;
-      ++(*this);
-      return tmp;
-    }
-
-    Iterator operator--() {
-      ptr_ = reverse ? ObjectList::Next(ptr_) : ObjectList::Prev(ptr_);
-      return *this;
-    }
-
-    Iterator operator--(int) {
-      Iterator tmp = *this;
-      --(*this);
-      return tmp;
-    }
-
-    bool operator!=(const Iterator &other) const { return ptr_ != other.ptr_; }
-
-    reference operator*() { return *ptr_; }
-    pointer operator->() { return ptr_; }
-
-    Iterator GetPrev() {
-      Iterator iter = *this;
-      return --iter;
-    }
-
-    Iterator GetNext() {
-      Iterator iter = *this;
-      return ++iter;
-    }
-
-    NDObject *get() { return ptr_; }
-
-   private:
-    pointer ptr_;
-  };
-
  protected:
   NDLoadDummy sentinel_;
   size_t size_;
   size_t capacity_;
-  friend BasicBlock;
 };
 
-class BasicBlock {
+class BasicBlock : public ObjectList {
  public:
   struct Edge {
     int64_t next;
     NDObject *user;
   };
+  BasicBlock(const std::vector<NDObject *> &objects, GraphTracker *tracker = nullptr);
 
-  using iterator = ObjectList::Iterator<false>;
-  using reverse_iterator = ObjectList::Iterator<true>;
+  inline size_t size() const { return size_; }
+  inline size_t capacity() const { return capacity_; }
 
-  BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner, GraphTracker *tracker = nullptr);
-
-  iterator begin() { return iterator(list_.Begin()); }
-  iterator end() { return iterator(list_.End()); }
-  reverse_iterator rbegin() { return reverse_iterator(list_.ReverseBegin()); }
-  reverse_iterator rend() { return reverse_iterator(list_.ReverseEnd()); }
-
-  inline size_t size() const { return list_.size_; }
-  inline size_t capacity() const { return list_.capacity_; }
-
-  iterator Insert(iterator iter, NDObject *object);
+  NDObject *Insert(NDObject *pos, NDObject *object);
   void Erase(NDObject *object);
-  iterator Move(iterator iter, NDObject *object);
+  NDObject *Move(NDObject *pos, NDObject *object);
   void UpdateInput(NDObject *obj, NDObject *old, NDObject *update);
 
-  void PushFront(NDObject *ptr) { Insert(begin(), ptr); }
-  void PushBack(NDObject *ptr) { Insert(end(), ptr); }
+  void PushFront(NDObject *ptr) { Insert(Begin(), ptr); }
+  void PushBack(NDObject *ptr) { Insert(End(), ptr); }
 
   template <bool if_update_index = true>
   std::vector<NDObject *> ToVector();
@@ -180,16 +112,16 @@ class BasicBlock {
     SetHead(obj, static_cast<int>(edges_.size() - 1));
   }
 
-  ObjectList &List() { return list_; }
   GraphTracker *Tracker() { return tracker_; }
+
+  std::vector<NDObject *> dels_;
+  std::vector<NDObject *> news_;
 
  protected:
   static int GetHead(NDObject *obj) { return obj->xbuf_; }
   static void SetHead(NDObject *obj, int head) { obj->xbuf_ = head; }
 
-  ObjectList list_;
   std::vector<Edge> edges_;
-  std::vector<NDObject *> &objects_owner_;
   GraphTracker *tracker_;
 };
 
@@ -282,8 +214,31 @@ void VfFusion(BasicBlock &bb);
 void InsertRemovePad(BasicBlock &block);
 
 using Pass = void (*)(BasicBlock &);
-extern std::vector<Pass> passes;
 
+class PassOptimizer {
+ public:
+  PassOptimizer() = default;
+  virtual ~PassOptimizer() {}
+  void Run(std::vector<NDObject *> &objects, std::vector<NDObject *> &mng, GraphTracker *tracker) {
+    auto bb = BasicBlock(objects, tracker);
+    RunPass(bb, false);
+    bb.Export(objects);
+    if (!bb.news_.empty()) {
+      mng.insert(mng.end(), bb.news_.begin(), bb.news_.end());
+    }
+  }
+  void RunD(std::vector<NDObject *> &objects, GraphTracker *tracker) {
+    auto bb = BasicBlock(objects, tracker);
+    RunPass(bb, true);
+    bb.Export(objects);
+    for (auto op : bb.dels_) {
+      delete op;
+    }
+  }
+  virtual void RunPass(BasicBlock &bb, bool dyn_shape) = 0;
+};
+
+PassOptimizer *CreateOptimizer(AiCoreArch arch);
 }  // namespace dvm::pass
 
 #endif  // _DVM_PASS_H_

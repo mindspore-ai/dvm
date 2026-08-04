@@ -14,31 +14,21 @@
  * limitations under the License.
  */
 
-#include "pass.h"
-#include <algorithm>
 #include <queue>
 #include <cstdint>
 #include <vector>
-#include <stack>
-#include <functional>
 #include <unordered_map>
 #include <unordered_set>
-#include <optional>
+#include "pass.h"
 
 namespace dvm::pass {
 
 namespace {
-constexpr int kNumUsersBig = 100;
-constexpr int kNumUsers1 = 1;
-constexpr int kNumUsers2 = 2;
-
 inline std::vector<NDObject *> GetPreds(NDObject *obj) {
   std::vector<NDObject *> res;
   obj->ForInput([&res](NDObject *op) { res.push_back(op); });
   return res;
 }
-
-inline void ItePreds(NDObject *obj, std::function<void(NDObject *)> fun) { obj->ForInput(fun); }
 
 size_t GetInputsNum(NDObject *obj) {
   if (obj->lhs_ == nullptr) {
@@ -50,134 +40,72 @@ size_t GetInputsNum(NDObject *obj) {
   return 2 + (obj->CheckFlag(OBJ_FLAG_XHS) ? static_cast<FlexOp *>(obj)->xhs_->in_num : 0);
 }
 
-size_t MaxLive(BasicBlock &bb) {
-  size_t peak = 0;
-  size_t current_live = 0;
-  std::unordered_map<NDObject *, int> num_users;
-  auto try_deallcate = [&num_users, &current_live](NDObject *obj) {
-    if (--num_users[obj] == 0) {
-      current_live--;
-      num_users.erase(obj);
-    }
-  };
-  // Store and Load always occupy a variable
-  for (auto &obj : bb) {
-    if (obj.IsLoad()) {
-      current_live++;
-      num_users[&obj] = kNumUsersBig;
-    }
-    if (obj.IsStore()) {
-      current_live++;
-      num_users[obj.lhs_] = kNumUsersBig;
+constexpr int STATIC_LIVE = 2;
+constexpr int DYN_LIVE = 1;
+
+size_t LivenessAnalyze(BasicBlock &bb, std::unordered_map<NDObject *, int> &lives) {
+  for (NDObject *obj = bb.Begin(); obj != bb.End(); obj = bb.Next(obj)) {
+    if (obj->IsLoad()) {
+      lives[obj] = STATIC_LIVE;
+    } else if (obj->IsStore()) {
+      lives[obj->lhs_] = STATIC_LIVE;
     }
   }
-
-  peak = current_live;
-  for (auto &obj : bb) {
-    // Store doesn't introduce new variable
-    if (!obj.IsSimd()) {
+  size_t current = lives.size();
+  size_t peak = current;
+  for (auto obj = bb.ReverseBegin(); obj != bb.ReverseEnd(); obj = bb.Prev(obj)) {
+    if (!lives.count(obj)) {
       continue;
     }
-    if (num_users.find(&obj) == num_users.end()) {
-      num_users[&obj] = bb.GetUserNum(&obj);
-      ++current_live;
-    }
-
-    // unary, binary and binaryS can inplace
-    auto type = obj.GetObjectType();
-    bool need_update = true;
-    if (type == kUnary || type == kBinary || type == kBinaryS) {
-      if (need_update && obj.lhs_ != nullptr && num_users[obj.lhs_] == kNumUsers1) {
-        need_update = false;
+    obj->ForInput([&lives, &current](NDObject *in) {
+      if (auto it = lives.find(in); it == lives.end()) {
+        current++;
+        lives[in] = DYN_LIVE;
       }
-      if (need_update && obj.rhs_ != nullptr && num_users[obj.rhs_] == kNumUsers1) {
-        need_update = false;
-      }
-      if (need_update && obj.lhs_ != nullptr && obj.rhs_ == obj.lhs_ && num_users[obj.rhs_] == kNumUsers2) {
-        need_update = false;
-      }
+    });
+    if (current > peak) {
+      peak = current;
     }
-    if (need_update) {
-      peak = std::max(peak, current_live);
+    if (lives[obj] == DYN_LIVE) {
+      current--;
     }
-
-    // deallocate variable
-    obj.ForInput(try_deallcate);
   }
   return peak;
 }
 
-// This encode method support basic block with size less than 64
-template <class InputIt>
-uint64_t Encode(InputIt first, InputIt last) {
-  uint64_t res = 0;
-  for (; first != last; ++first) {
-    res |= 1 << (*first)->index_;
-  }
-  return res;
-}
-
-std::vector<NDObject *> Decode(const std::vector<NDObject *> objects, uint64_t code) {
-  std::vector<NDObject *> res;
-  for (size_t i = 0; i < objects.size() && code != 0; ++i) {
-    if (code & 0x1) {
-      res.emplace_back(objects[i]);
-    }
-    code >>= 1;
-  }
-  return res;
-}
-
-std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
+std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb, std::unordered_map<NDObject *, int> &lives) {
   // Preprocess, calculate points of all objects
   std::unordered_map<NDObject *, int64_t> points;
-  std::unordered_map<NDObject *, uint32_t> heights;
-  constexpr int32_t B1 = 1;
-  constexpr int32_t B2 = 1000;
+  std::unordered_map<NDObject *, int64_t> heights;
+  constexpr int64_t B1 = -1;
+  constexpr int64_t B2 = 1000;
   constexpr int64_t B3 = 1000000;
-  auto get_reducable_inputs_num = [](NDObject *obj) -> size_t {
-    size_t res = 0;
-    if (obj->lhs_ == nullptr) {
-      return 0;
-    }
-    if (!obj->lhs_->IsLoad()) {
-      ++res;
-    }
-    if (obj->rhs_ == nullptr) {
-      return res;
-    }
-    if (!obj->rhs_->IsLoad()) {
-      ++res;
-    }
-    if (obj->flags_ & OBJ_FLAG_XHS) {
-      auto xhs = static_cast<FlexOp *>(obj)->xhs_;
-      for (int i = 0; i < xhs->in_num; ++i) {
-        if (!xhs->data[i]->IsLoad()) {
-          ++res;
-        }
+  for (NDObject *obj = bb.ReverseBegin(); obj != bb.ReverseEnd(); obj = bb.Prev(obj)) {
+    int64_t height = 0;
+    for (auto user : bb.GetUsers(obj)) {
+      if (auto h = heights[user] + 1; h > height) {
+        height = h;
       }
     }
-    return res;
-  };
-  for (auto iter = bb.rbegin(); iter != bb.rend(); ++iter) {
-    auto obj = iter.get();
-    heights[obj] = 0;
-    for (auto user : bb.GetUsers(iter.get())) {
-      heights[obj] = std::max(heights[obj], heights[user] + 1);
-    }
+    heights[obj] = height;
+    int point = height * B1;
     if (!obj->IsSimd()) {
-      points[obj] = B3;
+      point += B3;
     }
-    points[obj] += get_reducable_inputs_num(obj) * B2;
-    points[obj] -= heights[obj] * B1;
+    obj->ForInput([&lives, &point](NDObject *in) {
+      if (lives[in] == DYN_LIVE) {
+        point += B2;
+      }
+    });
+    points[obj] = point;
   }
   auto compare = [&points](NDObject *a, NDObject *b) { return points[a] < points[b]; };
   std::priority_queue<NDObject *, std::vector<NDObject *>, decltype(compare)> pq(compare);
   std::unordered_map<NDObject *, uint32_t> in_degrees;
-  for (auto &obj : bb) {
-    in_degrees[&obj] = GetInputsNum(&obj);
-    if (in_degrees[&obj] == 0) {
-      pq.push(&obj);
+  for (NDObject *obj = bb.Begin(); obj != bb.End(); obj = bb.Next(obj)) {
+    in_degrees[obj] = GetInputsNum(obj);
+    if (in_degrees[obj] == 0) {
+      pq.push(obj);
     }
   }
   std::vector<NDObject *> res;
@@ -194,137 +122,6 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb) {
     }
   }
   return res;
-}
-
-// Ref: ORDERING CHAOS: MEMORY-AWARE SCHEDULING OF IRREGULARLY WIRED NEURAL NETWORKS FOR EDGE DEVICES
-__attribute__((unused)) std::vector<NDObject *> ReorderObjectsDP(BasicBlock &bb) {
-  struct DpStruct {
-    uint32_t cur_live;
-    uint32_t peak_live;
-    std::vector<NDObject *> arrange;
-  };
-  int iter_num = 0;
-  uint32_t cur_live = 0;
-  std::vector<NDObject *> objects = bb.ToVector<false>();  // used in encoding
-  if (bb.size() > 64) {
-    // Support up to 64 nodes
-    return objects;
-  }
-  std::unordered_map<NDObject *, uint32_t> in_degrees_bak;   // Used in schedulling
-  std::unordered_map<NDObject *, uint32_t> out_degrees_bak;  // Used in deallocating
-  std::vector<NDObject *> arrange_bak;                       // Record all load
-  std::unordered_set<NDObject *> static_obj;
-  std::vector<NDObject *> readys_bak;
-  // Init in_degrees
-  for (auto &obj : bb) {
-    in_degrees_bak[&obj] = GetInputsNum(&obj);
-    if (in_degrees_bak[&obj] == 0 && !obj.IsLoad()) {
-      readys_bak.emplace_back(&obj);
-    }
-  }
-  // Init arrange and out_degrees
-  for (auto &obj : bb) {
-    out_degrees_bak[&obj] = bb.GetUserNum(&obj);
-    if (obj.IsLoad()) {
-      cur_live++;
-      arrange_bak.emplace_back(&obj);
-      out_degrees_bak[&obj] += kNumUsersBig;  // Load won't be deallocated
-      for (auto user : bb.GetUsers(&obj)) {
-        in_degrees_bak[user]--;
-        if (in_degrees_bak[user] == 0) {
-          readys_bak.emplace_back(user);
-        }
-      }
-    } else if (obj.IsStore()) {
-      cur_live++;
-      out_degrees_bak[obj.lhs_] += kNumUsersBig;  // Variable used by Store won't be deallocated
-      static_obj.insert(obj.lhs_);
-      static_obj.insert(&obj);
-    }
-  }
-  std::unordered_map<uint64_t, DpStruct> tape;  // Used to record interediate results
-  tape[Encode(readys_bak.begin(), readys_bak.end())] = DpStruct{cur_live, cur_live, arrange_bak};
-
-  for (auto i = arrange_bak.size(); i < bb.size(); ++i) {
-    std::unordered_map<uint64_t, DpStruct> new_tape;
-    for (auto &[code, mem_block] : tape) {
-      auto readys = Decode(objects, code);
-      auto in_degrees = in_degrees_bak;
-      auto out_degrees = out_degrees_bak;
-      auto &arrange = mem_block.arrange;
-      auto cur_live = mem_block.cur_live;
-      auto peak_live = mem_block.peak_live;
-      // Init in_degrees and out_degree
-      for (auto i = arrange_bak.size(); i < arrange.size(); ++i) {
-        auto obj = arrange[i];
-        for (auto pred : GetPreds(obj)) {
-          out_degrees[pred]--;
-        }
-        for (auto user : bb.GetUsers(obj)) {
-          in_degrees[user]--;
-        }
-      }
-      for (auto obj : readys) {
-        // Allocate variable
-        arrange.emplace_back(obj);
-        std::unordered_set<NDObject *> new_readys(readys.begin(), readys.end());
-        new_readys.erase(obj);
-        // Object may be used twice by same user, so we need to really do the calculation
-        for (auto user : bb.GetUsers(obj)) {
-          if (--in_degrees[user] == 0) {
-            new_readys.insert(user);
-          }
-        }
-        auto new_code = Encode(new_readys.begin(), new_readys.end());
-        if (new_tape.find(new_code) != new_tape.end() && new_tape[new_code].peak_live <= peak_live) {
-          // skip
-          arrange.pop_back();
-          for (auto user : bb.GetUsers(obj)) {
-            ++in_degrees[user];
-          }
-          continue;
-        }
-        iter_num++;
-        // Update live, peak
-        auto new_cur = cur_live;
-        auto new_peak = peak_live;
-        bool need_update_peak = false;
-        if (static_obj.find(obj) == static_obj.end()) {
-          new_cur++;
-          need_update_peak = true;
-        }
-        auto type = obj->GetObjectType();
-        auto tmp_cur = new_cur;
-        // Deallocate variable
-        for (auto pred : GetPreds(obj)) {
-          if (--out_degrees[pred] == 0) {
-            new_cur--;
-            if (need_update_peak && (type == kUnary || type == kBinary || type == kBinaryS)) {
-              // Inplace optimize
-              need_update_peak = false;
-            }
-          }
-        }
-        if (need_update_peak) {
-          new_peak = std::max(new_peak, tmp_cur);
-        }
-        if (new_tape.find(new_code) == new_tape.end() || new_tape[new_code].peak_live > new_peak) {
-          new_tape.insert_or_assign(new_code, DpStruct{new_cur, new_peak, arrange});
-        }
-        // recorver to reuse arrange, out_degrees, in_degrees
-        arrange.pop_back();
-        for (auto pred : GetPreds(obj)) {
-          ++out_degrees[pred];
-        }
-        for (auto user : bb.GetUsers(obj)) {
-          ++in_degrees[user];
-        }
-      }
-    }
-    // replace old tape
-    tape = std::move(new_tape);
-  }
-  return tape[0].arrange;
 }
 }  // namespace
 
@@ -348,31 +145,28 @@ void ObjectList::Build(const std::vector<NDObject *> &objects, bool reindex) {
   }
 }
 
-BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, std::vector<NDObject *> &owner, GraphTracker *tracker)
-  : objects_owner_(owner), tracker_(tracker) {
+BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, GraphTracker *tracker) : tracker_(tracker) {
   // build linked list from objects
-  list_.Build(objects, true);
+  ObjectList::Build(objects, true);
   for (auto obj : objects) {
     SetHead(obj, -1);
   }
   edges_.reserve(objects.size() * 2);
   for (auto obj : objects) {
-    ItePreds(obj, [this, obj](NDObject *pred) { this->AddUser(pred, obj); });
+    obj->ForInput([this, obj](NDObject *pred) { this->AddUser(pred, obj); });
   }
 }
 
 template <bool if_update_index>
 std::vector<NDObject *> BasicBlock::ToVector() {
-  auto iter = begin();
   std::vector<NDObject *> res;
   res.reserve(size());
   int i = 0;
-  while (iter != end()) {
+  for (NDObject *iter = Begin(); iter != End(); iter = Next(iter)) {
     if constexpr (if_update_index) {
       iter->index_ = i++;
     }
-    res.push_back(iter.get());
-    ++iter;
+    res.push_back(iter);
   }
   return res;
 }
@@ -383,36 +177,34 @@ std::vector<NDObject *> BasicBlock::ToVector() {
 template std::vector<NDObject *> BasicBlock::ToVector<false>();
 
 void BasicBlock::Export(std::vector<NDObject *> &objects) {
-  auto iter = begin();
   objects.clear();
   objects.reserve(size());
   int i = 0;
-  while (iter != end()) {
+  for (NDObject *iter = Begin(); iter != End(); iter = Next(iter)) {
     iter->index_ = i++;
-    ObjectList::Prev(iter.get())->insn_ = nullptr;
+    ObjectList::Prev(iter)->insn_ = nullptr;
     iter->tail_insn_ = nullptr;
-    objects.push_back(iter.get());
-    ++iter;
+    objects.push_back(iter);
   }
-  ObjectList::Prev(iter.get())->insn_ = nullptr;
+  ObjectList::Prev(End())->insn_ = nullptr;
 }
 
-BasicBlock::iterator BasicBlock::Insert(BasicBlock::iterator iter, NDObject *object) {
-  if (iter.get() == object) {
-    return iter;
+NDObject *BasicBlock::Insert(NDObject *pos, NDObject *object) {
+  if (pos == object) {
+    return object;
   }
-  list_.Insert(iter.get(), object);
+  ObjectList::Insert(pos, object);
   SetHead(object, -1);
   for (auto pred : GetPreds(object)) {
     AddUser(pred, object);
   }
   // object should be deleted by owner
-  objects_owner_.push_back(object);
-  return BasicBlock::iterator(object);
+  news_.push_back(object);
+  return object;
 }
 
 void BasicBlock::Erase(NDObject *object) {
-  list_.Erase(object);
+  ObjectList::Erase(object);
   SetHead(object, -1);
   for (auto pred : GetPreds(object)) {
     auto idx = GetHead(pred);
@@ -431,15 +223,16 @@ void BasicBlock::Erase(NDObject *object) {
     }
     ASSERT(idx != -1);
   }
+  dels_.push_back(object);
 }
 
-BasicBlock::iterator BasicBlock::Move(BasicBlock::iterator iter, NDObject *obj) {
-  if (iter.get() == obj || iter.GetPrev().get() == obj) {
-    return iterator(obj);
+NDObject *BasicBlock::Move(NDObject *pos, NDObject *obj) {
+  if (pos == obj || Prev(pos) == obj) {
+    return obj;
   }
-  list_.Erase(obj);
-  list_.Insert(iter.get(), obj);
-  return iterator(obj);
+  ObjectList::Erase(obj);
+  ObjectList::Insert(pos, obj);
+  return obj;
 }
 
 void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
@@ -489,15 +282,15 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
 }
 
 void ReorderStore(BasicBlock &block) {
-  for (auto iter = block.begin(); iter != block.end();) {
+  for (NDObject *iter = block.Begin(); iter != block.End();) {
     if (iter->IsStore()) {
-      auto obj = BasicBlock::iterator(iter->lhs_);
-      auto store = iter.get();
-      iter++;
+      auto obj = iter->lhs_;
+      auto store = iter;
+      iter = block.Next(iter);
       // If store is in right position, Move will do nothing
-      block.Move(++obj, store);
+      block.Move(block.Next(obj), store);
     } else {
-      iter++;
+      iter = block.Next(iter);
     }
   }
 }
@@ -508,9 +301,9 @@ void ReorderLoad(BasicBlock &block) {
   std::priority_queue<ObjWithOrder> load_order;
   std::unordered_set<NDObject *> load_set;
   // Get order of Load by usage
-  for (auto iter = block.begin(); iter != block.end(); ++iter) {
+  for (NDObject *iter = block.Begin(); iter != block.End(); iter = block.Next(iter)) {
     if (!iter->IsLoad()) {
-      for (auto pred : GetPreds(iter.get())) {
+      for (auto pred : GetPreds(iter)) {
         if (pred->IsLoad() && load_set.find(pred) == load_set.end()) {
           load_set.insert(pred);
           load_order.push({idx, pred});
@@ -522,35 +315,31 @@ void ReorderLoad(BasicBlock &block) {
   while (!load_order.empty()) {
     auto load = load_order.top().second;
     load_order.pop();
-    block.Move(block.begin(), load);
+    block.Move(block.Begin(), load);
   }
 }
 
 void InsertRemovePad(BasicBlock &block) {
-  if (g_system.Arch() == kAiCore_C310) {
-    return;
-  }
-
   size_t max_depth = 1;
   auto min_type_id = kDataTypeEnd;
-  for (auto &op : block) {
-    auto obj_type = op.GetObjectType();
+  for (NDObject *op = block.Begin(); op != block.End(); op = block.Next(op)) {
+    auto obj_type = op->GetObjectType();
     if (obj_type == kReshape) {
       return;
     }
-    max_depth = std::max(max_depth, op.nd_.size());
-    min_type_id = std::min(min_type_id, op.type_id_);
+    max_depth = std::max(max_depth, op->nd_.size());
+    min_type_id = std::min(min_type_id, op->type_id_);
   }
 
   TileInfo info;
   info.Reset(max_depth);
-  for (auto &op : block) {
-    if (auto ndd = op.Ndd(); ndd != nullptr && ndd->dims.size() != max_depth) {
+  for (NDObject *op = block.Begin(); op != block.End(); op = block.Next(op)) {
+    if (auto ndd = op->Ndd(); ndd != nullptr && ndd->dims.size() != max_depth) {
       ndd->dims.resize(max_depth, 1);
     }
-    op.TileCollect(info);
+    op->TileCollect(info);
   }
-  for (auto iter = block.begin(); iter != block.end(); iter++) {
+  for (NDObject *iter = block.Begin(); iter != block.End(); iter = block.Next(iter)) {
     if (iter->GetObjectType() == kStore) {
       auto obj_id = iter->lhs_->obj_id_;
       if (obj_id == kElementAny || static_cast<int>(iter->nd_.size()) == info.lead_depth) {
@@ -588,25 +377,28 @@ void InsertRemovePad(BasicBlock &block) {
 }
 
 void PrintPeakLive(BasicBlock &bb) {
-  auto maxlive = MaxLive(bb);
+  std::unordered_map<NDObject *, int> lives;
+  auto maxlive = LivenessAnalyze(bb, lives);
   std::cout << "peak live: " << maxlive << std::endl;
 }
 
 void CompactPeakLiveness(BasicBlock &bb) {
   std::vector<NDObject *> backup = bb.ToVector<false>();
-  auto old_peak = MaxLive(bb);
-  auto new_order = ReorderObjectsHeuristic(bb);
-  bb.List().Build(new_order, false);
-  auto new_peak = MaxLive(bb);
+  std::unordered_map<NDObject *, int> lives;
+  auto old_peak = LivenessAnalyze(bb, lives);
+  auto new_order = ReorderObjectsHeuristic(bb, lives);
+  bb.Build(new_order, false);
+  lives.clear();
+  auto new_peak = LivenessAnalyze(bb, lives);
   if (new_peak >= old_peak) {
     // Reorder cause a bad result, rollback
-    bb.List().Build(backup, false);
+    bb.Build(backup, false);
   }
 }
 
 void EliminateReshape(BasicBlock &bb) {
-  for (auto it = bb.begin(); it != bb.end(); ++it) {
-    auto op = it.get();
+  for (NDObject *it = bb.Begin(); it != bb.End(); it = bb.Next(it)) {
+    auto op = it;
     if (op->GetObjectType() != kReshape) continue;
     auto lhs = op->lhs_;
     auto small = &lhs->nd_.dims();
@@ -627,7 +419,7 @@ void EliminateReshape(BasicBlock &bb) {
           std::vector<NDObject *> stuff_ops;
           copy->Normalize(stuff_ops);
           ASSERT(stuff_ops.empty());
-          bb.Insert(BasicBlock::iterator(op), copy);
+          bb.Insert(op, copy);
           lhs = copy;
           break;
         }
@@ -641,7 +433,44 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
-std::vector<Pass> passes = {&VfFusion, &EliminateReshape, &CompactPeakLiveness,
-                            &ReorderLoad, &ReorderStore, &InsertRemovePad};
+class PassOptimizerC220 : public PassOptimizer {
+ public:
+  void RunPass(BasicBlock &bb, bool dyn_shape) override {
+    if (dyn_shape) {
+      CompactPeakLiveness(bb);
+      ReorderLoad(bb);
+      ReorderStore(bb);
+    } else {
+      EliminateReshape(bb);
+      CompactPeakLiveness(bb);
+      ReorderLoad(bb);
+      ReorderStore(bb);
+      InsertRemovePad(bb);
+    }
+  }
+};
 
+class PassOptimizerC310 : public PassOptimizer {
+ public:
+  void RunPass(BasicBlock &bb, bool dyn_shape) override {
+    if (dyn_shape) {
+      CompactPeakLiveness(bb);
+      ReorderLoad(bb);
+      ReorderStore(bb);
+    } else {
+      EliminateReshape(bb);
+      CompactPeakLiveness(bb);
+      ReorderLoad(bb);
+      ReorderStore(bb);
+      VfFusion(bb);
+    }
+  }
+};
+
+PassOptimizer *CreateOptimizer(AiCoreArch arch) {
+  if (arch == kAiCore_C220) {
+    return new PassOptimizerC220();
+  }
+  return new PassOptimizerC310();
+}
 }  // namespace dvm::pass

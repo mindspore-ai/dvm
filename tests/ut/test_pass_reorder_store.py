@@ -13,6 +13,7 @@
 # limitations under the License.
 # ============================================================================
 
+import pytest
 import numpy as np
 from dvm.tester import Tester
 from utils import Graph
@@ -39,8 +40,9 @@ def test_reorder_store():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_reorder_multi_store():
-    t = Tester()
+@pytest.mark.parametrize('ktype', ["vector", "vector:dyn"])
+def test_reorder_multi_store(ktype):
+    t = Tester(ktype)
     a = np.full([8], 9, np.float16)
     b = np.full([8], 2, np.float16)
     c = np.full([8], 3, np.float16)

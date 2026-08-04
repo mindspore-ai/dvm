@@ -247,7 +247,16 @@ class VectorKernel : public VKernel {
  protected:
   int64_t Analyze();
   void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
-  void Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker);
+  template <bool dyn_shape>
+  void Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker) {
+    if (auto opt = g_system.pass_opt_) {
+      if (dyn_shape) {
+        opt->RunD(build_ops, tracker);
+      } else {
+        opt->Run(objects_, build_ops, tracker);
+      }
+    }
+  }
   void ApplyTiling(const TileUpdate &update);
   void AlignSimd(int64_t tile_size_limit);
 

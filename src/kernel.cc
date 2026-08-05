@@ -2107,6 +2107,18 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
                  "concat output expect viewload/viewstore or load/store");
   }
   load_num_ = kernel->load_num_;
+  // Reject shared inputs: concat slice loads consumed by non-concat ops (e.g. mul)
+  // would be referenced by programs of other slices without being loaded.
+  for (auto &slice : slices) {
+    auto *load = slice.input;
+    if (!load->IsLoad()) continue;
+    for (auto *op : kernel->objects_) {
+      if (op == concat_ || op->IsLoad() || op->IsStore() || op->reuse_dep_ >= 0) continue;
+      bool shared = false;
+      op->ForInput([&](NDObject *in) { if (in == load) shared = true; });
+      EXCEPTION_IF(shared, "concat input shared by non-concat op is unsupported");
+    }
+  }
 }
 
 int64_t ConcatSchGen::CodeGen() {
@@ -2190,6 +2202,31 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
     slice_ios_[i].slice = op->reuse_dep_;
     EXCEPTION_IF(op->reuse_dep_ < 0 && !static_cast<NDAccess *>(op)->IsSupportView(),
                  "split input expect viewload/viewstore or load/store");
+  }
+  // Reject shared inputs: an op consuming both the split input load and a split
+  // output block (directly or via Broadcast) reads a ViewUpdate-polluted load;
+  // ops reading only loads (e.g. compare) run before split and are safe.
+  auto *load = split_->lhs_;
+  if (load->IsLoad()) {
+    for (auto *op : kernel->objects_) {
+      if (op == split_ || op->IsLoad() || op->IsStore()) continue;
+      bool uses_load = false;
+      bool uses_split_out = false;
+      op->ForInput([&](NDObject *in) {
+        if (in == load) {
+          uses_load = true;
+        }
+        if (!in->IsLoad() && !in->IsStore() && in->obj_id_ != kSplitOp) {
+          in->ForInput([&](NDObject *in2) {
+            if (in2->obj_id_ == kSplitOp) {
+              uses_split_out = true;
+            }
+          });
+        }
+      });
+      EXCEPTION_IF(uses_load && uses_split_out,
+                   "split input shared by op that also consumes split output is unsupported");
+    }
   }
 }
 

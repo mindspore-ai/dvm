@@ -1488,14 +1488,16 @@ NDObject *Kernel::Slice(NDObject *input, int dim, ScalarRef *begin, ScalarRef *e
 }
 
 NDObject *Kernel::Concat(NDObject **inputs, size_t input_num, int dim) {
-  ASSERT(input_num >= 2);
+  // lookup table stores prog offset in uint8_t; over 120 inputs the offset is truncated and silently misaligned
+  ASSERT(input_num >= 2 && input_num <= 120);
   auto concat = new ConcatOp(inputs, input_num, dim);
   kernel_->Append(concat);
   return concat;
 }
 
 NDObject **Kernel::Split(NDObject *input, int dim, int64_t split_size, size_t split_num) {
-  ASSERT(split_size > 0);
+  // lookup table stores prog offset in uint8_t; over 120 inputs the offset is truncated and silently misaligned
+  ASSERT(split_size > 0 && split_size <= 120);
   auto main = new SplitOpM(input, dim, split_size, split_num);
   kernel_->Append(main);
   for (size_t i = 1; i < split_num; ++i) {

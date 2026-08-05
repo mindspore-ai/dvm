@@ -1354,7 +1354,21 @@ uint64_t NDStore::Emit(VectorKernel &k) {
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
         op.round_rank = round_tile.size();
         op.red_op = red_op->red_op_;
-        op.atmoic_type = (type_id_ == kFloat32 ? V_ATOMIC_FP32 : V_ATOMIC_FP16);
+        switch (type_id_) {
+          case kFloat32:
+            op.atmoic_type = V_ATOMIC_FP32;
+            break;
+          case kBFloat16:
+            op.atmoic_type = V_ATOMIC_BF16;
+            break;
+          case kFloat16:
+            op.atmoic_type = V_ATOMIC_FP16;
+            break;
+          default:
+            ASSERT(false);
+            op.atmoic_type = V_ATOMIC_FP16;
+            break;
+        }
         addr_.Update(insn_ + vStoreAtomic::RELOC_OFFSET);
         code_size = vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
         auto clean_wrap = red_op->clean_wrap_;

@@ -239,6 +239,7 @@ enum vReduceOpType {
 enum vAtomicType {
   V_ATOMIC_FP32 = 0,
   V_ATOMIC_FP16,
+  V_ATOMIC_BF16,
 };
 
 // head(simd):

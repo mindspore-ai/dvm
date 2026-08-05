@@ -2031,21 +2031,9 @@ __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) 
     op.iter_num = op.iter_tail;
   }
   __gm__ uint8_t *gm = (__gm__ uint8_t *)op.to + op.tile_stride * tile_idx;
-  if (likely(op.red_op == V_RED_SUM)) {
-    set_atomic_f32();
-    set_atomic_add();
-  } else {
-    if (op.atmoic_type == V_ATOMIC_FP32) {
-      set_atomic_f32();
-    } else {
-      set_atomic_f16();
-    }
-    if (op.red_op == V_RED_MAX) {
-      set_atomic_max();
-    } else {
-      set_atomic_min();
-    }
-  }
+  uint64_t atomic_type = op.atmoic_type == V_ATOMIC_BF16 ? ATOMIC_BF16 : op.atmoic_type + 1;
+  uint64_t ctrl = get_ctrl() & ~(0x1ful << 6);
+  set_ctrl(ctrl | (atomic_type << 6) | (op.red_op << 9));
   if (op.pad_size == 0) {
     copy_ubuf_to_gm_align_v2(gm, (__ubuf__ void *)(op.xn), 0, 1, op.iter_num * op.iter_size, 0, 0, 0);
   } else {

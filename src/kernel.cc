@@ -2203,30 +2203,39 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
     EXCEPTION_IF(op->reuse_dep_ < 0 && !static_cast<NDAccess *>(op)->IsSupportView(),
                  "split input expect viewload/viewstore or load/store");
   }
-  // Reject shared inputs: an op consuming both the split input load and a split
-  // output block (directly or via Broadcast) reads a ViewUpdate-polluted load;
-  // ops reading only loads (e.g. compare) run before split and are safe.
+  // Reject shared/cross-slice consumption in one pass:
+  // - shared input: an op consuming both the split input load and a split output
+  //   block (directly or via intermediate ops) reads a ViewUpdate-polluted load;
+  //   ops reading only loads (e.g. compare) run before split and are safe
+  // - cross-slice: an op (e.g. mul) consuming split blocks from different slices
+  //   would be assigned to one slice, leaving the other blocks unloaded
+  // reuse_dep_ is already propagated by slice above: -1 for loads, slice idx for
+  // split blocks, inherited from inputs for intermediate ops, so in->reuse_dep_ >= 0
+  // identifies split-chain nodes at any depth.
   auto *load = split_->lhs_;
-  if (load->IsLoad()) {
-    for (auto *op : kernel->objects_) {
-      if (op == split_ || op->IsLoad() || op->IsStore()) continue;
-      bool uses_load = false;
-      bool uses_split_out = false;
-      op->ForInput([&](NDObject *in) {
-        if (in == load) {
-          uses_load = true;
+  for (auto *op : kernel->objects_) {
+    if (op == split_ || op->IsLoad() || op->IsStore() || op->obj_id_ == kSplitOp) continue;
+    bool uses_load = false;
+    bool uses_split_out = false;
+    int first_slice = -1;
+    bool cross_slice = false;
+    op->ForInput([&](NDObject *in) {
+      if (load->IsLoad() && in == load) {
+        uses_load = true;
+      }
+      if (in->reuse_dep_ >= 0) {  // split-chain node (block or intermediate)
+        uses_split_out = true;
+        if (first_slice == -1) {
+          first_slice = in->reuse_dep_;
+        } else if (in->reuse_dep_ != first_slice) {
+          cross_slice = true;
         }
-        if (!in->IsLoad() && !in->IsStore() && in->obj_id_ != kSplitOp) {
-          in->ForInput([&](NDObject *in2) {
-            if (in2->obj_id_ == kSplitOp) {
-              uses_split_out = true;
-            }
-          });
-        }
-      });
-      EXCEPTION_IF(uses_load && uses_split_out,
-                   "split input shared by op that also consumes split output is unsupported");
-    }
+      }
+    });
+    EXCEPTION_IF(uses_load && uses_split_out,
+                 "split input shared by op that also consumes split output is unsupported");
+    EXCEPTION_IF(cross_slice,
+                 "op consuming split blocks from different slices is unsupported");
   }
 }
 

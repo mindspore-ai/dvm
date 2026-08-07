@@ -1164,7 +1164,7 @@ __aicore_inline__ void ReduceJoin(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     join_offset = iter_offset * op.iter_stride;
     join_count = iter_range * op.iter_stride;
   }
-  wait_flag_dev(PIPE_S, flag_id);
+  wait_flag_dev(PIPE_MTE2, flag_id);
   if (join_offset >= iter_total) {
     return;
   }

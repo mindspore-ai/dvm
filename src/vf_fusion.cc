@@ -43,7 +43,7 @@ namespace dvm::pass {
 namespace detail {
 
 constexpr VfOverflowPolicy kOverflowPolicy = VfOverflowPolicy::kSkip;
-constexpr char kVfCodegenVersion[] = "c310-vf-v15";
+constexpr char kVfCodegenVersion[] = "c310-vf-v16";
 
 using NodeSet = std::unordered_set<NDObject *>;
 using NodeIndex = std::unordered_map<NDObject *, size_t>;
@@ -707,6 +707,37 @@ std::string HashNamespace(const VfPartition &partition) {
 
 std::string EntryName(const std::string &nspace) { return nspace + "_entry"; }
 
+struct VfCompileUnit {
+  std::string nspace;
+  const VfPartition *partition;
+};
+
+std::vector<VfCompileUnit> BuildCompileUnits(const std::vector<VfPartition> &partitions) {
+  std::vector<VfCompileUnit> units;
+  std::unordered_set<std::string> seen;
+  units.reserve(partitions.size());
+  seen.reserve(partitions.size());
+  for (const auto &partition : partitions) {
+    auto nspace = HashNamespace(partition);
+    if (seen.insert(nspace).second) {
+      units.push_back({std::move(nspace), &partition});
+    }
+  }
+  std::sort(units.begin(), units.end(),
+            [](const VfCompileUnit &lhs, const VfCompileUnit &rhs) { return lhs.nspace < rhs.nspace; });
+  return units;
+}
+
+std::string HashBundleNamespace(const std::vector<VfCompileUnit> &units) {
+  auto hash = Fnv1aAppend(1469598103934665603ull, std::string(kVfCodegenVersion) + "|bundle|");
+  for (const auto &unit : units) {
+    hash = Fnv1aAppend(hash, unit.nspace + '|');
+  }
+  std::ostringstream oss;
+  oss << "vf_bundle_" << std::hex << std::setw(16) << std::setfill('0') << hash;
+  return oss.str();
+}
+
 std::string RunCommand(const std::vector<std::string> &command, const char *error_message) {
   std::string output;
   int fd[2];
@@ -914,7 +945,6 @@ void VfCceInstructionEmitter::EmitBinaryScalar(size_t index, const VfInstruction
   const int op_type = binary->GetOpType();
   const std::string scalar = ScalarLiteral(binary->GetScalar(), instruction.node->type_id_);
   if (IsScalarDivision(op_type)) {
-    source_ << "      vbr(vscalar" << index << ", " << scalar << ");\n";
     source_ << "      vdiv(" << Value(instruction.node) << ", ";
     if (op_type == ksDiv) {
       source_ << "vscalar" << index << ", " << Value(instruction.inputs[0]);
@@ -988,10 +1018,15 @@ void VfCceInstructionEmitter::EmitSelect(size_t index, const VfInstruction &inst
           << Value(instruction.inputs[1]) << ", select_pred" << index << "); }\n";
 }
 
-VfCceSourceEmitter::VfCceSourceEmitter(const VfProgram &program) : program_(program) { BuildProgramState(); }
+VfCceSourceEmitter::VfCceSourceEmitter(const VfProgram &program, std::string registration_namespace)
+    : program_(program), registration_namespace_(std::move(registration_namespace)) {
+  BuildProgramState();
+}
 
-std::string VfCceSourceEmitter::Emit() {
-  EmitPreamble();
+std::string VfCceSourceEmitter::Emit(bool include_preamble) {
+  if (include_preamble) {
+    EmitPreamble();
+  }
   EmitEntryPoint();
   return source_.str();
 }
@@ -1015,7 +1050,7 @@ void VfCceSourceEmitter::EmitPreamble() {
   // CCEC's standalone JIT preamble does not provide vm_aiv.h's helper.
   source_ << "#ifndef BlockNum\n#define BlockNum(x) (CCE_VL / sizeof(x))\n#endif\n\n";
   source_ << "template <ROUND R> __aicore_inline__ auto VfRound() { return std::integral_constant<ROUND, R>(); }\n\n";
-  source_ << "extern \"C\" __global__ [aicore] void dvm_custom_" << program_.nspace
+  source_ << "extern \"C\" __global__ [aicore] void dvm_custom_" << registration_namespace_
           << "(uint64_t) { pipe_barrier(PIPE_ALL); }\n\n";
 }
 
@@ -1025,7 +1060,7 @@ void VfCceSourceEmitter::EmitEntryPoint() {
   EmitPayloadBindings();
   source_ << "  __VEC_SCOPE__ {\n";
   EmitDeclarations();
-  EmitCompareConstants();
+  EmitBroadcastConstants();
   EmitChunkLoop();
   source_ << "  }\n}\n";
 }
@@ -1079,7 +1114,18 @@ void VfCceSourceEmitter::EmitDeclarations() {
   source_ << "    constexpr uint32_t sregLower = BlockNum(" << program_.BlockElementType() << ");\n";
 }
 
-void VfCceSourceEmitter::EmitCompareConstants() {
+void VfCceSourceEmitter::EmitBroadcastConstants() {
+  for (size_t i = 0; i < program_.instructions.size(); ++i) {
+    const auto &instruction = program_.instructions[i];
+    if (instruction.node->GetObjectType() != kBinaryS) {
+      continue;
+    }
+    const auto *binary = static_cast<BinaryScalarOp *>(instruction.node);
+    if (IsScalarDivision(binary->GetOpType())) {
+      source_ << "    vbr(vscalar" << i << ", " << ScalarLiteral(binary->GetScalar(), instruction.node->type_id_)
+              << ");\n";
+    }
+  }
   for (int type = kBool; type < kDataTypeEnd; ++type) {
     if (compare_types_[type]) {
       const auto data_type = static_cast<DataType>(type);
@@ -1124,16 +1170,78 @@ void VfCceSourceEmitter::EmitStores() {
   }
 }
 
-void VfFusionCompiler::CompileAndRegister(const VfPartition &partition) {
-  const auto nspace = HashNamespace(partition);
-  const auto entry_name = EntryName(nspace);
+std::string BuildVfBundleCceSource(const std::vector<VfCompileUnit> &units, const std::string &bundle_namespace) {
+  std::string source;
+  bool emit_preamble = true;
+  for (const auto &unit : units) {
+    const VfProgram program(*unit.partition, unit.nspace);
+    source += VfCceSourceEmitter(program, bundle_namespace).Emit(emit_preamble);
+    emit_preamble = false;
+  }
+  return source;
+}
+
+VfFusionCompiler::FunctionMap ResolveFunctions(const std::vector<VfCompileUnit> &units,
+                                               const std::string &registration_namespace, bool is_bundle) {
+  VfFusionCompiler::FunctionMap functions;
+  for (const auto &unit : units) {
+    const auto full_name = is_bundle ? registration_namespace + "/" + unit.nspace : unit.nspace + "/VfFusionOp";
+    functions.emplace(unit.nspace, g_system.GetCustomFunc(full_name));
+  }
+  return functions;
+}
+
+void CompileVfSource(const std::string &source_path, const std::string &binary_path) {
+  RunCommand(
+    {
+      "ccec",
+      "-c",
+      "-O2",
+      "--std=c++17",
+      "-Wno-int-to-pointer-cast",
+      "--cce-aicore-only",
+      "--cce-auto-sync=off",
+      "--cce-simd-vf-fusion=true",
+      "-mllvm",
+      "-cce-aicore-stack-size=0x8000",
+      "-mllvm",
+      "-cce-aicore-function-stack-size=0x8000",
+      "-mllvm",
+      "-cce-aicore-addr-transform",
+      "-mllvm",
+      "-cce-aicore-or-combine=false",
+      "-mllvm",
+      "-instcombine-code-sinking=false",
+      "-mllvm",
+      "-cce-aicore-jump-expand=true",
+      "-mllvm",
+      "-cce-aicore-mask-opt=false",
+      "-mllvm",
+      "-cce-aicore-dcci-insert-for-scalar=false",
+      "--cce-aicore-arch=dav-c310-vec",
+      source_path,
+      "-o",
+      binary_path,
+    },
+    "device VF JIT compile failed");
+}
+
+VfFusionCompiler::FunctionMap VfFusionCompiler::CompileAndRegister(const std::vector<VfPartition> &partitions) {
+  if (partitions.empty()) {
+    return {};
+  }
+
+  const auto units = BuildCompileUnits(partitions);
+  const bool is_bundle = partitions.size() > 1;
+  const auto registration_namespace = is_bundle ? HashBundleNamespace(units) : units.front().nspace;
   const auto cache_root = FindCacheRoot();
-  const std::string cache_key = nspace + "|" + cache_root.string();
+  const std::string cache_key = registration_namespace + "|" + cache_root.string();
   static std::mutex mutex;
   static std::unordered_set<std::string> cache;
   std::lock_guard<std::mutex> lock(mutex);
+
   if (cache.count(cache_key) != 0) {
-    return;
+    return ResolveFunctions(units, registration_namespace, is_bundle);
   }
 
   std::error_code fs_error;
@@ -1142,50 +1250,28 @@ void VfFusionCompiler::CompileAndRegister(const VfPartition &partition) {
     DvmException("cannot create VF JIT cache directory");
   }
 
-  const auto prefix = cache_root / nspace;
+  const auto prefix = cache_root / registration_namespace;
   const auto cce_path = prefix.string() + ".cce";
   const auto bin_path = prefix.string() + ".o";
-  if (!WriteFile(cce_path, BuildVfCceSource(partition, nspace))) {
+  const auto source = is_bundle ? BuildVfBundleCceSource(units, registration_namespace)
+                                : BuildVfCceSource(*units.front().partition, units.front().nspace);
+  if (!WriteFile(cce_path, source)) {
     DvmException("cannot write VF JIT source files");
   }
-  std::vector<std::string> ccec_command = {
-    "ccec",
-    "-c",
-    "-O2",
-    "--std=c++17",
-    "-Wno-int-to-pointer-cast",
-    "--cce-aicore-only",
-    "--cce-auto-sync=off",
-    "--cce-simd-vf-fusion=true",
-    "-mllvm",
-    "-cce-aicore-stack-size=0x8000",
-    "-mllvm",
-    "-cce-aicore-function-stack-size=0x8000",
-    "-mllvm",
-    "-cce-aicore-addr-transform",
-    "-mllvm",
-    "-cce-aicore-or-combine=false",
-    "-mllvm",
-    "-instcombine-code-sinking=false",
-    "-mllvm",
-    "-cce-aicore-jump-expand=true",
-    "-mllvm",
-    "-cce-aicore-mask-opt=false",
-    "-mllvm",
-    "-cce-aicore-dcci-insert-for-scalar=false",
-    "--cce-aicore-arch=dav-c310-vec",
-    cce_path,
-    "-o",
-    bin_path,
-  };
-  RunCommand(ccec_command, "device VF JIT compile failed");
+  CompileVfSource(cce_path, bin_path);
   const auto symbols = RunCommand({"objdump", "-t", bin_path}, "VF JIT objdump failed");
-  const auto offset = FindFunctionOffset(symbols, entry_name);
-  if (!offset.has_value()) {
-    DvmException("VF JIT entry symbol not found");
+  std::vector<std::pair<std::string, uint64_t>> function_table;
+  function_table.reserve(units.size());
+  for (const auto &unit : units) {
+    const auto offset = FindFunctionOffset(symbols, EntryName(unit.nspace));
+    if (!offset.has_value()) {
+      DvmException("VF JIT entry symbol not found");
+    }
+    function_table.emplace_back(is_bundle ? unit.nspace : "VfFusionOp", *offset);
   }
-  g_system.RegCustom(nspace, bin_path, {{"VfFusionOp", *offset}});
+  g_system.RegCustom(registration_namespace, bin_path, function_table);
   cache.insert(cache_key);
+  return ResolveFunctions(units, registration_namespace, is_bundle);
 }
 
 std::string VfFusionCompiler::NamespaceFor(const VfPartition &partition) { return HashNamespace(partition); }
@@ -1267,19 +1353,8 @@ void DeleteUnownedCustom(NDObject *custom) {
   delete custom;
 }
 
-bool RewritePartition(BasicBlock &bb, const VfPartition &partition) {
+bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t func_id) {
   if (!IsShadowAcyclic(bb, partition)) {
-    return false;
-  }
-  const auto nspace = VfFusionCompiler::NamespaceFor(partition);
-  uint64_t func_id = 0;
-  VfFusionCompiler compiler;
-  try {
-    compiler.CompileAndRegister(partition);
-    func_id = g_system.GetCustomFunc(nspace + "/VfFusionOp");
-  } catch (const std::exception &) {
-    return false;
-  } catch (...) {
     return false;
   }
 
@@ -1358,7 +1433,7 @@ std::string VfPayloadLayout::DecodeField(size_t field) const { return detail::Pa
 
 std::string BuildVfCceSource(const VfPartition &partition, const std::string &nspace) {
   const detail::VfProgram program(partition, nspace);
-  return detail::VfCceSourceEmitter(program).Emit();
+  return detail::VfCceSourceEmitter(program, nspace).Emit(true);
 }
 
 std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
@@ -1427,6 +1502,7 @@ std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
 std::vector<VfPartition> SplitOverLimit(const VfPartition &, const VfFusionLimits &) {
   // The interface intentionally exists now, but OverflowPolicy::kSkip is the
   // only enabled behavior for this first implementation.
+  static_assert(detail::kOverflowPolicy == VfOverflowPolicy::kSkip);
   return {};
 }
 
@@ -1437,16 +1513,27 @@ void VfFusion(BasicBlock &bb) {
 
   VfCapabilityPartitioner partitioner(bb);
   auto partitions = partitioner.Propose();
+  partitions.erase(std::remove_if(partitions.begin(), partitions.end(), [&](const VfPartition &partition) {
+                     return !detail::WithinLimits(bb, partition) || !detail::IsShadowAcyclic(bb, partition);
+                   }),
+                   partitions.end());
+
+  detail::VfFusionCompiler::FunctionMap functions;
+  try {
+    detail::VfFusionCompiler compiler;
+    functions = compiler.CompileAndRegister(partitions);
+  } catch (...) {
+    return;
+  }
+
   // Process consumers first.  This makes a later producer replacement update
   // the already-created downstream Custom input through BasicBlock edges.
   for (auto it = partitions.rbegin(); it != partitions.rend(); ++it) {
-    // v1 deliberately skips whole over-limit capability partitions.  A future
-    // policy can call SplitOverLimit(*it, VfFusionLimits{}) here.
-    if (!detail::WithinLimits(bb, *it)) {
-      static_assert(detail::kOverflowPolicy == VfOverflowPolicy::kSkip);
+    const auto function = functions.find(detail::VfFusionCompiler::NamespaceFor(*it));
+    if (function == functions.end()) {
       continue;
     }
-    detail::RewritePartition(bb, *it);
+    detail::RewritePartition(bb, *it, function->second);
   }
 }
 

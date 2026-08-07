@@ -482,32 +482,34 @@ class CodeGenHelper {
         SimdSync(op->rhs_, op);
       }
     } else {
-      auto xhs = op->xhs_;
-      int n = xhs->in_num;
+      auto *xhs = op->xhs_;
+      const int n = xhs->in_num;
       for (int i = 0; i < n; ++i) {
         if (xhs->free_mask & (1u << i)) {
           free_xbuf_.Push(xhs->data[i]->xbuf_, op);
         }
       }
-      constexpr int kMaxXhsInputs = 4;
-      NDObject *inputs[2 + kMaxXhsInputs];
-      inputs[0] = op->lhs_;
-      inputs[1] = op->rhs_;
-      for (int i = 0; i < n; ++i) {
-        inputs[2 + i] = xhs->data[i];
-      }
-      int total = 2 + n;
-      for (int i = 1; i < total; ++i) {
-        auto key = inputs[i];
-        int j = i - 1;
-        while (j >= 0 && inputs[j]->index_ < key->index_) {
-          inputs[j + 1] = inputs[j];
-          --j;
+      NDObject *last_load_input = nullptr;
+      NDObject *last_vec_input = nullptr;
+      auto record_last_input = [&](NDObject *input) {
+        if (input->IsSimd()) {
+          if (last_vec_input == nullptr || last_vec_input->index_ < input->index_) {
+            last_vec_input = input;
+          }
+        } else if (last_load_input == nullptr || last_load_input->index_ < input->index_) {
+          last_load_input = input;
         }
-        inputs[j + 1] = key;
+      };
+      record_last_input(op->lhs_);
+      record_last_input(op->rhs_);
+      for (int i = 0; i < n; ++i) {
+        record_last_input(xhs->data[i]);
       }
-      for (int i = 0; i < total; ++i) {
-        SimdSync(inputs[i], op);
+      if (last_vec_input != nullptr) {
+        SimdBarrier(last_vec_input, op);
+      }
+      if (last_load_input != nullptr) {
+        SimdSync(last_load_input, op);
       }
     }
     return size;

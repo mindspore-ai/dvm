@@ -1394,6 +1394,7 @@ __aicore_inline__ void RemovePad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
 __aicore_inline__ void Custom(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vCustom op;
   vCustom::Decode(pc, op);
+  preload(reinterpret_cast<const void *>(op.func_addr), 1);
   auto func = reinterpret_cast<OpFunc>(op.func_addr);
   func(pc + vCustom::PAYLOAD_OFFSET, head, tile);
 }

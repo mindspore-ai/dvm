@@ -159,9 +159,9 @@ class VfCceInstructionEmitter {
 
 class VfCceSourceEmitter {
  public:
-  explicit VfCceSourceEmitter(const VfProgram &program);
+  VfCceSourceEmitter(const VfProgram &program, std::string registration_namespace);
 
-  std::string Emit();
+  std::string Emit(bool include_preamble);
 
  private:
   void BuildProgramState();
@@ -169,13 +169,14 @@ class VfCceSourceEmitter {
   void EmitEntryPoint();
   void EmitPayloadBindings();
   void EmitDeclarations();
-  void EmitCompareConstants();
+  void EmitBroadcastConstants();
   void EmitChunkLoop();
   void EmitLoads();
   void EmitInstructions();
   void EmitStores();
 
   const VfProgram &program_;
+  const std::string registration_namespace_;
   std::ostringstream source_;
   VfValueNames values_;
   std::array<bool, kDataTypeEnd> compare_types_{};
@@ -183,7 +184,9 @@ class VfCceSourceEmitter {
 
 class VfFusionCompiler {
  public:
-  void CompileAndRegister(const VfPartition &partition);
+  using FunctionMap = std::unordered_map<std::string, uint64_t>;
+
+  FunctionMap CompileAndRegister(const std::vector<VfPartition> &partitions);
   static std::string NamespaceFor(const VfPartition &partition);
 
  private:

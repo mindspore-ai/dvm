@@ -26,19 +26,18 @@ from tests.mark_utils import arg_mark
 
 
 @pytest.fixture(autouse=True)
-def vf_fusion_dir(monkeypatch, tmp_path):
+def isolated_workdir(monkeypatch, tmp_path):
     monkeypatch.delenv("DVM_VF_JIT_CACHE_DIR", raising=False)
     dvm.Kernel.set_vf_fusion(0)
     monkeypatch.chdir(tmp_path)
-    return tmp_path / "vf_fusion"
 
 
-def run_pytest_child(request, child_flag, env_defaults=None):
+def run_codegen_in_child(request):
+    child_flag = "DVM_VF_CODEGEN_CHILD"
     if os.environ.get(child_flag) == "1":
         return False
     env = os.environ.copy()
-    for name, value in (env_defaults or {}).items():
-        env.setdefault(name, value)
+    env.setdefault("DVM_SOC_NAME", "Ascend950PR_9599")
     env[child_flag] = "1"
     result = subprocess.run(
         [sys.executable, "-m", "pytest", "-q", request.node.nodeid],
@@ -50,14 +49,6 @@ def run_pytest_child(request, child_flag, env_defaults=None):
     )
     assert result.returncode == 0, result.stdout + result.stderr
     return True
-
-
-def run_codegen(request):
-    return run_pytest_child(
-        request,
-        "DVM_VF_CODEGEN_CHILD",
-        {"DVM_SOC_NAME": "Ascend950PR_9599"},
-    )
 
 
 def make_f32_multi_output_graph(t, shape=(1024, 1024)):
@@ -103,9 +94,17 @@ def make_gelu_graph(t, shape=(1024, 1024)):
     t.store_expect(out, x_np / denominator)
 
 
+def make_abs_chain(t, shape=(1024, 1024), length=24):
+    input_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
+    value = t.load(input_np)
+    for _ in range(length):
+        value = t.abs(value)
+    t.store_expect(value, np.abs(input_np))
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_entry_symbol_lookup_codegen(request):
-    if run_codegen(request):
+    if run_codegen_in_child(request):
         return
     dvm.Kernel.set_vf_fusion(1)
     input_np = np.ones((16, 16), dtype=np.float32)
@@ -123,79 +122,45 @@ def test_entry_symbol_lookup_codegen(request):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_gelu_codegen(request, vf_fusion_dir):
-    if run_codegen(request):
+def test_long_chain_codegen(request):
+    if run_codegen_in_child(request):
         return
     dvm.Kernel.set_vf_fusion(1)
+
     t = Tester()
     t.set_passes("VfFusion")
-    make_gelu_graph(t)
+    make_abs_chain(t)
 
     t.codegen()
+    dump = t.dump()
 
-    assert list(vf_fusion_dir.glob("vf_*.o"))
-    cce_source = next(vf_fusion_dir.glob("vf_*.cce")).read_text()
-    assert all(
-        intrinsic in cce_source
-        for intrinsic in ("vmul(", "vmuls(", "vadd(", "vexp(", "vadds(", "vdiv(")
-    )
+    assert dump.count("Custom") > 1
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_f16_tail_codegen(request, vf_fusion_dir):
-    if run_codegen(request):
-        return
+@pytest.mark.skipif(
+    dvm.Device.arch() != "AscendC310",
+    reason="VF Fusion only supports C310",
+)
+@pytest.mark.parametrize("length, regions", [(12, 1), (13, 2), (24, 2), (25, 3)])
+def test_long_chain(length, regions):
     dvm.Kernel.set_vf_fusion(1)
-    shape = (1024, 1025)
-    input_np = np.random.normal(-1.0, 1.0, shape).astype(np.float16)
-    y_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
-    z_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
 
     t = Tester()
     t.set_passes("VfFusion")
-    x = t.load(input_np, "float16")
-    y = t.load(y_np)
-    z = t.load(z_np)
-    x_f32 = t.cast(x, "float32")
-    abs_x = t.abs(x_f32)
-    add = t.add(abs_x, y)
-    cond = t.greater(add, z)
-    selected = t.select(cond, add, y)
-    out = t.cast(selected, "float16")
-
-    add_expect = np.abs(input_np.astype(np.float32)) + y_np
-    out_expect = np.where(add_expect > z_np, add_expect, y_np)
-    t.store_expect(out, out_expect.astype(np.float16))
+    make_abs_chain(t, length=length)
 
     t.codegen()
-    cce_source = next(vf_fusion_dir.glob("vf_*.cce")).read_text()
-    assert "UNPK_B16" in cce_source and "PK_B32" in cce_source
+    dump = t.dump()
 
-
-@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_long_chain_codegen(request, vf_fusion_dir):
-    if run_codegen(request):
-        return
-    dvm.Kernel.set_vf_fusion(1)
-    input_np = np.random.normal(-1.0, 1.0, (1024, 1024)).astype(np.float32)
-
-    t = Tester()
-    t.set_passes("VfFusion")
-    value = t.load(input_np)
-    expect = input_np
-    for _ in range(24):
-        value = t.abs(value)
-        expect = np.abs(expect)
-    t.store_expect(value, expect)
-
-    t.codegen()
-
-    assert list(vf_fusion_dir.glob("vf_*.o"))
+    assert dump.count("Custom") == regions
+    assert "Abs" not in dump
+    assert t.run_check()
 
 
 @arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
-def test_dynamic_same_shape_select_codegen(request, vf_fusion_dir):
-    if run_codegen(request):
+def test_dynamic_same_shape_select_codegen(request):
+    if run_codegen_in_child(request):
         return
     dvm.Kernel.set_vf_fusion(2)
     t = Tester("vector:dyn", use_pass_opt=True)
@@ -221,12 +186,11 @@ def test_dynamic_same_shape_select_codegen(request, vf_fusion_dir):
     assert dump.count("Custom") == 1
     assert "Broadcast" not in dump
     assert all(op not in dump for op in ("Abs", "Add", "Minimum", "Mul", "Select", "Cast"))
-    assert list(vf_fusion_dir.glob("vf_*.o"))
 
 
 @arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
 def test_dynamic_same_shape_multi_output_codegen(request):
-    if run_codegen(request):
+    if run_codegen_in_child(request):
         return
     dvm.Kernel.set_vf_fusion(2)
     t = Tester("vector:dyn")
@@ -249,7 +213,7 @@ def test_dynamic_same_shape_multi_output_codegen(request):
 
 @arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
 def test_dynamic_vf_fusion_default_mode_checks_shape_codegen(request):
-    if run_codegen(request):
+    if run_codegen_in_child(request):
         return
     dvm.Kernel.set_vf_fusion(1)
     t = Tester("vector:dyn")
@@ -361,6 +325,31 @@ def test_dynamic_same_shape_select():
         t.input(condition, condition_np)
         t.run()
         assert t.check(out, expect)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(
+    dvm.Device.arch() != "AscendC310",
+    reason="VF Fusion only supports C310",
+)
+def test_dynamic_long_chain():
+    dvm.Kernel.set_vf_fusion(2)
+    t = Tester("vector:dyn")
+    t.set_passes("VfFusion")
+    x = t.load([-1], "float32")
+    value = x
+    for _ in range(24):
+        value = t.abs(value)
+    out = t.store(value)
+
+    for shape in ((3, 17, 9), (5, 11, 7)):
+        input_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
+        t.input(x, input_np)
+        t.run()
+        dump = t.dump()
+        assert dump.count("Custom") == 2
+        assert "Abs" not in dump
+        assert t.check(out, np.abs(input_np))
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

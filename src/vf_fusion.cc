@@ -24,6 +24,7 @@
 #include <filesystem>
 #include <fstream>
 #include <iomanip>
+#include <iterator>
 #include <limits>
 #include <mutex>
 #include <optional>
@@ -31,6 +32,7 @@
 #include <sstream>
 #include <string>
 #include <sys/wait.h>
+#include <tuple>
 #include <unistd.h>
 #include <unordered_map>
 #include <unordered_set>
@@ -44,11 +46,9 @@ namespace detail {
 
 constexpr int kSameShapeMode = 2;
 
-constexpr VfOverflowPolicy kOverflowPolicy = VfOverflowPolicy::kSkip;
 constexpr char kVfCodegenVersion[] = "c310-vf-v16";
 
 using NodeSet = std::unordered_set<NDObject *>;
-using NodeIndex = std::unordered_map<NDObject *, size_t>;
 
 // BasicBlock::ToVector is intentionally defined in pass.cc and is only
 // instantiated there.  Keep this pass independent of that implementation
@@ -60,6 +60,15 @@ std::vector<NDObject *> CollectObjects(BasicBlock &bb) {
     objects.push_back(it);
   }
   return objects;
+}
+
+NodeIndex IndexObjects(const std::vector<NDObject *> &objects) {
+  NodeIndex indices;
+  indices.reserve(objects.size());
+  for (size_t i = 0; i < objects.size(); ++i) {
+    indices.emplace(objects[i], i);
+  }
+  return indices;
 }
 
 std::vector<NDObject *> GetInputs(NDObject *obj) {
@@ -185,10 +194,7 @@ const char *StoreDistribution(DataType type, size_t max_type_size) {
 std::optional<std::vector<NDObject *>> StableKahnOrder(BasicBlock &bb) {
   const auto objects = CollectObjects(bb);
   NodeSet members(objects.begin(), objects.end());
-  NodeIndex list_indices;
-  for (size_t i = 0; i < objects.size(); ++i) {
-    list_indices.emplace(objects[i], i);
-  }
+  const auto list_indices = IndexObjects(objects);
   std::unordered_map<NDObject *, size_t> indegree;
   auto later = [&list_indices](NDObject *lhs, NDObject *rhs) { return list_indices.at(lhs) > list_indices.at(rhs); };
   std::priority_queue<NDObject *, std::vector<NDObject *>, decltype(later)> ready(later);
@@ -230,7 +236,16 @@ std::optional<std::vector<NDObject *>> StableKahnOrder(BasicBlock &bb) {
   return order;
 }
 
-bool IsAcyclic(BasicBlock &bb) { return StableKahnOrder(bb).has_value(); }
+VfGraphContext::VfGraphContext(BasicBlock &block) : bb(block) {
+  auto order = StableKahnOrder(bb);
+  if (!order.has_value()) {
+    return;
+  }
+  topological_order = std::move(*order);
+  topological_indices = IndexObjects(topological_order);
+  list_indices = IndexObjects(CollectObjects(bb));
+  valid = true;
+}
 
 // A capability partition may be non-contiguous in the physical object list:
 // Normalize can leave an unsupported helper between two supported nodes.  The
@@ -238,13 +253,7 @@ bool IsAcyclic(BasicBlock &bb) { return StableKahnOrder(bb).has_value(); }
 // anywhere after all of them and before the first external user of any
 // partition output.  This keeps the list execution order valid without
 // needlessly rejecting an otherwise acyclic capability partition.
-NDObject *FindSafeInsertionPoint(BasicBlock &bb, const VfPartition &partition) {
-  const auto objects = CollectObjects(bb);
-  NodeIndex indices;
-  for (size_t i = 0; i < objects.size(); ++i) {
-    indices.emplace(objects[i], i);
-  }
-
+NDObject *FindSafeInsertionPoint(BasicBlock &bb, const VfPartition &partition, const NodeIndex &indices) {
   bool has_input = false;
   size_t latest_input = 0;
   for (auto *input : partition.inputs) {
@@ -257,7 +266,8 @@ NDObject *FindSafeInsertionPoint(BasicBlock &bb, const VfPartition &partition) {
   }
 
   NodeSet members(partition.nodes.begin(), partition.nodes.end());
-  std::optional<size_t> earliest_external_user;
+  NDObject *insertion_point = nullptr;
+  size_t earliest_external_user = std::numeric_limits<size_t>::max();
   for (auto *output : partition.outputs) {
     for (auto *user : bb.GetUsers(output)) {
       if (members.count(user) != 0) {
@@ -267,15 +277,21 @@ NDObject *FindSafeInsertionPoint(BasicBlock &bb, const VfPartition &partition) {
       if (user_it == indices.end()) {
         return nullptr;
       }
-      if (!earliest_external_user.has_value() || user_it->second < *earliest_external_user) {
+      if (user_it->second < earliest_external_user) {
         earliest_external_user = user_it->second;
+        insertion_point = user;
       }
     }
   }
-  if (!earliest_external_user.has_value() || (has_input && latest_input >= *earliest_external_user)) {
+  if (has_input && latest_input >= earliest_external_user) {
     return nullptr;
   }
-  return objects[*earliest_external_user];
+  return insertion_point;
+}
+
+NDObject *FindSafeInsertionPoint(BasicBlock &bb, const VfPartition &partition) {
+  // Rewrites mutate the list, so only proposal evaluation can use cached indices.
+  return FindSafeInsertionPoint(bb, partition, IndexObjects(CollectObjects(bb)));
 }
 
 // Build a shadow graph that contracts every member of `partition` into a
@@ -390,15 +406,15 @@ void SortUniqueByIndex(std::vector<NDObject *> &objects, const NodeIndex &indice
   objects.erase(std::unique(objects.begin(), objects.end()), objects.end());
 }
 
-VfPartition BuildPartition(BasicBlock &bb, std::vector<NDObject *> nodes, const NodeIndex &indices) {
-  SortUniqueByIndex(nodes, indices);
+VfPartition BuildPartition(const VfGraphContext &graph, std::vector<NDObject *> nodes) {
+  // Proposals and split slices are already unique and in topological order.
   VfPartition partition;
   partition.nodes = std::move(nodes);
   if (partition.nodes.empty()) {
     return partition;
   }
-  partition.first_index = indices.at(partition.nodes.front());
-  partition.last_index = indices.at(partition.nodes.back());
+  partition.first_index = graph.topological_indices.at(partition.nodes.front());
+  partition.last_index = graph.topological_indices.at(partition.nodes.back());
 
   NodeSet members(partition.nodes.begin(), partition.nodes.end());
   NodeSet seen_inputs;
@@ -409,7 +425,7 @@ VfPartition BuildPartition(BasicBlock &bb, std::vector<NDObject *> nodes, const 
       }
     });
     bool has_external_user = false;
-    for (auto *user : bb.GetUsers(node)) {
+    for (auto *user : graph.bb.GetUsers(node)) {
       if (members.count(user) == 0) {
         has_external_user = true;
         break;
@@ -419,8 +435,7 @@ VfPartition BuildPartition(BasicBlock &bb, std::vector<NDObject *> nodes, const 
       partition.outputs.push_back(node);
     }
   }
-  SortUniqueByIndex(partition.inputs, indices);
-  SortUniqueByIndex(partition.outputs, indices);
+  SortUniqueByIndex(partition.inputs, graph.topological_indices);
   return partition;
 }
 
@@ -475,33 +490,72 @@ bool SameShapeAndNdd(const NDObject *lhs, const NDObject *rhs) {
   return true;
 }
 
-bool WithinLimits(BasicBlock &bb, const VfPartition &partition) {
-  if (partition.nodes.size() < VfFusionLimits::kMinOps || partition.inputs.empty() || partition.outputs.empty() ||
-      partition.inputs.size() + partition.outputs.size() > VfFusionLimits::kMaxIO ||
-      (partition.inputs.size() + partition.outputs.size() + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord >
-        kMaxPayloadWords ||
-      (g_system.vf_fusion_ != kSameShapeMode && !SameShapeAndNdd(partition))) {
-    return false;
+size_t VfInstructionCost(const NDObject *node) {
+  switch (node->GetObjectType()) {
+    case kCompare:
+    case kCompareS:
+    case kSelect:
+      return 2;
+    case kCast:
+      return node->lhs_->type_id_ == kInt32 && node->type_id_ == kFloat16 ? 2 : 1;
+    default:
+      return 1;
   }
+}
 
-  auto topo_order = StableKahnOrder(bb);
-  if (!topo_order.has_value()) {
-    return false;
+VfPartitionMetrics VfSplitPolicy::Measure(const VfPartition &partition) const {
+  VfPartitionMetrics metrics;
+  metrics.node_count = partition.nodes.size();
+  metrics.io_count = partition.inputs.size() + partition.outputs.size();
+  for (auto *node : partition.nodes) {
+    metrics.instruction_cost += VfInstructionCost(node);
   }
-  NodeIndex topo_indices;
-  const auto list_order = CollectObjects(bb);
-  for (size_t i = 0; i < topo_order->size(); ++i) {
-    topo_indices.emplace((*topo_order)[i], i);
+  return metrics;
+}
+
+bool VfSplitPolicy::FitsResourceLimits(const VfPartitionMetrics &metrics) const {
+  return metrics.node_count <= MaxSegmentNodes() && metrics.instruction_cost <= VfFusionLimits::kMaxInstructionCost &&
+         metrics.io_count <= VfFusionLimits::kMaxIO;
+}
+
+bool VfSplitPolicy::FitsSegmentLimits(const VfPartitionMetrics &metrics) const {
+  return metrics.node_count >= MinSegmentNodes() && FitsResourceLimits(metrics);
+}
+
+bool VfSplitPolicy::CanAttemptSplit(const VfPartitionMetrics &metrics) const {
+  return graph_.valid && metrics.node_count >= 2 * MinSegmentNodes();
+}
+
+bool VfSplitPolicy::HasValidInterface(const VfPartition &partition) const {
+  return !partition.inputs.empty() && !partition.outputs.empty() &&
+         (g_system.vf_fusion_ == kSameShapeMode || SameShapeAndNdd(partition));
+}
+
+bool VfSplitPolicy::HasSafePlacement(const VfPartition &partition) const {
+  if (!graph_.valid) {
+    return false;
   }
   for (auto *node : partition.nodes) {
-    if (topo_indices.count(node) == 0) {
-      return false;
-    }
-    if (std::find(list_order.begin(), list_order.end(), node) == list_order.end()) {
+    if (graph_.topological_indices.count(node) == 0) {
       return false;
     }
   }
-  return FindSafeInsertionPoint(bb, partition) != nullptr;
+  return FindSafeInsertionPoint(graph_.bb, partition, graph_.list_indices) != nullptr &&
+         IsShadowAcyclic(graph_.bb, partition);
+}
+
+VfPartitionDisposition VfSplitPolicy::Classify(const VfPartition &partition) const {
+  const auto metrics = Measure(partition);
+  if (CanFuse(partition, metrics)) {
+    return VfPartitionDisposition::kFuse;
+  }
+  // Interface and placement failures are not necessarily inherited by a
+  // subsegment, so let the splitter evaluate every sufficiently large graph.
+  return CanAttemptSplit(metrics) ? VfPartitionDisposition::kSplit : VfPartitionDisposition::kSkip;
+}
+
+bool VfSplitPolicy::CanFuse(const VfPartition &partition, const VfPartitionMetrics &metrics) const {
+  return FitsSegmentLimits(metrics) && HasValidInterface(partition) && HasSafePlacement(partition);
 }
 
 std::string DataTypeCpp(DataType type) {
@@ -948,7 +1002,6 @@ void VfCceInstructionEmitter::EmitBinary(const VfInstruction &instruction) const
 void VfCceInstructionEmitter::EmitBinaryScalar(size_t index, const VfInstruction &instruction) const {
   const auto *binary = static_cast<BinaryScalarOp *>(instruction.node);
   const int op_type = binary->GetOpType();
-  const std::string scalar = ScalarLiteral(binary->GetScalar(), instruction.node->type_id_);
   if (IsScalarDivision(op_type)) {
     source_ << "      vdiv(" << Value(instruction.node) << ", ";
     if (op_type == ksDiv) {
@@ -959,6 +1012,7 @@ void VfCceInstructionEmitter::EmitBinaryScalar(size_t index, const VfInstruction
     source_ << ", " << program_.mask_name << ", MODE_ZEROING);\n";
     return;
   }
+  const std::string scalar = ScalarLiteral(binary->GetScalar(), instruction.node->type_id_);
   source_ << "      " << BinaryScalarIntrinsic(op_type) << '(' << Value(instruction.node) << ", "
           << Value(instruction.inputs[0]) << ", " << scalar << ", " << program_.mask_name << ", MODE_ZEROING);\n";
 }
@@ -1412,22 +1466,18 @@ std::string BuildVfCceSource(const VfPartition &partition, const std::string &ns
   return detail::VfCceSourceEmitter(program, nspace).Emit(true);
 }
 
-std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
-  auto topo_order = detail::StableKahnOrder(bb_);
-  if (!topo_order.has_value()) {
+namespace detail {
+
+std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
+  if (!graph.valid) {
     return {};
-  }
-  const auto &objects = *topo_order;
-  detail::NodeIndex indices;
-  for (size_t i = 0; i < objects.size(); ++i) {
-    indices.emplace(objects[i], i);
   }
 
   std::unordered_map<NDObject *, size_t> assignment;
-  std::vector<detail::WorkingPartition> partitions;
-  for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
+  std::vector<WorkingPartition> partitions;
+  for (auto it = graph.topological_order.rbegin(); it != graph.topological_order.rend(); ++it) {
     auto *node = *it;
-    if (!detail::IsCapabilityNode(node)) {
+    if (!IsCapabilityNode(node)) {
       continue;
     }
     const size_t base = partitions.size();
@@ -1435,7 +1485,7 @@ std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
     assignment[node] = base;
 
     std::vector<size_t> merge_candidates;
-    for (auto *user : bb_.GetUsers(node)) {
+    for (auto *user : graph.bb.GetUsers(node)) {
       auto user_partition = assignment.find(user);
       if (user_partition != assignment.end() && user_partition->second != base &&
           partitions[user_partition->second].alive) {
@@ -1443,16 +1493,17 @@ std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
       }
     }
     std::sort(merge_candidates.begin(), merge_candidates.end(), [&](size_t lhs, size_t rhs) {
-      return indices.at(partitions[lhs].nodes.front()) < indices.at(partitions[rhs].nodes.front());
+      return graph.topological_indices.at(partitions[lhs].nodes.front()) <
+             graph.topological_indices.at(partitions[rhs].nodes.front());
     });
     merge_candidates.erase(std::unique(merge_candidates.begin(), merge_candidates.end()), merge_candidates.end());
     for (size_t other : merge_candidates) {
       if (!partitions[other].alive) {
         continue;
       }
-      detail::NodeSet merged(partitions[base].nodes.begin(), partitions[base].nodes.end());
+      NodeSet merged(partitions[base].nodes.begin(), partitions[base].nodes.end());
       merged.insert(partitions[other].nodes.begin(), partitions[other].nodes.end());
-      if (detail::WouldCreateCycle(bb_, merged, assignment, partitions)) {
+      if (WouldCreateCycle(graph.bb, merged, assignment, partitions)) {
         continue;
       }
       partitions[base].nodes.insert(partitions[base].nodes.end(), partitions[other].nodes.begin(),
@@ -1467,7 +1518,8 @@ std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
   std::vector<VfPartition> result;
   for (auto &partition : partitions) {
     if (partition.alive) {
-      result.push_back(detail::BuildPartition(bb_, std::move(partition.nodes), indices));
+      SortUniqueByIndex(partition.nodes, graph.topological_indices);
+      result.push_back(BuildPartition(graph, std::move(partition.nodes)));
     }
   }
   std::sort(result.begin(), result.end(),
@@ -1475,24 +1527,107 @@ std::vector<VfPartition> VfCapabilityPartitioner::Propose() {
   return result;
 }
 
-std::vector<VfPartition> SplitOverLimit(const VfPartition &, const VfFusionLimits &) {
-  // The interface intentionally exists now, but OverflowPolicy::kSkip is the
-  // only enabled behavior for this first implementation.
-  static_assert(detail::kOverflowPolicy == VfOverflowPolicy::kSkip);
-  return {};
+std::vector<VfPartition> SplitPartition(const VfGraphContext &graph, const VfPartition &partition,
+                                        const VfSplitPolicy &policy) {
+  if (!graph.valid) {
+    return {};
+  }
+
+  const size_t node_count = partition.nodes.size();
+  struct SplitState {
+    bool valid{false};
+    size_t parts{0};
+    size_t max_cost{0};
+    size_t boundary_values{0};
+    size_t square_cost{0};
+    size_t previous{0};
+    VfPartition tail;
+  };
+  std::vector<SplitState> best(node_count + 1);
+  best[0].valid = true;
+  // Prefer fewer regions, a lower worst-segment cost, fewer values which stay
+  // live across boundaries, and finally a more balanced cost distribution.
+  const auto score = [](const SplitState &value) {
+    return std::tuple(value.parts, value.max_cost, value.boundary_values, value.square_cost);
+  };
+
+  for (size_t end = policy.MinSegmentNodes(); end <= node_count; ++end) {
+    const size_t max_nodes = std::min(end, policy.MaxSegmentNodes());
+    for (size_t length = policy.MinSegmentNodes(); length <= max_nodes; ++length) {
+      const size_t begin = end - length;
+      if (!best[begin].valid) {
+        continue;
+      }
+      // Region count is the first score component; this prefix cannot improve it.
+      if (best[end].valid && best[begin].parts + 1 > best[end].parts) {
+        continue;
+      }
+      std::vector<NDObject *> nodes(partition.nodes.begin() + begin, partition.nodes.begin() + end);
+      auto candidate = BuildPartition(graph, std::move(nodes));
+      const auto metrics = policy.Measure(candidate);
+      const size_t cost = metrics.instruction_cost;
+      SplitState state;
+      state.valid = true;
+      state.parts = best[begin].parts + 1;
+      state.max_cost = std::max(best[begin].max_cost, cost);
+      state.boundary_values = best[begin].boundary_values + (end == node_count ? 0 : candidate.outputs.size());
+      state.square_cost = best[begin].square_cost + cost * cost;
+      state.previous = begin;
+      // Whole-graph legality checks are only needed for a competitive candidate.
+      if ((!best[end].valid || score(state) < score(best[end])) && policy.CanFuse(candidate, metrics)) {
+        state.tail = std::move(candidate);
+        best[end] = std::move(state);
+      }
+    }
+  }
+  if (!best[node_count].valid || best[node_count].parts < 2) {
+    return {};
+  }
+
+  std::vector<VfPartition> result;
+  result.reserve(best[node_count].parts);
+  for (size_t end = node_count; end != 0; end = best[end].previous) {
+    result.push_back(std::move(best[end].tail));
+  }
+  std::reverse(result.begin(), result.end());
+  return result;
 }
 
+}  // namespace detail
+
 void VfFusion(BasicBlock &bb) {
-  if (!g_system.vf_fusion_ || !detail::IsAcyclic(bb)) {
+  if (!g_system.vf_fusion_) {
     return;
   }
 
-  VfCapabilityPartitioner partitioner(bb);
-  auto partitions = partitioner.Propose();
-  partitions.erase(std::remove_if(partitions.begin(), partitions.end(), [&](const VfPartition &partition) {
-                     return !detail::WithinLimits(bb, partition) || !detail::IsShadowAcyclic(bb, partition);
-                   }),
-                   partitions.end());
+  const detail::VfGraphContext graph(bb);
+  auto proposals = detail::ProposePartitions(graph);
+  if (proposals.empty()) {
+    return;
+  }
+  const detail::VfSplitPolicy policy(graph);
+  std::vector<VfPartition> partitions;
+  partitions.reserve(proposals.size());
+  for (auto &partition : proposals) {
+    switch (policy.Classify(partition)) {
+      case detail::VfPartitionDisposition::kFuse:
+        partitions.push_back(std::move(partition));
+        break;
+      case detail::VfPartitionDisposition::kSplit: {
+        auto splits = detail::SplitPartition(graph, partition, policy);
+        partitions.insert(partitions.end(), std::make_move_iterator(splits.begin()),
+                          std::make_move_iterator(splits.end()));
+        break;
+      }
+      case detail::VfPartitionDisposition::kSkip:
+        break;
+    }
+  }
+  if (partitions.empty()) {
+    return;
+  }
+  std::sort(partitions.begin(), partitions.end(),
+            [](const VfPartition &lhs, const VfPartition &rhs) { return lhs.first_index < rhs.first_index; });
 
   detail::VfFusionCompiler::FunctionMap functions;
   try {

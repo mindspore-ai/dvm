@@ -20,7 +20,6 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
-#include <optional>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -32,18 +31,15 @@ namespace dvm {
 namespace pass {
 class BasicBlock;
 
-// Keep the limits in one public-to-the-pass structure so a future overflow
-// splitter can use exactly the same admission criteria as the first version.
+// Keep partition admission and splitting on the same limits.
 struct VfFusionLimits {
   static constexpr size_t kMinOps = 2;
+  // Keep one C310 VF region small enough that vector tiling does not grow at
+  // the expense of block parallelism.  Instruction cost additionally counts
+  // lowering sequences which emit more than one vector instruction.
+  static constexpr size_t kMaxOps = 12;
+  static constexpr size_t kMaxInstructionCost = 16;
   static constexpr size_t kMaxIO = 16;
-};
-
-enum class VfOverflowPolicy {
-  kSkip,
-  // Reserved for a later implementation.  The C310 v1 pass deliberately
-  // never invokes this policy yet.
-  kSplit,
 };
 
 struct VfPartition {
@@ -77,10 +73,51 @@ namespace detail {
 constexpr uint64_t kPayloadSlotBits = 20;
 constexpr uint64_t kPayloadSlotMask = (1ull << kPayloadSlotBits) - 1;
 constexpr size_t kPayloadSlotsPerWord = 3;
-constexpr size_t kMaxPayloadWords =
-  (VfFusionLimits::kMaxIO + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord;
+constexpr size_t kMaxPayloadWords = (VfFusionLimits::kMaxIO + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord;
 constexpr int kMaxVfExtraInputs = static_cast<int>(VfFusionLimits::kMaxIO - 3);
 constexpr int kMaxVfExtraOutputs = static_cast<int>(VfFusionLimits::kMaxIO - 2);
+
+using NodeIndex = std::unordered_map<NDObject *, size_t>;
+
+struct VfGraphContext {
+  explicit VfGraphContext(BasicBlock &block);
+
+  BasicBlock &bb;
+  bool valid{false};
+  std::vector<NDObject *> topological_order;
+  NodeIndex topological_indices;
+  NodeIndex list_indices;
+};
+
+struct VfPartitionMetrics {
+  size_t node_count{0};
+  size_t instruction_cost{0};
+  size_t io_count{0};
+};
+
+enum class VfPartitionDisposition { kSkip, kFuse, kSplit };
+
+// Keep segment admission in one policy.  The splitter only enumerates,
+// scores, and backtracks candidates accepted by this class.
+class VfSplitPolicy {
+ public:
+  explicit VfSplitPolicy(const VfGraphContext &graph) : graph_(graph) {}
+
+  VfPartitionDisposition Classify(const VfPartition &partition) const;
+  VfPartitionMetrics Measure(const VfPartition &partition) const;
+  bool CanFuse(const VfPartition &partition, const VfPartitionMetrics &metrics) const;
+  static constexpr size_t MinSegmentNodes() { return VfFusionLimits::kMinOps; }
+  static constexpr size_t MaxSegmentNodes() { return VfFusionLimits::kMaxOps; }
+
+ private:
+  bool FitsResourceLimits(const VfPartitionMetrics &metrics) const;
+  bool FitsSegmentLimits(const VfPartitionMetrics &metrics) const;
+  bool CanAttemptSplit(const VfPartitionMetrics &metrics) const;
+  bool HasValidInterface(const VfPartition &partition) const;
+  bool HasSafePlacement(const VfPartition &partition) const;
+
+  const VfGraphContext &graph_;
+};
 
 struct VfInstruction {
   NDObject *node;
@@ -191,26 +228,9 @@ class VfFusionCompiler {
 
  private:
   static bool WriteFile(const std::string &path, const std::string &contents);
-  static std::optional<uint64_t> FindFunctionOffset(const std::string &symbols, const std::string &name);
 };
 
 }  // namespace detail
-
-// CapabilityBasedPartitioner-style partitioner for normalized BasicBlock
-// graphs.  It is intentionally reusable by a future kSplit overflow policy.
-class VfCapabilityPartitioner {
- public:
-  explicit VfCapabilityPartitioner(BasicBlock &bb) : bb_(bb) {}
-
-  std::vector<VfPartition> Propose();
-
- private:
-  BasicBlock &bb_;
-};
-
-// Reserved split hook.  v1 uses kSkip and therefore returns no replacement
-// partitions for an over-limit candidate.
-std::vector<VfPartition> SplitOverLimit(const VfPartition &partition, const VfFusionLimits &limits);
 
 // C310 pointwise graph pass.  It is a no-op unless Config::SetVfFusion() was
 // called before codegen.

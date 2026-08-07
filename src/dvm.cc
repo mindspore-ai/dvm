@@ -1617,7 +1617,12 @@ void Kernel::Clear() {
 }
 
 const char *Kernel::Dump() const {
-  std::string &graph = kernel_->DumpGraph();
+  std::string &graph = kernel_->DumpGraph(false);
+  return graph.c_str();
+}
+
+const char *Kernel::DumpR() const {
+  std::string &graph = kernel_->DumpGraph(true);
   return graph.c_str();
 }
 

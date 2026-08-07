@@ -30,7 +30,7 @@ class CubeKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 
   void SetTuner(CubeTuner *tuner) { tuner_ = tuner; }
@@ -74,7 +74,7 @@ class MixKernelBase : public CubeKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 
   void NormalizePost() {
@@ -126,7 +126,7 @@ class MixKernel : public MixKernelBase {
   MixKernel(uint32_t flags = 0) : MixKernelBase(KernelType::kMix, flags) {}
   ~MixKernel() override;
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
 
  protected:
   uint64_t StageCodeGen(const CubeOp::Tactics &tactics);
@@ -150,7 +150,7 @@ class ParallelKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
   void AddKernel(KernelType type, uint32_t flags, size_t thread_limit);
 
@@ -240,7 +240,7 @@ class StagesKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 
  protected:
@@ -309,7 +309,7 @@ class _SplitKernel : public VKernel {
   ~_SplitKernel() override;
 
   void Append(NDObject *obj) override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   std::string &DisAssemble() override;
   virtual void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc);
   int Launch(void *stream) override;
@@ -405,7 +405,7 @@ class _SplitGraph : public _SplitKernel {
   _SplitGraph(uint32_t flags);
   ~_SplitGraph() override;
   void Append(NDObject *obj) override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Normalize() override;
 
  protected:

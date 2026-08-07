@@ -107,16 +107,28 @@ uint64_t CubeKernel::CodeGen() {
   return 0;
 }
 
-void CubeKernel::Dump(std::ostringstream &oss, const std::string &indent) {
-  oss << indent << "vgraph.cube(tile_num=" << cube_op_->core_loop_ << ") {\n";
-  std::string body_indent = indent + "  ";
-  oss << body_indent << "%3" << cube_op_->nd_;
-  oss << " = MatMul(%0" << cube_op_->lhs_->nd_ << ", %1" << cube_op_->rhs_->nd_;
-  if (cube_op_->bias_) {
-    oss << ", %2" << cube_op_->bias_->nd_;
+void CubeKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
+  if (rgraph) {
+    oss << indent << "rgraph.cube() {\n";
+    std::string body_indent = indent + "  ";
+    oss << body_indent << "%3" << *cube_op_->shape_ref_;
+    oss << " = MatMul(%0" << *cube_op_->lhs_->shape_ref_ << ", %1" << *cube_op_->rhs_->shape_ref_ ;
+    if (cube_op_->bias_) {
+      oss << ", %2" << *cube_op_->bias_->shape_ref_;
+    }
+    oss << ")\n";
+    oss << indent << "}";
+  } else {
+    oss << indent << "vgraph.cube(tile_num=" << cube_op_->core_loop_ << ") {\n";
+    std::string body_indent = indent + "  ";
+    oss << body_indent << "%3" << cube_op_->nd_;
+    oss << " = MatMul(%0" << cube_op_->lhs_->nd_ << ", %1" << cube_op_->rhs_->nd_;
+    if (cube_op_->bias_) {
+      oss << ", %2" << cube_op_->bias_->nd_;
+    }
+    oss << ")\n";
+    oss << indent << "}";
   }
-  oss << ")\n";
-  oss << indent << "}";
 }
 
 void CubeKernel::Clone(VKernel *base, CloneHelper &helper) {
@@ -199,17 +211,17 @@ uint64_t MixKernelBase::CodeGen() {
   return DoCodeGen();
 }
 
-void MixKernelBase::Dump(std::ostringstream &oss, const std::string &indent) {
+void MixKernelBase::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   if (post_fusion_ == nullptr) {
-    CubeKernel::Dump(oss, indent);
+    CubeKernel::Dump(oss, indent, rgraph);
     return;
   }
   std::string body_indent = indent + "  ";
   oss << indent << "vgraph.mix() {\n";
   oss << body_indent << "// cube" << std::endl;
-  CubeKernel::Dump(oss, body_indent);
+  CubeKernel::Dump(oss, body_indent, rgraph);
   oss << body_indent << "// post_fusion" << std::endl;
-  post_fusion_->Dump(oss, body_indent);
+  post_fusion_->Dump(oss, body_indent, rgraph);
   oss << std::endl;
   oss << indent << "}";
 }
@@ -549,11 +561,11 @@ uint64_t MixKernel::CodeGen() {
   return workspace_size;
 }
 
-void MixKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+void MixKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   if (stage_kernel_) {
-    stage_kernel_->Dump(oss, indent);
+    stage_kernel_->Dump(oss, indent, rgraph);
   } else {
-    MixKernelBase::Dump(oss, indent);
+    MixKernelBase::Dump(oss, indent, rgraph);
   }
 }
 
@@ -834,19 +846,19 @@ uint64_t ParallelKernel::CodeGenVE(VKernelS *kernel, RedVisitCoder *visit, uint8
   return ws_size + visit->ws_size_;
 }
 
-void ParallelKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+void ParallelKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   oss << indent << "vgraph.parallel() {" << std::endl;
   std::string body_indent = indent + "  ";
   for (auto &n : vectors_) {
-    n.kernel->Dump(oss, body_indent);
+    n.kernel->Dump(oss, body_indent, rgraph);
     oss << std::endl;
   }
   for (auto &n : cubes_) {
-    n.kernel->Dump(oss, body_indent);
+    n.kernel->Dump(oss, body_indent, rgraph);
     oss << std::endl;
   }
   for (auto &n : mixes_) {
-    n.kernel->Dump(oss, body_indent);
+    n.kernel->Dump(oss, body_indent, rgraph);
     oss << std::endl;
   }
   oss << indent << "}";
@@ -1072,14 +1084,14 @@ uint64_t StagesKernel::AllocWorkspace() {
   return workspace_size;
 }
 
-void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+void StagesKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   oss << indent << "vgraph.stages() {\n";
   int stage_idx = 0;
   std::string body_indent = indent + "  ";
   for (auto &s : stages_) {
     oss << body_indent << "// stage " << stage_idx << std::endl;
     stage_idx++;
-    s->kernel->Dump(oss, body_indent);
+    s->kernel->Dump(oss, body_indent, rgraph);
     oss << std::endl;
   }
   oss << indent << "}";
@@ -1414,7 +1426,7 @@ class EagerVector : public VectorKernel {
     return 0;
   }
 
-  void Dump(std::ostringstream &oss, const std::string &indent) {
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
     if (mm_) {
       oss << indent << "vgraph_cube() {" << std::endl;
       auto body_indent = indent + "  ";
@@ -1429,7 +1441,7 @@ class EagerVector : public VectorKernel {
       if (objects_.empty()) return;
       oss << std::endl;
     }
-    VectorKernel::Dump(oss, indent);
+    VectorKernel::Dump(oss, indent, rgraph);
   }
 
   uint64_t &GetWsReloc() { return block_align_; }
@@ -2069,27 +2081,12 @@ class EagerDumpRef : public DumpRefHelper {
   }
 };
 
-void _SplitKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+void _SplitKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   if (kernel_used_ == 0) return;
-  if (kernel_begin_ < kernel_used_) {
-    oss << "vgraph.eager() {" << std::endl;
-    std::string body_indent = indent + "  ";
-    for (int i = 0; i < kernel_begin_; ++i) {
-      auto k = kernels_[i];
-      oss << body_indent << "// pv_merged " << i << std::endl;
-      k->Dump(oss, body_indent);
-      oss << std::endl;
-    }
-    for (int i = kernel_begin_; i < kernel_used_; ++i) {
-      auto k = kernels_[i];
-      oss << body_indent << "// eager " << i << std::endl;
-      k->Dump(oss, body_indent);
-      oss << std::endl;
-    }
-  } else {
+  std::string body_indent = indent + "  ";
+  if (rgraph) {
     EagerDumpRef helper(oss);
     oss << "rgraph.eager() {" << std::endl;
-    std::string body_indent = indent + "  ";
     for (auto op : objects_) {
       if (!op->IsStore() && (op->flags_ & OBJ_FLAG_EAGER)) {
         oss << body_indent;
@@ -2100,6 +2097,22 @@ void _SplitKernel::Dump(std::ostringstream &oss, const std::string &indent) {
           helper.Dump(store);
           oss << std::endl;
         }
+      }
+    }
+  } else {
+    oss << "vgraph.eager() {" << std::endl;
+    if (kernel_begin_ < kernel_used_) {
+      for (int i = 0; i < kernel_begin_; ++i) {
+        auto k = kernels_[i];
+        oss << body_indent << "// pv_merged " << i << std::endl;
+        k->Dump(oss, body_indent, rgraph);
+        oss << std::endl;
+      }
+      for (int i = kernel_begin_; i < kernel_used_; ++i) {
+        auto k = kernels_[i];
+        oss << body_indent << "// eager " << i << std::endl;
+        k->Dump(oss, body_indent, rgraph);
+        oss << std::endl;
       }
     }
   }
@@ -2344,13 +2357,13 @@ void _SplitGraph::Normalize() {
   }
 }
 
-void _SplitGraph::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (!objects_.empty()) {
-    _SplitKernel::Dump(oss, indent);
+void _SplitGraph::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
+  if (rgraph) {
+    DumpRefHelper helper(oss);
+    helper.DumpGraph(indent, "split", build_ops_);
     return;
   }
-  DumpRefHelper helper(oss);
-  helper.DumpGraph(indent, "split", build_ops_);
+  _SplitKernel::Dump(oss, indent, false);
 }
 
 void SplitGraphD::Append(NDObject *op) {

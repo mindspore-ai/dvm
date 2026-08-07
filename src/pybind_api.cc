@@ -658,8 +658,9 @@ void RtKernelPy::Run() {
   }
   auto ret = runner_->Run(kernel_, workspace_, true);
   if (ret != 0) {
-    std::cerr << kernel_.GetImpl()->DumpGraph() << std::endl;
-    std::cerr << kernel_.GetImpl()->DisAssemble() << std::endl;
+    std::cerr << kernel_.DumpR() << std::endl;
+    std::cerr << kernel_.Dump() << std::endl;
+    std::cerr << kernel_.Das() << std::endl;
     std::string err = "Kernel Execute Exception:" + std::to_string(ret);
     DvmException(err.c_str());
   }

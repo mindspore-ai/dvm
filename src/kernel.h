@@ -42,11 +42,11 @@ class VKernel {
   virtual void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc);
   virtual int Launch(void *stream);
   virtual uint64_t CodeGen();
-  virtual void Dump(std::ostringstream &oss, const std::string &indent) = 0;
+  virtual void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) = 0;
   virtual void Clone(VKernel *base, CloneHelper &helper);
-  std::string &DumpGraph() {
+  std::string &DumpGraph(bool rgraph = false) {
     std::ostringstream oss;
-    Dump(oss, "");
+    Dump(oss, "", rgraph);
     dump_str_ = oss.str();
     return dump_str_;
   }
@@ -89,7 +89,7 @@ class VectorKernel : public VKernel {
   }
   ~VectorKernel() override = default;
 
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
 
   void BuildDomain();
   void PrepareTiling();
@@ -418,7 +418,7 @@ class VKernelS : public VectorKernel {
   ~VKernelS() override;
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 
   bool NormBuild();
@@ -480,7 +480,7 @@ class _SpecVector : public VKernelD {
   _SpecVector(uint32_t flags) : VKernelD(flags | KernelFlag::kSpeculate) {}
   ~_SpecVector() override;
   void Append(NDObject *obj) override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
   void Next() { last_stage_++; }
 
@@ -575,7 +575,7 @@ class SpecVecBase : public VKernelS {
   using Area = SpecVecContext::Area;
   SpecVecBase(uint32_t flags, SpecVecContext &ctx) : VKernelS(flags), ctx_(ctx) {}
   uint64_t CodeGen() override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
 
   void Reset() {
     min_type_ = kDataTypeEnd;
@@ -645,7 +645,7 @@ class SpecVecKernel : public SpecVecBase {
   SpecVecKernel(uint32_t flags) : SpecVecBase(flags, context_) {}
 
   void Append(NDObject *obj) override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
   uint64_t CodeGen() override;
 

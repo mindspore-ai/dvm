@@ -1056,7 +1056,7 @@ uint8_t *VectorKernel::DoTileGen(int64_t live_peak, uint8_t *code_ptr, uint64_t 
   return code_end;
 }
 
-void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent) {
+void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   auto dump_op = [&oss](NDObject *op) {
     oss << "%" << op->index_ << op->nd_ << "<" << DTYPE_NAMES[op->type_id_] << ">";
   };
@@ -2451,12 +2451,13 @@ void VKernelS::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
-void VKernelS::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (tile_num_ > 0) {
-    return VectorKernel::Dump(oss, indent);
+void VKernelS::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
+  if (rgraph) {
+    DumpRefHelper helper(oss);
+    helper.DumpGraph(indent, "vec", build_ops_);
+    return;
   }
-  DumpRefHelper helper(oss);
-  helper.DumpGraph(indent, "vec", build_ops_);
+  VectorKernel::Dump(oss, indent, rgraph);
 }
 
 void VKernelS::ManualTiling() {
@@ -2546,11 +2547,11 @@ void _SpecVector::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
-void _SpecVector::Dump(std::ostringstream &oss, const std::string &indent) {
+void _SpecVector::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   if (use_fall_) {
-    fall_kernel_->Dump(oss, indent);
+    fall_kernel_->Dump(oss, indent, rgraph);
   } else {
-    VKernelS::Dump(oss, indent);
+    VKernelS::Dump(oss, indent, rgraph);
   }
 }
 
@@ -3406,13 +3407,13 @@ void SpecVecBase::SplitBuild() {
   }
 }
 
-void SpecVecBase::Dump(std::ostringstream &oss, const std::string &indent) {
+void SpecVecBase::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
   if (!tile_num_) {
     tile_num_ = 1;
-    VKernelS::Dump(oss, indent);
+    VKernelS::Dump(oss, indent, rgraph);
     tile_num_ = 0;
   } else {
-    VKernelS::Dump(oss, indent);
+    VKernelS::Dump(oss, indent, rgraph);
   }
 }
 
@@ -3512,14 +3513,16 @@ uint64_t SpecVecKernel::CodeGen() {
   return ws;
 }
 
-void SpecVecKernel::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (context_.stage_size_) {
-    context_.stage_k_->Dump(oss, indent);
-  } else if (objects_.empty()) {
+void SpecVecKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
+  if (rgraph) {
     DumpRefHelper helper(oss);
     helper.DumpGraph(indent, "spec", build_ops_);
+    return;
+  }
+  if (context_.stage_size_) {
+    context_.stage_k_->Dump(oss, indent, rgraph);
   } else {
-    SpecVecBase::Dump(oss, indent);
+    SpecVecBase::Dump(oss, indent, rgraph);
   }
 }
 

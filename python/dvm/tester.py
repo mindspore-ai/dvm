@@ -210,11 +210,10 @@ class Tester(Kernel):
     def codegen(self, verbose=False):
         if self.is_codegen:
             return
-        if verbose:
-            print("******* before tiling *******")
-            print(self.dump())
         Kernel.codegen(self, self.passes)
         if verbose:
+            print("******* before tiling *******")
+            print(self.dump_r())
             print("******* after tiling *******")
             print(self.dump())
             print("********* bytecode *********")
@@ -223,17 +222,9 @@ class Tester(Kernel):
             self.is_codegen = True
 
     def run(self, verbose=False):
-        if not self.is_dyn and verbose:
-            print("******* before tiling *******")
-            print(self.dump())
-        self.codegen()
+        self.codegen(verbose)
         Kernel.run(self)
         self.barrier()
-        if verbose:
-            print("******* after tiling *******")
-            print(self.dump())
-            print("********* bytecode *********")
-            print(self.das())
 
     def bare_run(self):
         Kernel.run(self)

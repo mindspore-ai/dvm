@@ -620,6 +620,12 @@ class Kernel {
   const char *Dump() const;
 
   /**
+   * @brief Dump operation represent of this kernel with ref shape.
+   * @return result represent string. managed by DVM, DONOT delete.
+   */
+  const char *DumpR() const;
+
+  /**
    * @brief Dump disassemblng string of this kernel. MUST called after CodeGen or PreCodeGen.
    * @return result disassemblng string. managed by DVM, DONOT delete.
    */

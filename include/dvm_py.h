@@ -209,6 +209,7 @@ class KernelPy {
   void SetLoadBind(py::object load, py::object access) { kernel_.SetLoadBind(PyToObj(load), PyToObj(access)); }
   py::object DisAssemble() { return py::cast(kernel_.Das()); }
   py::object DumpGraph() { return py::cast(kernel_.Dump()); }
+  py::object DumpR() { return py::cast(kernel_.DumpR()); }
   void SpecNext() { kernel_.SpecNext(); }
   void ParallelAdd(int ktype, uint32_t flags, int core_limit) { kernel_.ParallelAdd(static_cast<KernelType>(ktype), flags, core_limit); }
   void SequenceAdd(int ktype, uint32_t flags) { kernel_.SequenceAdd(static_cast<KernelType>(ktype), flags); }
@@ -368,6 +369,7 @@ static inline void RegDvmPy(const py::module &m) {
          py::arg("group_list_type") = 0)
     .def("das", &KernelPy::DisAssemble, "disassemble code")
     .def("dump", &KernelPy::DumpGraph, "dump graph")
+    .def("dump_r", &KernelPy::DumpR, "dump ref graph")
     .def("spec_next", &KernelPy::SpecNext, "spec next")
     .def("parallel_add", &KernelPy::ParallelAdd, "add new parallel Kernel", py::arg("ktype"), py::arg("flags") = 0,
          py::arg("core_limit") = 0)

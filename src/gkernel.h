@@ -28,7 +28,7 @@ class GraphKernel : public StagesKernel {
   void Append(NDObject *op) override;
   uint64_t CodeGen() override;
   void Clone(VKernel *base, CloneHelper &helper) override;
-  void Dump(std::ostringstream &oss, const std::string &indent) override;
+  void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
 
  protected:
   std::vector<NDObject *> build_ops_;

@@ -80,7 +80,7 @@ class GraphSpliter {
       for (int idx = 0; idx < static_cast<int>(kernel->build_ops_.size()); ++idx) {
         kernel->build_ops_[idx]->index_ = idx;
       }
-      std::cout << "\n************ shape prop ************\n" << kernel->DumpGraph() << std::endl;
+      std::cout << "\n************ shape prop ************\n" << kernel->DumpGraph(true) << std::endl;
       DumpArea("init");
     }
     PATTERN_CALL(BroadCons);
@@ -93,7 +93,7 @@ class GraphSpliter {
       delete area;
     }
     if (sym_dump_) {
-      std::cout << "\n************ split ************\n" << kernel->DumpGraph() << std::endl;
+      std::cout << "\n************ split ************\n" << kernel->DumpGraph(true) << std::endl;
     }
   }
 
@@ -543,12 +543,12 @@ void GraphKernel::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
-void GraphKernel::Dump(std::ostringstream &oss, const std::string &indent) {
-  if (!stages_.empty()) {
-    StagesKernel::Dump(oss, indent);
-  } else {
+void GraphKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
+  if (rgraph) {
     DumpRefHelper helper(oss);
     helper.DumpGraph(indent, "sym", build_ops_);
+    return;
   }
+  StagesKernel::Dump(oss, indent, rgraph);
 }
 }  // namespace dvm

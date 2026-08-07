@@ -584,7 +584,13 @@ void RtKernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
 void RtKernelPy::CodeGen(py::object pass_names) {
   class _PassOptimizer : public pass::PassOptimizer {
    public:
-    _PassOptimizer(py::list pass_list) : names_(pass_list.cast<std::vector<std::string>>()) {}
+    _PassOptimizer(py::list pass_list) : names_(pass_list.cast<std::vector<std::string>>()) {
+      // RAII: replace pass_opt_ on construction and restore it on destruction
+      // (even on exception), preventing dangling-pointer crash in ~System().
+      old_ = g_system.pass_opt_;
+      g_system.pass_opt_ = this;
+    }
+    ~_PassOptimizer() { g_system.pass_opt_ = old_; }
     void RunPass(pass::BasicBlock &bb, bool dyn_shape) override {
       struct PassInfo {
         pass::Pass pass;
@@ -606,6 +612,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
       }
     }
     std::vector<std::string> names_;
+    pass::PassOptimizer *old_{nullptr};
   };
   if (kernel_.GetImpl()->IsSplit()) {
     std::vector<RelocEntry> relocs;
@@ -624,10 +631,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
   uint64_t workspace_size;
   if (py::isinstance<py::list>(pass_names)) {
     _PassOptimizer opt(py::cast<py::list>(pass_names));
-    auto old = g_system.pass_opt_;
-    g_system.pass_opt_ = &opt;
     workspace_size = kernel_.CodeGen();
-    g_system.pass_opt_ = old;
   } else {
     workspace_size = kernel_.CodeGen();
   }

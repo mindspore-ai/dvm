@@ -486,17 +486,18 @@ def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2, view):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("dtype", [np.float16, np.float32])
 @pytest.mark.parametrize("shape1, shape2, shape3, shape4, axis, view", [
     [[3, 400], [3, 600], [3, 200], [3, 1200], 1, False], # lead
     [[3, 400, 32], [3, 600, 32], [3, 200, 32], [3, 1, 32], 1, True], # middle, cat broadcast
     [[10, 400], [20, 400], [30, 400], [60, 1], 0, False], # out, no-cat broadcast
 ])
-def test_sch_concat(shape1, shape2, shape3, shape4, axis, view):
+def test_sch_concat(dtype, shape1, shape2, shape3, shape4, axis, view):
     t = Tester()
-    a0 = np.random.normal(0, 1, shape1).astype(np.float32)
-    a1 = np.random.normal(0, 1, shape2).astype(np.float32)
-    a2 = np.random.normal(0, 1, shape3).astype(np.float32)
-    a3 = np.random.normal(0, 1, shape4).astype(np.float32)
+    a0 = np.random.normal(0, 1, shape1).astype(dtype)
+    a1 = np.random.normal(0, 1, shape2).astype(dtype)
+    a2 = np.random.normal(0, 1, shape3).astype(dtype)
+    a3 = np.random.normal(0, 1, shape4).astype(dtype)
     x0 = t.load(a0)
     x1 = t.load(a1)
     x2 = t.add(x0, 0.1)
@@ -563,14 +564,15 @@ def test_sch_concat_dyn(view):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("dtype", [np.float16, np.float32])
 @pytest.mark.parametrize("shape, split_size, dim, view", [
     ([3, 900], 300, 1, False),    # lead, evenly divisible
     ([3, 500, 32], 200, 1, True),    # middle, body + tail
 ])
-def test_sch_split(shape, split_size, dim, view):
+def test_sch_split(dtype, shape, split_size, dim, view):
     split_num = (shape[dim] + split_size - 1) // split_size
     t = Tester()
-    a = np.random.normal(0, 1, shape).astype(np.float32)
+    a = np.random.normal(0, 1, shape).astype(dtype)
     if view:
         x0 = t.view_load(shape, _continuous_stride(shape), a)
     else:
@@ -609,4 +611,70 @@ def test_sch_dup_tiling(shape1, shape2, view):
         t.view_store_expect(x2, _continuous_stride(expect.shape), expect)
     else:
         t.store_expect(x2, expect)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape", [[3, 300], [2, 64, 1024], [4, 8192]])
+def test_concat_int64_generalization(shape):
+    # int64 (64-bit) concat generalization: actually supported in unconstrained cases (dims with size>1)
+    t = Tester()
+    a = np.random.randint(0, 1000, shape).astype(np.int64)
+    b = np.random.randint(0, 1000, shape).astype(np.int64)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.concat([x0, x1], 1)
+    t.store_expect(x2, np.concatenate([a, b], axis=1))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_concat_add_broadcast():
+    # concat + binary(add) + broadcast fusion: add broadcast scalar to concat result
+    t = Tester()
+    a = np.random.normal(0, 1, [3, 300]).astype(np.float32)
+    b = np.random.normal(0, 1, [3, 400]).astype(np.float32)
+    s = np.random.normal(0, 1, [3, 1]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.concat([x0, x1], 1)
+    x3 = t.add(x2, t.load(s))
+    t.store_expect(x3, np.concatenate([a, b], axis=1) + s)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_mul_broadcast():
+    # split + binary(mul) + broadcast fusion: add broadcast scalar to each split chunk then mul
+    t = Tester()
+    a = np.random.normal(0, 1, [3, 900]).astype(np.float32)
+    x0 = t.load(a)
+    xs = t.split(x0, 1, 300, 3)
+    s = np.random.normal(0, 1, [3, 1]).astype(np.float32)
+    for i, x in enumerate(xs):
+        y = t.mul(t.add(x, t.load(s)), 0.5)
+        t.store_expect(y, (np.split(a, [300, 600], 1)[i] + s) * 0.5)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_tree_multi_branch():
+    # three blocks each consumed by its own branch: add(a1,c), add(a2,d), add(a3,e)
+    # each op consumes a single block -> should work
+    t = Tester()
+    a = np.random.normal(0, 1, [3, 300]).astype(np.float32)
+    c = np.random.normal(0, 1, [1, 300]).astype(np.float32)
+    d = np.random.normal(0, 1, [1, 300]).astype(np.float32)
+    e = np.random.normal(0, 1, [1, 300]).astype(np.float32)
+    xa = t.load(a)
+    xc = t.load(c)
+    xd = t.load(d)
+    xe = t.load(e)
+    a1, a2, a3 = t.split(xa, 0, 1, 3)
+    b1 = t.add(a1, xc)
+    b2 = t.add(a2, xd)
+    b3 = t.add(a3, xe)
+    t.store_expect(b1, np.split(a, [1, 2], 0)[0] + c)
+    t.store_expect(b2, np.split(a, [1, 2], 0)[1] + d)
+    t.store_expect(b3, np.split(a, [1, 2], 0)[2] + e)
     assert (t.run_check())

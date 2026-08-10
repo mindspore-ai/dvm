@@ -480,10 +480,10 @@ class TileBuilderTester(TileBuilder):
         >>> assert t.run(verbose=True)
     """
 
-    def __init__(self, dev_id=None):
+    def __init__(self, ktype=TileBuilder.T_VEC, flags=0, dev_id=None):
         if dev_id is None:
             dev_id = int(os.getenv("DEVICE_ID", "0"))
-        TileBuilder.__init__(self, dev_id)
+        TileBuilder.__init__(self, ktype, flags, dev_id)
         self.expects = []  # [(store_op, expect, eps)]
 
     def load(self, arr, tshape, tspace):
@@ -526,3 +526,7 @@ class TileBuilderTester(TileBuilder):
                 if verbose:
                     print("check failed: expect {}, got {}".format(expect, out))
         return ok
+
+    def run_perf(self):
+        perf = self.perf()
+        return PerformanceResult(perf)

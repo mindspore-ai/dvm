@@ -88,8 +88,8 @@ def test_tb_reorder_load_tied_first_use_by_last_use():
     dump = t.dump()
     # load_y becomes %0 and load_x becomes %1. Arithmetic dependencies must
     # remain unchanged because reordering moves TObject pointers, not operands.
-    assert "Binary<68<(%1[256]<float32>, %0[256]<float32>)" in dump
-    assert "Binary<82<(%" in dump
+    assert "Binary<68>(%1[256]<float32>, %0[256]<float32>)" in dump
+    assert "Binary<82>(%" in dump
     das = t.das()
     div_begin = das.index("Div.fp32")
     exp_begin = das.index("Exp.fp32")
@@ -107,4 +107,31 @@ def test_tb_reorder_load_tied_first_use_by_last_use():
     # Event IDs are allocator details; only distinct, correctly placed release
     # events matter for overlapping the next tile's Loads with current SIMD.
     assert {div_event, final_mul_event} == {0, 1}
+    assert(t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_tb_double_buffer():
+    shape = [800000]
+    tile_shape = [8000]
+    tile_space = [shape[0] // tile_shape[0]]
+    a = np.full(shape, 1.25, np.float32)
+    b = np.full(shape, 1.25, np.float32)
+    t = TileBuilderTester(flags=TileBuilderTester.F_DB)
+    x0 = t.load(a, tile_shape, tile_space)
+    x1 = t.load(b, tile_shape, tile_space)
+    x2 = t.add(x0, x1)
+    x3 = t.mul(x2, x0)
+    x4 = t.sub(x3, x1)
+    x5 = t.abs(x4)
+    x6 = t.add(x5, x1)
+    x7 = t.sqrt(x6)
+    x8 = t.div(x7, x0)
+    x9 = t.add(x8, x1)
+    x10 = t.sub(x9, x0)
+    x11 = t.mul(x10, x1)
+    out = np.full(shape, 1.7677671, np.float32)
+    t.store_expect(x11, tile_space, out)
+    assert(tile_shape[0] * 4 < t.max_tile_size())
+    t.codegen(tile_space_size=tile_space[0], block_dim=40)
     assert(t.run_check())

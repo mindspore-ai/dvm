@@ -981,9 +981,10 @@ int RtKernelPy::RankId() { return g_mpc.rank_id; }
 
 int RtKernelPy::RankSize() { return g_mpc.rank_size; }
 
-TileBuilderPy::TileBuilderPy(int dev_id) {
+TileBuilderPy::TileBuilderPy(int ktype, uint32_t flags, int dev_id) {
   runner_ = RunnerManager::Instance().Get("dev", dev_id);
   g_system.Init();
+  impl_.Reset(static_cast<TileKernelType>(ktype), flags);
 }
 
 TileBuilderPy::~TileBuilderPy() {
@@ -1106,6 +1107,27 @@ void TileBuilderPy::Run() {
   ERROR_CHECK(aclrtSynchronizeStream(stream));
 }
 
+py::object TileBuilderPy::Perf() {
+  auto stream = runner_->Stream();
+  // warm up
+  int ret = impl_.Launch(true, stream);
+  EXCEPTION_IF(ret != 0, "launch error");
+  RepeatProfiler profiler;
+  profiler.Reset();
+  for (size_t i = 0; i < TEST_NUM; i++) {
+    for (auto info : stores_) {
+      auto buf = info->host.request();
+      ERROR_CHECK(aclrtMemcpy(info->dev, info->size, buf.ptr, info->size, ACL_MEMCPY_HOST_TO_DEVICE));
+    }
+    profiler.RecordStart(stream);
+    int ret = impl_.Launch(true, stream);
+    profiler.RecordEnd(stream);
+    EXCEPTION_IF(ret != 0, "launch error");
+  }
+  return py::make_tuple(py::float_(profiler.min_us_), py::float_(profiler.max_us_),
+                        py::float_(profiler.total_us_ / float(TEST_NUM)));
+}
+
 const char *TileBuilderPy::Dump() const { return impl_.Dump(); }
 const char *TileBuilderPy::Das() const { return impl_.Das(); }
 int64_t TileBuilderPy::MaxTileSize() { return impl_.MaxTileSize(); }
@@ -1178,7 +1200,7 @@ PYBIND11_MODULE(_dvm_py, m) {
   (void)py::class_<TObjectPy, std::shared_ptr<TObjectPy>>(m, "TObject");
 
   py::class_<TileBuilderPy, std::shared_ptr<TileBuilderPy>>(m, "TileBuilder")
-    .def(py::init<int>(), py::arg("dev_id") = 0)
+    .def(py::init<int, uint32_t, int>())
     .def("load", &TileBuilderPy::Load, "load array", py::arg("arr"), py::arg("shape"), py::arg("tile"))
     .def("store", &TileBuilderPy::Store, "store array", py::arg("input"), py::arg("tile"))
     .def("input", &TileBuilderPy::Input, "set input data", py::arg("op"), py::arg("val"))
@@ -1212,8 +1234,11 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("logical_or", &TileBuilderPy::Binary<BinaryOpType::kLogicalOr>, "emit logical_or")
     .def("codegen", &TileBuilderPy::CodeGen, py::arg("tile_space_size"), py::arg("block_dim") = 0)
     .def("run", &TileBuilderPy::Run)
+    .def("perf", &TileBuilderPy::Perf)
     .def("dump", &TileBuilderPy::Dump)
     .def("das", &TileBuilderPy::Das)
-    .def("max_tile_size", &TileBuilderPy::MaxTileSize);
+    .def("max_tile_size", &TileBuilderPy::MaxTileSize)
+    .def_readonly_static("T_VEC", &TileBuilderPy::T_VEC)
+    .def_readonly_static("F_DB", &TileBuilderPy::F_DB);
 }
 }  // namespace dvm

@@ -20,6 +20,11 @@
 #include "dvm.h"
 
 namespace dvm {
+enum TileKernelType {
+  kTileVector = 0,
+  kTileKernelTypeEnd,
+};
+
 class TileRef {
  public:
   enum { MAX_TILE_DIM = 4 };
@@ -46,6 +51,9 @@ class TileBuilder {
   TileBuilder();
   ~TileBuilder();
 
+  static constexpr uint32_t F_DB = 1;
+  void Reset(TileKernelType type, uint32_t flags);
+
   TObject *Load(DataType type, GmRef *gm, IntArrayRef *tile_shape, TileRef *tile_space, IntArrayRef *stride = nullptr);
   TObject *Store(TObject *input, GmRef *gm, TileRef *tile_space, IntArrayRef *stride = nullptr);
 
@@ -53,6 +61,8 @@ class TileBuilder {
   TObject *Unary(TObject *x);
   template <BinaryType op_type>
   TObject *Binary(TObject *lhs, TObject *rhs);
+
+  TObject *Copy(TObject *x);
 
   void CodeGen(int64_t tile_space_size, int64_t block_dim = 0);
   int Launch(bool reloc, void *stream);

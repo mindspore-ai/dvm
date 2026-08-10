@@ -66,6 +66,7 @@ enum InsnId {
   kStoreInsn,
   kUnaryInsn,
   kBinaryInsn,
+  kCopyInsn,
 };
 
 class TObject {
@@ -80,6 +81,16 @@ class TObject {
   bool IsLoad() const { return id_ == kLoadInsn; }
   bool IsStore() const { return id_ == kStoreInsn; }
   bool IsSimd() const { return id_ > kStoreInsn; }
+
+  template <typename T>
+  void ForInput(const T &func) {
+    if (lhs_) {
+      func(lhs_);
+      if (rhs_) {
+        func(rhs_);
+      }
+    }
+  }
 
   DataType dtype_;
   InsnId id_;
@@ -204,7 +215,7 @@ class TUnary : public TObject {
   void Dump(bool verbose, std::ostringstream &oss) override {
     oss << "Unary";
     if (verbose) {
-      oss << '<' << simd_id_ << '<';
+      oss << '<' << simd_id_ << '>';
     }
   }
   vSimdInsnID simd_id_;
@@ -229,10 +240,26 @@ class TBinary : public TObject {
   void Dump(bool verbose, std::ostringstream &oss) override {
     oss << "Binary";
     if (verbose) {
-      oss << '<' << simd_id_ << '<';
+      oss << '<' << simd_id_ << '>';
     }
   }
   vSimdInsnID simd_id_;
+};
+
+class TCopy : public TObject {
+ public:
+  TCopy(TObject *input) : TObject(input->dtype_, kCopyInsn, input, nullptr) { nd_ = input->nd_; }
+  uint64_t Emit(uint64_t *insn) override {
+    if (xbuf_ == lhs_->xbuf_) {
+      return vNop::Encode(insn);
+    }
+    vCopy op;
+    op.xd = xbuf_;
+    op.xn = lhs_->xbuf_;
+    op.lenburst = nd_.stride_back() * ITEM_SIZE[dtype_] / SIMD_BLOCK_SIZE;
+    return vCopy::Encode(insn, V_COPY, op);
+  }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "Copy"; }
 };
 
 class TBuilder {
@@ -257,6 +284,7 @@ class TBuilder {
 
   Code code_;
   std::string dump_str_;
+  uint64_t flags_{0};
 };
 
 class VectorBuilder : public TBuilder {
@@ -266,6 +294,7 @@ class VectorBuilder : public TBuilder {
   void Reloc() override;
   void Dump(std::ostringstream &oss, const std::string &indent) override;
   void ReorderLoads();
+  void DoubleBuffer();
   void Init();
   void CodeGen(int64_t tile_num, int64_t block_num);
   int64_t MaxTileSize();
@@ -453,7 +482,6 @@ VectorBuilder::~VectorBuilder() {
 }
 
 TObject *VectorBuilder::Append(TObject *obj) {
-  obj->index_ = objects_.size();
   objects_.push_back(obj);
   if (!obj->IsSimd()) {
     access_.push_back(static_cast<TAccess *>(obj));
@@ -546,21 +574,63 @@ void VectorBuilder::ReorderLoads() {
     }
   }
   objects_.swap(reordered);
-  for (size_t index = 0; index < objects_.size(); ++index) {
-    objects_[index]->index_ = static_cast<int>(index);
+}
+
+void VectorBuilder::DoubleBuffer() {
+  std::unordered_map<TObject *, TObject *> db_map;
+  for (auto obj : objects_) {
+    if (obj->IsLoad()) {
+      obj->xbuf_ = 0;
+      continue;
+    }
+    obj->ForInput([&db_map](TObject *in) {
+      if (in->IsLoad()) {
+        if (in->xbuf_ == 1) {
+          db_map[in] = new TCopy(in);
+        }
+        in->xbuf_++;
+      }
+    });
+  }
+  if (!db_map.empty()) {
+    std::vector<TObject *> update;
+    update.reserve(objects_.size() + db_map.size());
+    for (auto obj : objects_) {
+      obj->ForInput([&db_map, &update](TObject *&in) {
+        if (in->IsLoad()) {
+          auto it = db_map.find(in);
+          if (it != db_map.end()) {
+            if (in->xbuf_)  {
+              in->xbuf_ = 0;
+              update.push_back(it->second);
+            }
+            in = it->second;
+          }
+        }
+      });
+      update.push_back(obj);
+    }
+    objects_.swap(update);
   }
 }
 
 void VectorBuilder::Init() {
+  if (max_tile_size_) {
+    return;
+  }
   ReorderLoads();
+  if (flags_ & TileBuilder::F_DB) {
+    DoubleBuffer();
+  }
+  for (size_t index = 0; index < objects_.size(); ++index) {
+    objects_[index]->index_ = static_cast<int>(index);
+  }
   SlotInitializer initializer(objects_);
   max_tile_size_ = initializer.Run(code_);
 }
 
 int64_t VectorBuilder::MaxTileSize() {
-  if (code_.data_ == nullptr) {
-    Init();
-  }
+  Init();
   return max_tile_size_;
 }
 
@@ -593,6 +663,8 @@ TileBuilder::TileBuilder() {
 }
 
 TileBuilder::~TileBuilder() { delete impl_; }
+
+void TileBuilder::Reset(TileKernelType type, uint32_t flags) { impl_->flags_ = flags; }
 
 TObject *TileBuilder::Load(DataType type, GmRef *gm, IntArrayRef *tile_shape, TileRef *tile_space, IntArrayRef *stride) {
   return impl_->Append(new TLoad(type, gm, tile_shape, tile_space, stride));
@@ -641,6 +713,8 @@ DEF_BINARY(BinaryType::kMaximum);
 DEF_BINARY(BinaryType::kMinimum);
 DEF_BINARY(BinaryType::kLogicalAnd);
 DEF_BINARY(BinaryType::kLogicalOr);
+
+TObject *TileBuilder::Copy(TObject *x) { return impl_->Append(new TCopy(x)); }
 
 void TileBuilder::CodeGen(int64_t tile_num, int64_t block_num) {
   g_system.Init();

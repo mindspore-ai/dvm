@@ -148,7 +148,7 @@ class TileBuilderPy {
     TileRef tile_ref;
   };
 
-  explicit TileBuilderPy(int dev_id);
+  explicit TileBuilderPy(int ktype, uint32_t flags, int dev_id);
   ~TileBuilderPy();
 
   TObjPyPtr Load(DataTypePy dtype, py::object shape, py::object tile);
@@ -170,10 +170,14 @@ class TileBuilderPy {
 
   void CodeGen(int64_t tile_space_size, int64_t block_dim);
   void Run();
+  py::object Perf();
 
   const char *Dump() const;
   const char *Das() const;
   int64_t MaxTileSize();
+
+  static constexpr int T_VEC = TileKernelType::kTileVector;
+  static constexpr int F_DB = TileBuilder::F_DB;
 
  protected:
   TObject *PyToObj(py::object obj) { return obj.cast<TObjPyPtr>()->Get(); }

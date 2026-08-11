@@ -248,9 +248,15 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
   }
   auto code_end = CubeKernel::DoCodeGen(code_ptr, core_limit);
   auto cube_code = reinterpret_cast<vCubeOp *>(code_ptr);
-  uint64_t ws_size = sizeof(vMixGroupMsg) * code_.block_dim_;
-  gm_pos_.reloc_ = &cube_code->gm_pos;
-  code_.BindWorkspace(gm_pos_, 0);
+  uint64_t ws_size = 0;
+  if (g_system.Arch() == kAiCore_C220) {
+    ws_size = sizeof(vMixGroupMsg) * code_.block_dim_;
+    gm_pos_.reloc_ = &cube_code->gm_pos;
+    code_.BindWorkspace(gm_pos_, 0);
+  } else {
+    gm_pos_.reloc_ = nullptr;
+    cube_code->gm_pos = 0;
+  }
   if (auto comm = post_fusion_->comm_op_; comm != nullptr && comm->lhs_ == sload_) {
     cube_op_->pingpong_store_ = true;
     static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_PINGPONG;
@@ -1998,16 +2004,20 @@ void _SplitKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloc
         kernel->CodeGenCube(mm);
       } else {
         auto cube_code = kernel->CodeGenMix(mm);
-        uint64_t pos_size = sizeof(vMixGroupMsg) * mm->block_dim_;
-        void *pos_mem;
-        if (auto mem = ctx_->Alloc(pos_size)) {
-          pos_mem = mem->addr;
-          pos_size = mem->size;
+        if (g_system.Arch() == kAiCore_C220) {
+          uint64_t pos_size = sizeof(vMixGroupMsg) * mm->block_dim_;
+          void *pos_mem;
+          if (auto mem = ctx_->Alloc(pos_size)) {
+            pos_mem = mem->addr;
+            pos_size = mem->size;
+          } else {
+            pos_mem = ws_alloc->Alloc(pos_size);
+          }
+          ctx_->Free(pos_mem, pos_size);
+          cube_code->gm_pos = reinterpret_cast<uint64_t>(pos_mem);
         } else {
-          pos_mem = ws_alloc->Alloc(pos_size);
+          cube_code->gm_pos = 0;
         }
-        ctx_->Free(pos_mem, pos_size);
-        cube_code->gm_pos = reinterpret_cast<uint64_t>(pos_mem);
       }
       if (auto output = mm->output_; !mm->atomic_add_ && !(output->flags_ & OBJ_FLAG_EAGER)) {
         ctx_->Free(output->addr_.gm, GetStoreSize(output));
@@ -2258,7 +2268,7 @@ void _SplitKernel::SlotCodeGen(const RelocEntry *relocs, size_t reloc_size) {
           static_cast<NDAccess *>(gmm->group_list_)->addr_.Update(&code->gm_group_list);
         }
       }
-      if (code->flags & V_CUBE_FLAG_GROUP_SET) {
+      if (g_system.Arch() == kAiCore_C220 && (code->flags & V_CUBE_FLAG_GROUP_SET)) {
         add_reloc(code->gm_pos);
       }
     }

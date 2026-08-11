@@ -69,6 +69,7 @@ void DvmException(const char *error_str);
 enum AiCoreArch {
   kAiCore_C220,
   kAiCore_C310,
+  kAiCoreArchEnd,
 };
 
 enum class CoreType {
@@ -88,13 +89,14 @@ enum SocType {
   kAscend910_9381,
   kAscend910_9382,
   kAscend910_9372,
-  kAscend910_9361,
+  kAscend910_9362,
   // C310(PR)
   kAscend950PR_9579,
   kAscend950PR_9589,
   kAscend950PR_9599,
   kAscend950PR_958b,
   kAscend950PR_957b,
+  kAscend950PR_957bx,
   kAscend950PR_957c,
   kAscend950PR_957d,
   kAscend950PR_950z,
@@ -111,6 +113,7 @@ enum SocType {
   kAscend950DT_9578,
   kAscend950DT_9581,
   kAscend950DT_9582,
+  kAscend950DT_9582x,
   kAscend950DT_9583,
   kAscend950DT_9584,
   kAscend950DT_9585,
@@ -180,6 +183,8 @@ class System : public Config {
   uint64_t UbWorkspaceSize() const { return ub_workspace_size_; }
   uint64_t SimtWorkspace() const { return 32 * 1024; }
   uint64_t L2Size() const { return l2_size_; }
+  uint64_t L2CacheLineSize() const { return l2_cache_line_size_; }
+  float L2DdrBandwidthRatio() const { return l2_ddr_bandwidth_ratio_; }
   uint64_t L1Size() const { return l1_size_; }
   uint64_t L0CSize() const { return l0c_size_; }
   uint64_t CoreNum(CoreType core_type = CoreType::kAIV) const {
@@ -227,6 +232,9 @@ class System : public Config {
   uint64_t local_mem_size_;
   uint64_t ub_workspace_size_;
   uint64_t l2_size_;
+  uint64_t l2_cache_line_size_;
+  // C220 and custom DVM_SOC_NAME values use the calibrated default; C310 uses the static SoC table.
+  float l2_ddr_bandwidth_ratio_{5.0f};
   uint64_t l1_size_;
   uint64_t l0c_size_;
   uint64_t event_num_;

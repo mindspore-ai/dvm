@@ -15,6 +15,7 @@
  */
 
 #include <algorithm>
+#include <array>
 #include "acl/acl_rt.h"
 #include "kernel.h"
 #include "xkernel.h"
@@ -23,6 +24,13 @@
 
 namespace dvm {
 namespace {
+constexpr std::array<uint32_t, 7> kTileV2Sizes = {1024, 512, 256, 128, 64, 32, 16};
+constexpr float kDdrBandwidthRatio = 1.0f;
+constexpr uint64_t kPerCoreL2ReserveElements[kAiCoreArchEnd] = {
+  256 * 128 * 8,  // C220
+  256 * 256 * 8,  // C310
+};
+
 void MatMulBatchShapeProp(const IntArrayRef *lhs, const IntArrayRef *rhs, ShapeWithRef &shape, int64_t &sym_dim_next) {
   ASSERT(lhs != nullptr && rhs != nullptr && lhs->size >= 2 && rhs->size >= 2);
   auto rank = std::max(lhs->size, rhs->size);
@@ -121,13 +129,15 @@ bool TileHelper::GetCandidate(uint32_t x, uint32_t y, TileCand *candidate) const
   return true;
 }
 
-template <typename Visit, typename Stop>
-void ForEachCubeTilePair(Visit &&visit, Stop &&stop) {
-  for (uint32_t x = MATMUL_ALIGN_MAX; x >= CubeOp::BLOCK_SIZE; x >>= 1) {
-    for (uint32_t y = MATMUL_ALIGN_MAX; y >= x; y >>= 1) {
-      visit(x, y);
-      if (x != y) {
-        visit(y, x);
+template <size_t N, typename Visit, typename Stop>
+void ForEachCubeTilePair(const std::array<uint32_t, N> &candidates, Visit &&visit, Stop &&stop) {
+  for (size_t x = 0; x < N; ++x) {
+    for (size_t y = 0; y <= x; ++y) {
+      const uint32_t tile_x = candidates[x];
+      const uint32_t tile_y = candidates[y];
+      visit(tile_x, tile_y);
+      if (tile_x != tile_y) {
+        visit(tile_y, tile_x);
       }
       if (stop()) {
         return;
@@ -228,9 +238,9 @@ void CubeOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
 }
 
 float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
-  float a_coef = 5.0f;
-  float b_coef = 5.0f;
-  float bw_coef = 1.0f;
+  const float l2_ddr_ratio = g_system.L2DdrBandwidthRatio();
+  float a_coef = l2_ddr_ratio;
+  float b_coef = l2_ddr_ratio;
   auto m_loop = CeilDiv(op->m_real, m0);
   auto n_loop = CeilDiv(op->n_real, n0);
   if (m_loop == 0 || n_loop == 0) {
@@ -244,10 +254,10 @@ float CubeOp::CostFunc(vCubeOp *op, uint32_t m0, uint32_t n0) {
 
   uint32_t n_once = block_dim < n_loop ? core_num * n0 : op->n_real;
   if (m_once * op->k_real > l2_num) {
-    a_coef = bw_coef;
+    a_coef = kDdrBandwidthRatio;
   }
   if (n_once * op->k_real > l2_num) {
-    b_coef = bw_coef;
+    b_coef = kDdrBandwidthRatio;
   }
   // calibrate bandwidth
   a_coef = a_coef * block_dim / core_num;
@@ -341,10 +351,14 @@ void CubeOp::TileV1(vCubeOp *op) {
 
 static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, uint64_t minor_loop, uint64_t k_real,
                            bool major_align, bool minor_align, uint32_t block_dim, float &mincost) {
-  constexpr float L2_BW = 5.0f;
-  const uint64_t CACHE_LINE = 512 / ITEM_SIZE[kFloat16];
+  const float l2_ddr_ratio = g_system.L2DdrBandwidthRatio();
+  const uint64_t cache_line = g_system.L2CacheLineSize() / ITEM_SIZE[kFloat16];
   uint32_t core_num = g_system.CoreNum(CoreType::kAIC);
-  uint64_t cache_limit = (g_system.L2Size() / ITEM_SIZE[kFloat16] - 256 * 128 * 8 * core_num) / k_real;
+  // Cost upper bound at block_dim=1 and the minimum tile size:
+  // 2 / ((1 / core_num) * CubeOp::BLOCK_SIZE).
+  const float kSwizzleEarlyStopCost = 2.0f * static_cast<float>(core_num) / CubeOp::BLOCK_SIZE;
+  uint64_t cache_limit =
+    (g_system.L2Size() / ITEM_SIZE[kFloat16] - kPerCoreL2ReserveElements[g_system.Arch()] * core_num) / k_real;
   uint64_t swizzle_cnt = 0;
   uint64_t minsize = major * major_loop + minor * minor_loop;
   for (uint64_t cnt = std::min(static_cast<uint64_t>(block_dim), major_loop); cnt >= 1; --cnt) {
@@ -352,11 +366,11 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
     uint64_t width = std::min(block_dim * 2 / cnt, minor_loop);
     uint64_t major_need = major * cnt * 2;
     uint64_t minor_need = minor * width;
-    if (major_align) major_need = RoundUp(major_need, CACHE_LINE);
-    if (minor_align) minor_need = RoundUp(minor_need, CACHE_LINE);
+    if (major_align) major_need = RoundUp(major_need, cache_line);
+    if (minor_align) minor_need = RoundUp(minor_need, cache_line);
     if (minor * minor_loop + major_need * 2 < cache_limit) {
       uint64_t size = major * cnt + minor * width;
-      if (size >= minsize && mincost < 3.125f) continue;
+      if (size >= minsize && mincost < kSwizzleEarlyStopCost) continue;
       minsize = size;
       major_hit = static_cast<float>(minor_loop - 1) / minor_loop;
       minor_hit = static_cast<float>(major_loop - 1) / major_loop;
@@ -366,20 +380,20 @@ static uint32_t GetSwizzle(uint64_t major, uint64_t minor, uint64_t major_loop, 
     } else {
       major_hit = static_cast<float>(width - 1) / width;
       minor_hit = static_cast<float>(cnt - 1) / cnt;
-      if (major_align && major < CACHE_LINE) {
+      if (major_align && major < cache_line) {
         uint64_t size = major * cnt;
-        major_hit = major_hit * size / RoundUp(size, CACHE_LINE);
+        major_hit = major_hit * size / RoundUp(size, cache_line);
       }
-      if (minor_align && minor < CACHE_LINE) {
+      if (minor_align && minor < cache_line) {
         uint64_t size = minor * width;
-        minor_hit = minor_hit * size / RoundUp(size, CACHE_LINE);
+        minor_hit = minor_hit * size / RoundUp(size, cache_line);
       }
       float k_hit = static_cast<float>(cache_limit) / (major_need + minor_need);
       major_hit *= k_hit;
       minor_hit *= k_hit;
     }
-    float major_coef = L2_BW / (major_hit + (1.0f - major_hit) * L2_BW);
-    float minor_coef = L2_BW / (minor_hit + (1.0f - minor_hit) * L2_BW);
+    float major_coef = l2_ddr_ratio / (major_hit + (1.0f - major_hit) * l2_ddr_ratio);
+    float minor_coef = l2_ddr_ratio / (minor_hit + (1.0f - minor_hit) * l2_ddr_ratio);
     if (block_dim < core_num) {
       major_coef = major_coef * block_dim / core_num;
       minor_coef = minor_coef * block_dim / core_num;
@@ -418,7 +432,7 @@ void CubeOp::TileV2(vCubeOp *op, uint32_t swizzle_type) {
     }
   };
   block_dim_ = 0;
-  ForEachCubeTilePair(tile_select, [&] { return block_dim_ > 0; });
+  ForEachCubeTilePair(kTileV2Sizes, tile_select, [&] { return block_dim_ > 0; });
 }
 
 void CubeOp::GenTiling(vCubeOp *op) {
@@ -686,7 +700,7 @@ void OnlineCubeTuner::TileV3(TuneData &td, CubeOp *mm, vCubeOp *op) {
       Tuning(td, {m0, n0, k0, swizzle, core_loop, block_dim});
     }
   };
-  ForEachCubeTilePair(tile_select, [&] { return block_dim == core_num; });
+  ForEachCubeTilePair(kTileV2Sizes, tile_select, [&] { return block_dim == core_num; });
 }
 
 void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
@@ -829,7 +843,7 @@ void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<Tuning
     space.push_back(
       new TuningInfo(m0, n0, k0, vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_zN, cnt), core_loop, block_dim));
   };
-  ForEachCubeTilePair(tile_select, [&] { return block_dim == core_num; });
+  ForEachCubeTilePair(kTileV2Sizes, tile_select, [&] { return block_dim == core_num; });
 }
 
 void LazyCubeTuner::BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std::vector<TuningInfo *> &space) {

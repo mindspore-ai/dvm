@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <cstdlib>
 #include <dlfcn.h>
 #include <stdexcept>
 #include <sstream>
@@ -118,54 +119,60 @@ struct SocConfig {
   AiCoreArch arch;
   uint64_t aicore_num;
   uint64_t l2_size;
+  float l2_ddr_bandwidth_ratio;
 };
 
 constexpr uint64_t MB = 1024 * 1024;
+constexpr uint64_t kC220L2CacheLineBytes = 512;
+constexpr uint64_t kC310L2CacheLineBytes = 256;
+// C310 ratios are from CANN platform_config/<SoC>.ini [AICoreMemoryRates].
 const SocConfig soc_configs[] = {
-  {"Ascend910B1", kAscend910B1, kAiCore_C220, 25, 192 * MB},
-  {"Ascend910B2", kAscend910B2, kAiCore_C220, 24, 192 * MB},
-  {"Ascend910B2C", kAscend910B2, kAiCore_C220, 24, 192 * MB},
-  {"Ascend910B3", kAscend910B3, kAiCore_C220, 20, 192 * MB},
-  {"Ascend910B4", kAscend910B4, kAiCore_C220, 20, 96 * MB},
-  {"Ascend910B4-1", kAscend910B4, kAiCore_C220, 20, 96 * MB},
-  {"Ascend910_9391", kAscend910_9391, kAiCore_C220, 25, 192 * MB},
-  {"Ascend910_9392", kAscend910_9392, kAiCore_C220, 25, 192 * MB},
-  {"Ascend910_9381", kAscend910_9381, kAiCore_C220, 24, 192 * MB},
-  {"Ascend910_9382", kAscend910_9382, kAiCore_C220, 24, 192 * MB},
-  {"Ascend910_9372", kAscend910_9372, kAiCore_C220, 20, 192 * MB},
-  {"Ascend910_9361", kAscend910_9361, kAiCore_C220, 20, 96 * MB},
-  {"Ascend950PR_9579", kAscend950PR_9579, kAiCore_C310, 28, 128 * MB},
-  {"Ascend950PR_9589", kAscend950PR_9589, kAiCore_C310, 32, 128 * MB},
-  {"Ascend950PR_9599", kAscend950PR_9599, kAiCore_C310, 36, 128 * MB},
-  {"Ascend950PR_958b", kAscend950PR_958b, kAiCore_C310, 32, 112 * MB},
-  {"Ascend950PR_957b", kAscend950PR_957b, kAiCore_C310, 28, 112 * MB},
-  {"Ascend950PR_957c", kAscend950PR_957c, kAiCore_C310, 28, 112 * MB},
-  {"Ascend950PR_957d", kAscend950PR_957d, kAiCore_C310, 28, 96 * MB},
-  {"Ascend950PR_950z", kAscend950PR_950z, kAiCore_C310, 4, 16 * MB},
-  {"Ascend950DT_950x", kAscend950DT_950x, kAiCore_C310, 8, 32 * MB},
-  {"Ascend950DT_950y", kAscend950DT_950y, kAiCore_C310, 8, 32 * MB},
-  {"Ascend950DT_9571", kAscend950DT_9571, kAiCore_C310, 28, 128 * MB},
-  {"Ascend950DT_9572", kAscend950DT_9572, kAiCore_C310, 28, 128 * MB},
-  {"Ascend950DT_9573", kAscend950DT_9573, kAiCore_C310, 28, 112 * MB},
-  {"Ascend950DT_9574", kAscend950DT_9574, kAiCore_C310, 28, 112 * MB},
-  {"Ascend950DT_9575", kAscend950DT_9575, kAiCore_C310, 28, 128 * MB},
-  {"Ascend950DT_9576", kAscend950DT_9576, kAiCore_C310, 28, 128 * MB},
-  {"Ascend950DT_9577", kAscend950DT_9577, kAiCore_C310, 28, 112 * MB},
-  {"Ascend950DT_9578", kAscend950DT_9578, kAiCore_C310, 28, 112 * MB},
-  {"Ascend950DT_9581", kAscend950DT_9581, kAiCore_C310, 32, 128 * MB},
-  {"Ascend950DT_9582", kAscend950DT_9582, kAiCore_C310, 32, 128 * MB},
-  {"Ascend950DT_9583", kAscend950DT_9583, kAiCore_C310, 32, 112 * MB},
-  {"Ascend950DT_9584", kAscend950DT_9584, kAiCore_C310, 32, 112 * MB},
-  {"Ascend950DT_9585", kAscend950DT_9585, kAiCore_C310, 32, 128 * MB},
-  {"Ascend950DT_9586", kAscend950DT_9586, kAiCore_C310, 32, 128 * MB},
-  {"Ascend950DT_9587", kAscend950DT_9587, kAiCore_C310, 32, 112 * MB},
-  {"Ascend950DT_9588", kAscend950DT_9588, kAiCore_C310, 32, 112 * MB},
-  {"Ascend950DT_9591", kAscend950DT_9591, kAiCore_C310, 36, 128 * MB},
-  {"Ascend950DT_9592", kAscend950DT_9592, kAiCore_C310, 36, 128 * MB},
-  {"Ascend950DT_9595", kAscend950DT_9595, kAiCore_C310, 36, 128 * MB},
-  {"Ascend950DT_9596", kAscend950DT_9596, kAiCore_C310, 36, 128 * MB},
-  {"Ascend950DT_95A1", kAscend950DT_95A1, kAiCore_C310, 36, 128 * MB},
-  {"Ascend950DT_95A2", kAscend950DT_95A2, kAiCore_C310, 36, 128 * MB},
+  {"Ascend910B1", kAscend910B1, kAiCore_C220, 25, 192 * MB, 5.0f},
+  {"Ascend910B2", kAscend910B2, kAiCore_C220, 24, 192 * MB, 5.0f},
+  {"Ascend910B2C", kAscend910B2, kAiCore_C220, 24, 192 * MB, 5.0f},
+  {"Ascend910B3", kAscend910B3, kAiCore_C220, 20, 192 * MB, 5.0f},
+  {"Ascend910B4", kAscend910B4, kAiCore_C220, 20, 96 * MB, 5.0f},
+  {"Ascend910B4-1", kAscend910B4, kAiCore_C220, 20, 96 * MB, 5.0f},
+  {"Ascend910_9391", kAscend910_9391, kAiCore_C220, 25, 192 * MB, 5.0f},
+  {"Ascend910_9392", kAscend910_9392, kAiCore_C220, 25, 192 * MB, 5.0f},
+  {"Ascend910_9381", kAscend910_9381, kAiCore_C220, 24, 192 * MB, 5.0f},
+  {"Ascend910_9382", kAscend910_9382, kAiCore_C220, 24, 192 * MB, 5.0f},
+  {"Ascend910_9372", kAscend910_9372, kAiCore_C220, 20, 192 * MB, 5.0f},
+  {"Ascend910_9362", kAscend910_9362, kAiCore_C220, 20, 168 * MB, 5.0f},
+  {"Ascend950PR_9579", kAscend950PR_9579, kAiCore_C310, 28, 128 * MB, 3.2258065f},
+  {"Ascend950PR_9589", kAscend950PR_9589, kAiCore_C310, 32, 128 * MB, 3.2258065f},
+  {"Ascend950PR_9599", kAscend950PR_9599, kAiCore_C310, 36, 128 * MB, 3.2258065f},
+  {"Ascend950PR_958b", kAscend950PR_958b, kAiCore_C310, 32, 112 * MB, 3.7037036f},
+  {"Ascend950PR_957b", kAscend950PR_957b, kAiCore_C310, 28, 112 * MB, 3.7037036f},
+  {"Ascend950PR_957bx", kAscend950PR_957bx, kAiCore_C310, 28, 112 * MB, 3.7037036f},
+  {"Ascend950PR_957c", kAscend950PR_957c, kAiCore_C310, 28, 112 * MB, 3.7037036f},
+  {"Ascend950PR_957d", kAscend950PR_957d, kAiCore_C310, 28, 96 * MB, 4.347826f},
+  {"Ascend950PR_950z", kAscend950PR_950z, kAiCore_C310, 4, 16 * MB, 25.0f},
+  {"Ascend950DT_950x", kAscend950DT_950x, kAiCore_C310, 8, 32 * MB, 5.2631578f},
+  {"Ascend950DT_950y", kAscend950DT_950y, kAiCore_C310, 8, 32 * MB, 7.142857f},
+  {"Ascend950DT_9571", kAscend950DT_9571, kAiCore_C310, 28, 128 * MB, 1.25f},
+  {"Ascend950DT_9572", kAscend950DT_9572, kAiCore_C310, 28, 128 * MB, 1.25f},
+  {"Ascend950DT_9573", kAscend950DT_9573, kAiCore_C310, 28, 112 * MB, 1.4285714f},
+  {"Ascend950DT_9574", kAscend950DT_9574, kAiCore_C310, 28, 112 * MB, 1.4285714f},
+  {"Ascend950DT_9575", kAscend950DT_9575, kAiCore_C310, 28, 128 * MB, 1.6393443f},
+  {"Ascend950DT_9576", kAscend950DT_9576, kAiCore_C310, 28, 128 * MB, 1.6393443f},
+  {"Ascend950DT_9577", kAscend950DT_9577, kAiCore_C310, 28, 112 * MB, 1.8518518f},
+  {"Ascend950DT_9578", kAscend950DT_9578, kAiCore_C310, 28, 112 * MB, 1.8518518f},
+  {"Ascend950DT_9581", kAscend950DT_9581, kAiCore_C310, 32, 128 * MB, 1.25f},
+  {"Ascend950DT_9582", kAscend950DT_9582, kAiCore_C310, 32, 128 * MB, 1.25f},
+  {"Ascend950DT_9582x", kAscend950DT_9582x, kAiCore_C310, 32, 128 * MB, 1.25f},
+  {"Ascend950DT_9583", kAscend950DT_9583, kAiCore_C310, 32, 112 * MB, 1.4285714f},
+  {"Ascend950DT_9584", kAscend950DT_9584, kAiCore_C310, 32, 112 * MB, 1.4285714f},
+  {"Ascend950DT_9585", kAscend950DT_9585, kAiCore_C310, 32, 128 * MB, 1.6393443f},
+  {"Ascend950DT_9586", kAscend950DT_9586, kAiCore_C310, 32, 128 * MB, 1.6393443f},
+  {"Ascend950DT_9587", kAscend950DT_9587, kAiCore_C310, 32, 112 * MB, 1.8518518f},
+  {"Ascend950DT_9588", kAscend950DT_9588, kAiCore_C310, 32, 112 * MB, 1.8518518f},
+  {"Ascend950DT_9591", kAscend950DT_9591, kAiCore_C310, 36, 128 * MB, 1.25f},
+  {"Ascend950DT_9592", kAscend950DT_9592, kAiCore_C310, 36, 128 * MB, 1.25f},
+  {"Ascend950DT_9595", kAscend950DT_9595, kAiCore_C310, 36, 128 * MB, 1.6393443f},
+  {"Ascend950DT_9596", kAscend950DT_9596, kAiCore_C310, 36, 128 * MB, 1.6393443f},
+  {"Ascend950DT_95A1", kAscend950DT_95A1, kAiCore_C310, 36, 128 * MB, 1.25f},
+  {"Ascend950DT_95A2", kAscend950DT_95A2, kAiCore_C310, 36, 128 * MB, 1.25f},
 };
 
 static void GetAclCoreCount(int device_id, uint64_t *aic, uint64_t *aiv) {
@@ -322,6 +329,7 @@ void System::GetSocConfig() {
       arch_ = c.arch;
       cube_core_num_ = c.aicore_num;
       l2_size_ = c.l2_size;
+      l2_ddr_bandwidth_ratio_ = c.l2_ddr_bandwidth_ratio;
       return;
     }
   }
@@ -352,6 +360,7 @@ void System::DoInit() {
     g_vkernel_bin_len = g_vkernel_c220_bin_len;
     l0c_size_ = 128 * 1024;
     local_mem_size_ = 192 * 1024;
+    l2_cache_line_size_ = kC220L2CacheLineBytes;
   } else if (arch_ == kAiCore_C310) {
     bt_size_ = 4096;
     ub_workspace_size_ = 256; // avoid access overflow: vlds etc.
@@ -362,6 +371,7 @@ void System::DoInit() {
     g_vkernel_bin_len = g_vkernel_c310_bin_len;
     l0c_size_ = 256 * 1024;
     local_mem_size_ = 256 * 1024;
+    l2_cache_line_size_ = kC310L2CacheLineBytes;
   }
   int32_t device_id = 0;
   if (aclrtGetDevice(&device_id) != ACL_SUCCESS) {

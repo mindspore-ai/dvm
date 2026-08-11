@@ -516,10 +516,17 @@ def test_sch_concat(dtype, shape1, shape2, shape3, shape4, axis, view):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_sch_concat_exceed_core():
+    # The first input accounts for 99.9% of total elements:
+    # 137862*32 / (137862*32 + 69*2*32) = 4411584 / 4416000 = 0.999
     t = Tester()
     slice_num = 70
     cat_np, cat_ops = [], []
-    for i in range(slice_num):
+    first = np.random.normal(0, 1, [137862, 32]).astype(np.float32)
+    x0 = t.load(first)
+    x1 = t.add(x0, 0.1)
+    cat_np.append(first + 0.1)
+    cat_ops.append(x1)
+    for _ in range(slice_num - 1):
         a = np.random.normal(0, 1, [2, 32]).astype(np.float32)
         x0 = t.load(a)
         x1 = t.add(x0, 0.1)
@@ -677,4 +684,19 @@ def test_split_tree_multi_branch():
     t.store_expect(b1, np.split(a, [1, 2], 0)[0] + c)
     t.store_expect(b2, np.split(a, [1, 2], 0)[1] + d)
     t.store_expect(b3, np.split(a, [1, 2], 0)[2] + e)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_concat_core_reserve():
+    # concat quota imbalance: first segment (24576 rows) rounds up to all cores,
+    # second segment (1 row) must be reserved at least 1 core, otherwise it gets
+    # 0 cores and its output is all zeros (silent misalignment)
+    t = Tester()
+    lhs = np.random.normal(0, 1, [24576, 32]).astype(np.float32)
+    rhs = np.random.normal(0, 1, [1, 32]).astype(np.float32)
+    x0 = t.load(lhs)
+    x1 = t.load(rhs)
+    xout = t.concat([x0, x1], 0)
+    t.store_expect(xout, np.concatenate([lhs, rhs], axis=0))
     assert (t.run_check())

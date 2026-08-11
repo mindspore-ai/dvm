@@ -1830,9 +1830,14 @@ class VectorDupHelper {
  public:
   VectorDupHelper(VectorKernel *kernel, int dup_num, RelocAddr *relocs, uint64_t total_quota)
       : kernel_(kernel), dup_num_(dup_num), dup_idx_(0), block_begin_(0), relocs_(relocs),
-        free_core_(RoundUp(static_cast<uint64_t>(dup_num), g_system.CoreNum())), remain_quota_(total_quota) {
+        remain_quota_(total_quota) {
+    uint64_t dup = static_cast<uint64_t>(dup_num);
+    // Reserve 1 core per segment up front (free_core_ = freely allocatable
+    // cores); each segment gets its reserved core back via the +1 in DoAppend.
+    uint64_t total_core = RoundUp(dup, g_system.CoreNum());
+    free_core_ = total_core - dup;
     uint64_t code_reserve = dup_num * kernel_->ReserveCodeSize();
-    encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve, free_core_);
+    encoder_.Reset(&kernel_->code_, Code::kTargetVec, dup_num, code_reserve, total_core);
   }
 
   void Reset() {
@@ -1844,12 +1849,13 @@ class VectorDupHelper {
 
   void DoAppend(uint64_t quota, uint64_t cap_core = 0) {
     ASSERT(dup_idx_ < dup_num_);
+    ASSERT(remain_quota_ >= quota && quota > 0);
     dup_idx_++;
     kernel_->PrepareTiling();
     ASSERT(kernel_->tile_size_);
     auto code_begin = encoder_.ProgData();
     uint64_t code_reserve = kernel_->ReserveCodeSize();
-    uint64_t core_limit = CeilDiv(quota * free_core_, remain_quota_);
+    uint64_t core_limit = CeilDiv(quota * free_core_, remain_quota_) + 1;
     if (cap_core != 0 && core_limit > cap_core) {
       core_limit = cap_core;
     }
@@ -1869,7 +1875,7 @@ class VectorDupHelper {
         kernel_->code_.BindOpFast(*bind, r);
       }
     }
-    free_core_ -= block_dim;
+    free_core_ -= block_dim - 1;
   }
 
   void Append(uint64_t quota, uint64_t cap_core = 0) {

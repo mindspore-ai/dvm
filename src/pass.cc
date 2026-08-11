@@ -14,6 +14,7 @@
  * limitations under the License.
  */
 
+#include <algorithm>
 #include <queue>
 #include <cstdint>
 #include <vector>
@@ -88,7 +89,7 @@ std::vector<NDObject *> ReorderObjectsHeuristic(BasicBlock &bb, std::unordered_m
       }
     }
     heights[obj] = height;
-    int point = height * B1;
+    int64_t point = height * B1;
     if (!obj->IsSimd()) {
       point += B3;
     }
@@ -296,26 +297,31 @@ void ReorderStore(BasicBlock &block) {
 }
 
 void ReorderLoad(BasicBlock &block) {
-  uint16_t idx = 0;
-  using ObjWithOrder = std::pair<uint16_t, NDObject *>;
-  std::priority_queue<ObjWithOrder> load_order;
-  std::unordered_set<NDObject *> load_set;
+  uint32_t idx = 0;
+  std::unordered_map<NDObject *, std::pair<uint32_t, uint32_t>> user_idx;
   // Get order of Load by usage
   for (NDObject *iter = block.Begin(); iter != block.End(); iter = block.Next(iter)) {
-    if (!iter->IsLoad()) {
-      for (auto pred : GetPreds(iter)) {
-        if (pred->IsLoad() && load_set.find(pred) == load_set.end()) {
-          load_set.insert(pred);
-          load_order.push({idx, pred});
+    iter->ForInput([&user_idx, idx](NDObject *in) {
+      if (in->IsLoad()) {
+        auto it = user_idx.find(in);
+        if (it == user_idx.end()) {
+          user_idx[in] = {idx, idx};
+        } else {
+          it->second.second = idx;
         }
       }
-    }
+    });
     idx++;
   }
-  while (!load_order.empty()) {
-    auto load = load_order.top().second;
-    load_order.pop();
-    block.Move(block.Begin(), load);
+  using LoadOrder = std::pair<NDObject *, uint32_t>;
+  std::vector<LoadOrder> loads;
+  loads.reserve(user_idx.size());
+  for (const auto &kv : user_idx) {
+    loads.push_back({kv.first, kv.second.first << 16 | kv.second.second});
+  }
+  std::sort(loads.begin(), loads.end(), [](const LoadOrder &a, const LoadOrder &b) { return a.second > b.second; });
+  for (auto &load : loads) {
+    block.Move(block.Begin(), load.first);
   }
 }
 
@@ -433,16 +439,55 @@ void EliminateReshape(BasicBlock &bb) {
   }
 }
 
+void VectorDoubleBuffer(BasicBlock &bb) {
+  struct Span {
+    NDObject *first_op;
+    int first_ref;
+    int last_ref;
+  };
+  std::unordered_map<NDObject *, Span> load_span;
+  int index = 0;
+  for (auto obj = bb.ReverseBegin(); obj != bb.ReverseEnd(); obj = bb.Prev(obj)) {
+    obj->ForInput([&load_span, index, obj](NDObject *in) {
+      if (in->IsLoad()) {
+        auto it = load_span.find(in);
+        if (it == load_span.end()) {
+          load_span[in] = {obj, index, index};
+        } else {
+          it->second.first_op = obj;
+          it->second.first_ref = index;
+        }
+      }
+    });
+    index++;
+  }
+  std::vector<NDObject *> stuff_ops;
+  constexpr int MIN_DB_SPAN = 3;
+  for (auto &p : load_span) {
+    auto &span = p.second;
+    if (span.first_ref - span.last_ref >= MIN_DB_SPAN) {
+      auto copy = new CopyOp(p.first);
+      copy->Normalize(stuff_ops);
+      for (auto succ : bb.GetUsers(p.first)) {
+        bb.UpdateInput(succ, p.first, copy);
+      }
+      bb.Insert(span.first_op, copy);
+    }
+  }
+}
+
 class PassOptimizerC220 : public PassOptimizer {
  public:
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
     if (dyn_shape) {
       CompactPeakLiveness(bb);
+      VectorDoubleBuffer(bb);
       ReorderLoad(bb);
       ReorderStore(bb);
     } else {
       EliminateReshape(bb);
       CompactPeakLiveness(bb);
+      VectorDoubleBuffer(bb);
       ReorderLoad(bb);
       ReorderStore(bb);
       InsertRemovePad(bb);
@@ -455,14 +500,16 @@ class PassOptimizerC310 : public PassOptimizer {
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
     if (dyn_shape) {
       CompactPeakLiveness(bb);
+      VectorDoubleBuffer(bb);
       ReorderLoad(bb);
       ReorderStore(bb);
     } else {
       EliminateReshape(bb);
       CompactPeakLiveness(bb);
+      VfFusion(bb);
+      VectorDoubleBuffer(bb);
       ReorderLoad(bb);
       ReorderStore(bb);
-      VfFusion(bb);
     }
   }
 };

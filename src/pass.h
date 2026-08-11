@@ -213,6 +213,8 @@ void VfFusion(BasicBlock &bb);
 /// up the data transfer process to the GM.
 void InsertRemovePad(BasicBlock &block);
 
+void VectorDoubleBuffer(BasicBlock &block);
+
 using Pass = void (*)(BasicBlock &);
 
 class PassOptimizer {

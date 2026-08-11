@@ -58,3 +58,24 @@ def test_reorder_load_2(ktype):
     assert (g[0].name == "Load")
     assert (g[1].name == "Load")
     assert (g[2].name == "Load")
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reorder_load_3():
+    """when two loads share the same first-user position, the one whose last
+    user appears earliest is placed first"""
+    t = Tester()
+    a = np.full([8], 4, np.float16)
+    b = np.full([8], 9, np.float16)
+    x1 = t.load(a)
+    x2 = t.load(b)
+    x3 = t.add(x1, x2)
+    x4 = t.mul(x1, 0.5)
+    x5 = t.add(x3, x4)
+    t.set_passes("ReorderLoad")
+    t.store_expect(x5, 15.0)
+    assert (t.run_check())
+    g = Graph(t)
+    assert (g[0].name == "Load")
+    assert (g[1].name == "Load")
+    assert (g[3].input(0) == g[1])

@@ -601,6 +601,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
         {"ReorderStore", {pass::ReorderStore, false}},
         {"ReorderLoad", {pass::ReorderLoad, false}},
         {"CompactPeakLiveness", {pass::CompactPeakLiveness, false}},
+        {"VectorDoubleBuffer", {pass::VectorDoubleBuffer, false}},
         {"EliminateReshape", {pass::EliminateReshape, true}},
         {"InsertRemovePad", {pass::InsertRemovePad, true}},
         {"VfFusion", {pass::VfFusion, true}}};

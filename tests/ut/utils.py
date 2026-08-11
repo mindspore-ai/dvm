@@ -35,7 +35,7 @@ class Operation:
 
 class Graph:
     # pat1: find operation name and inputs string
-    pat1 = re.compile(r'= (\b\w+\b)(?:<\d+>)?\((.*?)\)')
+    pat1 = re.compile(r'= (\b\w+\b)(?:<[^>]+>)?\((.*?)\)')
     # pat2: find id of all inputs
     pat2 = re.compile(r'%(\d+)\[')
 

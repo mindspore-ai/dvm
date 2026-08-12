@@ -1181,7 +1181,6 @@ __aicore_inline__ void ReduceJoin(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   event_t ping = EVENT_ID6;
   event_t pong = EVENT_ID7;
-  lenburst = (join_count + 7) >> BlockDataShift(float);
   copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)op.xs, (__gm__ uint8_t *)op.ws + bidx * ws_stride, 0, 1,
                            join_count * sizeof(float), 0, 0, false, 0, 0, 0);
   set_flag(PIPE_MTE2, PIPE_V, ping);
@@ -2044,7 +2043,8 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
   uint64_t tile = 0;
   uint64_t code_size = vGetBitRange(entry, V_ENTRY_CODE_SIZE_OFFSET, V_ENTRY_CODE_SIZE_BITS);
   if (ktype == V_ENTRY_TYPE_V) {
-    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)PC_BASE, (__gm__ uint8_t *)body_addr, 0, 1,
+                             code_size * sizeof(uint64_t), 0, 0, false, 0, 0, 0);
     uint64_t count = vGetBitRange(entry, V_ENTRY_V_TILE_BODY_OFFSET, V_ENTRY_V_TILE_BODY_BITS);
     tile = (blockidx * count) << V_TILE_CUR_IDX_OFFSET;
     if (blockidx == blocknum - 1) {
@@ -2060,7 +2060,8 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
       code_size -= sizeof(vCubeOp) / sizeof(uint64_t);
       vBlockGroupInit(blockidx >> 1, blocknum >> 1);
     }
-    copy_gm_to_ubuf(reinterpret_cast<__ubuf__ void*>(PC_BASE), body_addr, 0, 1, (code_size + 3) >> 2, 0, 0);
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)PC_BASE, (__gm__ uint8_t *)body_addr, 0, 1,
+                             code_size * sizeof(uint64_t), 0, 0, false, 0, 0, 0);
     set_flag(PIPE_MTE2, PIPE_S, EVENT_ID0);
     vBlockInit(blockidx, blocknum);
     uint64_t visit_id = vGetBitRange(entry, V_ENTRY_VE_VISIT_ID_OFFSET, V_ENTRY_VE_VISIT_ID_BITS);

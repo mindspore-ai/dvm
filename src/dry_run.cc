@@ -126,7 +126,7 @@ void set_ctrl(uint64_t) {}
 #define copy_ubuf_to_ubuf CCE_CALL(copy_ubuf_to_ubuf)
 #define copy_ubuf_to_gm CCE_CALL(copy_ubuf_to_gm)
 #define copy_ubuf_to_gm_align_b8 CCE_CALL(copy_ubuf_to_gm_align_b8)
-#define copy_gm_to_ubuf_align_b8 CCE_CALL(copy_gm_to_ubuf_align_b8)
+#define copy_ubuf_to_gm_align_b16 CCE_CALL(copy_ubuf_to_gm_align_b16)
 #define copy_ubuf_to_gm_align_b32 CCE_CALL(copy_ubuf_to_gm_align_b32)
 
 #define vabs CCE_CALL(vabs)
@@ -252,7 +252,8 @@ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
 }
 
 uint64_t get_imm(uint64_t imm) { return reinterpret_cast<uint64_t>(g_ubuf_mem) + imm; }
-void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_t lenBurst, uint16_t srcStride, uint16_t dstStride);
+void copy_gm_to_ubuf_align_b8(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint32_t lenBurst,
+                              uint8_t leftPaddingNum, uint8_t rightPaddingNum, uint32_t srcGap, uint32_t dstGap);
 
 struct FuncRegister {
   FuncRegister(const uint64_t **offsets, int op_id, const char *name, void *func) {
@@ -264,13 +265,13 @@ struct FuncRegister {
 #include "vm_aiv.cce"
 #include "vm_aic.cce"
 
-void copy_gm_to_ubuf(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint16_t lenBurst, uint16_t srcStride, uint16_t dstStride) {
+void copy_gm_to_ubuf_align_b8(void *dst, void *src, uint8_t sid, uint16_t nBurst, uint32_t lenBurst,
+                              uint8_t leftPaddingNum, uint8_t rightPaddingNum, uint32_t srcGap, uint32_t dstGap) {
   if (dst == reinterpret_cast<void *>(PC_BASE)) {
-    uint64_t size = nBurst * lenBurst * 32;
-    std::memcpy(g_ubuf_mem + PC_BASE, src, size);
+    std::memcpy(g_ubuf_mem + PC_BASE, src, nBurst * lenBurst);
   }
-  std::cout << "copy_gm_to_ubuf(" << dst << ", " << src << ", " << sid << ", " << nBurst << ", " << lenBurst << ", "
-            << srcStride << ", " << dstStride << ")" << std::endl;
+  CallTracer("copy_gm_to_ubuf_align_b8")(dst, src, sid, nBurst, lenBurst, leftPaddingNum, rightPaddingNum, srcGap,
+                                          dstGap);
 }
 } // end namespace
 

@@ -1497,7 +1497,7 @@ NDObject *Kernel::Concat(NDObject **inputs, size_t input_num, int dim) {
 
 NDObject **Kernel::Split(NDObject *input, int dim, int64_t split_size, size_t split_num) {
   // lookup table stores prog offset in uint8_t; over 120 inputs the offset is truncated and silently misaligned
-  ASSERT(split_size > 0 && split_size <= 120);
+  ASSERT(split_num <= 120);
   auto main = new SplitOpM(input, dim, split_size, split_num);
   kernel_->Append(main);
   for (size_t i = 1; i < split_num; ++i) {

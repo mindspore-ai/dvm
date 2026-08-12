@@ -18,6 +18,7 @@
 #include <climits>
 #include <memory>
 #include <cstring>
+#include <algorithm>
 #include "kernel.h"
 #include "xkernel.h"
 #include "msprof.h"
@@ -2086,43 +2087,103 @@ int64_t FractalSchGen::CodeGen() {
   return result;
 }
 
-ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::vector<NDObject *> &objects)
-    : SchGenHelper(kernel), concat_(concat) {
-  for (auto op : objects) {
-    op->reuse_dep_ = -1;
-  }
-  auto &slices = concat->slices_;
-  for (int i = 0; i < static_cast<int>(slices.size()); ++i) {
-    slices[i].input->reuse_dep_ = i;
-  }
-  for (auto it = objects.rbegin(); it != objects.rend(); ++it) {
-    auto op = *it;
-    if (int slice_idx = op->reuse_dep_; slice_idx >= 0) {
-      op->ForInput([slice_idx](NDObject *in) {
-        in->reuse_dep_ = slice_idx;
-      });
+template <typename T>
+void TravelInput(std::vector<NDObject *> &stack, NDObject *root, const T &func) {
+  stack.push_back(root);
+  while (!stack.empty()) {
+    auto top = stack.back();
+    stack.pop_back();
+    if (func(top)) {
+      top->ForInput([&stack](NDObject *in) { stack.push_back(in); });
     }
   }
-  // TODO: side away load/store
-  slice_ios_.resize(kernel->static_ops_.size());
-  for (size_t i = 0; i < slice_ios_.size(); ++i) {
-    auto op = kernel->static_ops_[i];
-    slice_ios_[i].op = op;
-    slice_ios_[i].slice = op->reuse_dep_;
-    EXCEPTION_IF(op->reuse_dep_ < 0 && !static_cast<NDAccess *>(op)->IsSupportView(),
-                 "concat output expect viewload/viewstore or load/store");
+}
+
+ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::vector<NDObject *> &objects)
+    : SchGenHelper(kernel), concat_(concat) {
+  constexpr int kInvalidDomain = -1;
+  constexpr int kConcatDomain = -2;
+  constexpr int kSliceMergeDomain = -3;
+  for (auto op : objects) {
+    op->reuse_dep_ = kInvalidDomain;
   }
-  load_num_ = kernel->load_num_;
-  // Reject shared inputs: concat slice loads consumed by non-concat ops (e.g. mul)
-  // would be referenced by programs of other slices without being loaded.
-  for (auto &slice : slices) {
-    auto *load = slice.input;
-    if (!load->IsLoad()) continue;
-    for (auto *op : kernel->objects_) {
-      if (op == concat_ || op->IsLoad() || op->IsStore() || op->reuse_dep_ >= 0) continue;
-      bool shared = false;
-      op->ForInput([&](NDObject *in) { if (in == load) shared = true; });
-      EXCEPTION_IF(shared, "concat input shared by non-concat op is unsupported");
+  concat->reuse_dep_ = kConcatDomain;
+  std::vector<NDObject *> stack;
+  int slice_cnt = concat->slices_.size();
+  slice_ios_.resize(slice_cnt);
+  for (int i = 0; i < slice_cnt; ++i) {
+    auto &s = slice_ios_[i];
+    TravelInput(stack, concat->slices_[i].input, [&s, i, kInvalidDomain, kSliceMergeDomain](NDObject *in) {
+      if (in->IsLoad()) {
+        s.ios.push_back(in);
+        s.load_num++;
+      }
+      in->reuse_dep_ = in->reuse_dep_ == kInvalidDomain ? i : kSliceMergeDomain;
+      return true;
+    });
+  }
+  std::vector<NDObject *> pend_load;
+  for (size_t k = 0; k < kernel->load_num_; ++k) {
+    kernel->static_ops_[k]->xbuf_ = k;
+  }
+  for (size_t k = kernel->load_num_; k < kernel->static_ops_.size(); ++k) {
+    auto store = kernel->static_ops_[k];
+    store->xbuf_ = k;
+    int joined = kInvalidDomain;
+    TravelInput(stack, store, [&joined, &pend_load, kInvalidDomain](NDObject *in) -> bool {
+      if (in->IsLoad()) {
+        pend_load.push_back(in);
+      }
+      if (auto dom = in->reuse_dep_; dom != kInvalidDomain) {
+        if (joined == kInvalidDomain) {
+          joined = dom;
+        } else {
+          EXCEPTION_IF(joined != dom, "concat multi domain depend");
+        }
+        return false;
+      }
+      return true;
+    });
+    store->reuse_dep_ = joined;
+    if (joined == kConcatDomain) {
+      for (auto &s : slice_ios_) {
+        s.ios.push_back(store);
+      }
+    } else if (joined >= 0) {
+      slice_ios_[joined].ios.push_back(store);
+      for (size_t i = 0; i < slice_ios_.size(); ++i) {
+        if (i != static_cast<size_t>(joined)) {
+          slice_ios_[i].deads.push_back(store);
+        }
+      }
+    } else {
+      DvmException("store is not joined");  // TODO: add seperate path if joined is invalid
+    }
+    if (!pend_load.empty()) {
+      for (auto op : pend_load) {
+        EXCEPTION_IF(op->reuse_dep_ != kInvalidDomain && op->reuse_dep_ != joined, "concat multi domain depend");
+        op->reuse_dep_ = joined;
+      }
+      size_t pend_num = pend_load.size();
+      if (joined == kConcatDomain) {
+        for (auto &s : slice_ios_) {
+          s.ios.insert(s.ios.end(), pend_load.begin(), pend_load.end());
+          s.load_num += pend_num;
+        }
+      } else {
+        auto &s = slice_ios_[joined];
+        s.ios.insert(s.ios.end(), pend_load.begin(), pend_load.end());
+        s.load_num += pend_num;
+      }
+      pend_load.clear();
+    }
+  }
+  for (auto &s : slice_ios_) {
+    std::sort(s.ios.begin(), s.ios.end(), [](NDObject *a, NDObject *b) { return a->xbuf_ < b->xbuf_; });
+    for (size_t i = 0; i < s.ios.size(); ++i) {
+      if (s.ios[i]->reuse_dep_ != kConcatDomain) {
+        s.slice_mask |= 1ull << i;
+      }
     }
   }
 }
@@ -2132,16 +2193,21 @@ int64_t ConcatSchGen::CodeGen() {
   SaveSpace();
   DimArray size = concat_->nd_.dims();
   int cat_dim = concat_->CatDim();
-  auto &static_ops = kernel_->static_ops_;
   for (auto &s : slice_ios_) {
-    if (s.slice < 0) {
-      s.slice = s.op->nd_[cat_dim] == 1 ? -2 : -1;
-      if (auto acc = static_cast<NDAccess *>(s.op); acc->stride_ == nullptr) {
+    s.bcast_mask = 0;
+    for (size_t j = 0; j < s.ios.size(); ++j) {
+      if ((s.slice_mask >> j) & 1) continue;  // concat input partition: skip
+      auto acc = static_cast<NDAccess *>(s.ios[j]);
+      if (acc->nd_[cat_dim] == 1) {
+        s.bcast_mask |= (1ULL << j);
+      }
+      if (acc->stride_ == nullptr) {
         AllocStride(acc);
       }
     }
   }
   int dup_num = concat_->slices_.size();
+  auto &static_ops = kernel_->static_ops_;
   VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num), size[cat_dim]);
   size_t cat_offset = 0;
   auto ctx = concat_->PartialInit();
@@ -2151,30 +2217,26 @@ int64_t ConcatSchGen::CodeGen() {
     size[cat_dim] = cat_size;
     concat_->PartialSet(slice.input);
     ApplySubSpace(size);
-    static_ops.clear();
-    for (size_t i = 0; i < load_num_; ++i) {
-      auto &s = slice_ios_[i];
-      if (s.slice < 0) {
-        auto load = static_cast<NDAccess *>(s.op);
-        load->ViewUpdate(s.slice == -1 ? (*load->stride_)[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
-      } else if (s.slice != cat_idx) {
-        continue;
+    helper.Reset();
+    auto &entry = slice_ios_[cat_idx];
+    for (size_t j = 0; j < entry.ios.size(); ++j) {
+      auto acc = static_cast<NDAccess *>(entry.ios[j]);
+      if (!((entry.slice_mask >> j) & 1)) {
+        auto bcast = (entry.bcast_mask >> j) & 1;
+        acc->ViewUpdate(bcast ? 0 : (*acc->stride_)[cat_dim] * static_cast<uint64_t>(cat_offset));
       }
-      static_ops.push_back(s.op);
     }
-    kernel_->load_num_ = static_ops.size();
-    for (size_t i = load_num_; i < slice_ios_.size(); ++i) {
-      auto &s = slice_ios_[i];
-      if (s.slice < 0) {
-        auto store = static_cast<NDAccess *>(s.op);
-        store->ViewUpdate(s.slice == -1 ? (*store->stride_)[cat_dim] * static_cast<uint64_t>(cat_offset) : 0);
-      } else if (s.slice != cat_idx) {
-        continue;
-      }
-      static_ops.push_back(s.op);
+    for (auto op : entry.deads) {
+      op->flags_ |= OBJ_FLAG_DEAD;
     }
+    std::swap(static_ops, entry.ios);
+    kernel_->load_num_ = entry.load_num;
     cat_offset += cat_size;
-    helper.Append(cat_size);
+    helper.DoAppend(cat_size);
+    std::swap(static_ops, entry.ios);
+    for (auto op : entry.deads) {
+      op->flags_ &= ~OBJ_FLAG_DEAD;
+    }
   }
   concat_->PartialRecover(ctx);
   helper.Submit();

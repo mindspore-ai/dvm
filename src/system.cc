@@ -167,6 +167,14 @@ const SocConfig soc_configs[] = {
   {"Ascend950DT_95A2", kAscend950DT_95A2, kAiCore_C310, 36, 128 * MB},
 };
 
+static void GetAclCoreCount(int device_id, uint64_t *aic, uint64_t *aiv) {
+  int64_t reported_aic = 0;
+  auto aic_ret = aclGetDeviceCapability(device_id, ACL_DEVICE_INFO_AI_CORE_NUM, &reported_aic);
+  if (aic_ret != ACL_SUCCESS || reported_aic <= 0) return;
+  *aic = static_cast<uint64_t>(reported_aic);
+  *aiv = *aic * 2;
+}
+
 const char *AiCoreArchName(AiCoreArch arch) {
   static const char *arch_names[] = {"AscendC220", "AscendC310"};
   return arch_names[arch];
@@ -353,6 +361,7 @@ void System::DoInit() {
     code_launch_ = CodeLaunchNone;
     return;
   }
+  GetAclCoreCount(device_id, &cube_core_num_, &vector_core_num_);
   inited_ = true;
 #ifdef VK_SIM_MODEL
   void *sim_handle = dlopen("libruntime_camodel.so", RTLD_NOW | RTLD_GLOBAL);

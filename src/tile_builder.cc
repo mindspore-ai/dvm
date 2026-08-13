@@ -509,6 +509,7 @@ void VectorBuilder::CodeGen(int64_t tile_num, int64_t block_num) {
     }
     insn += size;
   }
+  *insn++ = 0;
   code_.data_size_ = reinterpret_cast<uint8_t *>(insn) - code_.data_;
   auto tile_per_block = (tile_num + block_num - 1) / block_num;
   code_.block_dim_ = (tile_num + tile_per_block - 1) / tile_per_block;

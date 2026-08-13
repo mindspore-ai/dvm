@@ -15,9 +15,7 @@
  */
 
 #include <cstdlib>
-#include <queue>
 #include <unordered_set>
-#include <functional>
 #include "xkernel.h"
 #include "comm.h"
 #include "msprof.h"

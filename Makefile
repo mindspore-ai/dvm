@@ -1,5 +1,5 @@
 VPATH = ./src:./include
-OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o pass.o vf_fusion.o msprof.o system.o comm.o
+OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o schedule.o pass.o vf_fusion.o msprof.o system.o comm.o
 
 CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include -I${ASCEND_PATH}/pkg_inc ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
 CFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all -Wno-array-bounds

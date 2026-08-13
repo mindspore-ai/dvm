@@ -1133,6 +1133,7 @@ class SplitOp : public NDObject {
     nd_.data = &ndd_;
   }
 
+  void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
@@ -1143,6 +1144,7 @@ class SplitOp : public NDObject {
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
   int slice_idx_;
+  uint32_t norm_sync_{0};
   SplitOpM *main_;
   ShapeWithRef shape_;
   NDSpaceData ndd_;
@@ -1166,6 +1168,7 @@ class SplitOpM : public SplitOp {
     siblings_.push_back(sib);
     return sib;
   }
+  void DoNormalize(std::vector<NDObject *> &run_ops);
 
   int split_axis_ref_;
   int split_dim_{0};

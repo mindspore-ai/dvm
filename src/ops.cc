@@ -1869,7 +1869,25 @@ void SplitOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
   }
 }
 
+void SplitOp::Normalize(std::vector<NDObject *> &run_ops) {
+  auto sync = norm_sync_;
+  norm_sync_ += 2;
+  if (sync == main_->norm_sync_) {
+    main_->norm_sync_++;
+    main_->DoNormalize(run_ops);
+  }
+}
+
 void SplitOpM::Normalize(std::vector<NDObject *> &run_ops) {
+  if ((norm_sync_ & 1) == 0) {
+    norm_sync_ += 2;
+    DoNormalize(run_ops);
+  } else {
+    norm_sync_++;
+  }
+}
+
+void SplitOpM::DoNormalize(std::vector<NDObject *> &run_ops) {
   int dim_size = static_cast<int>(lhs_->shape_ref_->size);
   int axis = split_axis_ref_ >= 0 ? split_axis_ref_ : split_axis_ref_ + dim_size;
   split_dim_ = dim_size - 1 - axis;

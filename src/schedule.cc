@@ -359,6 +359,7 @@ int64_t FractalSchGen::CodeGen() {
   return result;
 }
 
+namespace {
 template <typename T>
 void TravelInput(std::vector<NDObject *> &stack, NDObject *root, const T &func) {
   stack.push_back(root);
@@ -371,11 +372,22 @@ void TravelInput(std::vector<NDObject *> &stack, NDObject *root, const T &func) 
   }
 }
 
+uint64_t AddPengLoad(std::vector<NDObject *> &ios, const std::vector<NDObject *> &pend_load) {
+  uint64_t num = 0;
+  for (auto op : pend_load) {
+    if (std::find(ios.begin(), ios.end(), op) == ios.end()) {
+        ios.push_back(op);
+        num++;
+    }
+  }
+  return num;
+}
+}
+
 ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::vector<NDObject *> &objects)
     : SchGenHelper(kernel), concat_(concat) {
   constexpr int kInvalidDomain = -1;
   constexpr int kConcatDomain = -2;
-  constexpr int kSliceMergeDomain = -3;
   for (auto op : objects) {
     op->reuse_dep_ = kInvalidDomain;
   }
@@ -385,12 +397,12 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
   slice_ios_.resize(slice_cnt);
   for (int i = 0; i < slice_cnt; ++i) {
     auto &s = slice_ios_[i];
-    TravelInput(stack, concat->slices_[i].input, [&s, i, kInvalidDomain, kSliceMergeDomain](NDObject *in) {
+    TravelInput(stack, concat->slices_[i].input, [&s, i](NDObject *in) {
       if (in->IsLoad()) {
         s.ios.push_back(in);
         s.load_num++;
       }
-      in->reuse_dep_ = in->reuse_dep_ == kInvalidDomain ? i : kSliceMergeDomain;
+      in->reuse_dep_ = i;
       return true;
     });
   }
@@ -409,10 +421,9 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
       if (auto dom = in->reuse_dep_; dom != kInvalidDomain) {
         if (joined == kInvalidDomain) {
           joined = dom;
-        } else {
-          EXCEPTION_IF(joined != dom, "concat multi domain depend");
+          return false;
         }
-        return false;
+        EXCEPTION_IF(joined != dom && !in->IsLoad(), "concat multi domain depend");
       }
       return true;
     });
@@ -433,19 +444,17 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
     }
     if (!pend_load.empty()) {
       for (auto op : pend_load) {
-        EXCEPTION_IF(op->reuse_dep_ != kInvalidDomain && op->reuse_dep_ != joined, "concat multi domain depend");
+        EXCEPTION_IF(
+          (op->reuse_dep_ >= 0 && joined == kConcatDomain) || (op->reuse_dep_ == kConcatDomain && joined >= 0),
+          "concat multi domain depend");
         op->reuse_dep_ = joined;
       }
-      size_t pend_num = pend_load.size();
       if (joined == kConcatDomain) {
         for (auto &s : slice_ios_) {
-          s.ios.insert(s.ios.end(), pend_load.begin(), pend_load.end());
-          s.load_num += pend_num;
+          s.load_num += AddPengLoad(s.ios, pend_load);;
         }
       } else {
-        auto &s = slice_ios_[joined];
-        s.ios.insert(s.ios.end(), pend_load.begin(), pend_load.end());
-        s.load_num += pend_num;
+        slice_ios_[joined].load_num += AddPengLoad(slice_ios_[joined].ios, pend_load);;
       }
       pend_load.clear();
     }
@@ -506,9 +515,6 @@ int64_t ConcatSchGen::CodeGen() {
     cat_offset += cat_size;
     helper.DoAppend(cat_size);
     std::swap(static_ops, entry.ios);
-    for (auto op : entry.deads) {
-      op->flags_ &= ~OBJ_FLAG_DEAD;
-    }
   }
   concat_->PartialRecover(ctx);
   helper.Submit();
@@ -519,63 +525,85 @@ int64_t ConcatSchGen::CodeGen() {
 SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vector<NDObject *> &objects)
     : SchGenHelper(kernel), split_(split) {
   ASSERT(split_->slice_idx_ == 0);
+  constexpr int kInvalidDomain = -1;
+  constexpr int kSplitDomain = -2;
+  constexpr int kSliceDomain = -3;
   for (auto op : objects) {
-    if (op->IsLoad()) {
-      op->reuse_dep_ = -1;
-    } else if (op->obj_id_ == kSplitOp) {
-      op->reuse_dep_ = static_cast<SplitOp *>(op)->slice_idx_;
-    } else {
-      int input_idx = -1;
-      op->ForInput([&input_idx](NDObject *in) {
-        if (in->reuse_dep_ >= 0) {
-          input_idx = in->reuse_dep_;
+    op->reuse_dep_ = kInvalidDomain;
+  }
+  std::vector<NDObject *> stack;
+  std::vector<NDObject *> pend_load;
+  TravelInput(stack, split->lhs_, [&pend_load, kSplitDomain](NDObject *in) {
+    in->reuse_dep_ = kSplitDomain;
+    if (in->IsLoad()) {
+      pend_load.push_back(in);
+    }
+    return true;
+  });
+  slice_ios_.resize(split->siblings_.size());
+  for (int i = 0; i < static_cast<int>(split->siblings_.size()); ++i) {
+    split->siblings_[i]->reuse_dep_ = i;
+    slice_ios_[i].ios = pend_load;
+    slice_ios_[i].load_num = pend_load.size();
+  }
+  pend_load.clear();
+  for (uint64_t i = kernel->load_num_; i < kernel->static_ops_.size(); ++i) {
+    auto store = kernel->static_ops_[i];
+    int joined = kInvalidDomain;
+    TravelInput(stack, store, [&](NDObject *in) -> bool {
+      auto dom = in->reuse_dep_;
+      if (in->IsLoad() && dom != kSplitDomain) {
+        pend_load.push_back(in);
+      }
+      if (dom != kInvalidDomain && dom != kSliceDomain) {
+        if (joined == kInvalidDomain) {
+          joined = dom;
+          return false;
         }
-      });
-      op->reuse_dep_ = input_idx;
+        EXCEPTION_IF(joined != dom, "split multi domain depend");
+      }
+      return true;
+    });
+    store->reuse_dep_ = joined;
+    if (joined == kSplitDomain) {
+      for (auto &s : slice_ios_) {
+        s.ios.push_back(store);
+      }
+    } else if (joined >= 0) {
+      slice_ios_[joined].ios.push_back(store);
+      for (size_t i = 0; i < slice_ios_.size(); ++i) {
+        if (i != static_cast<size_t>(joined)) {
+          slice_ios_[i].deads.push_back(store);
+        }
+      }
+    } else {
+      DvmException("store is not joined");  // TODO: add seperate path if joined is invalid
+    }
+    if (!pend_load.empty()) {
+      for (auto op : pend_load) {
+        op->reuse_dep_ = kSliceDomain;
+      }
+      if (joined == kSplitDomain) {
+        for (auto &s : slice_ios_) {
+          s.load_num += AddPengLoad(s.ios, pend_load);
+        }
+      } else {
+        slice_ios_[joined].load_num += AddPengLoad(slice_ios_[joined].ios, pend_load);
+      }
+      pend_load.clear();
     }
   }
-  // TODO: side away load/store
-  slice_ios_.resize(kernel->static_ops_.size());
-  for (size_t i = 0; i < slice_ios_.size(); ++i) {
-    auto op = kernel->static_ops_[i];
-    slice_ios_[i].op = op;
-    slice_ios_[i].slice = op->reuse_dep_;
-    EXCEPTION_IF(op->reuse_dep_ < 0 && !static_cast<NDAccess *>(op)->IsSupportView(),
-                 "split input expect viewload/viewstore or load/store");
+  for (uint64_t i = 0; i < kernel->static_ops_.size(); ++i) {
+    kernel->static_ops_[i]->xbuf_ = i;
   }
-  // Reject shared/cross-slice consumption in one pass:
-  // - shared input: an op consuming both the split input load and a split output
-  //   block (directly or via intermediate ops) reads a ViewUpdate-polluted load;
-  //   ops reading only loads (e.g. compare) run before split and are safe
-  // - cross-slice: an op (e.g. mul) consuming split blocks from different slices
-  //   would be assigned to one slice, leaving the other blocks unloaded
-  // reuse_dep_ is already propagated by slice above: -1 for loads, slice idx for
-  // split blocks, inherited from inputs for intermediate ops, so in->reuse_dep_ >= 0
-  // identifies split-chain nodes at any depth.
-  auto *load = split_->lhs_;
-  for (auto *op : kernel->objects_) {
-    if (op == split_ || op->IsLoad() || op->IsStore() || op->obj_id_ == kSplitOp) continue;
-    bool uses_load = false;
-    bool uses_split_out = false;
-    int first_slice = -1;
-    bool cross_slice = false;
-    op->ForInput([&](NDObject *in) {
-      if (load->IsLoad() && in == load) {
-        uses_load = true;
+  for (auto &s : slice_ios_) {
+    std::sort(s.ios.begin(), s.ios.end(), [](NDObject *a, NDObject *b) { return a->xbuf_ < b->xbuf_; });
+    for (size_t i = 0; i < s.ios.size(); ++i) {
+      if (s.ios[i]->reuse_dep_ != kSplitDomain) {
+        s.slice_mask |= 1ull << i;
       }
-      if (in->reuse_dep_ >= 0) {  // split-chain node (block or intermediate)
-        uses_split_out = true;
-        if (first_slice == -1) {
-          first_slice = in->reuse_dep_;
-        } else if (in->reuse_dep_ != first_slice) {
-          cross_slice = true;
-        }
-      }
-    });
-    EXCEPTION_IF(uses_load && uses_split_out,
-                 "split input shared by op that also consumes split output is unsupported");
-    EXCEPTION_IF(cross_slice,
-                 "op consuming split blocks from different slices is unsupported");
+    }
+    EXCEPTION_IF(s.slice_mask >> s.load_num == 0, "split has no slice store");
   }
 }
 
@@ -584,53 +612,48 @@ int64_t SplitSchGen::CodeGen() {
   SaveSpace();
   int split_dim = split_->split_dim_;
   for (auto &s : slice_ios_) {
-    if (s.slice < 0) {
-      s.slice = s.op->nd_[split_dim] == 1 ? -2 : -1;
-      if (auto acc = static_cast<NDAccess *>(s.op); acc->stride_ == nullptr) {
+    s.bcast_mask = 0;
+    for (size_t j = 0; j < s.ios.size(); ++j) {
+      if ((s.slice_mask >> j) & 1) continue;
+      auto acc = static_cast<NDAccess *>(s.ios[j]);
+      if (acc->nd_[split_dim] == 1) {
+        s.bcast_mask |= 1ull << j;
+      }
+      if (acc->stride_ == nullptr) {
         AllocStride(acc);
       }
     }
   }
   int slice_num = static_cast<int>(split_->siblings_.size());
   int64_t split_dim_size = split_->lhs_->nd_[split_dim];
-  VectorDupHelper helper(kernel_, slice_num, ReserveReloc(slice_ios_.size() * slice_num), split_dim_size);
-  size_t load_num = kernel_->load_num_;
   auto &static_ops = kernel_->static_ops_;
+  VectorDupHelper helper(kernel_, slice_num, ReserveReloc(static_ops.size() * slice_num), split_dim_size);
   int64_t split_offset = 0;
   DimArray size = split_->nd_.dims();
   for (int slice_idx = 0; slice_idx < slice_num; ++slice_idx) {
-    int64_t split_size = slice_idx < slice_num - 1 ? split_->split_size_ : split_dim_size - split_->split_size_ * (slice_num - 1);
+    int64_t split_size =
+      slice_idx < slice_num - 1 ? split_->split_size_ : split_dim_size - split_->split_size_ * (slice_num - 1);
     size[split_dim] = split_size;
     ApplySubSpace(size);
     helper.Reset();
-    static_ops.resize(load_num);
-    for (size_t i = 0; i < load_num; ++i) {
-      if (auto &s = slice_ios_[i]; s.slice < 0) {
-        auto load = static_cast<NDAccess *>(s.op);
-        load->ViewUpdate(s.slice == -1 ? (*load->stride_)[split_dim] * static_cast<uint64_t>(split_offset) : 0);
+    auto &entry = slice_ios_[slice_idx];
+    for (size_t j = 0; j < entry.ios.size(); ++j) {
+      auto acc = static_cast<NDAccess *>(entry.ios[j]);
+      if (!((entry.slice_mask >> j) & 1)) {
+        auto bcast = (entry.bcast_mask >> j) & 1;
+        acc->ViewUpdate(bcast ? 0 : (*acc->stride_)[split_dim] * static_cast<uint64_t>(split_offset));
       }
     }
-    for (size_t i = load_num; i < slice_ios_.size(); ++i) {
-      auto &s = slice_ios_[i];
-      if (s.slice < 0) {
-        static_ops.push_back(s.op);
-        auto store = static_cast<NDAccess *>(s.op);
-        store->ViewUpdate(s.slice == -1 ? (*store->stride_)[split_dim] * static_cast<uint64_t>(split_offset) : 0);
-      } else if (s.slice == slice_idx) {
-        static_ops.push_back(s.op);
-        s.op->flags_ &= ~OBJ_FLAG_DEAD;
-      } else {
-        s.op->flags_ |= OBJ_FLAG_DEAD;
-      }
+    for (auto op : entry.deads) {
+      op->flags_ |= OBJ_FLAG_DEAD;
     }
+    std::swap(static_ops, entry.ios);
+    kernel_->load_num_ = entry.load_num;
     split_offset += split_size;
     helper.DoAppend(split_size);
+    std::swap(static_ops, entry.ios);
   }
   helper.Submit();
-  static_ops.resize(load_num);
-  for (size_t i = load_num; i < slice_ios_.size(); ++i) {
-    static_ops.push_back(slice_ios_[i].op);
-  }
   ResetStrides();
   return 0;
 }

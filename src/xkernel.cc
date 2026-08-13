@@ -15,6 +15,7 @@
  */
 
 #include <cstdlib>
+#include <algorithm>
 #include <unordered_set>
 #include "xkernel.h"
 #include "comm.h"

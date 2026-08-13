@@ -115,8 +115,11 @@ class SplitSchGen : public SchGenHelper {
  protected:
   SplitOpM *split_;
   struct SliceIO {
-    NDObject *op;
-    int slice;
+    std::vector<NDObject *> ios;
+    std::vector<NDObject *> deads;
+    size_t load_num{0};
+    uint64_t slice_mask{0};
+    uint64_t bcast_mask{0};
   };
   std::vector<SliceIO> slice_ios_;
 };

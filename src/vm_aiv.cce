@@ -1520,8 +1520,8 @@ __aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
   set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
   pipe_barrier(PIPE_V);
-  uint64_t row_stride = op.item_size == 2 || op.w_fractal <= 8 ? 32 : 64;
-  uint64_t iter_dst_size = op.h_fractal * row_stride;
+  const uint64_t row_stride = op.row_stride_blocks * 32;
+  const uint64_t iter_dst_size = op.is_width_iter ? op.w_fractal * op.item_size : op.h_fractal * row_stride;
   uint32_t coord[6] = {0};
   uint64_t idx = op.loop_depth;
   uint64_t pingpong = 0;

@@ -236,7 +236,7 @@ int64_t FractalSchGen::CodeGen() {
   class FractalDunGen {
    public:
     FractalDunGen(SchGenHelper &gen, int h_idx, uint64_t item_size)
-        : gen_(gen), space_(gen.kernel_->DimSpace()), h_idx_(h_idx) {
+        : gen_(gen), space_(gen.kernel_->DimSpace()), item_size_(item_size), h_idx_(h_idx) {
       w_fractal_ = g_system.Arch() == AiCoreArch::kAiCore_C310 ? 128 : 16;
       h_fractal_ = item_size == 2 ? 16 : 8;
       int64_t w_size = space_[0];
@@ -246,6 +246,7 @@ int64_t FractalSchGen::CodeGen() {
       h_body_ = h_size / h_fractal_;
       h_tail_ = h_size - h_body_ * h_fractal_;
     }
+
     void CodeGen(uint64_t fractal_mask) {
       int64_t w_npart = w_body_;
       int64_t h_npart = h_body_;
@@ -307,6 +308,155 @@ int64_t FractalSchGen::CodeGen() {
       helper.Submit();
     }
 
+    struct RectPart {
+      int64_t element_count;
+      int64_t tile_size;
+      int64_t group_count;
+      int64_t fractal_offset;
+    };
+
+    struct PartOffset {
+      int factor_dim;
+      int part_dim;
+      int64_t offset;
+    };
+
+    static int64_t SelectExactDivisor(int64_t value, int64_t limit) {
+      if (value <= 1 || limit <= 1) {
+        return 1;
+      }
+      for (int64_t candidate = std::min(value, limit); candidate > 1;) {
+        const int64_t quotient = value / candidate;
+        if (value % candidate == 0) {
+          return candidate;
+        }
+        // Skip to just before the current value / candidate quotient interval.
+        candidate = value / (quotient + 1);
+      }
+      return 1;
+    }
+
+    static std::vector<RectPart> BuildBodyTailParts(int64_t body_count, int64_t tail_elements,
+                                                    int64_t full_element_count, int64_t tile_size) {
+      std::vector<RectPart> parts;
+      parts.reserve(2);
+      if (tail_elements) {
+        parts.push_back({tail_elements, 1, 1, body_count});
+      }
+      if (body_count) {
+        ASSERT(body_count % tile_size == 0);
+        parts.push_back({full_element_count, tile_size, body_count / tile_size, 0});
+      }
+      return parts;
+    }
+
+    void CodeGenRect(uint64_t fractal_mask) {
+      // Keep the UB row stride 32B aligned and target a 512B continuous MTE3.
+      // Exact H/W divisors make every body Tile uniform, so only element tails
+      // need separate programs.
+      constexpr int64_t target_row_bytes = 512;
+      const int64_t fractal_bytes = w_fractal_ * h_fractal_ * item_size_;
+      const int64_t tile_fractal_limit = gen_.kernel_->AnalyzeTileSizeLimit() / (w_fractal_ * h_fractal_);
+      const int64_t ub_fractal_capacity = g_system.LocalMemSize() / fractal_bytes;
+      const int64_t fractal_row_bytes = w_fractal_ * item_size_;
+      const int64_t max_w_inner =
+        std::max<int64_t>(1, std::min(w_body_, std::min(tile_fractal_limit, target_row_bytes / fractal_row_bytes)));
+      int64_t w_inner = SelectExactDivisor(w_body_, max_w_inner);
+      const int64_t max_h_inner = std::max<int64_t>(1, std::min(h_body_, tile_fractal_limit / w_inner));
+      const int64_t w_fractal_count = w_body_ + (w_tail_ ? 1 : 0);
+      const int64_t h_fractal_count = h_body_ + (h_tail_ ? 1 : 0);
+      int64_t h_inner = SelectExactDivisor(h_body_, max_h_inner);
+      const auto rect_ub_fractals = [](int64_t h, int64_t w) { return 2 * h * w + 3 * h + 1; };
+      while (rect_ub_fractals(h_inner, w_inner) > ub_fractal_capacity) {
+        h_inner = SelectExactDivisor(h_body_, h_inner - 1);
+        if (h_inner == 1 && rect_ub_fractals(h_inner, w_inner) > ub_fractal_capacity) {
+          w_inner = SelectExactDivisor(w_body_, w_inner - 1);
+        }
+      }
+
+      const auto h_parts = BuildBodyTailParts(h_body_, h_tail_, h_fractal_, h_inner);
+      const auto w_parts = BuildBodyTailParts(w_body_, w_tail_, w_fractal_, w_inner);
+      gen_.SpaceInit();
+      gen_.SpaceSplit(0, w_fractal_count, w_fractal_);
+      h_idx_ += 1;
+      gen_.SpaceTrans(1, h_idx_);
+      gen_.SpaceSplit(1, h_fractal_count, h_fractal_);
+
+      constexpr int h_part_dim = 2;
+      gen_.SpaceSplit(h_part_dim, CeilDiv(h_fractal_count, h_inner), h_inner);
+      const int w_part_dim = h_idx_ + 2;
+      gen_.SpaceSplit(w_part_dim, CeilDiv(w_fractal_count, w_inner), w_inner);
+      const int h_group_dim = w_part_dim;
+      const int w_group_dim = w_part_dim + 1;
+      gen_.SpaceTrans(h_part_dim + 1, w_part_dim);
+      // Use [width element, width tile, height element, height tile] for every program.
+      gen_.SpaceTrans(2, 3);
+      gen_.SpaceTrans(1, 2);
+      gen_.SaveSpace();
+      const DimArray rect_size = gen_.kernel_->DimSpace();
+
+      part_base_ = 1;
+      for (size_t i = FractalRowMajorAxes::kRank; i < rect_size.size(); ++i) {
+        if (static_cast<int>(i) != h_group_dim && static_cast<int>(i) != w_group_dim) {
+          part_base_ *= rect_size[i];
+        }
+      }
+
+      const int program_count = static_cast<int>(h_parts.size() * w_parts.size());
+      VectorDupHelper helper(gen_.kernel_, program_count,
+                             gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * program_count),
+                             h_fractal_count * w_fractal_count);
+      SetFractalRowMajor(fractal_mask, gen_.kernel_->static_ops_);
+      for (const auto &h : h_parts) {
+        for (const auto &w : w_parts) {
+          const bool lead_folded = w.element_count == 1;
+          if (lead_folded) {
+            ClearFractal(fractal_mask, gen_.kernel_->static_ops_);
+            ClearFractalRowMajor(fractal_mask, gen_.kernel_->static_ops_);
+          }
+          DimArray part_size = rect_size;
+          part_size[FractalRowMajorAxes::kWidthElement] = w.element_count;
+          part_size[FractalRowMajorAxes::kHeightElement] = h.element_count;
+          part_size[FractalRowMajorAxes::kHeightTile] = h.tile_size;
+          part_size[FractalRowMajorAxes::kWidthTile] = w.tile_size;
+          part_size[h_group_dim] = h.group_count;
+          part_size[w_group_dim] = w.group_count;
+          gen_.ApplySubSpace(part_size);
+          for (const auto &record : gen_.space_records_) {
+            record.ndd->strides.resize(0);
+          }
+          UpdateViewOffset({FractalRowMajorAxes::kHeightElement, FractalRowMajorAxes::kHeightTile, h.fractal_offset},
+                           {FractalRowMajorAxes::kWidthElement, FractalRowMajorAxes::kWidthTile, w.fractal_offset});
+          const uint64_t part_fractal_count = h.tile_size * h.group_count * w.tile_size * w.group_count;
+          helper.Append(part_fractal_count, part_base_ * part_fractal_count);
+          if (lead_folded) {
+            SetFractal(fractal_mask, gen_.kernel_->static_ops_);
+            SetFractalRowMajor(fractal_mask, gen_.kernel_->static_ops_);
+          }
+        }
+      }
+      ClearFractalRowMajor(fractal_mask, gen_.kernel_->static_ops_);
+      helper.Submit();
+    }
+
+    void UpdateViewOffset(PartOffset h, PartOffset w) {
+      for (auto *op : gen_.kernel_->static_ops_) {
+        auto *acc = static_cast<NDAccess *>(op);
+        const auto &stride = *acc->stride_;
+        const uint32_t bcast_mask = gen_.GetBCast(op);
+        uint64_t offset = 0;
+        // A broadcast dimension has no independent GM tile. Keep its base address
+        // while advancing the output and non-broadcast inputs to the next tile.
+        if ((bcast_mask & (1u << h.factor_dim)) == 0) {
+          offset += stride[h.part_dim] * static_cast<uint64_t>(h.offset);
+        }
+        if ((bcast_mask & (1u << w.factor_dim)) == 0) {
+          offset += stride[w.part_dim] * static_cast<uint64_t>(w.offset);
+        }
+        acc->ViewUpdate(offset);
+      }
+    }
+
     void GenDup(VectorDupHelper &helper, int64_t h_part_off, int64_t w_part_off, int64_t w_fac_size, int64_t h_fac_size,
                 int64_t h_part_size, int64_t w_part_size) {
       constexpr int w_factor_dim = 0;
@@ -318,36 +468,40 @@ int64_t FractalSchGen::CodeGen() {
       size_[h_part_dim] = h_part_size;
       size_[w_part_dim] = w_part_size;
       gen_.ApplySubSpace(size_);
-      for (auto op : gen_.kernel_->static_ops_) {
-        auto acc = static_cast<NDAccess *>(op);
-        auto &stride = *acc->stride_;
-        const uint32_t mask = gen_.GetBCast(op);
-        uint64_t offset = 0;
-        if ((mask & (1u << h_factor_dim)) == 0) {
-          offset += stride[h_part_dim] * static_cast<uint64_t>(h_part_off);
-        }
-        if ((mask & (1u << w_factor_dim)) == 0) {
-          offset += stride[w_part_dim] * static_cast<uint64_t>(w_part_off);
-        }
-        acc->ViewUpdate(offset);
-      }
+      UpdateViewOffset({h_factor_dim, h_part_dim, h_part_off}, {w_factor_dim, w_part_dim, w_part_off});
       uint64_t part_num = h_part_size * w_part_size;
       helper.Append(part_num, part_base_ * part_num);
-    };
+    }
 
     static void SetFractal(uint64_t mask, const std::vector<NDObject *> &objects) {
       while (mask) {
-        auto idx = 63 - __builtin_clzl(mask);
-        mask &= ~(1ul << idx);
+        auto idx = 63 - __builtin_clzll(mask);
+        mask &= ~(1ull << idx);
         objects[idx]->flags_ |= OBJ_FLAG_VIEW_LOAD_FRACTAL;
       }
     }
 
     static void ClearFractal(uint64_t mask, const std::vector<NDObject *> &objects) {
       while (mask) {
-        auto idx = 63 - __builtin_clzl(mask);
-        mask &= ~(1ul << idx);
+        auto idx = 63 - __builtin_clzll(mask);
+        mask &= ~(1ull << idx);
         objects[idx]->flags_ &= ~OBJ_FLAG_VIEW_LOAD_FRACTAL;
+      }
+    }
+
+    static void SetFractalRowMajor(uint64_t mask, const std::vector<NDObject *> &objects) {
+      while (mask) {
+        auto idx = 63 - __builtin_clzll(mask);
+        mask &= ~(1ull << idx);
+        objects[idx]->flags_ |= OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR;
+      }
+    }
+
+    static void ClearFractalRowMajor(uint64_t mask, const std::vector<NDObject *> &objects) {
+      while (mask) {
+        auto idx = 63 - __builtin_clzll(mask);
+        mask &= ~(1ull << idx);
+        objects[idx]->flags_ &= ~OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR;
       }
     }
 
@@ -361,6 +515,7 @@ int64_t FractalSchGen::CodeGen() {
     int64_t h_tail_;
     DimArray size_;
     uint64_t part_base_;
+    uint64_t item_size_;
     int h_idx_;
   };
 
@@ -380,7 +535,11 @@ int64_t FractalSchGen::CodeGen() {
       }
     }
     FractalDunGen gen(*this, h_idx, item_size);
-    gen.CodeGen(fractal_mask);
+    if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
+      gen.CodeGenRect(fractal_mask);
+    } else {
+      gen.CodeGen(fractal_mask);
+    }
     ResetStrides();
   }
   FractalDunGen::ClearFractal(fractal_mask, kernel_->static_ops_);

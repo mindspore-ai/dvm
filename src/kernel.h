@@ -148,6 +148,7 @@ class VectorKernel : public VKernel {
   int MinType() const { return min_type_; }
   uint64_t LeadAlign() const { return lead_align_; }
   const DimArray &DimSpace() const { return dom_->nd_.dims(); }
+  int64_t AnalyzeTileSizeLimit() { return TileSizeLimit(Analyze()); }
 
   uint64_t ReserveCodeSize() const {
     auto res = SIMD_BLOCK_SIZE + objects_.size() * V_INSN_SIZE_MAX + tile_info_.code_reserve;

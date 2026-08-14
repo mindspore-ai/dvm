@@ -90,6 +90,7 @@ struct PropRange {
     ELEMWISE = 0,
     BROADCAST,
     REDUCE,
+    NO_TILING,
   };
   int base;
   int depth;
@@ -113,6 +114,31 @@ struct TileInfo {
   uint32_t ext_ws;
   uint32_t code_reserve;
   uint32_t event_reserve;
+};
+
+struct FractalRowMajorAxes {
+  // NDSpace stores [width element, width tile, height element, height tile].
+  // ViewLoadT folds them as [width element, height element, height tile, width tile].
+  static constexpr int kWidthElement = 0;
+  static constexpr int kWidthTile = 1;
+  static constexpr int kHeightElement = 2;
+  static constexpr int kHeightTile = 3;
+  static constexpr int kRank = 4;
+
+  static constexpr int PhysicalAxis(int semantic_axis) {
+    switch (semantic_axis) {
+      case 0:
+        return kWidthElement;
+      case 1:
+        return kHeightElement;
+      case 2:
+        return kHeightTile;
+      case 3:
+        return kWidthTile;
+      default:
+        return semantic_axis;
+    }
+  }
 };
 
 // shard map(low axis left): [a0, a1,.. s0, s1, s2, ...] -> [a0, a1,...tile[0], tile[1], 1, 1, ..]
@@ -400,6 +426,7 @@ class VectorKernel;
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
 #define OBJ_FLAG_REDUCE_NO_CUM (1u << 30)
 #define OBJ_FLAG_VIEW_LOAD_FRACTAL (1u << 31)
+#define OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR (1u << 28)
 
 class __export__ NDObject {
  public:

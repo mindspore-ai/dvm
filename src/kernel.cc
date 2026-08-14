@@ -748,6 +748,8 @@ class ShapeTilingHelper {
         return true;
       }
       init_tile_num = std::max(CeilDiv(space, max_factor), CeilDiv(size_limit_, tile_size_));
+    } else if (range.affine == PropRange::NO_TILING) {
+      return false;
     }
     int64_t num, tile;
     if (tile_num_ > 1) {  // avoid tile range pad
@@ -878,13 +880,13 @@ void VectorKernel::ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdat
   bool running = true;
   while (running) {
     if (fold.base + 1 > align_depth) {
+      fold.affine = PropRange::ELEMWISE;
       if (shard_ && fold.base > shard_->base) {
         int partial_end = shard_->base + ShardParam::PARTIAL_SIZE;
         fold.depth = fold.base >= partial_end ? fold.base - partial_end + 2 : 1;
         fold.space = DimSpace()[fold.base + 1 - fold.depth];
       } else {
         fold.depth = fold.base + 1;
-        fold.affine = PropRange::ELEMWISE;
         for (auto op : objects_) {
           op->FoldProp(fold);
         }

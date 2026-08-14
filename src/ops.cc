@@ -633,6 +633,9 @@ void NDAccess::TileCollect(NDObject *op, TileInfo &info) {
     return;
   }
   auto &stride = *acc->stride_;
+  if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL)) {
+    info.lead_depth = std::min(info.lead_depth, 1);
+  }
   if (int max_depth = stride.size(); info.lead_depth > max_depth) {
     info.lead_depth = max_depth;
   }
@@ -667,11 +670,19 @@ void NDAccess::FoldProp(NDObject *op, PropRange &range) {
     }
   } else {
     auto &dims = acc->nd_.dims();
-    if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL)) {
-      if (range.base < 2) {
+    if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR)) {
+      if (range.base < FractalRowMajorAxes::kRank) {
         range.depth = 1;
-      } else if (range.depth > range.base - 1) {
-        range.depth = range.base - 1;
+        range.affine = PropRange::NO_TILING;
+      } else if (range.depth > range.base - FractalRowMajorAxes::kRank + 1) {
+        range.depth = range.base - FractalRowMajorAxes::kRank + 1;
+      }
+    } else if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL)) {
+      constexpr int fixed_depth = 2;
+      if (range.base < fixed_depth) {
+        range.depth = 1;
+      } else if (range.depth > range.base - fixed_depth + 1) {
+        range.depth = range.base - fixed_depth + 1;
       }
     }
     for (int d = 1; d < range.depth; ++d) {
@@ -800,43 +811,71 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
   int64_t tail_size = k.GetTailSize(&ndd_);
   DimArray fold_dim, fold_stride;
   int lead_idx, fold_idx, last_dim;
-  if (flags_ & OBJ_FLAG_VIEW_LOAD_FRACTAL) {
-    ASSERT(tail_dim >= 2);
-    fold_dim[0] = ndd_.dims[0];
-    fold_dim[1] = ndd_.dims[1];
-    fold_stride[0] = src_stride_[0];
-    fold_stride[1] = src_stride_[1];
-    lead_idx = 1;
-    last_dim = 1;
+  if (flags_ & OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR) {
+    ASSERT(k.tile_region_.depth == 0 || k.tile_region_.starts[k.tile_region_.depth - 1] >= FractalRowMajorAxes::kRank);
+    constexpr int w_dim = FractalRowMajorAxes::kWidthElement;
+    constexpr int h_dim = FractalRowMajorAxes::kHeightElement;
+    fold_dim[0] = ndd_.dims[w_dim];
+    fold_dim[1] = ndd_.dims[h_dim];
+    fold_stride[0] = src_stride_[w_dim];
+    fold_stride[1] = src_stride_[h_dim];
+    lead_idx = h_dim;
+    last_dim = h_dim;
     fold_idx = 1;
-  } else {
-    lead_idx = std::min(ndd_.lead_idx(), tail_dim);
-    fold_dim[0] = ndd_.dims[lead_idx];
-    fold_stride[0] = src_stride_[lead_idx];
-    last_dim = lead_idx;
-    if (nd_.stride(lead_idx) == nd_[lead_idx]) {
-      for (int i = last_dim + 1; i <= tail_dim ; ++i) {
-        if (ndd_.dims[i] == 1) continue;
-        if (src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
-          break;
-        }
-        fold_dim[0] *= nd_[i];
-        last_dim = i;
+    for (int d = 2; d <= tail_dim; ++d) {
+      const int i = FractalRowMajorAxes::PhysicalAxis(d);
+      if (ndd_.dims[i] == 1) continue;
+      // Keep the rectangular Tile iteration axis separate from its first outer group.
+      const bool first_outer = d >= FractalRowMajorAxes::kRank && last_dim < FractalRowMajorAxes::kRank;
+      if (first_outer || last_dim == lead_idx ||
+          src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
+        fold_idx++;
+        fold_dim[fold_idx] = ndd_.dims[i];
+        fold_stride[fold_idx] = src_stride_[i];
+      } else {
+        fold_dim[fold_idx] *= ndd_.dims[i];
       }
-      lead_idx = last_dim;
+      last_dim = i;
     }
-    fold_idx = 0;
-  }
-  for (int i = last_dim + 1; i <= tail_dim; ++i) {
-    if (ndd_.dims[i] == 1) continue;
-    if (last_dim == lead_idx || src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
-      fold_idx++;
-      fold_dim[fold_idx] = ndd_.dims[i];
-      fold_stride[fold_idx] = src_stride_[i];
+  } else {
+    if (flags_ & OBJ_FLAG_VIEW_LOAD_FRACTAL) {
+      ASSERT(tail_dim >= 2);
+      fold_dim[0] = ndd_.dims[0];
+      fold_dim[1] = ndd_.dims[1];
+      fold_stride[0] = src_stride_[0];
+      fold_stride[1] = src_stride_[1];
+      lead_idx = 1;
+      last_dim = 1;
+      fold_idx = 1;
     } else {
-      fold_dim[fold_idx] *= ndd_.dims[i];
+      lead_idx = std::min(ndd_.lead_idx(), tail_dim);
+      fold_dim[0] = ndd_.dims[lead_idx];
+      fold_stride[0] = src_stride_[lead_idx];
+      last_dim = lead_idx;
+      if (nd_.stride(lead_idx) == nd_[lead_idx]) {
+        for (int i = last_dim + 1; i <= tail_dim; ++i) {
+          if (ndd_.dims[i] == 1) continue;
+          if (src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
+            break;
+          }
+          fold_dim[0] *= nd_[i];
+          last_dim = i;
+        }
+        lead_idx = last_dim;
+      }
+      fold_idx = 0;
     }
-    last_dim = i;
+    for (int i = last_dim + 1; i <= tail_dim; ++i) {
+      if (ndd_.dims[i] == 1) continue;
+      if (last_dim == lead_idx || src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
+        fold_idx++;
+        fold_dim[fold_idx] = ndd_.dims[i];
+        fold_stride[fold_idx] = src_stride_[i];
+      } else {
+        fold_dim[fold_idx] *= ndd_.dims[i];
+      }
+      last_dim = i;
+    }
   }
   int tile_start = fold_idx + 1;
   if (auto &tr = k.tile_region_; tr.depth > 0) {
@@ -918,14 +957,12 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     op.w_fractal = fold_dim[0];
     op.h_fractal = fold_dim[1];
     op.w_gap = fold_stride[0] - op.h_fractal * item_size;
-    if (tile_start > 3) {
+    op.row_stride_blocks = op.item_size == 2 || op.w_fractal <= 8 ? 1 : 2;
+    op.is_width_iter = 0;
+    if (tile_start > 2) {
       op.iter_size = fold_dim[2];
       op.iter_stride = fold_stride[2];
       op.loop_depth = tile_start - 3;
-    } else if (tile_start > 2) {
-      op.iter_size = fold_dim[2];
-      op.iter_stride = fold_stride[2];
-      op.loop_depth = 0;
     } else { // tile_start == 2
       op.iter_size = 1;
       op.iter_stride = 0;
@@ -951,7 +988,43 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
       op.ws_size = 0;
     }
     uint64_t *var_insn = insn_ + vViewLoadT::VAR_OFFSET;
-    if (op.loop_depth) {
+    if (flags_ & OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR) {
+      constexpr int h_tile_dim = FractalRowMajorAxes::kHeightTile;
+      constexpr int w_tile_dim = FractalRowMajorAxes::kWidthTile;
+      const uint64_t row_stride_bytes = ndd_.stride(w_tile_dim) * item_size;
+      const uint64_t tile_stride_bytes = ndd_.stride(h_tile_dim) * item_size;
+      const bool is_height_iter = ndd_[h_tile_dim] > 1 &&
+                                  op.iter_size == static_cast<uint64_t>(ndd_[h_tile_dim]) &&
+                                  op.iter_stride == static_cast<uint64_t>(src_stride_[h_tile_dim]);
+      const bool is_width_iter = ndd_[w_tile_dim] > 1 &&
+                                 op.iter_size == static_cast<uint64_t>(ndd_[w_tile_dim]) &&
+                                 op.iter_stride == static_cast<uint64_t>(src_stride_[w_tile_dim]);
+      if (op.loop_depth) {
+        uint64_t remaining_inner_tiles =
+          is_width_iter ? ndd_[h_tile_dim] : (is_height_iter ? ndd_[w_tile_dim] : 1);
+        const uint64_t inner_dst_stride_bytes =
+          is_width_iter ? op.h_fractal * row_stride_bytes : op.w_fractal * item_size;
+        uint64_t outer_dst_stride_bytes =
+          tile_stride_bytes * (is_height_iter || is_width_iter ? 1 : op.iter_size);
+        for (int i = 3; i < tile_start; ++i, ++var_insn) {
+          uint64_t loop_dst_stride_bytes;
+          if (remaining_inner_tiles > 1) {
+            ASSERT(fold_dim[i] == static_cast<int64_t>(remaining_inner_tiles));
+            loop_dst_stride_bytes = inner_dst_stride_bytes;
+            remaining_inner_tiles = 1;
+          } else {
+            loop_dst_stride_bytes = outer_dst_stride_bytes;
+            outer_dst_stride_bytes *= fold_dim[i];
+          }
+          *var_insn = vViewLoad::EncodeLoop(fold_dim[i], loop_dst_stride_bytes, fold_stride[i]);
+        }
+      }
+      ASSERT(row_stride_bytes % SIMD_BLOCK_SIZE == 0);
+      const uint64_t row_stride_blocks = row_stride_bytes / SIMD_BLOCK_SIZE;
+      ASSERT(row_stride_blocks < (1ull << 13));
+      op.row_stride_blocks = row_stride_blocks;
+      op.is_width_iter = is_width_iter;
+    } else if (op.loop_depth) {
       uint64_t dst_stride = ndd_.stride(1) * fold_dim[2] * item_size;
       for (int i = 3; i < tile_start; ++i, ++var_insn) {
         *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);

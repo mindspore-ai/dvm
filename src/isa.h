@@ -1268,13 +1268,16 @@ struct vViewLoadT {
   uint64_t iter_stride;
   uint64_t ws;
   uint64_t ws_size;
+  uint64_t row_stride_blocks;  // UB row stride in 32B blocks.
+  uint64_t is_width_iter;
   uint64_t tail_size;
   uint64_t loop_depth;
   uint64_t tile_depth;
   // pc[0]: w_gap(32)
   // pc[1]: iter_stride(32) << 32 | offset(32)
   // pc[2]: xd(18) << 46 | item_size(4) << 40 | loop_depth(4) << 36 | tile_depth(4) << 32 | tail_size(16) << 16 | h_fractal(8) << 8 | w_fractal(8)
-  // pc[3]: ws(18) << 46 | reserve(14) << 32 | ws_size(16) << 16 | iter_size(16)
+  // pc[3]: ws(18) << 46 | is_width_iter(1) << 45 | row_stride_blocks(13) << 32 | ws_size(16) << 16 |
+  //        iter_size(16)
   // pc[4]: from(64)
   // pc[VAR::loop_depth]: loop_size(16) << 48 | dst_stride(16) << 32 | src_stride(32)
   // pc[VAR+loop_depth::tile_depth]: tile_space(32) << 32 | tile_stride(32)
@@ -1294,6 +1297,8 @@ struct vViewLoadT {
     uint64_t data3 = pc[3];
     op.iter_size = data3 & 0xfffful;
     op.ws_size = (data3 >> 16) & 0xfffful;
+    op.row_stride_blocks = (data3 >> 32) & 0x1ffful;
+    op.is_width_iter = (data3 >> 45) & 0x1ul;
     op.ws = data3 >> 46;
     op.from = pc[4];
   }
@@ -1302,7 +1307,8 @@ struct vViewLoadT {
     pc[0] = vMakeAccHead(id, op.w_gap, size);
     pc[1] = op.iter_stride << 32 | op.offset;
     pc[2] = op.xd << 46 | op.item_size << 40 | op.loop_depth << 36 | op.tile_depth << 32 | op.tail_size << 16 | op.h_fractal << 8 | op.w_fractal;
-    pc[3] = op.ws << 46 | op.ws_size << 16 | op.iter_size;
+    pc[3] = op.ws << 46 | op.is_width_iter << 45 | op.row_stride_blocks << 32 | op.ws_size << 16 |
+            op.iter_size;
     pc[4] = op.from;
     return size;
   }

@@ -76,6 +76,23 @@ def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2, view):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape, swap", [
+    ([4, 70, 20, 200], (1, 3)),   # first loop axis is 1
+    ([2, 2048, 16, 128], (2, 3)), # middle loop axis is 1
+    ([129, 128], (0, 1)) # w_tail is 1
+])
+def test_trans_fractal_inner_axis(shape, swap):
+    t = Tester("vector:opt_fractal")
+    a = np.random.normal(0, 1, shape).astype(np.float16)
+    expect = np.swapaxes(a, swap[0], swap[1])
+    stride = _continuous_stride(shape)
+    stride[swap[0]], stride[swap[1]] = stride[swap[1]], stride[swap[0]]
+    x = t.view_load(expect.shape, stride, a)
+    t.view_store_expect(x, _continuous_stride(expect.shape), expect)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("dtype", [np.float16, np.float32])
 @pytest.mark.parametrize("shape1, shape2, shape3, shape4, axis, view", [
     [[3, 400], [3, 600], [3, 200], [3, 1200], 1, False], # lead

@@ -814,16 +814,18 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     lead_idx++;
     fold_idx = fold_begin = 0;
   }
+  int last_dim = lead_idx - 1;
   for (int i = lead_idx; i <= tail_dim; ++i) {
     if (ndd_.dims[i] == 1) continue;
     // TODO: fold optimize for ndd_.lead_stride == ndd.lead_dim
-    if (fold_idx == fold_begin || src_stride_[i - 1] * ndd_.dims[i - 1] != src_stride_[i]) {
+    if (fold_idx == fold_begin || src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
       fold_idx++;
       fold_dim[fold_idx] = ndd_.dims[i];
       fold_stride[fold_idx] = src_stride_[i];
     } else {
       fold_dim[fold_idx] *= ndd_.dims[i];
     }
+    last_dim = i;
   }
   int tile_start = fold_idx + 1;
   if (auto &tr = k.tile_region_; tr.depth > 0) {
@@ -934,7 +936,7 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     }
     uint64_t *var_insn = insn_ + vViewLoadT::VAR_OFFSET;
     if (op.loop_depth) {
-      uint64_t dst_stride = ndd_.stride(2) * item_size;
+      uint64_t dst_stride = ndd_.stride(1) * fold_dim[2] * item_size;
       for (int i = 3; i < tile_start; ++i, ++var_insn) {
         *var_insn = vViewLoad::EncodeLoop(fold_dim[i], dst_stride, fold_stride[i]);
         dst_stride *= fold_dim[i];
@@ -1454,15 +1456,17 @@ uint64_t NDStore::EmitView(VectorKernel &k) {
   fold_dim[0] = nd_[lead_idx];
   fold_stride[0] = dst_stride_[lead_idx];
   int fold_idx = 0;
+  int last_dim = lead_idx;
   for (int i = lead_idx + 1; i <= tail_dim; ++i) {
     if (nd_[i] == 1) continue;
-    if (fold_idx == 0 || dst_stride_[i - 1] * nd_[i - 1] != dst_stride_[i]) {
+    if (fold_idx == 0 || dst_stride_[last_dim] * nd_[last_dim] != dst_stride_[i]) {
       fold_idx++;
       fold_dim[fold_idx] = nd_[i];
       fold_stride[fold_idx] = dst_stride_[i];
     } else {
       fold_dim[fold_idx] *= nd_[i];
     }
+    last_dim = i;
   }
   int tile_start = fold_idx + 1;
   if (auto &tr = k.tile_region_; tr.depth > 0) {

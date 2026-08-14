@@ -202,6 +202,7 @@ int64_t FractalSchGen::CodeGen() {
   constexpr int64_t min_dim_limit = 6;
   int h_idx = -1;
   int64_t item_size = 0;
+  uint64_t fractal_mask = 0;
   for (size_t i = 0; i < kernel_->load_num_; ++i) {
     auto load = static_cast<NDAccess *>(kernel_->static_ops_[i]);
     if (load->stride_ == nullptr) {
@@ -221,12 +222,15 @@ int64_t FractalSchGen::CodeGen() {
               h_idx = static_cast<int>(j);
               item_size = type_size;
               load->SetFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL);
+              fractal_mask |= 1ull << i;
             }
             break;
           }
         }
-      } else if (static_cast<size_t>(h_idx) < stride.size() && type_size == item_size && stride[h_idx] == type_size && dims[h_idx] >= min_dim_limit) {
+      } else if (static_cast<size_t>(h_idx) < stride.size() && type_size == item_size && stride[h_idx] == type_size &&
+                 dims[h_idx] >= min_dim_limit) {
         load->SetFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL);
+        fractal_mask |= 1ull << i;
       }
     }
   }
@@ -247,7 +251,7 @@ int64_t FractalSchGen::CodeGen() {
       h_body_ = h_size / h_fractal_;
       h_tail_ = h_size - h_body_ * h_fractal_;
     }
-    void CodeGen() {
+    void CodeGen(uint64_t fractal_mask) {
       int64_t w_npart = w_body_;
       int64_t h_npart = h_body_;
       int dup_num;
@@ -282,14 +286,25 @@ int64_t FractalSchGen::CodeGen() {
       }
       VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 4),
                              h_npart * w_npart);
-      if (w_tail_ && h_body_) {
-        GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
+      if (w_tail_ > 1) {
+        if (h_body_) {
+          GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
+        }
+        if (h_tail_) {
+          GenDup(helper, h_body_, w_body_, w_tail_, h_tail_, 1, 1);
+        }
+      } else if (w_tail_ == 1) { // lead dim is folded
+        ClearFractal(fractal_mask, gen_.kernel_->static_ops_);
+        if (h_body_) {
+          GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
+        }
+        if (h_tail_) {
+          GenDup(helper, h_body_, w_body_, w_tail_, h_tail_, 1, 1);
+        }
+        SetFractal(fractal_mask, gen_.kernel_->static_ops_);
       }
       if (h_tail_ && w_body_) {
         GenDup(helper, h_body_, 0, w_fractal_, h_tail_, 1, w_body_);
-      }
-      if (w_tail_ && h_tail_) {
-        GenDup(helper, h_body_, w_body_, w_tail_, h_tail_, 1, 1);
       }
       if (w_body_ && h_body_) {
         GenDup(helper, 0, 0, w_fractal_, h_fractal_, h_body_, w_body_);
@@ -317,6 +332,22 @@ int64_t FractalSchGen::CodeGen() {
       uint64_t part_num = h_part_size * w_part_size;
       helper.Append(part_num, part_base_ * part_num);
     };
+
+    static void SetFractal(uint64_t mask, const std::vector<NDObject *> &objects) {
+      while (mask) {
+        auto idx = 63 - __builtin_clzl(mask);
+        mask &= ~(1ul << idx);
+        objects[idx]->flags_ |= OBJ_FLAG_VIEW_LOAD_FRACTAL;
+      }
+    }
+
+    static void ClearFractal(uint64_t mask, const std::vector<NDObject *> &objects) {
+      while (mask) {
+        auto idx = 63 - __builtin_clzl(mask);
+        mask &= ~(1ul << idx);
+        objects[idx]->flags_ &= ~OBJ_FLAG_VIEW_LOAD_FRACTAL;
+      }
+    }
 
     SchGenHelper &gen_;
     const DimArray &space_;
@@ -347,15 +378,10 @@ int64_t FractalSchGen::CodeGen() {
       }
     }
     FractalDunGen gen(*this, h_idx, item_size);
-    gen.CodeGen();
+    gen.CodeGen(fractal_mask);
     ResetStrides();
   }
-  for (size_t i = 0; i < kernel_->load_num_; ++i) {
-    auto op = kernel_->static_ops_[i];
-    if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL)) {
-      op->flags_ &= ~OBJ_FLAG_VIEW_LOAD_FRACTAL;
-    }
-  }
+  FractalDunGen::ClearFractal(fractal_mask, kernel_->static_ops_);
   return result;
 }
 

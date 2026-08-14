@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1500" height="430" viewBox="0 0 1500 430" role="img" aria-labelledby="title desc">
+  <title id="title">DVM Eager无图融合流程</title>
+  <desc id="desc">PyTorch Eager算子经过TorchNPU ATen分发后进行DVM支持判断。支持的算子加入待执行融合图，在融合边界统一通过DVM runtime生成并下发Kernel；不支持的算子回退到原生ACLNN，最终都在Ascend NPU执行。</desc>
+  <defs>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto">
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="#475569"/>
+    </marker>
+    <style>
+      .title { font: 700 28px Arial, "Noto Sans CJK SC", sans-serif; fill: #1e293b; }
+      .label { font: 600 18px Arial, "Noto Sans CJK SC", sans-serif; fill: #1e293b; text-anchor: middle; }
+      .hint { font: 600 16px Arial, "Noto Sans CJK SC", sans-serif; fill: #475569; text-anchor: middle; }
+      .arrow { fill: none; stroke: #475569; stroke-width: 3; marker-end: url(#arrow); }
+    </style>
+  </defs>
+
+  <rect width="1500" height="430" rx="18" fill="#ffffff"/>
+  <text class="title" x="40" y="52">DVM Eager 无图融合</text>
+
+  <rect x="40" y="125" width="190" height="90" rx="14" fill="#dbeafe" stroke="#2563eb" stroke-width="3"/>
+  <text class="label" x="135" y="162"><tspan x="135">PyTorch Eager</tspan><tspan x="135" dy="28">算子序列</tspan></text>
+
+  <rect x="280" y="125" width="230" height="90" rx="14" fill="#ede9fe" stroke="#7c3aed" stroke-width="3"/>
+  <text class="label" x="395" y="162"><tspan x="395">TorchNPU</tspan><tspan x="395" dy="28">ATen算子分发</tspan></text>
+
+  <path d="M 650 105 L 750 170 L 650 235 L 550 170 Z" fill="#fef3c7" stroke="#d97706" stroke-width="3"/>
+  <text class="label" x="650" y="164"><tspan x="650">DVM是否</tspan><tspan x="650" dy="26">支持？</tspan></text>
+
+  <rect x="800" y="125" width="220" height="90" rx="14" fill="#dcfce7" stroke="#16a34a" stroke-width="3"/>
+  <text class="label" x="910" y="162"><tspan x="910">加入待执行</tspan><tspan x="910" dy="28">DVM融合图</tspan></text>
+
+  <rect x="1070" y="125" width="230" height="90" rx="14" fill="#ffedd5" stroke="#ea580c" stroke-width="3"/>
+  <text class="label" x="1185" y="150"><tspan x="1185">遇到融合边界</tspan><tspan x="1185" dy="27">Flush / CodeGen</tspan><tspan x="1185" dy="27">Kernel Launch</tspan></text>
+
+  <rect x="1350" y="125" width="120" height="90" rx="14" fill="#fee2e2" stroke="#dc2626" stroke-width="3"/>
+  <text class="label" x="1410" y="162"><tspan x="1410">Ascend</tspan><tspan x="1410" dy="28">NPU</tspan></text>
+
+  <rect x="800" y="300" width="220" height="80" rx="14" fill="#f1f5f9" stroke="#64748b" stroke-width="3"/>
+  <text class="label" x="910" y="332"><tspan x="910">原生ACLNN</tspan><tspan x="910" dy="27">自动fallback</tspan></text>
+
+  <path class="arrow" d="M 230 170 H 272"/>
+  <path class="arrow" d="M 510 170 H 542"/>
+  <path class="arrow" d="M 750 170 H 792"/>
+  <path class="arrow" d="M 1020 170 H 1062"/>
+  <path class="arrow" d="M 1300 170 H 1342"/>
+  <path class="arrow" d="M 650 235 V 340 H 792"/>
+  <path class="arrow" d="M 1020 340 H 1410 V 223"/>
+
+  <text class="hint" x="772" y="151">支持</text>
+  <text class="hint" x="680" y="285">不支持</text>
+</svg>

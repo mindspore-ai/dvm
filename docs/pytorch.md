@@ -1,6 +1,6 @@
 # 如何在TorchNPU中使用DVM
 
-本文面向希望在TorchNPU中使用DVM的开发者，优先给出可直接运行的Inductor图融合和DVM自定义算子示例，再说明TorchNPU内部的对接设计与实现。
+本文面向希望在TorchNPU中使用DVM的开发者，介绍Inductor图融合、DVM自定义算子和Eager无图融合三种路径，再说明TorchNPU内部的对接设计与实现。
 
 推荐使用TorchNPU 26.1.0及以上版本，并选择与PyTorch版本匹配的发行包。DVM当前支持的TorchNPU版本和开发分支如下：
 
@@ -17,11 +17,11 @@
 
 ## 1. 使用场景与配置
 
-| 使用场景 | 使用方法 | 功能概述 |
+| DVM特性 | 覆盖场景 | 使用方法 |
 | --- | --- | --- |
-| Inductor图融合 | 设置`TORCHINDUCTOR_NPU_BACKEND=dvm`，并调用`torch.compile(..., backend="inductor")` | 将DVM支持的Inductor子图编译为融合Kernel，减少算子下发和中间Tensor读写 |
-| DVM自定义算子 | 使用`torch_npu._inductor.dvm.kernel`编写`k.*`计算 | 直接定义DVM Kernel，支持根据输入Shape进行运行时编译和执行 |
-| 无图融合 | 使用Eager执行路径 | 面向Eager场景进行自动融合优化，本文暂不展开 |
+| 图融合 | Inductor图模式 | 设置`TORCHINDUCTOR_NPU_BACKEND=dvm`，并调用`torch.compile(..., backend="inductor")` |
+| Eager无图融合 | Eager模式 | 设置`TORCH_NPU_LAZY_FUSION=True`，直接运行Eager代码 |
+| 自定义融合 | 自定义算子 | 使用`torch_npu._inductor.dvm.kernel`编写`k.*`计算 |
 
 ### 1.1 配置汇总
 
@@ -32,6 +32,7 @@
 | 环境变量 | `TORCHINDUCTOR_CACHE_DIR` | `/tmp/torchinductor_dvm` | 可选，指定独立的Inductor缓存目录 |
 | 环境变量 | `INDUCTOR_DVM_DEBUG_MODE` | `1` | 可选，DVM异常时同步设备并输出`dump`、`das`信息 |
 | 环境变量 | `INDUCTOR_DVM_ENABLE_MATMUL_FUSION` | `1` | 可选，仅用于支持DVM MatMul template融合的较新分支 |
+| 环境变量 | `TORCH_NPU_LAZY_FUSION` | `True` | 开启Eager无图融合，需在导入`torch`或`torch_npu`前设置 |
 | `dvm.config` | `debug_mode` | `False` | 是否在DVM Kernel执行后进行同步和异常调试检查 |
 | `dvm.config` | `dump_fx_test` | `False` | 是否导出DVM融合子图的独立FX回归用例 |
 | `dvm.config` | `view_fusion_level` | `1` | View融合级别：`0`关闭，`1`要求末维步长为1，`2`始终开启 |
@@ -39,7 +40,7 @@
 | `dvm.config` | `enable_matmul_fusion` | `False` | 是否开启MatMul template融合，由`INDUCTOR_DVM_ENABLE_MATMUL_FUSION`在导入时初始化 |
 | `dvm.config` | `bf16_vector_keep_promoted` | `False` | 是否将发生类型提升的BF16 Vector计算结果转换回BF16 |
 
-Python侧可以通过`from torch_npu._inductor import dvm`访问`dvm.config`。这些配置会在相关DVM后端模块加载时读取，应在首次调用`torch.compile`前设置；MatMul融合建议直接使用对应环境变量，并在导入PyTorch前设置。
+Python侧可以通过`from torch_npu._inductor import dvm`访问表中的`dvm.config`项。这些配置用于Inductor路径，会在相关后端模块加载时读取，应在首次调用`torch.compile`前设置；MatMul融合建议直接使用对应环境变量，并在导入PyTorch前设置。Eager无图融合不读取`dvm.config`，而是使用`TORCH_NPU_LAZY_FUSION`中的独立C++配置。
 
 ## 2. Inductor图融合
 
@@ -260,9 +261,103 @@ export INDUCTOR_DVM_DEBUG_MODE=1
 
 该模式会在DVM调用后同步设备；发生异常时打印Kernel名称、输入摘要、`dump`和`das`信息，便于定位生成指令与运行错误。
 
-## 4. 无图融合（预留）
+## 4. Eager无图融合
 
-本章预留，当前版本暂不展开无图融合的配置和使用方法。
+无图融合是DVM独有的算子融合方式。它在PyTorch Eager模式执行过程中实时捕获下发的算子序列，将其中可融合的算子实时生成融合算子并替换执行，从而加速网络模型。相比图模式，无图融合具有两个显著优势：
+
+1. 对用户代码无侵入：通过环境变量全局开启，不需要用户显式使用`torch.compile`；
+2. 对用户代码无约束：图模式需要谨慎实现代码以避免裂图和Guard开销，而无图融合直接基于Eager模式进行融合，无此类约束。
+
+### 4.1 开启方式和最小示例
+
+开关在TorchNPU动态库加载时读取，因此必须在启动Python前设置：
+
+```bash
+export TORCH_NPU_LAZY_FUSION=True
+python eager_dvm_demo.py
+```
+
+Eager无图融合依赖异步TaskQueue，其默认配置`TASK_QUEUE_ENABLE=1`可以直接使用，通常无需显式设置。不要将其设为`0`，也不要同时使用`ASCEND_LAUNCH_BLOCKING=1`；与`torch.npu.NPUGraph`共同使用时保持默认值`1`。
+
+
+```python
+import torch
+import torch_npu
+
+
+x = torch.randn((1024, 1024), device="npu", dtype=torch.float32)
+y = torch.randn((1024, 1024), device="npu", dtype=torch.float32)
+
+# abs、add、sqrt和mul在运行时被追加到同一个待执行DVM图中。
+out = torch.sqrt(torch.abs(x) + torch.abs(y) + 1.0) * 0.5
+
+# NPU执行是异步的；同步、拷回CPU或后续fallback算子都会先Flush待执行图。
+torch.npu.synchronize()
+print(out.cpu().shape)
+```
+
+`TORCH_NPU_LAZY_FUSION`和其中的算子级配置会被C++静态对象缓存，开启、关闭或修改配置后，应启动新的Python进程，不能依赖在同一进程中修改`os.environ`来切换行为。
+
+### 4.2 哪些情况会结束当前融合
+
+融合边界是Eager无图融合行为中最重要的部分：
+
+- 不支持的算子、数据类型、设备、Format、Shape或Stride会结束当前DVM融合段，并回退到原生`op_api/aclnn`；
+- `torch.npu.synchronize()`、NPU到CPU拷贝、`item()`等需要等待设备结果的操作会触发当前融合段执行；
+- Stream切换、in-place、`out=`、Reduce以及需要保护View/alias语义的场景可能结束当前融合段；
+- `matmul`、`mm`、`bmm`、`addmm`和部分BatchNorm入口会先结束旧融合段，再以自己作为新融合段的起点；MatMul结果仍可继续与后续Pointwise算子组成Mix Kernel。
+
+这里的“回退”是逐算子、自动完成的，不要求用户维护fallback名单。一个Eager程序可以交替执行多个DVM融合段和普通aclnn算子。
+
+### 4.3 当前支持的算子
+
+op-plugin在`op_plugin_functions.yaml`中用`dvm`标记可进入无图融合分发的ATen Schema。当前源码的接口范围如下，每个接口内部还会继续检查dtype、布局、Shape和可选参数，不满足条件时自动回退。
+
+| 类别 | 当前接入的主要接口 |
+| --- | --- |
+| 类型转换 | `_npu_dtype_cast` |
+| Unary | `abs`、`neg`、`sqrt`、`exp`/`exp_`、`reciprocal` |
+| Binary | `add`的Scalar/Tensor与`add_`的Tensor重载，`sub`/`sub_`的Tensor重载，`mul`、`div`、`pow`、`floor_divide`的Scalar/Tensor及相应in-place重载，以及`floor_divide.out` |
+| 比较与选择 | `eq`、`ne`、`gt`、`ge`、`lt`、`le`、`maximum`、`minimum`、`where`及`where.out` |
+| 激活与反向 | `sigmoid`、`tanh`/`tanh_`、`relu`/`relu_`、`leaky_relu`/`leaky_relu_`、`silu`，以及`sigmoid_backward`、`tanh_backward`、`gelu_backward`、`silu_backward`；GELU前向当前接入`tanh`近似的`out=`路径 |
+| Reduce | `sum`、`sum.dim_IntList`和`sum.out` |
+| MatMul | `matmul`、`mm`、`bmm`、`addmm` |
+| BatchNorm | `native_batch_norm`、`native_batch_norm_backward`、`batch_norm_stats`、`batch_norm_gather_stats_with_counts`、`batch_norm_elemt`、`batch_norm_backward_elemt` |
+| Foreach | `_foreach_sqrt`/`_foreach_sqrt_`、`_foreach_add_`、`_foreach_mul_`、`_foreach_div_`、`_foreach_addcmul_`、`_foreach_addcdiv_`的部分Scalar或ScalarList重载 |
+| TorchNPU自定义算子 | `npu_swiglu`前向 |
+
+具体算子还会检查dtype、布局、Shape和可选参数，不满足条件时自动回退。精确范围以所用发行版本为准。
+
+### 4.4 确认是否发生融合
+
+Inductor使用的`TORCH_COMPILE_DEBUG`和`INDUCTOR_DVM_DEBUG_MODE`不适用于本节路径。Eager无图融合的源码调试参数附加在同一个`TORCH_NPU_LAZY_FUSION`字符串中，参数之间用空格分隔：
+
+```bash
+mkdir -p /tmp/dvm_lazy_dump
+TORCH_NPU_LAZY_FUSION="True dump_as_text dump_dir=/tmp/dvm_lazy_dump synchronize" \
+python eager_dvm_demo.py
+```
+
+其中`dump_as_text`、`dump_dir`和`synchronize`是当前源码的内部调试参数，不属于稳定用户接口。执行后会生成：
+
+- `lazy_fusion_<pid>_graph.txt`：按PyTorch调用顺序记录输入、输出和`lazy_fusion_graph_<op...>`；
+- `lazy_fusion_<pid>_kernel.txt`：记录DVM切分前后的VGraph以及DAS反汇编。
+
+PyTorch Profiler中还可以看到`DvmFlush`和`Dvm::<op>`范围。判断实际融合内容时，以graph/kernel dump和设备侧Kernel记录为准。
+
+排查精度或执行问题时，建议在两个独立进程中运行相同输入：一个不设置`TORCH_NPU_LAZY_FUSION`，另一个设置为`True`，再比较输出。环境变量在进程内有缓存，不能在一次Python运行中可靠地先关后开。
+
+### 4.5 内部调试开关
+
+除`True`/`False`主开关外，当前源码还解析以下内部参数。它们适合定位问题，不建议作为业务长期配置：
+
+| 参数示例 | 作用 |
+| --- | --- |
+| `disable_ops=where,sum` | 在默认启用集合中排除指定算子，适合二分定位 |
+| `enable_ops_only=add,mul` | 只允许列表中的算子进入DVM |
+| `level=O1` | 只启用较保守的Elementwise、Activation、Where、部分BatchNorm和Foreach集合 |
+| `level=O2` | 默认级别；在O1基础上开启MatMul、Sum、`npu_swiglu`、较重的BatchNorm反向和非连续ViewLoad |
+| `synchronize` | 每个DVM Launch后同步当前Stream，使异步设备错误更接近真实出错位置 |
 
 ## 5. TorchNPU对接设计和实现
 
@@ -274,6 +369,13 @@ TorchNPU通过以下结构集成DVM：
 Ascend/pytorch
 ├── third_party/dvm/dvm                         # DVM源码子模块
 ├── CMakeLists.txt                              # 编译并链接libdvm.a
+├── third_party/op-plugin/op_plugin/config/
+│   └── op_plugin_functions.yaml                # Eager无图融合的算子Schema接入表
+├── third_party/op-plugin/op_plugin/ops/dvm/
+│   ├── lazy_fusion_flags.*                     # TORCH_NPU_LAZY_FUSION解析
+│   ├── lazy_fusion_ops.cpp                     # ATen算子检查、DVM构图和fallback
+│   └── lazy_fusion_kernel.*                    # 图管理、Tensor关联、Flush、CodeGen和Launch
+├── torch_npu/csrc/core/npu/NPUQueue.cpp        # 原生任务入队和队列清空前触发Flush
 ├── torch_npu/csrc/inductor/dvm/pybind_api.*    # PyTorch Tensor与DVM的PyBind适配
 ├── torch_npu/_inductor/__init__.py              # NPU Inductor后端选择
 └── torch_npu/_inductor/dvm/
@@ -284,11 +386,22 @@ Ascend/pytorch
 
 构建TorchNPU时，顶层`CMakeLists.txt`会编译`third_party/dvm`并将`libdvm.a`链接到TorchNPU。`THDVM_init`随后注册`torch_npu._C.dvm`子模块，Python侧的`torch_npu._inductor.dvm`在此基础上封装`dvm.kernel`、数据类型和不同Kernel类型。
 
-### 5.2 整体流程
+Eager无图融合不经过`torch_npu._C.dvm`的Python接口，而是由op-plugin分发到`lazy_fusion::<op>`，再由`LazyFusionKernel`直接调用同一个DVM C++库。`op_plugin_functions.yaml`中的`dvm`标记决定哪些ATen Schema具有该分支。
+
+### 5.2 Inductor图融合和自定义算子流程
 
 Inductor图融合和DVM自定义算子最终共用TorchNPU中的DVM PyBind与DVM runtime。Inductor路径复用MLIR后端已有的`traced_graph`机制跟踪Inductor IR融合边界，按融合后的节点重建FX Graph，再生成DVM代码：
 
 ![DVM在TorchNPU中的对接流程](figures/pytorch_inductor_flow.svg)
+
+### 5.3 Eager无图融合流程
+
+Eager无图融合与前述路径共用DVM C++ runtime，但不经过Dynamo、FX、Inductor调度或Python PyBind Builder。
+
+![DVM Eager无图融合流程](figures/pytorch_eager_flow.svg)
+
+满足DVM约束的连续算子会加入当前待执行融合图，直到遇到融合边界再统一生成和下发Kernel；不支持的算子自动回退到原生ACLNN，并与前后的DVM融合段保持正确执行顺序。返回值仍是普通NPU Tensor，用户不需要改变模型代码。
+
 
 ## 6. 常见问题
 
@@ -300,7 +413,15 @@ Inductor图融合和DVM自定义算子最终共用TorchNPU中的DVM PyBind与DVM
 4. 检查当前子图的算子、数据类型和Shape是否被DVM支持；
 5. 查看同一`output_code.py`中是否生成了fallback Kernel。
 
-### 6.2 如何提交问题
+### 6.2 设置了`TORCH_NPU_LAZY_FUSION`但没有发生无图融合
+
+1. 确认变量在导入`torch`和`torch_npu`前设置，并重新启动Python进程；
+2. 确认设备属于当前DVM支持的A2、A3或A5系列；
+3. 检查算子是否在4.3节所列的接入范围内；具体dtype、布局和Shape不满足实现要求时会自动回退；
+4. 用`dump_as_text`确认进入了哪些DVM算子。未进入DVM的算子会正常回退，不一定产生报错；
+5. 注意in-place、`out=`、Reduce、MatMul前边界、CPU读取和同步会缩短融合段，这是设计行为。
+
+### 6.3 如何提交问题
 
 建议同时提供以下信息：
 
@@ -309,4 +430,5 @@ Inductor图融合和DVM自定义算子最终共用TorchNPU中的DVM PyBind与DVM
 - 完整环境变量；
 - 最小复现代码；
 - `torch_compile_debug`中的FX Graph和`output_code.py`；
-- DVM自定义算子问题对应的`dump`和`das`输出。
+- Inductor或DVM自定义算子问题对应的`dump`和`das`输出；
+- Eager无图融合问题对应的`lazy_fusion_<pid>_graph.txt`和`lazy_fusion_<pid>_kernel.txt`，以及关闭/开启`TORCH_NPU_LAZY_FUSION`的对比结果。

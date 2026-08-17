@@ -920,9 +920,14 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
       op.iter_stride = 0;
       op.loop_depth = 0;
     }
-    op.tail_size = fold_dim[tile_start - 1];
-    if (tail_size) {
-      op.tail_size = op.tail_size / ndd_[tail_dim] * tail_size;
+    if (tile_start == 2) {
+      // No dim2 iteration axis: h_fractal describes the H tail, so the iteration tail is 1.
+      op.tail_size = 1;
+    } else {
+      op.tail_size = fold_dim[tile_start - 1];
+      if (tail_size) {
+        op.tail_size = op.tail_size / ndd_[tail_dim] * tail_size;
+      }
     }
     if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
       auto last_store = k.static_ops_.back();

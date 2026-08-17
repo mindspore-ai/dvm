@@ -447,9 +447,9 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
       if (auto dom = in->reuse_dep_; dom != kInvalidDomain) {
         if (joined == kInvalidDomain) {
           joined = dom;
-          return false;
         }
         EXCEPTION_IF(joined != dom && !in->IsLoad(), "concat multi domain depend");
+        return false;
       }
       return true;
     });
@@ -584,9 +584,9 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
       if (dom != kInvalidDomain && dom != kSliceDomain) {
         if (joined == kInvalidDomain) {
           joined = dom;
-          return false;
         }
         EXCEPTION_IF(joined != dom, "split multi domain depend");
+        return false;
       }
       return true;
     });
@@ -728,5 +728,18 @@ int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
   helper.Submit();
   ResetStrides();
   return 0;
+}
+
+SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects) {
+  for (auto op : objects) {
+    if (op->obj_id_ == kConcat) {
+      return new ConcatSchGen(kernel, static_cast<ConcatOp *>(op), objects);
+    }
+    if (op->obj_id_ == kSplitOp) {
+      ASSERT(static_cast<SplitOpM *>(op)->main_ == op); // first is splitm
+      return new SplitSchGen(kernel, static_cast<SplitOpM *>(op), objects);
+    }
+  }
+  return nullptr;
 }
 }  // namespace dvm

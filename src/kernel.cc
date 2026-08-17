@@ -1283,17 +1283,7 @@ void VKernelS::SchInit(const std::vector<NDObject *> &objects) {
   if (flags_ & KernelFlag::kOptFractalTrans) {
     sch_gen_ = new FractalSchGen(this);
   } else {
-    for (auto op : build_ops_) {
-      if (op->obj_id_ == kConcat) {
-        sch_gen_ = new ConcatSchGen(this, static_cast<ConcatOp *>(op), objects);
-        break;
-      }
-      if (op->obj_id_ == kSplitOp) {
-        ASSERT(static_cast<SplitOpM *>(op)->main_ == op); // first is splitm
-        sch_gen_ = new SplitSchGen(this, static_cast<SplitOpM *>(op), objects);
-        break;
-      }
-    }
+    sch_gen_ = BuildViewSch(this, objects);
   }
 }
 
@@ -1620,6 +1610,7 @@ class SplitVector : public VectorKernel {
     for (auto op : build_ops_) {
       delete op;
     }
+    delete sch_gen_;
   }
   uint64_t CodeGen() override {
     max_type_ = comm_op_ ? comm_op_->max_type_ : objects_.front()->type_id_;
@@ -1628,9 +1619,14 @@ class SplitVector : public VectorKernel {
       StaticAppend(op);
     }
     BuildDomain();
+    ASSERT(sch_gen_ == nullptr);
+    if (sch_gen_ = BuildViewSch(this, objects_); sch_gen_ != nullptr) {
+      return sch_gen_->CodeGen();
+    }
     return DoCodeGen(g_system.CoreNum());
   }
   std::vector<NDObject *> build_ops_;
+  SchGenHelper *sch_gen_{nullptr};
 };
 
 uint64_t VKernelS::BrokerCodeGen(VKernel **hold_kernel) {

@@ -382,3 +382,41 @@ def test_sch_concat_shared_load_sideway_store():
     y2 = t.add(y1, y0)
     t.store_expect(y2, np.concatenate([a0 + a1, a5 - a1], axis=1) + ay)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape1, broad_shape1, shape2, cat_dim", [
+    ([1, 512], [20, 512], [4, 5, 512], 1), # broadcast reshape, concat no reshape: prop ok
+    ([1, 512], [20, 512], [20, 4, 128], 1), # broadcast no reshape, concat reshape: prop ok
+    ([1, 512], [20, 512], [20 * 512], 0), # fallback
+])
+def test_sch_concat_reshape(shape1, broad_shape1, shape2, cat_dim):
+    t = Tester()
+    a0 = np.random.normal(0, 1, shape1).astype(np.float16)
+    a1 = np.random.normal(0, 1, shape2).astype(np.float16)
+    x0 = t.broadcast(t.load(a0), broad_shape1)
+    x1 = t.reshape(x0, shape2)
+    x2 = t.load(a1)
+    x3 = t.concat([x1, x2], cat_dim)
+    t.store_expect(x3, np.concatenate([np.broadcast_to(a0, broad_shape1).reshape(shape2), a1], axis=cat_dim))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("shape1, shape2, reshape, split_dim", [
+    ([1, 512], [20, 512], [4, 5, 512], 0), # backward prop ok
+    ([1, 10, 64], [20, 10, 64], [200, 64], 1), # forward prop ok
+    ([1, 512], [20, 512], [20 * 512], 0), # fallback
+])
+def test_sch_split_reshape(shape1, shape2, reshape, split_dim):
+    t = Tester()
+    a = np.random.normal(0, 1, shape1).astype(np.float32)
+    b = np.random.normal(0, 1, shape2).astype(np.float32)
+    x0 = t.add(t.load(a), t.load(b))
+    x1 = t.reshape(x0, reshape)
+    x2 = t.add(x1, 0.1)
+    x3, x4 = t.split(x2, split_dim, reshape[split_dim] // 2, 2)
+    expect = np.split((a + b).reshape(reshape) + 0.1, 2, split_dim)
+    t.store_expect(x3, expect[0])
+    t.store_expect(x4, expect[1])
+    assert (t.run_check())

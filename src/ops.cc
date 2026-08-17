@@ -509,8 +509,8 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                               // CompareS
     {kGenSimd1, F_DM, OneHotOp::DimChanged, OneHotOp::FoldProp, OneHotOp::TileCollect, OneHotOp::ShapeProp},  // OneHot
     {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
-    {kGenSimd1, F_IP | F_LR, ConcatOp::DimChanged, ConcatOp::FoldProp, ConcatOp::TileCollect, ConcatOp::ShapeProp}, // Concat
-    {kGenSimd1, F_IP | F_LR, SplitOp::DimChanged, SplitOp::FoldProp, SplitOp::TileCollect, SplitOp::ShapeProp},  // SplitOp
+    {kGenSimd1, F_LR, ConcatOp::DimChanged, ConcatOp::FoldProp, ConcatOp::TileCollect, ConcatOp::ShapeProp}, // Concat
+    {kGenSimd1, F_LR, SplitOp::DimChanged, SplitOp::FoldProp, SplitOp::TileCollect, SplitOp::ShapeProp},  // SplitOp
     {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
     {kGenSimd0, F_NS, nullptr, nullptr, nullptr, nullptr},                                                    // ExtOut 
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
@@ -1746,17 +1746,20 @@ void ConcatOp::Dump(bool verbose, std::ostringstream &oss) {
 
 void ConcatOp::TileCollect(NDObject *op, TileInfo &info) {
   auto cat_depth = static_cast<ConcatOp *>(op)->cat_dim_ + 1;
-  if (info.lead_depth > cat_depth) {
+  if (info.lead_depth > cat_depth && op->rhs_ != nullptr) {
     info.lead_depth = cat_depth;
   }
 }
 
 void ConcatOp::FoldProp(NDObject *op, PropRange &range) {
   auto cat_dim = static_cast<ConcatOp *>(op)->cat_dim_;
+  if (op->rhs_ == nullptr) return;
   if (range.base > cat_dim) {
     if (auto depth_len = range.base - cat_dim; depth_len < range.depth) {
       range.depth = depth_len;
     }
+  } else if (range.base == cat_dim) {
+    range.depth = 0; // only for reshape prop
   }
 }
 
@@ -1813,21 +1816,31 @@ void SplitOp::Dump(bool verbose, std::ostringstream &oss) {
 }
 
 void SplitOp::TileCollect(NDObject *op, TileInfo &info) {
-  if (static_cast<SplitOp *>(op)->slice_idx_ == 0) {
-    auto split_depth = static_cast<SplitOpM *>(op)->split_dim_ + 1;
-    if (info.lead_depth > split_depth) {
+  auto split = static_cast<SplitOp *>(op);
+  if (split->slice_idx_ > 0) {
+    return;
+  }
+  auto split_dim = static_cast<SplitOpM *>(op)->split_dim_;
+  if (split->ndd_[split_dim] != split->lhs_->nd_[split_dim]) {
+    if (auto split_depth = split_dim + 1; info.lead_depth > split_depth) {
       info.lead_depth = split_depth;
     }
   }
 }
 
 void SplitOp::FoldProp(NDObject *op, PropRange &range) {
-  if (static_cast<SplitOp *>(op)->slice_idx_ == 0) {
-    auto split_dim = static_cast<SplitOpM *>(op)->split_dim_;
+  auto split = static_cast<SplitOp *>(op);
+  if (split->slice_idx_ > 0) {
+    return;
+  }
+  auto split_dim = static_cast<SplitOpM *>(op)->split_dim_;
+  if (split->ndd_[split_dim] != split->lhs_->nd_[split_dim]) {
     if (range.base > split_dim) {
       if (auto depth_len = range.base - split_dim; depth_len < range.depth) {
         range.depth = depth_len;
       }
+    } else if (range.base == split_dim) {
+      range.depth = 0; // only for reshape prop
     }
   }
 }

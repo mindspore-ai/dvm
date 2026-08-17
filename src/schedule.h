@@ -129,5 +129,7 @@ class DupTilingSchGen : public SchGenHelper {
   explicit DupTilingSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {}
   int64_t DupCodeGen(int split_dim, int64_t truck_size);
 };
+
+SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects);
 }  // namespace dvm
 #endif  // _DVM_SCHEDULE_H_

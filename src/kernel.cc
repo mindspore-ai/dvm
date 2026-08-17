@@ -1851,7 +1851,8 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       stage_kernel->AddStage(new std::conditional_t<dyn_shape, VKernelD, VKernelS>());
     }
     _CloneHelper  helper;
-    helper.clones_.reserve(stage_ids_.size());
+    // Clone lookup uses the original op index, including gaps from unused loads.
+    helper.clones_.resize(stage_ids_.size());
     for (size_t i = 0; i < stage_ids_.size(); ++i) {
       auto out_sid = stage_ids_[i];
       if (out_sid == -1) continue; // load only
@@ -1860,7 +1861,7 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       if (src_op->obj_id_ == ObjectType::kStore) {
         if (auto sstore = GET_SSTORE(helper.GetClone(src_op->lhs_))) {
           stage_kernel->Remap(static_cast<NDAccess *>(sstore), static_cast<NDAccess *>(src_op));
-          helper.clones_.push_back(sstore);
+          helper.clones_[i] = sstore;
           auto stage = stage_kernel->StageAt(out_sid);
           for (auto &ss : stage->sstores_) {
             if (ss.store == sstore) {
@@ -1874,7 +1875,7 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       auto clone_op = src_op->Clone(helper);
       INIT_SSTORE(clone_op);
       clone_op->index_ = i;
-      helper.clones_.push_back(clone_op);
+      helper.clones_[i] = clone_op;
       if (!clone_op->IsSimd()) {
         stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
         if (clone_op->obj_id_ == ObjectType::kStore) {

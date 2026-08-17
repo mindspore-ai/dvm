@@ -2,7 +2,13 @@ VPATH = ./src:./include
 OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o schedule.o pass.o vf_fusion.o msprof.o system.o comm.o
 
 CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include -I${ASCEND_PATH}/pkg_inc ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
-CFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack -fstack-protector-all -Wno-array-bounds
+CFLAGS += -fstack-protector-all -Wno-array-bounds
+LDFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack
+
+CXX_VERSION := $(shell $(CXX) --version 2>/dev/null | head -n 1)
+ifneq (,$(findstring clang,$(CXX_VERSION)))
+CFLAGS += -Wno-error
+endif
 
 CCE_FLGAS_C220 = --std=c++17 -Wno-int-to-pointer-cast\
 				 --cce-aicore-only\
@@ -61,20 +67,20 @@ HEADERS = $(OBJ:.o=.h) isa.h
 all: _dvm_py.so
 
 _dvm_py.so: pybind_api.o dry_run.o libdvm.a
-	g++ -shared  $^ $(LD_FLAGS) -o $@
+	$(CXX) -shared $(LDFLAGS) $^ $(LD_FLAGS) -o $@
 	cp $@ ./python/dvm
 
 libdvm.a: $(OBJ) vm.o
 	ar crv $@ $^
 
 pybind_api.o: pybind_api.cc pybind_api.h dvm_py.h $(HEADERS)
-	g++ -c $(CFLAGS) $(PYBIND11_INCLUDES) $< -o $@
+	$(CXX) -c $(CFLAGS) $(PYBIND11_INCLUDES) $< -o $@
 
 dry_run.o: dry_run.cc isa.h vm_aiv.cce vm_aic.cce
-	g++ -c $(CFLAGS) $< -o $@
+	$(CXX) -c $(CFLAGS) $< -o $@
 
 ${OBJ}: %.o: %.cc $(HEADERS)
-	g++ -c $(CFLAGS) $< -o $@
+	$(CXX) -c $(CFLAGS) $< -o $@
 
 vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	echo "extern const" > vm.cc
@@ -83,7 +89,7 @@ vm.o: g_vkernel_c220_bin g_vkernel_c310_bin
 	objdump -t g_vkernel_c310_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c310 >> vm.cc
 	objdump -t g_vkernel_c220_bin | grep " F " | python3 scripts/find_addrs.py src/isa.h c220 >> vm.cc
 	python3 scripts/find_meta.py g_vkernel_c310_bin >> vm.cc
-	g++ -c $(CFLAGS) vm.cc -o vm.o
+	$(CXX) -c $(CFLAGS) vm.cc -o vm.o
 
 ifneq ($(PRE_ASCEND),)
 g_vkernel_c220_bin: prebuild/g_vkernel_c220_bin

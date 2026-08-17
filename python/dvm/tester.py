@@ -14,6 +14,7 @@
 # ============================================================================
 
 import os
+import shlex
 import sys
 import subprocess
 import csv
@@ -358,7 +359,8 @@ class Tester(Kernel):
         so_path = os.path.join(custom_dir, f"ops_{namespace}_{timestamp}.so")
         with open(cc_path, "w") as f:
             f.write(host_code)
-        cmds = ["g++", "--std=c++17", "-shared", "-fPIC", f"-I{src_dir}", f"-I{inc_dir}", cc_path, "-o", so_path]
+        cxx = shlex.split(os.environ.get("CXX", "g++"))
+        cmds = cxx + ["--std=c++17", "-shared", "-fPIC", f"-I{src_dir}", f"-I{inc_dir}", cc_path, "-o", so_path]
         r = subprocess.run(cmds, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"reg_custom fail: {r.stderr}")

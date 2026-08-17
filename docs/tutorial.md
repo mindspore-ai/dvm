@@ -31,7 +31,7 @@
 |------|------|
 | 硬件 | Host - X86/aarch64等，Device - Ascend NPU |
 | 操作系统 | Linux |
-| 依赖软件 | CANN, gcc等 |
+| 依赖软件 | CANN、GCC或Clang等 |
 
 ### 2.2 环境配置
 

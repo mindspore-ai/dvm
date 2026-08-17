@@ -14,7 +14,7 @@ DVM支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构
 DVM支持在linux下进行编译执行，并依赖如下环境配置：
 + Ascend NPU硬件： 推荐A2/A3;
 + CANN: 推荐8.5版本及以上；
-+ g++：推荐版本7.3.0。 其它就近版本理论可支持，未验证；
++ C++编译器：支持GCC和Clang，已验证GCC 7.3.0和Clang 18.1，其它就近版本理论可支持，未验证；
 + python: 推荐3.7以上版本。需要包含numpy、pybind11包。
 
 
@@ -33,6 +33,11 @@ DVM支持在linux下进行编译执行，并依赖如下环境配置：
    ```bash
    make -j32
    ```
+   Host侧编译器由`CXX`指定；不设置时使用Make默认的`g++`。例如使用Clang编译：
+   ```bash
+   CXX=clang++ make -j32
+   ```
+   集成到其它C++工程时，DVM与上层工程应使用ABI兼容的C++标准库和编译选项。
 4. DVM验证执行。包括基于DVM相关接口定义算子计算逻辑以及执行算子。 DVM当前支持两种使用方式：
    + 使用python接口: 如 ```python examples/01_add.py```。 这种方式主要用于DVM功能验证或自定义算子表达；
    + 使用C++接口: 需要用户程序包含libdvm.a, 并基于DVM的C++接口进行算子定义和执行。具体示例可参考: [cc example](examples/cc/README.md)

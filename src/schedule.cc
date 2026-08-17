@@ -606,14 +606,17 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
       DvmException("store is not joined");  // TODO: add seperate path if joined is invalid
     }
     if (!pend_load.empty()) {
-      for (auto op : pend_load) {
-        op->reuse_dep_ = kSliceDomain;
-      }
       if (joined == kSplitDomain) {
+        for (auto op : pend_load) {
+          op->reuse_dep_ = kSplitDomain;
+        }
         for (auto &s : slice_ios_) {
           s.load_num += AddPengLoad(s.ios, pend_load);
         }
       } else {
+        for (auto op : pend_load) {
+          op->reuse_dep_ = kSliceDomain;
+        }
         slice_ios_[joined].load_num += AddPengLoad(slice_ios_[joined].ios, pend_load);
       }
       pend_load.clear();

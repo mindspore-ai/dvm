@@ -131,6 +131,20 @@ def test_dyn_spec_fall_reduce():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_dead_code():
+    t = Tester("vector:spec", use_pass_opt=True)
+    a = np.random.normal(0.0, 0.3, [1024]).astype(np.float32)
+    x1 = t.load(a)
+    t.load(np.zeros([64], dtype=np.float32))
+    x2 = t.reshape(x1, [16, 64])
+    x3 = t.sum(x2, (0,), False)
+    t.spec_next()
+    x4 = t.div(x3, 16.0)
+    t.store_expect(x4, np.sum(a.reshape(16, 64), axis=0) / 16.0, 1e-4)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_auto_spec_broadcast():
     t = Tester("vector:spec,priv1")
     a = np.random.normal(0.0, 0.3, [6000]).astype(np.float32)

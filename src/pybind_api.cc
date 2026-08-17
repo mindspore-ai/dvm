@@ -602,6 +602,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
         {"ReorderLoad", {pass::ReorderLoad, false}},
         {"CompactPeakLiveness", {pass::CompactPeakLiveness, false}},
         {"VectorDoubleBuffer", {pass::VectorDoubleBuffer, false}},
+        {"DeadCodeEliminate", {pass::DeadCodeEliminate, false}},
         {"EliminateReshape", {pass::EliminateReshape, true}},
         {"InsertRemovePad", {pass::InsertRemovePad, true}},
         {"VfFusion", {pass::VfFusion, true}}};

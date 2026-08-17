@@ -476,9 +476,28 @@ void VectorDoubleBuffer(BasicBlock &bb) {
   }
 }
 
+void DeadCodeEliminate(BasicBlock &bb) {
+  for (auto obj = bb.Begin(); obj != bb.End(); obj = bb.Next(obj)) {
+    obj->reuse_dep_ = obj->IsStore() ? 1 : 0;
+  }
+  for (auto obj = bb.ReverseBegin(); obj != bb.ReverseEnd(); obj = bb.Prev(obj)) {
+    if (obj->reuse_dep_) {
+      obj->ForInput([](NDObject *in) { in->reuse_dep_ = 1; });
+    }
+  }
+  for (auto obj = bb.Begin(); obj != bb.End();) {
+    auto next = bb.Next(obj);
+    if (obj->reuse_dep_ == 0) {
+      bb.Erase(obj);
+    }
+    obj = next;
+  }
+}
+
 class PassOptimizerC220 : public PassOptimizer {
  public:
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
+    DeadCodeEliminate(bb);
     if (dyn_shape) {
       CompactPeakLiveness(bb);
       VectorDoubleBuffer(bb);
@@ -498,6 +517,7 @@ class PassOptimizerC220 : public PassOptimizer {
 class PassOptimizerC310 : public PassOptimizer {
  public:
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
+    DeadCodeEliminate(bb);
     if (dyn_shape) {
       CompactPeakLiveness(bb);
       VectorDoubleBuffer(bb);

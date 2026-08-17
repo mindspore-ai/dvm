@@ -1827,9 +1827,9 @@ bool VKernelS::NormBuild() {
   if (IsDynamic()) {
     Clear();
     if (static_ops_.empty()) {
+      Optimize<true>(build_ops_, nullptr);
       StaticInit(build_ops_);
       SchInit(build_ops_);
-      Optimize<true>(build_ops_, nullptr);
     }
     if (!Normalize(true)) {
       return false;
@@ -1909,23 +1909,21 @@ void _SpecVector::Append(NDObject *obj) {
           if (!red->KeepDims()) {
             in = new ReshapeOp(red, red->shape_ref_);
             VKernelS::Append(in);
-            in->index_ = stage_ids_.size();
-            stage_ids_.push_back(last_stage_);
+            stage_ids_[in] = last_stage_;
           }
           red->insn_ = reinterpret_cast<uint64_t *>(in);
         } else if (!red->KeepDims()) {
           in = reinterpret_cast<NDObject *>(red->insn_);
         }
-      } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
-        stage_ids_[in->index_] = last_stage_;
+      } else if (in->IsLoad() && stage_ids_[in] < 0) {
+        stage_ids_[in] = last_stage_;
       }
     });
   }
   VKernelS::Append(obj);
-  obj->index_ = stage_ids_.size();
   int sid;
   if (obj->IsStore()) {
-    sid = stage_ids_[obj->lhs_->index_];
+    sid = stage_ids_[obj->lhs_];
   } else if (obj->IsLoad()) {
     sid = -1;
   } else {
@@ -1934,15 +1932,15 @@ void _SpecVector::Append(NDObject *obj) {
       obj->insn_ = nullptr;
     }
   }
-  stage_ids_.push_back(sid);
+  stage_ids_[obj] = sid;
 }
 
 void _SpecVector::Clone(VKernel *base, CloneHelper &helper) {
   auto k = static_cast<_SpecVector *>(base);
   for (size_t i = 0; i < k->build_ops_.size(); ++i) {
     auto op = k->build_ops_[i];
-    if (op->IsSimd() && k->stage_ids_[i] != last_stage_) {
-      ASSERT(k->stage_ids_[i] == last_stage_ + 1);
+    if (op->IsSimd() && k->stage_ids_[op] != last_stage_) {
+      ASSERT(k->stage_ids_[op] == last_stage_ + 1);
       Next();
     }
     Append(op->CloneUpdate(helper));
@@ -1978,8 +1976,8 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
   if constexpr (dyn_shape) {
     Clear();
     if (static_ops_.empty()) {
-      StaticInit(build_ops_);
       Optimize<true>(build_ops_, nullptr);
+      StaticInit(build_ops_);
     }
     if (!Normalize(true)) {
       return FallCodeGen();
@@ -1992,11 +1990,11 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       return FallCodeGen();
     }
   } else {
+    Optimize<true>(build_ops_, nullptr);  // build_ops_ is refered by stage_ids_, donot use static optimize
     if (!Normalize(true)) {
       return FallCodeGen();
     }
     GraphTracker tracker;
-    Optimize<false>(build_ops_, &tracker);
     StaticInit(objects_);
     BuildDomain();
     PrepareTiling();
@@ -2056,34 +2054,38 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
   };
   if (fall_kernel_ == nullptr) {
     {
-      std::vector<int> uf(stage_ids_.size());
+      std::vector<int> uf(build_ops_.size());
       for (size_t i = 0; i < uf.size(); ++i) uf[i] = i;
       auto Find = [&uf](int i) -> int {
         while (uf[i] != i) { uf[i] = uf[uf[i]]; i = uf[i]; }
         return i;
       };
-      for (size_t i = 0; i < stage_ids_.size(); ++i) {
-        build_ops_[i]->index_ = i;
+      for (size_t i = 0; i < build_ops_.size(); ++i) {
+        auto op = build_ops_[i];
+        op->index_ = i;
+        if (stage_ids_.find(op) == stage_ids_.end()) { // pass opt add new node
+          stage_ids_[op] = stage_ids_[op->lhs_];
+        }
       }
-      for (size_t i = 0; i < stage_ids_.size(); ++i) {
+      for (size_t i = 0; i < build_ops_.size(); ++i) {
         build_ops_[i]->ForInput([&](NDObject *in) {
           auto in_idx = in->index_;
-          while (static_cast<size_t>(in_idx) >= stage_ids_.size() || in != build_ops_[in_idx]) {
+          while (static_cast<size_t>(in_idx) >= build_ops_.size() || in != build_ops_[in_idx]) {
             in = in->lhs_;
             in_idx = in->index_;
           }
-          if (stage_ids_[in_idx] == stage_ids_[i]) {
+          if (stage_ids_[build_ops_[in_idx]] == stage_ids_[build_ops_[i]]) {
             int a = Find(i), b = Find(in->index_);
             if (a != b) uf[a] = b;
           }
         });
       }
-      std::vector<int> comp_id(stage_ids_.size(), -1);
+      std::vector<int> comp_id(build_ops_.size(), -1);
       int new_sid = 0;
       for (int s = 0; s <= last_stage_; ++s) {
         std::vector<int> roots;
-        for (size_t i = 0; i < stage_ids_.size(); ++i) {
-          if (stage_ids_[i] != s) continue;
+        for (size_t i = 0; i < build_ops_.size(); ++i) {
+          if (stage_ids_[build_ops_[i]] != s) continue;
           int root = Find(i);
           int cid = 0;
           for (; cid < (int)roots.size(); ++cid)
@@ -2093,8 +2095,8 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
         }
         new_sid += roots.size();
       }
-      for (size_t i = 0; i < stage_ids_.size(); ++i) {
-        if (comp_id[i] >= 0) stage_ids_[i] = comp_id[i];
+      for (size_t i = 0; i < build_ops_.size(); ++i) {
+        if (comp_id[i] >= 0) stage_ids_[build_ops_[i]] = comp_id[i];
       }
       last_stage_ = new_sid - 1;
     }
@@ -2106,9 +2108,9 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
       stage_kernel->AddStage(new std::conditional_t<dyn_shape, VKernelD, VKernelS>());
     }
     _CloneHelper  helper;
-    helper.clones_.reserve(stage_ids_.size());
-    for (size_t i = 0; i < stage_ids_.size(); ++i) {
-      auto out_sid = stage_ids_[i];
+    helper.clones_.reserve(build_ops_.size());
+    for (size_t i = 0; i < build_ops_.size(); ++i) {
+      auto out_sid = stage_ids_[build_ops_[i]];
       if (out_sid == -1) continue; // load only
       auto src_op = build_ops_[i];
       src_op->index_ = i;
@@ -2137,7 +2139,7 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
         }
       }
       clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
-        auto in_sid = stage_ids_[in->index_];
+        auto in_sid = stage_ids_[build_ops_[in->index_]];
         if (in_sid == out_sid) {
           return;
         }

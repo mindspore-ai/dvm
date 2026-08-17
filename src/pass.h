@@ -215,6 +215,8 @@ void InsertRemovePad(BasicBlock &block);
 
 void VectorDoubleBuffer(BasicBlock &block);
 
+void DeadCodeEliminate(BasicBlock &bb);
+
 using Pass = void (*)(BasicBlock &);
 
 class PassOptimizer {

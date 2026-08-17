@@ -18,6 +18,7 @@
 #define _DVM_KERNEL_H_
 
 #include <string>
+#include <unordered_map>
 #include <vector>
 #include "code.h"
 #include "ops.h"
@@ -385,7 +386,7 @@ class _SpecVector : public VKernelD {
  protected:
   bool use_fall_{false};
   int last_stage_{0};
-  std::vector<int> stage_ids_;
+  std::unordered_map<NDObject *, int> stage_ids_;
   std::vector<NDObject *> post_reduces_;
   VKernel *fall_kernel_{nullptr};
 };

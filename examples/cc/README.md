@@ -12,7 +12,7 @@ fuse_graph(x[1024]:float, y[1024]:float) -> [1024]:float {
 ## 编译执行
 1. 切换到当前路径下。执行如下编译命令, 完成add程序编译:
    ```bash
-   ${CXX:-g++} -I../../include -I${ASCEND_PATH}/include -L${ASCNED_PATH}/lib64 -ldl -lascendcl muladd.cc ../../libdvm.a -o add
+   ${CXX:-g++} -I../../include -I${ASCEND_HOME_PATH}/include -L${ASCEND_HOME_PATH}/lib64 -ldl -lascendcl muladd.cc ../../libdvm.a -o add
    ```
 2. 执行编译生成的add程序
    ```bash

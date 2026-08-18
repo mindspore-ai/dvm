@@ -36,9 +36,9 @@
 ### 2.2 环境配置
 
 ```bash
-# 配置CANN环境
-export ASCEND_PATH=/<path_to_cann>
-source $ASCEND_PATH/ascend_toolkit/set_env.sh
+# 初始化环境
+# 默认路径，请根据实际安装位置修改
+source /usr/local/Ascend/ascend-toolkit/set_env.sh
 # 配置DVM环境
 source env.sh
 ```

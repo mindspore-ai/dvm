@@ -1,7 +1,7 @@
 VPATH = ./src:./include
 OBJ = ops.o ops_m.o ops_c.o kernel.o xkernel.o gkernel.o code.o dvm.o schedule.o pass.o vf_fusion.o msprof.o system.o comm.o
 
-CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_PATH}/include -I${ASCEND_PATH}/pkg_inc ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
+CFLAGS = --std=c++17 -Werror -Wall -I./include -I${ASCEND_HOME_PATH}/include -I${ASCEND_HOME_PATH}/pkg_inc ${DVM_CUSTOM_FLAGS} -fPIC -fvisibility=hidden
 CFLAGS += -fstack-protector-all -Wno-array-bounds
 LDFLAGS += -Wl,-z,relro,-z,now,-z,noexecstack
 
@@ -42,10 +42,10 @@ CFLAGS += -O2 -D_FORTIFY_SOURCE=2
 endif
 
 ifneq ($(DVM_SOC_SIMU),)
-LD_FLAGS = -L${ASCEND_PATH}/tools/simulator/${DVM_SOC_SIMU}/lib -lruntime_camodel -L${ASCEND_PATH}/lib64 -lascendcl
+LD_FLAGS = -L${ASCEND_HOME_PATH}/tools/simulator/${DVM_SOC_SIMU}/lib -lruntime_camodel -L${ASCEND_HOME_PATH}/lib64 -lascendcl
 CFLAGS += -DVK_SIM_MODEL
 else
-LD_FLAGS = -L${ASCEND_PATH}/lib64 -lascendcl
+LD_FLAGS = -L${ASCEND_HOME_PATH}/lib64 -lascendcl
 endif
 
 ifneq ($(asan),)

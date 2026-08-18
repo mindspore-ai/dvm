@@ -36,9 +36,8 @@
 ### 2.2 环境配置
 
 ```bash
-# 初始化环境
-# 默认路径，请根据实际安装位置修改
-source /usr/local/Ascend/ascend-toolkit/set_env.sh
+# CANN环境配置
+source /<path_to_cann>/ascend-toolkit/set_env.sh
 # 配置DVM环境
 source env.sh
 ```

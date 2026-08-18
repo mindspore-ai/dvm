@@ -1,8 +1,8 @@
 # 如何在TorchNPU中使用DVM
 
-本文面向希望在TorchNPU中使用DVM的开发者，介绍Inductor图融合、DVM自定义算子和Eager无图融合三种路径，再说明TorchNPU内部的对接设计与实现。
+本文面向希望在TorchNPU中使用DVM的开发者。主要介绍Inductor图模式、Eager模式、自定义算子三种执行方式下使用DVM进行算子融合加速的方法，最后简单说明TorchNPU当前对接支持DVM的的实现架构。
 
-推荐使用TorchNPU 26.1.0及以上版本，并选择与PyTorch版本匹配的发行包。DVM当前支持的TorchNPU版本和开发分支如下：
+TorchNPU支持多个不同版本。为了更好使用DVM能力，推荐使用TorchNPU 26.1.0及以上版本，并选择与PyTorch版本匹配的发行包。DVM当前支持的TorchNPU版本和开发分支如下：
 
 | PyTorch版本或开发分支 | TorchNPU发行标签或分支 |
 | --- | --- |
@@ -17,11 +17,13 @@
 
 ## 1. 使用场景与配置
 
-| DVM特性 | 覆盖场景 | 使用方法 |
+通过不同使能方式，DVM已经支持了对不同用户使用场景和模式进行全场景算子融合加速的能力。并支持这些方式的组合使用。
+
+| DVM融合加速特性 | 支持场景 | 使用方法 |
 | --- | --- | --- |
-| 图融合 | Inductor图模式 | 设置`TORCHINDUCTOR_NPU_BACKEND=dvm`，并调用`torch.compile(..., backend="inductor")` |
-| Eager无图融合 | Eager模式 | 设置`TORCH_NPU_LAZY_FUSION=True`，直接运行Eager代码 |
-| 自定义融合 | 自定义算子 | 使用`torch_npu._inductor.dvm.kernel`编写`k.*`计算 |
+| Inductor图融合 | 基于Inductor子图进行算子融合，适用于可以compile构图场景 | 设置`TORCHINDUCTOR_NPU_BACKEND=dvm`，并调用`torch.compile(..., backend="inductor")` |
+| Eager无图融合 | 基于Eager下发算子进行实时算子捕获和融合加速，适用于无法compile构图场景 | 设置`TORCH_NPU_LAZY_FUSION=True`环境变量 |
+| 自定义融合 | 使用dvm原语自定义融合算子，适用于极致融合性能场景 | 使用`torch_npu._inductor.dvm.kernel`直接编写融合kernel代码 |
 
 ### 1.1 配置汇总
 

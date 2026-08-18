@@ -1695,23 +1695,15 @@ __aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ uint8_t *src = (__ubuf__ uint8_t *)(op.xn);
   uint32_t coord[6] = {0};
   uint64_t idx = 0;
-  bool pingpong = false;
+  uint64_t pingpong = 0;
+  set_flag(PIPE_MTE3, PIPE_V, EVENT_ID6);
   set_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
   pipe_barrier(PIPE_V);
   do {
     for (uint64_t iter_offset = 0; iter_offset < op.iter_size; iter_offset += op.ws_size) {
-      __ubuf__ uint8_t *ws;
-      if (pingpong) {
-        pingpong = false;
-        set_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
-        wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID6);
-        ws = (__ubuf__ uint8_t *)(op.ws);
-      } else {
-        pingpong = true;
-        set_flag(PIPE_MTE3, PIPE_V, EVENT_ID6);
-        wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
-        ws = (__ubuf__ uint8_t *)(op.ws + op.ws_size * 32);
-      }
+      event_t event = event_t(EVENT_ID6 ^ pingpong);
+      wait_flag(PIPE_MTE3, PIPE_V, event);
+      __ubuf__ uint8_t *ws = (__ubuf__ uint8_t *)(op.ws + pingpong * op.ws_size * 32);
       uint64_t chunk_size = op.iter_size - iter_offset > op.ws_size ? op.ws_size : op.iter_size - iter_offset;
       uint64_t repeat = (chunk_size + 7) >> 3;
       __ubuf__ uint8_t *xd = ws;
@@ -1730,12 +1722,12 @@ __aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       } else {
         vbrcb((__ubuf__ uint32_t *)xd, (__ubuf__ uint32_t *)xn, 1, VBRCB_NUM, repeat);
       }
-      set_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
-      wait_flag(PIPE_V, PIPE_MTE3, EVENT_ID7);
+      set_flag(PIPE_V, PIPE_MTE3, event);
+      wait_flag(PIPE_V, PIPE_MTE3, event);
       copy_ubuf_to_gm_align_b8(dst + iter_offset * op.iter_stride, (__ubuf__ uint8_t *)ws, 0, chunk_size,
                                 op.type_size, 0, 0, 0, op.iter_stride - op.type_size);
-      set_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
-      wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
+      set_flag(PIPE_MTE3, PIPE_V, event);
+      pingpong ^= 1;
     }
     for (idx = 0; idx < op.loop_depth; ++idx) {
       uint64_t loop_size, dst_stride, src_stride;
@@ -1755,7 +1747,8 @@ __aicore_inline__ void ViewStoreX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       src -= (loop_size - 1) * src_stride;
     }
   } while (idx < op.loop_depth);
-  wait_flag(PIPE_MTE3, PIPE_V, pingpong ? EVENT_ID6 : EVENT_ID7);
+  wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID6);
+  wait_flag(PIPE_MTE3, PIPE_V, EVENT_ID7);
   pipe_barrier(PIPE_V);
 }
 

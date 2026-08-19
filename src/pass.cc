@@ -237,6 +237,13 @@ NDObject *BasicBlock::Move(NDObject *pos, NDObject *obj) {
 }
 
 void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
+  if (obj->GetObjectType() == kConcat) {
+    for (auto &s : static_cast<ConcatOp *>(obj)->slices_) {
+      if (s.input == old) {
+        s.input = update;
+      }
+    }
+  }
   if (obj->lhs_ == old) {
     if (tracker_) {
       tracker_->Record(&obj->lhs_);

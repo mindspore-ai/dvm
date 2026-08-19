@@ -420,3 +420,22 @@ def test_sch_split_reshape(shape1, shape2, reshape, split_dim):
     t.store_expect(x3, expect[0])
     t.store_expect(x4, expect[1])
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_concat_update_slice():
+    t = Tester(use_pass_opt=True)
+    lhs = np.full([1, 8, 512], 0.5, dtype=np.float32)
+    rhs = np.full([1, 8, 1, 32, 2], -0.25, dtype=np.float32)
+
+    x0 = t.load(lhs, "bfloat16")
+    x1 = t.load(rhs)
+    x1 = t.reshape(x1, [1, 8, 1, 64])
+    x1 = t.cast(x1, "bfloat16")
+    x1 = t.reshape(x1, [1, 8, 64])
+
+    out = t.concat([x0, x1], 2)
+
+    expect = np.concatenate([lhs, rhs.reshape(1, 8, 64)], axis=2)
+    t.store_expect(out, expect, eps=0)
+    assert (t.run_check())

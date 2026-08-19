@@ -1082,14 +1082,14 @@ void VectorKernel::Dump(std::ostringstream &oss, const std::string &indent, bool
         }
       }
     }
-    oss << ") // stride=[";
-    if (const auto &strides = op->nd_.data->strides; !strides.empty()) {
-      for (size_t i = 0; i < strides.size() - 1; ++i) {
-        oss << strides[i] << ",";
+    oss << ") // nd_stride=" << op->nd_.data->strides;
+    if (!op->IsSimd()) {
+      auto acc = static_cast<NDAccess *>(op);
+      if (acc->stride_) {
+        oss << ", view_stride=" << *acc->stride_ << ", view_offset=" << acc->offset_bytes_;
       }
-      oss << strides.back();
     }
-    oss << "]" << std::endl;
+    oss << "\n";
   }
   oss << indent << "}";
 }

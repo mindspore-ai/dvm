@@ -814,8 +814,7 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     fold_stride[0] = src_stride_[lead_idx];
     last_dim = lead_idx;
     if (nd_.stride(lead_idx) == nd_[lead_idx]) {
-      int lead_fold_end = tail_size == 0 ? tail_dim + 1 : tail_dim;
-      for (int i = last_dim + 1; i < lead_fold_end; ++i) {
+      for (int i = last_dim + 1; i <= tail_dim ; ++i) {
         if (ndd_.dims[i] == 1) continue;
         if (src_stride_[last_dim] * ndd_.dims[last_dim] != src_stride_[i]) {
           break;
@@ -1473,8 +1472,7 @@ uint64_t NDStore::EmitView(VectorKernel &k) {
   fold_stride[0] = dst_stride_[lead_idx];
   int last_dim = lead_idx;
   if (nd_.stride(lead_idx) == nd_[lead_idx]) {
-    int lead_fold_end = tail_size == 0 ? tail_dim + 1 : tail_dim;
-    for (int i = last_dim + 1; i < lead_fold_end; ++i) {
+    for (int i = last_dim + 1; i <= tail_dim; ++i) {
       if (nd_[i] == 1) continue;
       if (dst_stride_[last_dim] * nd_[last_dim] != dst_stride_[i]) {
         break;

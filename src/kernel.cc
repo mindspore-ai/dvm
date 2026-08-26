@@ -698,6 +698,7 @@ void VectorKernel::PrepareTiling() {
 
 class ShapeTilingHelper {
  public:
+  static constexpr int64_t kMcMaxTileNum = 128;
   ShapeTilingHelper(int64_t size_limit, int64_t core_limit, int64_t tile_size, VectorKernel::TileRegion &range)
       : size_limit_(size_limit), core_limit_(core_limit), tile_size_(tile_size), range_(range) {}
   int64_t GetDivision(int64_t val, int64_t min) {
@@ -766,6 +767,9 @@ class ShapeTilingHelper {
           tile = factor;
         }
       }
+      if (tile_size_ < size_limit_ && num > kMcMaxTileNum) {
+        return false;
+      }
     } else {
       int64_t factor = CeilDiv(space, init_tile_num);
       num = init_tile_num;
@@ -820,6 +824,9 @@ class ShapeTilingHelper {
           num = div_tile;
           tile = factor;
         }
+      }
+      if (tile_size_ < size_limit_ && num > kMcMaxTileNum) {
+        return false;
       }
     } else {
       constexpr int64_t min_factor = 512L;

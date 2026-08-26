@@ -52,6 +52,7 @@ def _continuous_stride(shape):
     [[4, 70, 20, 200], (1, 3), [1, 70, 20, 200], (1, 3), False], # 4d. no neighbor axis
     [[10, 1, 200], (1, 2), [10, 128, 200], (1, 2), True],  # w broadcast
     [[10, 200, 1], (1, 2), [10, 200, 128], (1, 2), False],  # h broadcast
+    [[5, 3, 32, 1], (2, 3), [5, 3, 32, 129], (2, 3), True],  # h broadcast + h tail
 ])
 def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2, view):
     t = Tester("vector:opt_fractal")
@@ -73,6 +74,20 @@ def test_trans_fractal_multi_input(shape1, swap1, shape2, swap2, view):
     else:
         t.store_expect(x2, expect)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_dup_tiling_broadcast_zero_tail():
+    t = Tester()
+    lhs_src = np.random.normal(0, 1, [1, 1, 2, 1]).astype(np.float16)
+    lhs = t.view_load([1, 2, 1, 1], [2, 1, 2, 1], lhs_src)
+    rhs_src = np.random.normal(0, 1, [4, 1, 23, 257]).astype(np.float16)
+    rhs = t.view_load([4, 1, 257, 23], [5911, 5911, 1, 257], rhs_src)
+    result = t.copy(t.add(lhs, rhs))
+    expected = np.swapaxes(lhs_src, 1, 2) + np.swapaxes(rhs_src, 2, 3)
+    t.store_expect(result, expected)
+    t.codegen()
+    assert t.run_check()
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

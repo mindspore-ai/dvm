@@ -312,6 +312,16 @@ int64_t FractalSchGen::CodeGen() {
       helper.Submit();
     }
 
+    uint32_t BcastMask(const NDObject *op) const {
+      for (const auto &record : gen_.space_records_) {
+        if (record.bcast_mask != VectorSchedule::SpaceRecord::OP_MASK && record.ndd == op->nd_.data) {
+          return record.bcast_mask;
+        }
+      }
+      DvmException("missing space record");
+      return 0;
+    }
+
     void GenDup(VectorDupHelper &helper, int64_t h_part_off, int64_t w_part_off, int64_t w_fac_size, int64_t h_fac_size,
                 int64_t h_part_size, int64_t w_part_size) {
       constexpr int w_factor_dim = 0;
@@ -323,11 +333,18 @@ int64_t FractalSchGen::CodeGen() {
       size_[h_part_dim] = h_part_size;
       size_[w_part_dim] = w_part_size;
       gen_.ApplySubSpace(size_);
-      // TODO: consider broadcast
       for (auto op : gen_.kernel_->static_ops_) {
         auto acc = static_cast<NDAccess *>(op);
         auto &stride = *acc->stride_;
-        acc->ViewUpdate(stride[h_part_dim] * h_part_off + stride[w_part_dim] * w_part_off);
+        const uint32_t mask = BcastMask(op);
+        uint64_t offset = 0;
+        if ((mask & (1u << h_factor_dim)) == 0) {
+          offset += stride[h_part_dim] * static_cast<uint64_t>(h_part_off);
+        }
+        if ((mask & (1u << w_factor_dim)) == 0) {
+          offset += stride[w_part_dim] * static_cast<uint64_t>(w_part_off);
+        }
+        acc->ViewUpdate(offset);
       }
       uint64_t part_num = h_part_size * w_part_size;
       helper.Append(part_num, part_base_ * part_num);
@@ -696,7 +713,9 @@ int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
     body_size = split_size / 2;
     tail_size = split_size  - body_size;
   }
-  ASSERT(body_size > 1 && tail_size > 1);
+  if (body_size == 0 || tail_size == 0) {
+    return -1;
+  }
   auto &static_ops = kernel_->static_ops_;
   uint64_t bcast_mask = 0;
   for (size_t i = 0; i < static_ops.size(); ++i) {

@@ -24,11 +24,6 @@ void VectorSchedule::SpaceInit() {
     if (auto ndd = op->Ndd()) {
       space_records_.push_back({0, ndd});
     }
-    if (op->IsSimd() && NDObject::meta_.dim_changed[op->obj_id_]) {
-      auto &r = space_records_.emplace_back();
-      r.bcast_mask = SpaceRecord::OP_MASK;
-      r.change_op = op;
-    }
   }
 }
 
@@ -312,16 +307,6 @@ int64_t FractalSchGen::CodeGen() {
       helper.Submit();
     }
 
-    uint32_t BcastMask(const NDObject *op) const {
-      for (const auto &record : gen_.space_records_) {
-        if (record.bcast_mask != VectorSchedule::SpaceRecord::OP_MASK && record.ndd == op->nd_.data) {
-          return record.bcast_mask;
-        }
-      }
-      DvmException("missing space record");
-      return 0;
-    }
-
     void GenDup(VectorDupHelper &helper, int64_t h_part_off, int64_t w_part_off, int64_t w_fac_size, int64_t h_fac_size,
                 int64_t h_part_size, int64_t w_part_size) {
       constexpr int w_factor_dim = 0;
@@ -336,7 +321,7 @@ int64_t FractalSchGen::CodeGen() {
       for (auto op : gen_.kernel_->static_ops_) {
         auto acc = static_cast<NDAccess *>(op);
         auto &stride = *acc->stride_;
-        const uint32_t mask = BcastMask(op);
+        const uint32_t mask = gen_.GetBCast(op);
         uint64_t offset = 0;
         if ((mask & (1u << h_factor_dim)) == 0) {
           offset += stride[h_part_dim] * static_cast<uint64_t>(h_part_off);
@@ -424,6 +409,69 @@ uint64_t AddPengLoad(std::vector<NDObject *> &ios, const std::vector<NDObject *>
     }
   }
   return num;
+}
+
+bool IsViewOpObj(NDObject *op) { return op->obj_id_ == kSliceOp || op->obj_id_ == kSplitOp || op->obj_id_ == kConcat; }
+
+void ApplySliceSpace(SliceOp *slice) {
+  for (auto &sd : slice->sdims_) {
+    if (int i = sd.index; slice->nd_[i] == 1 && slice->lhs_->nd_[i] > 1) {
+      std::vector<NDObject *> stack;
+      TravelInput(stack, slice->lhs_, [i](NDObject *op) {
+        if (auto ndd = op->Ndd()) {
+          ndd->dims[i] = 1;
+        }
+        return op->nd_[i] > 1;
+      });
+    }
+  }
+}
+
+void ApplySplitSpace(SplitOp *split) {
+  size_t d = split->main_->split_dim_;
+  if (split->nd_[d] == 1 && split->lhs_->nd_[d] > 1) {
+    std::vector<NDObject *> stack;
+    TravelInput(stack, split->lhs_, [d](NDObject *op) {
+      if (auto ndd = op->Ndd()) {
+        ndd->dims[d] = 1;
+      }
+      return op->nd_[d] > 1;
+    });
+  }
+}
+
+void ApplyViewOpSpace(NDObject *op) {
+  if (op->obj_id_ == kSliceOp) {
+    return ApplySliceSpace(static_cast<SliceOp *>(op));
+  } else if (op->obj_id_ == kSplitOp) {
+    return ApplySplitSpace(static_cast<SplitOp *>(op));
+  }
+}
+
+uint64_t UpdateSliceOffset(SliceOp *slice, uint32_t bcast_mask, const DimArray &stride, uint64_t byte_offset) {
+  for (auto &sd : slice->sdims_) {
+    if (!((bcast_mask >> sd.index) & 1)) {
+      byte_offset += sd.begin * stride[sd.index];
+    }
+  }
+  return byte_offset;
+}
+
+uint64_t UpdateSplitOffset(SplitOp *split, uint32_t bcast_mask, const DimArray &stride, uint64_t byte_offset) {
+  auto *main = split->main_;
+  if (size_t split_dim = main->split_dim_; split_dim < stride.size() && !((bcast_mask >> split_dim) & 1)) {
+    byte_offset += split->slice_idx_ * main->split_size_ * stride[split_dim];
+  }
+  return byte_offset;
+}
+
+uint64_t UpdateViewOpOffset(NDObject *op, uint32_t bcast_mask, const DimArray &stride, uint64_t byte_offset) {
+  if (op->obj_id_ == kSliceOp) {
+    return UpdateSliceOffset(static_cast<SliceOp *>(op), bcast_mask, stride, byte_offset);
+  } else if (op->obj_id_ == kSplitOp) {
+    return UpdateSplitOffset(static_cast<SplitOp *>(op), bcast_mask, stride, byte_offset);
+  }
+  return byte_offset;
 }
 }
 
@@ -749,16 +797,421 @@ int64_t DupTilingSchGen::DupCodeGen(int split_dim, int64_t truck_size) {
   return 0;
 }
 
-SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects) {
-  for (auto op : objects) {
-    if (op->obj_id_ == kConcat) {
-      return new ConcatSchGen(kernel, static_cast<ConcatOp *>(op), objects);
+SliceSchGen::SliceSchGen(VectorKernel *kernel, NDObject *slice, const std::vector<NDObject *> &objects)
+    : SchGenHelper(kernel), slice_(static_cast<SliceOp *>(slice)) {
+  for (size_t i = 0; i < kernel->load_num_; ++i) {
+    kernel->static_ops_[i]->reuse_dep_ = i;
+  }
+  std::vector<NDObject *> stack;
+  TravelInput(stack, slice, [this](NDObject *in) {
+    if (in->IsLoad()) {
+      full_io_mask_ |= 1ull << in->reuse_dep_;
     }
-    if (op->obj_id_ == kSplitOp) {
-      ASSERT(static_cast<SplitOpM *>(op)->main_ == op); // first is splitm
-      return new SplitSchGen(kernel, static_cast<SplitOpM *>(op), objects);
+    return true;
+  });
+  for (size_t i = kernel->load_num_; i < kernel->static_ops_.size(); ++i) {
+    bool full_dom = true;
+    TravelInput(stack, kernel->static_ops_[i], [slice, &full_dom](NDObject *in) {
+      if (in == slice) {
+        full_dom = false;
+      }
+      return full_dom;
+    });
+    if (full_dom) {
+      full_io_mask_ |= 1ull << i;
+    } else {
+      slice_dom_ = kernel->static_ops_[i];
     }
   }
-  return nullptr;
+}
+
+int64_t SliceSchGen::CodeGen() {
+  SpaceInit();
+  SaveSpace();
+  int dup_num = 1;
+  uint64_t full_quota = 0;
+  uint64_t slice_quota = slice_->nd_.dims().prod();
+  if (full_io_mask_ >> kernel_->load_num_) {
+    dup_num = 2;
+    full_quota = slice_->lhs_->nd_.dims().prod();
+  }
+  auto &static_ops = kernel_->static_ops_;
+  VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num), full_quota + slice_quota);
+  for (size_t i = 0; i < kernel_->load_num_; ++i) {
+    auto load = static_cast<NDAccess *>(static_ops[i]);
+    if (((full_io_mask_ >> i) & 1) && load->stride_ == nullptr) {
+      AllocStride(load);
+    }
+  }
+  DimArray slice_space = slice_dom_->nd_.dims();
+  if (dup_num == 2) {
+    helper.Reset();
+    std::vector<NDObject *> ios;
+    uint64_t load_num = 0;
+    ios.reserve(static_ops.size());
+    for (size_t i = 0; i < static_ops.size(); ++i) {
+      if ((full_io_mask_ >> i) & 1) {
+        ios.push_back(static_ops[i]);
+        if (i < kernel_->load_num_) {
+          load_num++;
+        }
+      } else if (i >= kernel_->load_num_) {
+        static_ops[i]->flags_ |= OBJ_FLAG_DEAD;
+      }
+    }
+    auto dom = slice_->lhs_;
+    std::swap(static_ops, ios);
+    std::swap(kernel_->load_num_, load_num);
+    std::swap(kernel_->dom_, dom);
+    helper.DoAppend(full_quota);
+    std::swap(static_ops, ios);
+    std::swap(kernel_->load_num_, load_num);
+    std::swap(kernel_->dom_, dom);
+  }
+  helper.Reset();
+  ApplySubSpace(slice_space);
+  ApplySliceSpace(slice_);
+  if (dup_num == 2) {
+    for (size_t i = kernel_->load_num_; i < static_ops.size(); ++i) {
+      if ((full_io_mask_ >> i) & 1) {
+        static_ops[i]->flags_ |= OBJ_FLAG_DEAD;
+      }
+    }
+  }
+  for (size_t i = 0; i < kernel_->load_num_; ++i) {
+    if ((full_io_mask_ >> i) & 1) {
+      auto load = static_cast<NDAccess *>(static_ops[i]);
+      auto offset = UpdateSliceOffset(slice_, GetBCast(load), (*load->stride_), 0);
+      load->ViewUpdate(offset);
+    }
+  }
+  helper.DoAppend(slice_quota);
+  helper.Submit();
+  ResetStrides();
+  return 0;
+}
+
+namespace {
+class GroupCollector {
+ public:
+  using LoadInfo = GeneralViewSchGen::LoadInfo;
+  struct VisitInfo {
+    uint32_t view_mask;
+    uint32_t count{0};
+    uint32_t load_count{0};
+  };
+  GroupCollector(const std::vector<NDObject *> &objects) {
+    visited_.resize(objects.size());
+    int index = 0;
+    for (auto op : objects) {
+      op->index_ = index++;
+    }
+  }
+  void Collect(NDObject *root) {
+    view_mask_ = 0;
+    visit_cnt_++;
+    loads_.clear();
+    stack_.push_back(root);
+    visited_[root->index_].view_mask = 0;
+    visited_[root->index_].count = visit_cnt_;
+    while (!stack_.empty()) {
+      auto top = stack_.back();
+      stack_.pop_back();
+      auto &visit = visited_[top->index_];
+      uint32_t top_mask = visit.view_mask;
+      if (IsViewOpObj(top)) {
+        uint32_t mask = 1u << GetViewIndex(top);
+        top_mask |= mask;
+        view_mask_ |= mask;
+        if (top->obj_id_ == kConcat) {
+          continue;
+        }
+      } else if (top->IsLoad()) {
+        auto io_idx = GetIOIndex(top);
+        if (visit.load_count < visit_cnt_) {
+          auto &info = loads_.emplace_back();
+          info.view_mask = top_mask;
+          info.io_idx = io_idx;
+          visit.load_count = visit_cnt_;
+        } else {
+          auto it = std::find_if(loads_.begin(), loads_.end(),
+                                 [io_idx](const LoadInfo &info) { return info.io_idx == io_idx; });
+          ASSERT(it != loads_.end());
+          it->view_mask = top_mask;
+        }
+      }
+      top->ForInput([&](NDObject *in) {
+        auto &info = visited_[in->index_];
+        if (info.count < visit_cnt_) {
+          info.view_mask = top_mask;
+          info.count = visit_cnt_;
+          stack_.push_back(in);
+        } else if (info.view_mask != top_mask) {
+          info.view_mask |= top_mask;
+          stack_.push_back(in);
+        }
+      });
+    }
+  }
+  void MergeTo(std::vector<LoadInfo> &load_infos) {
+    for (auto &info : loads_) {
+      int ins_idx = -1;
+      for (size_t k = 0; k < load_infos.size(); ++k) {
+        if (load_infos[k].io_idx >= info.io_idx) {
+          ins_idx = k;
+          break;
+        }
+      }
+      if (ins_idx == -1) {
+        load_infos.push_back(info);
+      } else if (load_infos[ins_idx].io_idx != info.io_idx) {
+        load_infos.emplace_back();
+        for (int i = load_infos.size() - 1; i > ins_idx; --i) {
+          load_infos[i] = load_infos[i - 1];
+        }
+        load_infos[ins_idx] = info;
+      }
+    }
+  }
+
+  static void SetViewIndex(NDObject *op, int i) { op->reuse_dep_ = i; }
+  static int GetViewIndex(NDObject *op) { return op->reuse_dep_; }
+  static void SetIOIndex(NDObject *op, int i) { op->reuse_dep_ = i; }
+  static int GetIOIndex(NDObject *op) { return op->reuse_dep_; }
+
+  std::vector<NDObject *> stack_;
+  std::vector<LoadInfo> loads_;
+  std::vector<VisitInfo> visited_;
+  uint32_t visit_cnt_{0};
+  uint32_t view_mask_;
+};
+}  // namespace
+
+GeneralViewSchGen::GeneralViewSchGen(VectorKernel *kernel, const std::vector<NDObject *> &objects)
+    : SchGenHelper(kernel) {
+  GroupCollector gc(objects);
+  auto &static_ops = kernel->static_ops_;
+  load_bcast_mask_.resize(kernel->load_num_, 0);
+  for (int i = 0; i < static_cast<int>(kernel->load_num_); ++i) {
+    gc.SetIOIndex(static_ops[i], i);
+  }
+  uint32_t concat_mask = 0;
+  for (auto *op : objects) {
+    if (IsViewOpObj(op)) {
+      int view_idx = view_ops_.size();
+      gc.SetViewIndex(op, view_idx);
+      view_ops_.push_back(op);
+      if (op->obj_id_ == kConcat) {
+        concat_view_idx_ = view_idx;
+        concat_mask = 1u << view_idx;
+      }
+    }
+  }
+  if (concat_mask) {
+    auto concat = static_cast<ConcatOp *>(view_ops_[concat_view_idx_]);
+    size_t cat_size = concat->slices_.size();
+    concat_groups_.resize(cat_size);
+    for (size_t i = 0; i < cat_size; ++i) {
+      gc.Collect(concat->slices_[i].input);
+      gc.MergeTo(concat_groups_[i].load_infos);
+      concat_groups_[i].view_mask = gc.view_mask_;
+    }
+  }
+  int store_num = static_cast<int>(static_ops.size() - kernel->load_num_);
+  for (int i = 0; i < store_num; ++i) {
+    auto *store = static_ops[i + kernel->load_num_];
+    gc.Collect(store);
+    if (gc.view_mask_ & concat_mask) {
+      for (auto &g : concat_groups_) {
+        for (auto &info : gc.loads_) {
+          info.view_mask |= concat_mask;
+        }
+        gc.MergeTo(g.load_infos);
+        g.static_ops.push_back(store);
+        g.view_mask |= gc.view_mask_;
+      }
+    } else {
+      size_t index = groups_.size();
+      if (gc.view_mask_) {
+        for (size_t j = 0; j < groups_.size(); ++j) {
+          if (groups_[j].view_mask == gc.view_mask_) {
+            index = j;
+            break;
+          }
+        }
+      }
+      if (index == groups_.size()) {
+        auto &g = groups_.emplace_back();
+        g.view_mask = gc.view_mask_;
+      }
+      gc.MergeTo(groups_[index].load_infos);
+      groups_[index].static_ops.push_back(store);
+    }
+  }
+  auto &temp_ops = gc.stack_;
+  auto prepend_loads = [&static_ops, &temp_ops](const std::vector<LoadInfo> &infos, std::vector<NDObject *> &ios) {
+    temp_ops.clear();
+    temp_ops.reserve(infos.size());
+    for (auto &i : infos) {
+      temp_ops.push_back(static_ops[i.io_idx]);
+    }
+    ios.insert(ios.begin(), temp_ops.begin(), temp_ops.end());
+  };
+  for (auto &g : groups_) {
+    prepend_loads(g.load_infos, g.static_ops);
+    g.dom = g.static_ops.back();
+  }
+  for (auto &g : concat_groups_) {
+    prepend_loads(g.load_infos, g.static_ops);
+  }
+}
+
+int64_t GeneralViewSchGen::CodeGen() {
+  SpaceInit();
+  SaveSpace();
+  auto &static_ops = kernel_->static_ops_;
+  size_t orig_load_num = kernel_->load_num_;
+
+  for (size_t i = 0; i < orig_load_num; ++i) {
+    load_bcast_mask_[i] = GetBCast(static_ops[i]);
+  }
+  for (auto op : static_ops) {
+    if (auto io = static_cast<NDAccess *>(op); io->stride_ == nullptr) {
+      AllocStride(io);
+    }
+  }
+
+  int dup_num = static_cast<int>(groups_.size());
+  uint64_t total_quota = 0;
+  uint64_t concat_quota = 0;
+  for (auto &g : groups_) {
+    g.space = g.dom->nd_.dims();
+    g.quota = static_cast<uint64_t>(g.space.prod());
+    total_quota += g.quota;
+  }
+  if (!concat_groups_.empty()) {
+    dup_num += static_cast<int>(concat_groups_.size());
+    concat_quota = static_cast<uint64_t>(view_ops_[concat_view_idx_]->nd_.dims().prod());
+    total_quota += concat_quota;
+  }
+  VectorDupHelper helper(kernel_, dup_num, ReserveReloc(static_ops.size() * dup_num), total_quota);
+
+  auto update_store_dead = [&static_ops, orig_load_num](const std::vector<NDObject *> &ios, size_t load_num) {
+    for (size_t i = orig_load_num; i < static_ops.size(); ++i) {
+      static_ops[i]->flags_ |= OBJ_FLAG_DEAD;
+    }
+    for (size_t i = load_num; i < ios.size(); ++i) {
+      ios[i]->flags_ &= ~OBJ_FLAG_DEAD;
+    }
+  };
+  auto apply_view_space = [this](uint32_t view_mask) {
+    for (size_t i = 0; i < view_ops_.size(); ++i) {
+      if ((view_mask >> i) & 1) {
+        ApplyViewOpSpace(view_ops_[i]);
+      }
+    }
+  };
+  if (concat_quota) {
+    auto concat = static_cast<ConcatOp *>(view_ops_[concat_view_idx_]);
+    ConcatOp::PartialCtx ctx = concat->PartialInit();
+    int cat_dim = concat->CatDim();
+    DimArray concat_space = concat->nd_.dims();
+    concat_quota /= concat_space[cat_dim];
+    int64_t slice_start = 0;
+    for (size_t gi = 0; gi < concat_groups_.size(); ++gi) {
+      helper.Reset();
+      auto &g = concat_groups_[gi];
+      size_t load_num = g.load_infos.size();
+      update_store_dead(g.static_ops, load_num);
+      std::swap(static_ops, g.static_ops);
+      kernel_->load_num_ = load_num;
+
+      auto &slice = concat->slices_[gi];
+      concat->PartialSet(slice.input);
+      concat_space[cat_dim] = slice.size;
+
+      for (size_t i = 0; i < load_num; ++i) {
+        auto *acc = static_cast<NDAccess *>(static_ops[i]);
+        uint64_t byte_offset = 0;
+        uint32_t bcast_mask = load_bcast_mask_[g.load_infos[i].io_idx];
+        auto view_mask = g.load_infos[i].view_mask;
+        for (size_t j = 0; j < view_ops_.size(); ++j) {
+          if ((view_mask >> j) & 1) {
+            if (j == static_cast<size_t>(concat_view_idx_)) {
+              if (!((bcast_mask >> cat_dim) & 1)) {
+                byte_offset += (*acc->stride_)[cat_dim] * slice_start;
+              }
+            } else {
+              byte_offset = UpdateViewOpOffset(view_ops_[j], bcast_mask, *acc->stride_, byte_offset);
+            }
+          }
+        }
+        acc->ViewUpdate(byte_offset);
+      }
+      for (size_t i = load_num; i < static_ops.size(); ++i) {
+        auto *acc = static_cast<NDAccess *>(static_ops[i]);
+        acc->ViewUpdate((*acc->stride_)[cat_dim] * slice_start);
+      }
+      ApplySubSpace(concat_space);
+      apply_view_space(g.view_mask);
+      helper.DoAppend(concat_quota * slice.size);
+      slice_start += slice.size;
+      std::swap(static_ops, g.static_ops);
+    }
+    concat->PartialRecover(ctx);
+  }
+
+  for (auto &g : groups_) {
+    helper.Reset();
+    size_t load_num = g.load_infos.size();
+    update_store_dead(g.static_ops, load_num);
+    std::swap(static_ops, g.static_ops);
+    kernel_->load_num_ = load_num;
+    for (size_t i = 0; i < load_num; ++i) {
+      auto *acc = static_cast<NDAccess *>(static_ops[i]);
+      uint64_t byte_offset = 0;
+      auto bcast_mask = load_bcast_mask_[g.load_infos[i].io_idx];
+      auto view_mask = g.load_infos[i].view_mask;
+      for (size_t j = 0; j < view_ops_.size(); ++j) {
+        if ((view_mask >> j) & 1) {
+          byte_offset = UpdateViewOpOffset(view_ops_[j], bcast_mask, *acc->stride_, byte_offset);
+        }
+      }
+      acc->ViewUpdate(byte_offset);
+    }
+    ApplySubSpace(g.space);
+    apply_view_space(g.view_mask);
+    helper.DoAppend(g.quota);
+    std::swap(static_ops, g.static_ops);
+  }
+  helper.Submit();
+  ResetStrides();
+  kernel_->load_num_ = orig_load_num;
+  return 0;
+}
+
+SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects) {
+  NDObject *view = nullptr;
+  for (auto op : objects) {
+    if (op->obj_id_ == kSliceOp || op->obj_id_ == kConcat ||
+        (op->obj_id_ == kSplitOp && static_cast<SplitOp *>(op)->slice_idx_ == 0)) {
+      if (view == nullptr) {
+        view = op;
+      } else {
+        return new GeneralViewSchGen(kernel, objects);
+      }
+    }
+  }
+  if (view == nullptr) {
+    return nullptr;
+  }
+  if (view->obj_id_ == kConcat) {
+    return new ConcatSchGen(kernel, static_cast<ConcatOp *>(view), objects);
+  } else if (view->obj_id_ == kSplitOp) {
+    return new SplitSchGen(kernel, static_cast<SplitOpM *>(view), objects);
+  } else {
+    ASSERT(view->obj_id_ == kSliceOp);
+    return new SliceSchGen(kernel, view, objects);
+  }
 }
 }  // namespace dvm

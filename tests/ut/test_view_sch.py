@@ -454,3 +454,180 @@ def test_sch_concat_update_slice():
     expect = np.concatenate([lhs, rhs.reshape(1, 8, 64)], axis=2)
     t.store_expect(out, expect, eps=0)
     assert (t.run_check())
+
+
+@pytest.mark.parametrize("shape1, shape2, start, slice1, slice2", [
+    ([100, 2000], [1, 2000], [10, 30], [60, 1500], [60, 1500]),    # before slice broadcast
+    ([100, 2000], [100, 2000], [10, 30], [60, 1500], [60, 1]),    # after slice broadcast
+    ([100, 1000], [100, 1000], [0, 20], [100, 500], [100, 500]),    # start has 0
+])
+def test_sch_slice(shape1, shape2, start, slice1, slice2):
+    t = Tester()
+    a = np.random.normal(0, 1, shape1).astype(np.float32)
+    b = np.random.normal(0, 1, shape2).astype(np.float32)
+    c = np.random.normal(0, 1, slice2).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.mul(x0, x1)
+    x3 = t.slice(x2, start, slice1)
+    x4 = t.add(x3, t.load(c))
+    expect = (a * b)[start[0] : start[0] + slice1[0], start[1] : start[1] + slice1[1]] + c
+    t.store_expect(x4, expect)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_store():
+    t = Tester()
+    a = np.random.normal(0, 1, [10, 1024]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.mul(x0, 0.6)
+    x2 = t.slice(x1, [2, 0], [8, 512])
+    x3 = t.add(x2, 0.1)
+    x4 = t.mul(x3, 0.4)
+    x1_e = a * 0.6
+    x2_e = x1_e[2:10, :512]
+    x3_e = x2_e + 0.1
+    t.store_expect(x1, x1_e)
+    t.store_expect(x3, x3_e)
+    t.store_expect(x4, x3_e * 0.4)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_broadcast():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [10, 20]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.mul(x0, 0.1)
+    s1 = t.slice(x1, [2, 5], [6, 1])
+    a1 = np.random.normal(0, 1, [6, 20]).astype(np.float32)
+    x2 = t.load(a1)
+    add = t.add(s1, x2)
+    z = t.exp(add)
+    expect = np.exp(a0[2:8, 5:6] * 0.1 + a1)
+    t.store_expect(z, expect)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_slice_chain():
+    t = Tester()
+    a = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    b = np.random.normal(0, 1, [600, 300]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.add(x0, 0.1)
+    x2 = t.slice(x1, [100, 100], [600, 300])
+    x3 = t.add(x2, t.load(b))
+    x4 = t.slice(x3, [50, 0], [200, 160])
+    x5 = t.exp(x4)
+    e2 = (a + 0.1)[100:700, 100:400]
+    t.store_expect(x2, e2)
+    t.store_expect(x5, np.exp((e2 + b)[50:250, :160]))
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_slice_v_branch():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    a1 = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.mul(x0, 0.1)
+    s0 = t.slice(x1, [100, 100], [200, 100])
+    x2 = t.load(a1)
+    x3 = t.mul(x2, 0.1)
+    s1 = t.slice(x3, [200, 200], [200, 100])
+    z = t.add(s0, s1)
+    expect = a0[100:300, 100:200] * 0.1 + a1[200:400, 200:300] * 0.1
+    t.store_expect(z, expect)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_concat():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [600, 300]).astype(np.float32)
+    a1 = np.random.normal(0, 1, [400, 200]).astype(np.float32)
+    a2 = np.random.normal(0, 1, [200, 200]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.mul(x0, 0.1)
+    s1 = t.slice(x1, [100, 100], [400, 200])
+    x2 = t.load(a1)
+    add = t.add(s1, x2)
+    x3 = t.load(a2)
+    c = t.concat([add, x3], 0)
+    z = t.exp(c)
+    expect = np.exp(np.concatenate([a0[100:500, 100:300] * 0.1 + a1, a2], axis=0))
+    t.store_expect(z, expect)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_concat_slice():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [600, 300]).astype(np.float32)
+    a1 = np.random.normal(0, 1, [100, 300]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.mul(x0, 0.1)
+    s1 = t.slice(x1, [100, 0], [300, 300])
+    x2 = t.load(a1)
+    c = t.concat([s1, x2], 0)
+    a2 = np.random.normal(0, 1, [600, 300]).astype(np.float32)
+    x3 = t.load(a2)
+    x4 = t.mul(x3, 0.1)
+    s2 = t.slice(x4, [100, 0], [400, 300])
+    z = t.add(c, s2)
+    expect = np.concatenate([a0[100:400] * 0.1, a1], axis=0) + a2[100:500] * 0.1
+    t.store_expect(z, expect)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_concat_broadcast():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [600, 200]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.mul(x0, 0.1)
+    s1 = t.slice(x1, [100, 50], [400, 1])
+    a1 = np.random.normal(0, 1, [400, 200]).astype(np.float32)
+    x2 = t.load(a1)
+    add = t.add(s1, x2)
+    a2 = np.random.normal(0, 1, [200, 200]).astype(np.float32)
+    x3 = t.load(a2)
+    c = t.concat([add, x3], 0)
+    z = t.exp(c)
+    expect = np.exp(np.concatenate([a0[100:500, 50:51] * 0.1 + a1, a2], axis=0))
+    t.store_expect(z, expect)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_split_concat():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [500, 512]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.add(x0, 0.1)
+    x2, x3, x4 = t.split(x1, 0, 200, 3)
+    x5 = t.mul(x2, 0.8)
+    x6 = t.concat([x5, x3], 1)
+    e2, e3, e4 = np.split(a0 + 0.1, [200, 400])
+    t.store_expect(x4, e4)
+    t.store_expect(x6, np.concatenate([e2 * 0.8, e3], axis=1))
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_split_slice():
+    t = Tester()
+    a0 = np.random.normal(0, 1, [500, 512]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.add(x0, 0.1)
+    x2 = t.slice_dim(x1, 0, 50, 450)
+    x3, x4 = t.split(x2, 0, 200, 2)
+    x5 = t.exp(x3)
+    x6 = t.slice_dim(x4, 1, 100, 300)
+    e3, e4 = np.split((a0 + 0.1)[50:450, :], 2)
+    t.store_expect(x5, np.exp(e3))
+    t.store_expect(x6, e4[:, 100:300])
+    assert t.run_check()

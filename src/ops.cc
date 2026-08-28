@@ -511,6 +511,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_LR, nullptr, nullptr, nullptr, PermuteOp::ShapeProp},                                       // Permute
     {kGenSimd1, F_LR, ConcatOp::DimChanged, ConcatOp::FoldProp, ConcatOp::TileCollect, ConcatOp::ShapeProp}, // Concat
     {kGenSimd1, F_LR, SplitOp::DimChanged, SplitOp::FoldProp, SplitOp::TileCollect, SplitOp::ShapeProp},  // SplitOp
+    {kGenSimd1, F_LR, SliceOp::DimChanged, SliceOp::FoldProp, SliceOp::TileCollect, SliceOp::ShapeProp},  // SliceOp
     {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
     {kGenSimd0, F_NS, nullptr, nullptr, nullptr, nullptr},                                                    // ExtOut 
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
@@ -1950,6 +1951,57 @@ void SplitOpM::DoNormalize(std::vector<NDObject *> &run_ops) {
 NDObject *SplitOpM::Clone(CloneHelper &h) {
   return new SplitOpM(h.GetClone(lhs_), split_axis_ref_, split_size_, siblings_.size());
 }
+
+uint64_t SliceOp::Emit(VectorKernel &k) {
+  ndd_.UpdateStride(k.LeadAlign());
+  return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
+}
+
+void SliceOp::TileCollect(NDObject *op, TileInfo &info) {
+  auto &sdims = static_cast<SliceOp *>(op)->sdims_;
+  ASSERT(!sdims.empty());
+  if (int depth = sdims.front().index + 1; depth < info.lead_depth) {
+    info.lead_depth = depth;
+  }
+}
+
+void SliceOp::FoldProp(NDObject *op, PropRange &range) {
+  auto &sdims = static_cast<SliceOp *>(op)->sdims_;
+  ASSERT(!sdims.empty());
+  size_t sidx = sdims.size() - 1;
+  int index = sdims[sidx].index;
+  while (sidx > 0 && range.base < index) {
+    index = sdims[--sidx].index;
+  }
+  if (range.base >= index) {
+    auto new_depth = range.base > index ? range.base - index : 1;
+    if (new_depth < range.depth) {
+      range.depth = new_depth;
+    }
+  }
+}
+
+void SliceOp::DimChanged(NDObject *op) {
+  auto &sdims = static_cast<SliceOp *>(op)->sdims_;
+  auto &nd = static_cast<SliceOp *>(op)->ndd_.dims;
+  int index = 0;
+  int offset = 0;
+  for (auto &sd : sdims) {
+    while (offset < sd.offset) {
+      if (index == 0) {
+        offset = nd[0];
+        index = 1;
+      } else {
+        offset *= nd[index];
+        index++;
+      }
+    }
+    ASSERT(offset == sd.offset);
+    sd.index = index;
+  }
+}
+
+void SliceOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) { static_cast<SliceOp *>(op)->DoShapeProp(sym_dim_next); }
 
 void PermuteOp::Normalize(std::vector<NDObject *> &run_ops) {
   size_t dim_size = lhs_->shape_ref_->size;

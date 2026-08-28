@@ -30,25 +30,23 @@ class VectorSchedule {
   void SaveSpace();
   void ApplySubSpace(const DimArray &size) {
     for (auto &info : space_records_) {
-      if (info.bcast_mask == SpaceRecord::OP_MASK) {
-        info.change_op->DimChanged();
-      } else {
-        info.ndd->Reset();
-        auto &dims = info.ndd->dims;
-        for (size_t i = 0; i < dims.size(); ++i) {
-          dims[i] = (info.bcast_mask >> i) & 1ul ?  1 : size[i];
-        }
+      info.ndd->Reset();
+      auto &dims = info.ndd->dims;
+      for (size_t i = 0; i < dims.size(); ++i) {
+        dims[i] = (info.bcast_mask >> i) & 1ul ?  1 : size[i];
       }
     }
+  }
+  uint32_t GetBCast(NDObject *op) {
+    for (auto &r : space_records_) {
+      if (r.ndd == op->nd_.data) return r.bcast_mask;
+    }
+    return 0;
   }
 
   struct SpaceRecord {
     uint32_t bcast_mask;
-    union {
-      NDSpaceData *ndd;
-      NDObject *change_op;
-    };
-    static constexpr uint32_t OP_MASK = 0xffffffffu;
+    NDSpaceData *ndd;
   };
   std::vector<SpaceRecord> space_records_;
   VectorKernel *kernel_;
@@ -128,6 +126,48 @@ class DupTilingSchGen : public SchGenHelper {
  public:
   explicit DupTilingSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {}
   int64_t DupCodeGen(int split_dim, int64_t truck_size);
+};
+
+class SliceSchGen : public SchGenHelper {
+ public:
+  SliceSchGen(VectorKernel *kernel, NDObject *slice, const std::vector<NDObject *> &objects);
+  int64_t CodeGen() override;
+
+ protected:
+  SliceOp *slice_;
+  NDObject *slice_dom_{nullptr};
+  uint64_t full_io_mask_{0};
+};
+
+class GeneralViewSchGen : public SchGenHelper {
+ public:
+  struct LoadInfo {
+    int io_idx;
+    uint32_t view_mask;
+  };
+  struct Group {
+    std::vector<NDObject *> static_ops;
+    std::vector<LoadInfo> load_infos;
+    NDObject *dom{nullptr};
+    uint64_t quota;
+    uint64_t view_mask;
+    DimArray space;
+  };
+  struct ConcatGroup {
+    std::vector<NDObject *> static_ops;
+    std::vector<LoadInfo> load_infos;
+    uint64_t view_mask;
+  };
+
+  GeneralViewSchGen(VectorKernel *kernel, const std::vector<NDObject *> &objects);
+  int64_t CodeGen() override;
+
+ protected:
+  std::vector<Group> groups_;
+  std::vector<ConcatGroup> concat_groups_;  // ordered by slice index. only support one concat
+  std::vector<uint32_t> load_bcast_mask_;
+  std::vector<NDObject *> view_ops_;
+  int concat_view_idx_{-1};
 };
 
 SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects);

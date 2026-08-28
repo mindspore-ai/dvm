@@ -67,6 +67,7 @@ enum ObjectType {
   kPermute,
   kConcat,
   kSplitOp,
+  kSliceOp,
   kCustom,
   kExtOut,
   kCubeOp,
@@ -1174,6 +1175,32 @@ class SplitOpM : public SplitOp {
   int split_dim_{0};
   int64_t split_size_;
   std::vector<SplitOp *> siblings_;
+};
+
+class SliceOp : public NDObject {
+ public:
+  SliceOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kSliceOp) {
+    shape_ref_ = &shape_;
+    nd_.data = &ndd_;
+  }
+  uint64_t Emit(VectorKernel &k) override;
+  virtual void DoShapeProp(int64_t &sym_dim_next) = 0;
+
+  static void TileCollect(NDObject *op, TileInfo &info);
+  static void FoldProp(NDObject *op, PropRange &range);
+  static void DimChanged(NDObject *op);
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
+  struct SDim {
+    int index;
+    int64_t begin;
+    int64_t offset;
+  };
+  std::vector<SDim> sdims_;
+
+ protected:
+  NDSpaceData ndd_;
+  ShapeWithRef shape_;
 };
 
 class _BroadcastOp : public NDObject {

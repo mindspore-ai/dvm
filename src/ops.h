@@ -18,6 +18,7 @@
 #define _DVM_OPS_H_
 
 #include <cstdint>
+#include <cstring>
 #include <vector>
 #include <mutex>
 #include <atomic>
@@ -130,48 +131,13 @@ std::ostream &operator<<(std::ostream &oss, const IntArrayRef &shape);
 std::ostream &operator<<(std::ostream &oss, const Float16 &scalar);
 std::ostream &operator<<(std::ostream &oss, const BFloat16 &scalar);
 
-static inline void _DimCopy(int64_t *dst, const int64_t *src, size_t size) {
-  switch (size) {
-    case 10:
-      dst[9] = src[9];
-    case 9:
-      dst[8] = src[8];
-    case 8:
-      dst[7] = src[7];
-    case 7:
-      dst[6] = src[6];
-    case 6:
-      dst[5] = src[5];
-    case 5:
-      dst[4] = src[4];
-    case 4:
-      dst[3] = src[3];
-    case 3:
-      dst[2] = src[2];
-    case 2:
-      dst[1] = src[1];
-    case 1:
-      dst[0] = src[0];
-      break;
-    default:
-      break;
-  }
-}
-
 class DimArray {
  public:
   enum { kMaxDimSize = 10 };
   DimArray() : size_(0) {}
-  DimArray &operator=(const DimArray &other) {
-    if (this != &other) {
-      size_ = other.size();
-      if (size_ > 0) _DimCopy(data_, other.data(), size_);
-    }
-    return *this;
-  }
   DimArray &operator=(const std::vector<int64_t> &other) {
     size_ = other.size();
-    if (size_ > 0) _DimCopy(data_, other.data(), size_);
+    if (size_ > 0) std::memcpy(data_, other.data(), sizeof(int64_t) * size_);
     return *this;
   }
   bool operator==(const DimArray &other) const {
@@ -231,7 +197,7 @@ struct ShapeRefData : public IntArrayRef {
   }
   ShapeRefData &operator=(const IntArrayRef &other) {
     size = other.size;
-    _DimCopy(shape, other.data, size);
+    std::memcpy(shape, other.data, sizeof(int64_t) * size);
     return *this;
   }
   int64_t &operator[](int i) { return shape[i]; }

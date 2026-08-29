@@ -421,6 +421,7 @@ class VectorKernel;
 #define OBJ_FLAG_CAST_NOLOSS (1u << 31)
 #define OBJ_FLAG_FLEX_INPL_WS (1u << 31)
 #define OBJ_FLAG_STORE_TEMP (1u << 31)
+#define OBJ_FLAG_LOAD_NZ (1u << 28)
 #define OBJ_FLAG_LOAD_BIND (1u << 29)
 #define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)

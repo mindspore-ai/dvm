@@ -63,8 +63,6 @@ def test_matmul(trans):
 def test_matmul_split_k(m, n, k, trans):
     shape_a = [k, m] if trans[0] else [m, k]
     shape_b = [n, k] if trans[1] else [k, n]
-    if shape_a[1] > 65535 or shape_b[1] > 65535:
-        return
     g0 = Tester.fast_random_normal(0, 0.1, shape_a).astype(np.float16)
     g1 = Tester.fast_random_normal(0, 0.1, shape_b).astype(np.float16)
     expect = np.matmul((g0 if not trans[0] else g0.T).astype(np.float32),
@@ -74,6 +72,22 @@ def test_matmul_split_k(m, n, k, trans):
     b1 = t.load(g1)
     c1 = t.matmul(a1, b1, trans[0], trans[1])
     t.store_expect(c1, expect, 2e-3)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_batchmatmul_nd2nz_unaligned():
+    shape_a = [2, 17, 65537]
+    shape_b = [65537, 19]
+    np_a = Tester.fast_random_normal(0, 0.01, shape_a).astype(np.float16)
+    np_b = Tester.fast_random_normal(0, 0.01, shape_b).astype(np.float16)
+    expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
+    t = Tester("mix")
+    a = t.load(np_a)
+    b = t.load(np_b)
+    c = t.matmul(a, b, False, False)
+    t.store_expect(c, expect, 2e-3)
     assert (t.run_check())
 
 

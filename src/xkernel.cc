@@ -334,6 +334,200 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
 }
 
 namespace {
+class NDNzBindLoad : public NDViewLoad {
+ public:
+  explicit NDNzBindLoad(NDAccess *input, bool is_tail = false)
+      : NDViewLoad(nullptr, &nz_shape_, &src_stride_data_, input->type_id_), input_(input) {
+    auto src_shape = input_->shape_ref_;
+    auto rank = src_shape->size;
+    auto rows = src_shape->data[rank - 2];
+    auto cols = src_shape->data[rank - 1];
+
+    auto prefix = rank - 2;
+    auto cols_body = cols / CubeOp::BLOCK_SIZE;
+    auto cols_tail = cols % CubeOp::BLOCK_SIZE;
+    ASSERT(!is_tail || cols_tail > 0);
+    nz_shape_.Resize(prefix + (is_tail ? 2 : 3));
+    src_stride_data_.Resize(nz_shape_.size);
+    int64_t batch_stride = rows * cols;
+    for (int64_t i = static_cast<int64_t>(prefix) - 1; i >= 0; --i) {
+      nz_shape_[i] = src_shape->data[i];
+      src_stride_data_[i] = batch_stride;
+      batch_stride *= src_shape->data[i];
+    }
+    if (is_tail) {
+      // Load only the valid tail from GM. The logical C0=16 keeps a full NZ slab in UB;
+      // the following ClearPad supplies the remaining zeros in UB.
+      nz_shape_[prefix] = rows;
+      nz_shape_[prefix + 1] = CubeOp::BLOCK_SIZE;
+      src_stride_data_[prefix] = cols;
+      src_stride_data_[prefix + 1] = 1;
+      offset_elements_ = cols_body * CubeOp::BLOCK_SIZE;
+      tail_elements_ = cols_tail;
+    } else {
+      // Flatten the standard NZ [C1, R1, R0, C0] layout to [C1, R, C0].
+      nz_shape_[prefix] = cols_body;
+      nz_shape_[prefix + 1] = rows;
+      nz_shape_[prefix + 2] = CubeOp::BLOCK_SIZE;
+      src_stride_data_[prefix] = CubeOp::BLOCK_SIZE;
+      src_stride_data_[prefix + 1] = cols;
+      src_stride_data_[prefix + 2] = 1;
+    }
+  }
+
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    NDViewLoad::Normalize(run_ops);
+    offset_bytes_ = offset_elements_ * ITEM_SIZE[type_id_];
+  }
+
+  uint64_t Emit(VectorKernel &k) override {
+    k.code_.BindOpFast(addr_, input_->addr_);
+    if (auto &addr = input_->addr_; addr.reloc_ == nullptr) {
+      addr.Update(&addr.data);
+    }
+    auto size = NDViewLoad::Emit(k);
+    if (tail_elements_) {
+      vViewLoad op;
+      vViewLoad::Decode(insn_, insn_[0], op);
+      auto pad_bytes = (CubeOp::BLOCK_SIZE - tail_elements_) * ITEM_SIZE[type_id_];
+      ASSERT(op.iter_size >= pad_bytes);
+      op.iter_size -= pad_bytes;
+      op.src_gap += pad_bytes;
+      if (op.loop_depth == 0 && op.iter_num == 1) {
+        ASSERT(op.tail_size >= pad_bytes);
+        op.tail_size -= pad_bytes;
+      }
+      vViewLoad::Encode(insn_, V_LOAD_VIEW, op);
+    }
+    return size;
+  }
+
+  NDObject *Clone(CloneHelper &h) override {
+    return new NDNzBindLoad(static_cast<NDAccess *>(h.GetClone(static_cast<NDObject *>(input_))), tail_elements_ != 0);
+  }
+
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "NzViewLoad"; }
+
+ private:
+  NDAccess *input_;
+  ShapeWithRef nz_shape_;
+  ShapeWithRef src_stride_data_;
+  uint64_t offset_elements_{0};
+  uint64_t tail_elements_{0};
+};
+
+class NDNzClearPad : public CopyOp {
+ public:
+  NDNzClearPad(NDObject *input, uint64_t valid_elements) : CopyOp(input), valid_elements_(valid_elements) {
+    ASSERT(valid_elements_ > 0 && valid_elements_ < CubeOp::BLOCK_SIZE);
+  }
+
+  uint64_t Emit(VectorKernel &) override {
+    ASSERT(ITEM_SIZE[type_id_] == 2);
+    vClearPad clear;
+    clear.xd = lhs_->xbuf_;
+    clear.iter_num = lhs_->nd_.stride_back() / CubeOp::BLOCK_SIZE;
+    clear.iter_size = valid_elements_;
+    clear.iter_stride = CubeOp::BLOCK_SIZE;
+    clear.simd_width = CubeOp::BLOCK_SIZE;
+    clear.iter_tail = 0;
+    clear.scalar = 0;
+    auto size = vClearPad::Encode(insn_, V_CLR_PAD_B16, clear);
+    tail_insn_ = insn_ + size;
+    if (xbuf_ == lhs_->xbuf_) {
+      size += vNop::Encode(tail_insn_);
+    } else {
+      vCopy copy;
+      copy.xd = xbuf_;
+      copy.xn = lhs_->xbuf_;
+      copy.lenburst = CeilDiv<uint64_t>(nd_.stride_back() * ITEM_SIZE[type_id_], 32);
+      size += vCopy::Encode(tail_insn_, V_COPY, copy);
+    }
+    *tail_insn_ |= 1ul << V_HEAD_BAR_FLAG_OFFSET;
+    return size;
+  }
+
+  NDObject *Clone(CloneHelper &h) override { return new NDNzClearPad(h.GetClone(lhs_), valid_elements_); }
+
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "NzClearPad"; }
+
+ private:
+  uint64_t valid_elements_;
+};
+
+class NDNzViewStore : public NDViewStore {
+ public:
+  NDNzViewStore(NDObject *src, IntArrayRef *input_shape, NDNzViewStore *body_store = nullptr)
+      : NDViewStore(nullptr, src, &dst_stride_data_), body_store_(body_store) {
+    input_shape_ = *input_shape;
+    auto rank = input_shape->size;
+    auto prefix = rank - 2;
+    auto rows = input_shape->data[rank - 2];
+    auto cols = input_shape->data[rank - 1];
+    auto rows_round = RoundUp<int64_t>(rows, CubeOp::BLOCK_SIZE);
+    auto cols_blocks = CeilDiv<int64_t>(cols, CubeOp::BLOCK_SIZE);
+
+    alloc_shape_.Resize(prefix + 3);
+    bool is_tail = body_store != nullptr;
+    dst_stride_data_.Resize(prefix + (is_tail ? 2 : 3));
+    int64_t batch_stride = cols_blocks * rows_round * CubeOp::BLOCK_SIZE;
+    for (int64_t i = static_cast<int64_t>(prefix) - 1; i >= 0; --i) {
+      alloc_shape_[i] = input_shape->data[i];
+      dst_stride_data_[i] = batch_stride;
+      batch_stride *= input_shape->data[i];
+    }
+    alloc_shape_[prefix] = cols_blocks;
+    alloc_shape_[prefix + 1] = rows_round;
+    alloc_shape_[prefix + 2] = CubeOp::BLOCK_SIZE;
+    if (is_tail) {
+      dst_stride_data_[prefix] = CubeOp::BLOCK_SIZE;
+      dst_stride_data_[prefix + 1] = 1;
+      offset_elements_ = (cols / CubeOp::BLOCK_SIZE) * rows_round * CubeOp::BLOCK_SIZE;
+    } else {
+      dst_stride_data_[prefix] = rows_round * CubeOp::BLOCK_SIZE;
+      dst_stride_data_[prefix + 1] = CubeOp::BLOCK_SIZE;
+      dst_stride_data_[prefix + 2] = 1;
+    }
+  }
+
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    shape_ref_ = lhs_->shape_ref_;
+    NDViewStore::Normalize(run_ops);
+    offset_bytes_ = offset_elements_ * ITEM_SIZE[type_id_];
+  }
+
+  uint64_t Emit(VectorKernel &k) override {
+    if (body_store_) {
+      k.code_.BindOpFast(addr_, body_store_->addr_);
+      if (auto &addr = body_store_->addr_; addr.reloc_ == nullptr) {
+        addr.Update(&addr.data);
+      }
+    }
+    auto size = NDStore::Emit(k);
+    // Normalization needs the logical view shape, while the stage allocator needs
+    // the complete padded NZ workspace size after code generation.
+    shape_ref_ = &alloc_shape_;
+    return size;
+  }
+
+  NDObject *Clone(CloneHelper &h) override {
+    auto body_store =
+      body_store_ ? static_cast<NDNzViewStore *>(h.GetClone(static_cast<NDObject *>(body_store_))) : nullptr;
+    return new NDNzViewStore(h.GetClone(lhs_), &input_shape_, body_store);
+  }
+
+  void Dump(bool verbose, std::ostringstream &oss) override {
+    oss << (body_store_ ? "NzTailViewStore" : "NzViewStore");
+  }
+
+ private:
+  NDNzViewStore *body_store_;
+  uint64_t offset_elements_{0};
+  ShapeWithRef input_shape_;
+  ShapeWithRef alloc_shape_;
+  ShapeWithRef dst_stride_data_;
+};
+
 struct MixStageV : public StagesKernel::Stage {
   explicit MixStageV(uint32_t flags) : StagesKernel::Stage(&vec_k_), vec_k_(flags) {}
   ~MixStageV() override {
@@ -347,6 +541,28 @@ struct MixStageV : public StagesKernel::Stage {
     vec_k_.Append(copy);
     vec_k_.Append(store);
     StageStore(static_cast<NDAccess *>(store));
+    return store;
+  }
+  NDNzViewStore *BuildNZ(NDObject *load, std::vector<NDObject *> &mng, NDNzViewStore *body_store = nullptr) {
+    ASSERT(load->IsLoad());
+    auto view = mng.emplace_back(new NDNzBindLoad(static_cast<NDAccess *>(load), body_store != nullptr));
+    CopyOp *copy;
+    if (body_store) {
+      auto shape = load->shape_ref_;
+      auto tail_elements = shape->data[shape->size - 1] % CubeOp::BLOCK_SIZE;
+      copy = new NDNzClearPad(view, tail_elements);
+    } else {
+      copy = new CopyOp(view);
+    }
+    mng.emplace_back(copy);
+    auto store = new NDNzViewStore(copy, load->shape_ref_, body_store);
+    mng.emplace_back(store);
+    vec_k_.Append(view);
+    vec_k_.Append(copy);
+    vec_k_.Append(store);
+    if (body_store == nullptr) {
+      StageStore(store);
+    }
     return store;
   }
   NDObject *BuildBiasCast(NDObject *bias_load, std::vector<NDObject *> &mng) {
@@ -382,8 +598,10 @@ struct MixStageM : public StagesKernel::Stage {
     mng.push_back(output);
     return op;
   }
-  NDAccess *CubeLoad(NDObject *store, std::vector<NDObject *> &mng) {
-    auto load = new NDLoad(nullptr, store->shape_ref_, store->type_id_);
+  template <bool NZ = false>
+  NDAccess *CubeLoad(NDObject *store, std::vector<NDObject *> &mng, IntArrayRef *shape = nullptr) {
+    auto load = new NDLoad(nullptr, shape ? shape : store->shape_ref_, store->type_id_);
+    if constexpr (NZ) load->SetFlag(OBJ_FLAG_LOAD_NZ);
     mng.push_back(load);
     StageLoad(load, static_cast<NDAccess *>(store));
     return load;
@@ -433,7 +651,25 @@ uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
   stage_kernel_ = new StagesKernel(flags_);
   auto main_s = new MixStageM(flags_);
   auto dom = main_s->BuildCube(cube_op_, cube_op_->lhs_, cube_op_->rhs_, cube_op_->bias_, mng_);
-  if (tactics.enable_pad) {
+  auto pack_nz = [&](NDObject *&input) {
+    auto logical_shape = input->shape_ref_;
+    auto s = new MixStageV(flags_);
+    stage_kernel_->AppendStage(s);
+    auto store = s->BuildNZ(input, mng_);
+    if (logical_shape->data[logical_shape->size - 1] % CubeOp::BLOCK_SIZE != 0) {
+      auto tail_s = new MixStageV(flags_);
+      stage_kernel_->AppendStage(tail_s);
+      tail_s->BuildNZ(input, mng_, store);
+    }
+    input = main_s->CubeLoad<true>(store, mng_, logical_shape);
+  };
+  if (tactics.lhs_nz) {
+    pack_nz(dom->lhs_);
+  }
+  if (tactics.rhs_nz) {
+    pack_nz(dom->rhs_);
+  }
+  if (tactics.lhs_pad_size || tactics.rhs_pad_size) {
     if (tactics.lhs_pad_size) {
       auto s = new MixStageV(flags_);
       stage_kernel_->AppendStage(s);
@@ -460,13 +696,25 @@ uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
     size_t k_mng_begin = mng_.size();
     size_t offset_a = 0;
     size_t offset_b = 0;
-    size_t stride_a = cube_op_->trans_a_ ? (cube_op_->m_align_ + tactics.lhs_pad_size) * k_stride : k_stride;
-    size_t stride_b = cube_op_->trans_b_ ? k_stride : (cube_op_->n_align_ + tactics.rhs_pad_size) * k_stride;
+    size_t stride_a = k_stride;
+    size_t stride_b = k_stride;
+    if (tactics.lhs_nz) {
+      stride_a *= cube_op_->trans_a_ ? CubeOp::BLOCK_SIZE : RoundUp<int64_t>(cube_op_->m_align_, CubeOp::BLOCK_SIZE);
+    } else if (cube_op_->trans_a_) {
+      stride_a *= cube_op_->m_align_ + tactics.lhs_pad_size;
+    }
+    if (tactics.rhs_nz) {
+      stride_b *= cube_op_->trans_b_ ? RoundUp<int64_t>(cube_op_->n_align_, CubeOp::BLOCK_SIZE) : CubeOp::BLOCK_SIZE;
+    } else if (!cube_op_->trans_b_) {
+      stride_b *= cube_op_->n_align_ + tactics.rhs_pad_size;
+    }
     for (size_t i = 0; i < split_num; ++i) {
       auto s = new MixStageM(flags_);
       stage_kernel_->AppendStage(s);
       auto lhs = new NDLoad(nullptr, dom->lhs_->shape_ref_, dom->lhs_->type_id_);
       auto rhs = new NDLoad(nullptr, dom->rhs_->shape_ref_, dom->rhs_->type_id_);
+      if (dom->lhs_->CheckFlag(OBJ_FLAG_LOAD_NZ)) lhs->SetFlag(OBJ_FLAG_LOAD_NZ);
+      if (dom->rhs_->CheckFlag(OBJ_FLAG_LOAD_NZ)) rhs->SetFlag(OBJ_FLAG_LOAD_NZ);
       auto op = s->BuildCube(dom, lhs, rhs, nullptr, mng_);
       op->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, k_stride, offset_a, offset_b);
       op->SetOutFp32(i > 0);
@@ -546,7 +794,8 @@ uint64_t MixKernel::CodeGen() {
   CubeOp::Tactics tactics;
   cube_op_->InferTactics(tactics);
   uint64_t workspace_size = 0;
-  if (tactics.enable_bias_cast || tactics.enable_pad || tactics.enable_splitk) {
+  if (tactics.enable_bias_cast || tactics.enable_splitk || tactics.lhs_pad_size || tactics.rhs_pad_size ||
+      tactics.lhs_nz || tactics.rhs_nz) {
     workspace_size = StageCodeGen(tactics);
     if (reload_rhs_) {
       auto lhs = static_cast<NDAccess *>(cube_op_->lhs_);

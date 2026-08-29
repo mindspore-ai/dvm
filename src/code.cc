@@ -1173,6 +1173,10 @@ class DisAssembler {
     oss << ", ";
     DumpVal("trans_b", bool(op->flags & V_CUBE_FLAG_TRANS_B), oss);
     oss << ", ";
+    DumpVal("input_a_nz", bool(op->flags & V_CUBE_FLAG_INPUT_A_NZ), oss);
+    oss << ", ";
+    DumpVal("input_b_nz", bool(op->flags & V_CUBE_FLAG_INPUT_B_NZ), oss);
+    oss << ", ";
     DumpVal("swizzle", op->swizzle, oss);
     oss << ", ";
     DumpVal("group_num", op->group_num, oss);

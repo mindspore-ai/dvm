@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <limits>
 #include "acl/acl_rt.h"
 #include "kernel.h"
 #include "xkernel.h"
@@ -159,21 +160,27 @@ CubeOp::CubeOp(NDObject *lhs, NDObject *rhs, bool trans_a, bool trans_b, NDObjec
 }
 
 void CubeOp::InferTactics(Tactics &t) const {
-  t.enable_pad = false;
   t.lhs_pad_size = 0;
   t.rhs_pad_size = 0;
   t.enable_splitk = false;
   t.enable_bias_cast = false;
-  auto GetPad = [&t](int64_t pad_size, int64_t &pad) {
-    if (g_system.Arch() == kAiCore_C310 || pad_size % ALIGN_128 == 0 ||
-        (pad_size < ALIGN_512 && pad_size % ALIGN_32 == 0)) {
+  t.lhs_nz = false;
+  t.rhs_nz = false;
+  auto CheckPadOrND2NZ = [this](int64_t size, int64_t &pad, bool &nd2nz) {
+    if (g_system.Arch() != kAiCore_C220) return;
+    constexpr int64_t max_nd2nz_stride = std::numeric_limits<uint16_t>::max();
+    // GMM does not support NZ inputs yet.
+    if (obj_id_ == kCubeOp && RoundUp(size, ALIGN_256) > max_nd2nz_stride) {
+      nd2nz = true;
       return;
     }
-    pad = ALIGN_256 - pad_size % ALIGN_256;
-    t.enable_pad = true;
+    if (size % ALIGN_128 == 0 || (size < ALIGN_512 && size % ALIGN_32 == 0)) {
+      return;
+    }
+    pad = ALIGN_256 - size % ALIGN_256;
   };
-  GetPad(trans_a_ ? m_align_ : k_align_, t.lhs_pad_size);
-  GetPad(trans_b_ ? k_align_ : n_align_, t.rhs_pad_size);
+  CheckPadOrND2NZ(trans_a_ ? m_align_ : k_align_, t.lhs_pad_size, t.lhs_nz);
+  CheckPadOrND2NZ(trans_b_ ? k_align_ : n_align_, t.rhs_pad_size, t.rhs_nz);
 
   int64_t m_real = m_real_;
   if (batch_fold_) {
@@ -498,6 +505,8 @@ void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {
   op->gm_c = c->addr_.data;
   op->flags = trans_a_ ? V_CUBE_FLAG_TRANS_A : 0;
   if (trans_b_) op->flags |= V_CUBE_FLAG_TRANS_B;
+  if (lhs_->CheckFlag(OBJ_FLAG_LOAD_NZ)) op->flags |= V_CUBE_FLAG_INPUT_A_NZ;
+  if (rhs_->CheckFlag(OBJ_FLAG_LOAD_NZ)) op->flags |= V_CUBE_FLAG_INPUT_B_NZ;
   if (type_id_ == dvm::kFloat32) op->flags |= V_CUBE_FLAG_OUT_FP32;
   if (atomic_add_) op->flags |= V_CUBE_FLAG_ATOMIC_ADD;
   if (bias_) {

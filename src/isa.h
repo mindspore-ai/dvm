@@ -1878,6 +1878,8 @@ struct vStoreAG {
 #define V_CUBE_FLAG_STORE_UB_ONCE (1ul << 17)
 #define V_CUBE_FLAG_GMM_SIZE_MODE (1ul << 18)
 #define V_CUBE_FLAG_PIPELINE (1ul << 19)
+#define V_CUBE_FLAG_INPUT_A_NZ (1ul << 20)
+#define V_CUBE_FLAG_INPUT_B_NZ (1ul << 21)
 #define V_CUBE_FLAG_DTYPE_OFFSET 30  // [30, 31]
 
 #define V_CUBE_SWIZ_VISIT_nZ 0
@@ -1919,7 +1921,7 @@ struct vCubeOp {
   //  zN: swizzle_cnt(16)
   uint32_t swizzle;
   uint32_t group_list_size{0};
-  uint32_t offset_a, offset_b;
+  uint64_t offset_a, offset_b;
   // for aiv
   uint64_t gm_pos;
   uint32_t unique_id;

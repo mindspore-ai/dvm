@@ -61,12 +61,47 @@ class MatMul {
     op_ = op;
   }
 
+  __force_inline__ __aicore__ void LoadNzTile(__cbuf__ T *__restrict__ dst,
+                                               __gm__ T *__restrict__ src,
+                                               uint64_t outer_start,
+                                               uint64_t inner_start,
+                                               uint64_t outer_size,
+                                               uint64_t inner_size,
+                                               uint64_t inner_stride) {
+    constexpr uint64_t max_src_gap = 0xffff;
+    uint64_t inner_blocks = RoundUp(inner_stride, BLOCK_SIZE) / BLOCK_SIZE;
+    src += (outer_start / BLOCK_SIZE * inner_blocks + inner_start / BLOCK_SIZE) * BLOCK_SIZE * BLOCK_SIZE;
+    uint16_t burst_num = RoundUp(outer_size, BLOCK_SIZE) / BLOCK_SIZE;
+    uint16_t burst_len = RoundUp(inner_size, BLOCK_SIZE);
+    uint64_t src_span = inner_blocks * BLOCK_SIZE;
+    uint64_t src_gap = src_span - burst_len;
+    if (likely(src_gap <= max_src_gap)) {
+      copy_gm_to_cbuf(dst, src, 0, burst_num, burst_len, src_gap, 0, PAD_NONE);
+      return;
+    }
+    for (; burst_num > 0; --burst_num) {
+      copy_gm_to_cbuf(dst, src, 0, 1, burst_len, 0, 0, PAD_NONE);
+      dst += burst_len * BLOCK_SIZE;
+      src += src_span * BLOCK_SIZE;
+    }
+  }
+
   __force_inline__ __aicore__ void LoadA(__cbuf__ T *__restrict__ dst,
                                          __gm__ T *__restrict__ src,
                                          uint64_t midx,
                                          uint64_t kidx,
                                          uint64_t m_actual,
                                          uint64_t k_actual) {
+    if (flags & V_CUBE_FLAG_INPUT_A_NZ) {
+      uint64_t m_start = midx * m0;
+      uint64_t k_start = kidx * k0;
+      if (flags & V_CUBE_FLAG_TRANS_A) {
+        LoadNzTile(dst, src, m_start, k_start, m_actual, k_actual, ka_align);
+      } else {
+        LoadNzTile(dst, src, k_start, m_start, k_actual, m_actual, m_align);
+      }
+      return;
+    }
     // load GM to L1: ND -> zN
     bool transpose_a = flags & V_CUBE_FLAG_TRANS_A;
     uint64_t offset_a = transpose_a ? (kidx * k0 * m_align + midx * m0) : (midx * m0 * k_align + kidx * k0);
@@ -112,6 +147,16 @@ class MatMul {
                                          uint64_t nidx,
                                          uint64_t k_actual,
                                          uint64_t n_actual) {
+    if (flags & V_CUBE_FLAG_INPUT_B_NZ) {
+      uint64_t k_start = kidx * k0;
+      uint64_t n_start = nidx * n0;
+      if (flags & V_CUBE_FLAG_TRANS_B) {
+        LoadNzTile(dst, src, k_start, n_start, k_actual, n_actual, n_align);
+      } else {
+        LoadNzTile(dst, src, n_start, k_start, n_actual, k_actual, kb_align);
+      }
+      return;
+    }
     // load GM to L1: ND -> zN
     if (flags & V_CUBE_FLAG_TRANS_B) {
       copy_gm_to_cbuf_multi_nd2nz_b16(
@@ -403,8 +448,16 @@ class MatMul {
         b_idx = cast_b == V_CUBE_BCAST_FLAG_BCAST_B0 ? c_idx1 : (cast_b == V_CUBE_BCAST_FLAG_BCAST_B1 ? c_idx0 : 0);
       }
     }
-    offset_a = a_idx * m_align * ka_align;
-    offset_b = b_idx * n_align * kb_align;
+    uint64_t batch_size_a = m_align * ka_align;
+    uint64_t batch_size_b = n_align * kb_align;
+    if (flags & V_CUBE_FLAG_INPUT_A_NZ) {
+      batch_size_a = RoundUp(m_align, BLOCK_SIZE) * RoundUp(ka_align, BLOCK_SIZE);
+    }
+    if (flags & V_CUBE_FLAG_INPUT_B_NZ) {
+      batch_size_b = RoundUp(n_align, BLOCK_SIZE) * RoundUp(kb_align, BLOCK_SIZE);
+    }
+    offset_a = a_idx * batch_size_a;
+    offset_b = b_idx * batch_size_b;
   }
 
   __gm__ T *__restrict__ gm_a;

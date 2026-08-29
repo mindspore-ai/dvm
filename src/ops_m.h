@@ -42,8 +42,9 @@ class CubeOp : public NDObject {
   static constexpr int64_t ALIGN_32 = 32;
   struct Tactics {
     bool enable_splitk;
-    bool enable_pad;
     bool enable_bias_cast;
+    bool lhs_nz;
+    bool rhs_nz;
 
     int64_t k_stride;
     int64_t lhs_pad_size;
@@ -79,7 +80,10 @@ class CubeOp : public NDObject {
     atomic_add_ = atomic_add;
     type_id_ = kFloat32;
   }
-  void TryBatchFold() { batch_fold_ = !trans_a_ && lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2; }
+  void TryBatchFold() {
+    batch_fold_ = !lhs_->CheckFlag(OBJ_FLAG_LOAD_NZ) && !rhs_->CheckFlag(OBJ_FLAG_LOAD_NZ) && !trans_a_ &&
+                  lhs_->nd_.size() > 2 && rhs_->nd_.size() == 2;
+  }
   uint64_t BaseSize() const { return m0_ * n0_ * ITEM_SIZE[type_id_]; }
 
   void Recover() {

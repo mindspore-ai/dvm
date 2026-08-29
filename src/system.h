@@ -216,10 +216,8 @@ class System : public Config {
   const uint64_t *g_access_func_offset_;
   const uint64_t *g_visit_func_offset_;
 
-  void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path,
-                 const std::vector<std::pair<std::string, uint64_t>> &func_table);
-  void RegCustom(const std::string &nspace, const std::string &bin_path,
-                 const std::vector<std::pair<std::string, uint64_t>> &func_table);
+  void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path);
+  void RegCustom(const std::string &nspace, const std::string &bin_path);
   uint64_t GetCustomFunc(const std::string &full_name) const;
   std::string GetCustomFuncName(uint64_t func_id) const;
   NDObject *CreateCustom(const std::string &op_name, const std::vector<NDObject *> &inputs,

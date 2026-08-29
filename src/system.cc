@@ -52,6 +52,90 @@ rtError_t rtGetC2cCtrlAddr(uint64_t *addr, uint32_t *len);
 }
 #endif
 
+namespace elf64 {
+constexpr unsigned char kMagic[4] = {0x7f, 'E', 'L', 'F'};
+constexpr size_t kMagicSize = 4;
+constexpr size_t kIdentSize = 16;
+constexpr size_t kIdxClass = 4;
+constexpr unsigned char kClass64 = 2;
+constexpr size_t kIdxData = 5;
+constexpr unsigned char kData2LSB = 1;
+constexpr uint32_t kShtSymtab = 2;
+constexpr uint32_t kShtDynsym = 11;
+constexpr uint32_t kPtLoad = 1;
+constexpr uint32_t kPfX = 1;
+constexpr unsigned char kSttFunc = 2;
+constexpr unsigned char kStbGlobal = 1;
+constexpr uint16_t kShnUndef = 0;
+
+inline unsigned char StBind(unsigned char info) {
+    return static_cast<unsigned char>(info >> 4);
+}
+inline unsigned char StType(unsigned char info) {
+    return static_cast<unsigned char>(info & 0xf);
+}
+
+// ELF64 file header (64 bytes). Fixed-width types keep the in-memory
+// layout identical to the on-disk ELF64 layout under natural alignment.
+struct Ehdr {
+    uint8_t  e_ident[16];
+    uint16_t e_type;
+    uint16_t e_machine;
+    uint32_t e_version;
+    uint64_t e_entry;
+    uint64_t e_phoff;
+    uint64_t e_shoff;
+    uint32_t e_flags;
+    uint16_t e_ehsize;
+    uint16_t e_phentsize;
+    uint16_t e_phnum;
+    uint16_t e_shentsize;
+    uint16_t e_shnum;
+    uint16_t e_shstrndx;
+};
+static_assert(sizeof(Ehdr) == 64, "Elf64_Ehdr must be 64 bytes");
+
+// ELF64 section header (64 bytes).
+struct Shdr {
+    uint32_t sh_name;
+    uint32_t sh_type;
+    uint64_t sh_flags;
+    uint64_t sh_addr;
+    uint64_t sh_offset;
+    uint64_t sh_size;
+    uint32_t sh_link;
+    uint32_t sh_info;
+    uint64_t sh_addralign;
+    uint64_t sh_entsize;
+};
+static_assert(sizeof(Shdr) == 64, "Elf64_Shdr must be 64 bytes");
+
+// ELF64 program header (56 bytes).
+struct Phdr {
+    uint32_t p_type;
+    uint32_t p_flags;
+    uint64_t p_offset;
+    uint64_t p_vaddr;
+    uint64_t p_paddr;
+    uint64_t p_filesz;
+    uint64_t p_memsz;
+    uint64_t p_align;
+};
+static_assert(sizeof(Phdr) == 56, "Elf64_Phdr must be 56 bytes");
+
+// ELF64 symbol entry (24 bytes).
+struct Sym {
+    uint32_t st_name;
+    uint8_t  st_info;
+    uint8_t  st_other;
+    uint16_t st_shndx;
+    uint64_t st_value;
+    uint64_t st_size;
+};
+static_assert(sizeof(Sym) == 24, "Elf64_Sym must be 24 bytes");
+}  // namespace elf64
+
+
 extern const uint64_t g_visit_func_offset_c310[];
 extern const uint64_t g_simd_func_offset_c310[];
 extern const uint64_t g_access_func_offset_c310[];
@@ -73,6 +157,112 @@ extern const unsigned int g_mix_symbol_len_c220;
 extern const unsigned int g_meta_aiv_type_value_offset_c310;
 
 namespace dvm {
+namespace {
+class ElfView {
+ public:
+  ElfView(const void *data, size_t size) : base_(static_cast<const uint8_t *>(data)), size_(size) {}
+  bool Init() {
+    if (size_ < sizeof(elf64::Ehdr) || base_[elf64::kIdxClass] != elf64::kClass64 ||
+        base_[elf64::kIdxData] != elf64::kData2LSB) {
+      return false;
+    }
+    auto ehdr = Get<elf64::Ehdr>(0);
+    if (ehdr->e_shnum == 0 || ehdr->e_shentsize < sizeof(elf64::Shdr)) {
+      return false;
+    }
+    shoff_ = ehdr->e_shoff;
+    shnum_ = ehdr->e_shnum;
+    shentsize_ = ehdr->e_shentsize;
+    return true;
+  }
+
+  template <typename T>
+  const T *Get(uint64_t off) const {
+    if (off > size_ || sizeof(T) > size_ - off) return nullptr;
+    return reinterpret_cast<const T *>(base_ + off);
+  }
+  const char *GetStr(uint64_t off) const {
+    if (off >= size_) return nullptr;
+    const char *p = reinterpret_cast<const char *>(base_ + off);
+    size_t i = 0;
+    while (off + i < size_ && p[i] != '\0') ++i;
+    if (off + i >= size_) return nullptr;
+    return p;
+  }
+
+  const elf64::Shdr *GetShIndex(uint16_t i) {
+    return i < shnum_ ? Get<elf64::Shdr>(shoff_ + static_cast<uint64_t>(i) * shentsize_) : nullptr;
+  }
+  const elf64::Shdr *GetShType(uint32_t type) {
+    for (uint16_t i = 0; i < shnum_; ++i) {
+      auto sh = GetShIndex(i);
+      if (!sh) break;
+      if (sh->sh_type == type) {
+        return sh;
+      }
+    }
+    return nullptr;
+  }
+
+ private:
+  const uint8_t *base_;
+  size_t size_;
+  uint64_t shoff_;
+  uint16_t shnum_;
+  uint16_t shentsize_;
+};
+
+std::vector<std::pair<std::string, uint64_t>> ParseBinFuncTable(void *bin_data, size_t bin_size) {
+  std::vector<std::pair<std::string, uint64_t>> func_table;
+  ElfView view(bin_data, bin_size);
+  if (!view.Init()) {
+    DvmException("invalid binary elf format");
+  }
+  auto ehdr = view.Get<elf64::Ehdr>(0);
+  uint64_t code_seg_vaddr = 0;
+  uint16_t phnum = ehdr->e_phnum;
+  uint16_t phentsize = ehdr->e_phentsize;
+  if (phnum > 0 && phentsize >= sizeof(elf64::Phdr)) {
+    uint64_t phoff = ehdr->e_phoff;
+    for (uint16_t i = 0; i < phnum; ++i) {
+      const elf64::Phdr *ph = view.Get<elf64::Phdr>(phoff + static_cast<uint64_t>(i) * phentsize);
+      if (!ph) break;
+      if (ph->p_type == elf64::kPtLoad && (ph->p_flags & elf64::kPfX)) {
+        code_seg_vaddr = ph->p_vaddr;
+        break;
+      }
+    }
+  }
+  auto symtab_sh = view.GetShType(elf64::kShtSymtab);
+  if (!symtab_sh) {
+    symtab_sh = view.GetShType(elf64::kShtDynsym);
+  }
+  auto strtab_sh = view.GetShIndex(symtab_sh->sh_link);
+  EXCEPTION_IF(!strtab_sh || symtab_sh->sh_entsize < sizeof(elf64::Sym) || symtab_sh->sh_size == 0,
+               "error: no symbol table found");
+  uint64_t strtab_off = strtab_sh->sh_offset;
+  uint64_t sym_off = symtab_sh->sh_offset;
+  uint64_t sym_size = symtab_sh->sh_size;
+  size_t entsize = symtab_sh->sh_entsize ? symtab_sh->sh_entsize : sizeof(elf64::Sym);
+  size_t symcount = sym_size / entsize;
+  for (size_t i = 0; i < symcount; ++i) {
+    auto sym = view.Get<elf64::Sym>(sym_off + i * entsize);
+    if (!sym) break;
+    unsigned char bind = elf64::StBind(sym->st_info);
+    unsigned char type = elf64::StType(sym->st_info);
+    if (type != elf64::kSttFunc || bind != elf64::kStbGlobal || sym->st_shndx == elf64::kShnUndef) continue;
+    if (auto name = view.GetStr(strtab_off + sym->st_name); name != nullptr && name[0] != '\0') {
+      uint64_t offset = sym->st_value;
+      if (sym->st_value >= code_seg_vaddr) {
+        offset = sym->st_value - code_seg_vaddr;
+      }
+      func_table.push_back({name, offset});
+    }
+  }
+  return func_table;
+}
+} // namespace
+
 // {sizeof(int8_t), sizeof(float16), sizeof(bfloat16), sizeof(float32), sizeof(int32_t), sizeof(int64_t)}
 const uint64_t ITEM_SIZE[DataType::kDataTypeEnd] = {sizeof(int8_t), 2, 2, sizeof(float), sizeof(int32_t), sizeof(int64_t)};
 const char *DTYPE_NAMES[DataType::kDataTypeEnd] = {"bool", "float16", "bfloat16", "float32", "int32", "int64"};
@@ -511,8 +701,7 @@ System::~System() {
   }
 }
 
-void System::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path,
-                       const std::vector<std::pair<std::string, uint64_t>> &func_table) {
+void System::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path) {
   const std::string nspace_prefix = nspace + "/";
   void *handle = dlopen(so_path.c_str(), RTLD_NOW | RTLD_GLOBAL);
   auto op_def = handle == nullptr ? nullptr : reinterpret_cast<CustomDef *>(dlsym(handle, "__ALL_OPS__"));
@@ -522,11 +711,10 @@ void System::RegCustom(const std::string &nspace, const std::string &so_path, co
     ++op_def;
   }
 
-  RegCustom(nspace, bin_path, func_table);
+  RegCustom(nspace, bin_path);
 }
 
-void System::RegCustom(const std::string &nspace, const std::string &bin_path,
-                       const std::vector<std::pair<std::string, uint64_t>> &func_table) {
+void System::RegCustom(const std::string &nspace, const std::string &bin_path) {
   const std::string nspace_prefix = nspace + "/";
 
   std::ifstream fin(bin_path, std::ios::binary | std::ios::ate);
@@ -558,6 +746,7 @@ void System::RegCustom(const std::string &nspace, const std::string &bin_path,
   void *aiv_addr = nullptr;
   err = aclrtGetFunctionAddr(func_handle, &aic_addr, &aiv_addr);
   EXCEPTION_IF(err != ACL_SUCCESS, "RegisterCustom: aclrtGetFunctionAddr failed");
+  auto func_table = ParseBinFuncTable(bin_data, bin_size);
   for (const auto &entry : func_table) {
     custom_funcs_[nspace_prefix + entry.first] = reinterpret_cast<uint64_t>(aiv_addr) + entry.second;
   }

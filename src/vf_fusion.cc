@@ -1259,17 +1259,7 @@ VfFusionCompiler::FunctionMap VfFusionCompiler::CompileAndRegister(const std::ve
     DvmException("cannot write VF JIT source files");
   }
   CompileVfSource(cce_path, bin_path);
-  const auto symbols = RunCommand({"objdump", "-t", bin_path}, "VF JIT objdump failed");
-  std::vector<std::pair<std::string, uint64_t>> function_table;
-  function_table.reserve(units.size());
-  for (const auto &unit : units) {
-    const auto offset = FindFunctionOffset(symbols, EntryName(unit.nspace));
-    if (!offset.has_value()) {
-      DvmException("VF JIT entry symbol not found");
-    }
-    function_table.emplace_back(is_bundle ? unit.nspace : "VfFusionOp", *offset);
-  }
-  g_system.RegCustom(registration_namespace, bin_path, function_table);
+  g_system.RegCustom(registration_namespace, bin_path);
   cache.insert(cache_key);
   return ResolveFunctions(units, registration_namespace, is_bundle);
 }
@@ -1283,30 +1273,6 @@ bool VfFusionCompiler::WriteFile(const std::string &path, const std::string &con
   }
   stream << contents;
   return stream.good();
-}
-
-std::optional<uint64_t> VfFusionCompiler::FindFunctionOffset(const std::string &symbols, const std::string &name) {
-  std::istringstream stream(symbols);
-  std::string line;
-  while (std::getline(stream, line)) {
-    std::istringstream fields(line);
-    std::string address;
-    std::string bind;
-    std::string kind;
-    std::string section;
-    std::string size;
-    std::string symbol;
-    if (!(fields >> address >> bind >> kind >> section >> size >> symbol) || bind != "g" || kind != "F" ||
-        section != ".text" || symbol != name) {
-      continue;
-    }
-    try {
-      return std::stoull(address, nullptr, 16);
-    } catch (const std::exception &) {
-      return std::nullopt;
-    }
-  }
-  return std::nullopt;
 }
 
 bool ValidateCustomMetadata(NDObject *custom, const VfPartition &partition) {

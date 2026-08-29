@@ -69,7 +69,7 @@ class RtKernelPy : public KernelPy {
 
   py::object Custom(const std::string &full_name, py::object inputs, py::object attrs);
   py::object ExtOut(py::object op, int index) { return ObjToPy(kernel_.ExtOut(PyToObj(op), index)); }
-  static void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path, py::object func_list);
+  static void RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path);
 
   static void SetCubeStoreType(int type) { g_system.SetCubeStoreType((CubeStoreType)type); }
   static void SetLazyTuning(bool enable) {

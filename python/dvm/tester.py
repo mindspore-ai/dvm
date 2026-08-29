@@ -395,18 +395,8 @@ class Tester(Kernel):
         r = subprocess.run(cmds, capture_output=True, text=True)
         if r.returncode != 0:
             raise RuntimeError(f"reg_custom fail: {r.stderr}")
-        # generate func_list
-        r = subprocess.run(["objdump", "-t", bin_path], capture_output=True, text=True)
-        if r.returncode != 0:
-            raise RuntimeError(f"reg_custom fail: {r.stderr}")
-        func_list = []
-        for line in r.stdout.splitlines():
-            if line.startswith("0000"):
-                parts = line.split()
-                if len(parts) == 6 and parts[1] == "g" and parts[2] == "F" and parts[3] == ".text" and not parts[5].startswith("dvm_custom"):
-                    func_list.append((parts[5], int(parts[0], 16)))
         # final register
-        Kernel.reg_custom(namespace, so_path, bin_path, func_list)
+        Kernel.reg_custom(namespace, so_path, bin_path)
 
 
 class CommScope:

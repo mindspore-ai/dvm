@@ -672,7 +672,7 @@ void RtKernelPy::DryRun(int core_idx, bool cube_core) {
   static_cast<DryRunner *>(runner_)->DryRun(kernel_, workspace_, core_idx, cube_core);
 }
 
-void RtKernelPy::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path, py::object func_list) {
+void RtKernelPy::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path) {
   static bool promote_scope = false;
   if (!promote_scope) {
     promote_scope = true;
@@ -683,13 +683,7 @@ void RtKernelPy::RegCustom(const std::string &nspace, const std::string &so_path
       dlopen(info.dli_fname, RTLD_NOW | RTLD_GLOBAL);
     }
   }
-  std::vector<std::pair<std::string, uint64_t>> func_table;
-  py::list functions = py::cast<py::list>(func_list);
-  for (auto f : functions) {
-    py::tuple name_offset = py::cast<py::tuple>(f);
-    func_table.emplace_back(py::cast<std::string>(name_offset[0]), py::cast<uint64_t>(name_offset[1]));
-  }
-  g_system.RegCustom(nspace, so_path, bin_path, func_table);
+  g_system.RegCustom(nspace, so_path, bin_path);
 }
 
 py::object RtKernelPy::Custom(const std::string &full_name, py::object inputs, py::object attrs) {

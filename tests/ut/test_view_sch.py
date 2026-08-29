@@ -545,6 +545,23 @@ def test_sch_slice_slice_v_branch():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_reshape_slice_chain():
+    t = Tester()
+    a = np.random.normal(0, 1, [1024, 500]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.add(x0, 0.1)
+    x2 = t.slice(x1, [100, 100], [600, 300])
+    x3 = t.mul(x2, 0.9)
+    x3 = t.reshape(x3, [200, 3, 300])
+    x4 = t.slice(x3, [0, 1, 0], [200, 2, 300])
+    x5 = t.exp(x4)
+    e2 = (a + 0.1)[100:700, 100:400]
+    t.store_expect(x2, e2)
+    t.store_expect(x5, np.exp((e2 * 0.9).reshape(200, 3, 300)[:, 1:, :]))
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_sch_slice_concat():
     t = Tester()
     a0 = np.random.normal(0, 1, [600, 300]).astype(np.float32)

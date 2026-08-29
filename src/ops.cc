@@ -1960,8 +1960,8 @@ uint64_t SliceOp::Emit(VectorKernel &k) {
 void SliceOp::TileCollect(NDObject *op, TileInfo &info) {
   auto &sdims = static_cast<SliceOp *>(op)->sdims_;
   ASSERT(!sdims.empty());
-  if (int depth = sdims.front().index + 1; depth < info.lead_depth) {
-    info.lead_depth = depth;
+  if (int i = sdims.front().index; i + 1 < info.lead_depth && op->lhs_->nd_[i] != op->nd_[i]) {
+    info.lead_depth = i + 1;
   }
 }
 
@@ -1973,7 +1973,7 @@ void SliceOp::FoldProp(NDObject *op, PropRange &range) {
   while (sidx > 0 && range.base < index) {
     index = sdims[--sidx].index;
   }
-  if (range.base >= index) {
+  if (range.base >= index && op->lhs_->nd_[index] != op->nd_[index]) {
     auto new_depth = range.base > index ? range.base - index : 1;
     if (new_depth < range.depth) {
       range.depth = new_depth;

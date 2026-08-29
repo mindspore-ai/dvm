@@ -1073,11 +1073,10 @@ int64_t GeneralViewSchGen::CodeGen() {
   size_t orig_load_num = kernel_->load_num_;
 
   for (size_t i = 0; i < orig_load_num; ++i) {
-    load_bcast_mask_[i] = GetBCast(static_ops[i]);
-  }
-  for (auto op : static_ops) {
-    if (auto io = static_cast<NDAccess *>(op); io->stride_ == nullptr) {
-      AllocStride(io);
+    auto load = static_cast<NDAccess *>(static_ops[i]);
+    load_bcast_mask_[i] = GetBCast(load);
+    if (load->stride_ == nullptr) {
+      AllocStride(load);
     }
   }
 
@@ -1112,6 +1111,11 @@ int64_t GeneralViewSchGen::CodeGen() {
     }
   };
   if (concat_quota) {
+    for (size_t i = orig_load_num; i < static_ops.size(); ++i) {
+      if (auto io= static_cast<NDAccess *>(static_ops[i]); io->stride_ == nullptr) {
+        AllocStride(io);
+      }
+    }
     auto concat = static_cast<ConcatOp *>(view_ops_[concat_view_idx_]);
     ConcatOp::PartialCtx ctx = concat->PartialInit();
     int cat_dim = concat->CatDim();

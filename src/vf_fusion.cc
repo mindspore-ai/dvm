@@ -1182,10 +1182,10 @@ std::string BuildVfBundleCceSource(const std::vector<VfCompileUnit> &units, cons
 }
 
 VfFusionCompiler::FunctionMap ResolveFunctions(const std::vector<VfCompileUnit> &units,
-                                               const std::string &registration_namespace, bool is_bundle) {
+                                               const std::string &registration_namespace) {
   VfFusionCompiler::FunctionMap functions;
   for (const auto &unit : units) {
-    const auto full_name = is_bundle ? registration_namespace + "/" + unit.nspace : unit.nspace + "/VfFusionOp";
+    const auto full_name = registration_namespace + "/" + EntryName(unit.nspace);
     functions.emplace(unit.nspace, g_system.GetCustomFunc(full_name));
   }
   return functions;
@@ -1241,7 +1241,7 @@ VfFusionCompiler::FunctionMap VfFusionCompiler::CompileAndRegister(const std::ve
   std::lock_guard<std::mutex> lock(mutex);
 
   if (cache.count(cache_key) != 0) {
-    return ResolveFunctions(units, registration_namespace, is_bundle);
+    return ResolveFunctions(units, registration_namespace);
   }
 
   std::error_code fs_error;
@@ -1261,7 +1261,7 @@ VfFusionCompiler::FunctionMap VfFusionCompiler::CompileAndRegister(const std::ve
   CompileVfSource(cce_path, bin_path);
   g_system.RegCustom(registration_namespace, bin_path);
   cache.insert(cache_key);
-  return ResolveFunctions(units, registration_namespace, is_bundle);
+  return ResolveFunctions(units, registration_namespace);
 }
 
 std::string VfFusionCompiler::NamespaceFor(const VfPartition &partition) { return HashNamespace(partition); }

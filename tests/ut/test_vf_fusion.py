@@ -103,6 +103,25 @@ def make_gelu_graph(t, shape=(1024, 1024)):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_entry_symbol_lookup_codegen(request):
+    if run_codegen(request):
+        return
+    dvm.Kernel.set_vf_fusion(True)
+    input_np = np.ones((16, 16), dtype=np.float32)
+
+    for _ in range(2):
+        t = Tester()
+        t.set_passes("VfFusion")
+        value = t.load(input_np)
+        value = t.abs(t.abs(value))
+        t.store_expect(value, input_np)
+
+        t.codegen()
+
+        assert t.dump().count("Custom") == 1
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_gelu_codegen(request, vf_fusion_dir):
     if run_codegen(request):
         return

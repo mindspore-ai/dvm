@@ -248,22 +248,9 @@ int64_t FractalSchGen::CodeGen() {
     }
 
     void CodeGen(uint64_t fractal_mask) {
-      int64_t w_npart = w_body_;
-      int64_t h_npart = h_body_;
-      int dup_num;
-      if (h_tail_ && w_tail_) {
-        dup_num = h_body_ && w_body_ ? 4 : (h_body_ || w_body_ ? 2 : 1);
-        w_npart++;
-        h_npart++;
-      } else if (h_tail_) {
-        dup_num = h_body_ ? 2 : 1;
-        h_npart++;
-      } else if (w_tail_) {
-        dup_num = w_body_ ? 2 : 1;
-        w_npart++;
-      } else {
-        dup_num = 1;
-      }
+      const int dup_num = (1 + (w_body_ && w_tail_)) * (1 + (h_body_ && h_tail_));
+      const int64_t w_npart = w_body_ + (w_tail_ ? 1 : 0);
+      const int64_t h_npart = h_body_ + (h_tail_ ? 1 : 0);
       gen_.SpaceInit();
       gen_.SpaceSplit(0, w_npart, w_fractal_);
       h_idx_ += 1;
@@ -280,8 +267,12 @@ int64_t FractalSchGen::CodeGen() {
           part_base_ *= space_[i];
         }
       }
+      // Weight body/tail programs by their estimated element work.
+      const int64_t quota_w_tail = w_tail_ ? std::max<int64_t>(w_tail_, 16) : 0;
+      const uint64_t total_element_quota =
+        (h_body_ * h_fractal_ + h_tail_) * (w_body_ * w_fractal_ + quota_w_tail);
       VectorDupHelper helper(gen_.kernel_, dup_num, gen_.ReserveReloc(gen_.kernel_->static_ops_.size() * 4),
-                             h_npart * w_npart);
+                             total_element_quota);
       if (w_tail_ > 1) {
         if (h_body_) {
           GenDup(helper, 0, w_body_, w_tail_, h_fractal_, h_body_, 1);
@@ -469,8 +460,10 @@ int64_t FractalSchGen::CodeGen() {
       size_[w_part_dim] = w_part_size;
       gen_.ApplySubSpace(size_);
       UpdateViewOffset({h_factor_dim, h_part_dim, h_part_off}, {w_factor_dim, w_part_dim, w_part_off});
-      uint64_t part_num = h_part_size * w_part_size;
-      helper.Append(part_num, part_base_ * part_num);
+      const uint64_t part_num = h_part_size * w_part_size;
+      const uint64_t quota_w_fac_size = std::max<int64_t>(w_fac_size, 16);
+      const uint64_t element_quota = part_num * h_fac_size * quota_w_fac_size;
+      helper.Append(element_quota, part_base_ * part_num);
     }
 
     static void SetFractal(uint64_t mask, const std::vector<NDObject *> &objects) {

@@ -146,7 +146,8 @@ void ObjectList::Build(const std::vector<NDObject *> &objects, bool reindex) {
   }
 }
 
-BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, GraphTracker *tracker) : tracker_(tracker) {
+BasicBlock::BasicBlock(const std::vector<NDObject *> &objects, GraphTracker *tracker, bool is_dynamic)
+    : is_dynamic_(is_dynamic), tracker_(tracker) {
   // build linked list from objects
   ObjectList::Build(objects, true);
   for (auto obj : objects) {
@@ -527,6 +528,7 @@ class PassOptimizerC310 : public PassOptimizer {
     DeadCodeEliminate(bb);
     if (dyn_shape) {
       CompactPeakLiveness(bb);
+      VfFusion(bb);
       VectorDoubleBuffer(bb);
       ReorderLoad(bb);
       ReorderStore(bb);

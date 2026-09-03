@@ -607,7 +607,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
         {"DeadCodeEliminate", {pass::DeadCodeEliminate, false}},
         {"EliminateReshape", {pass::EliminateReshape, true}},
         {"InsertRemovePad", {pass::InsertRemovePad, true}},
-        {"VfFusion", {pass::VfFusion, true}}};
+        {"VfFusion", {pass::VfFusion, false}}};
       for (auto &name : names_) {
         auto pass = pass_map.find(name);
         if (pass != pass_map.end() && !(dyn_shape && pass->second.shape_sensitive)) {

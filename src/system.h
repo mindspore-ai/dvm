@@ -173,7 +173,7 @@ class System : public Config {
   Config &UnsetOnlineTuner() override;
   Config &SetLazyTuner() override;
   Config &UnsetLazyTuner() override;
-  Config &SetVfFusion() override;
+  Config &SetVfFusion(int mode) override;
   Config &UnsetVfFusion() override;
 
   // hardware config
@@ -199,7 +199,7 @@ class System : public Config {
   // features config
 
   bool deterministic_{false};
-  bool vf_fusion_{false};
+  int vf_fusion_{0};
   bool enable_profile_{false};
   ProfilerLevel profiler_level_{Level0};
   CubeTuner *online_tuner_{nullptr};

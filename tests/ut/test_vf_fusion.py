@@ -28,6 +28,7 @@ from tests.mark_utils import arg_mark
 @pytest.fixture(autouse=True)
 def vf_fusion_dir(monkeypatch, tmp_path):
     monkeypatch.delenv("DVM_VF_JIT_CACHE_DIR", raising=False)
+    dvm.Kernel.set_vf_fusion(0)
     monkeypatch.chdir(tmp_path)
     return tmp_path / "vf_fusion"
 
@@ -106,7 +107,7 @@ def make_gelu_graph(t, shape=(1024, 1024)):
 def test_entry_symbol_lookup_codegen(request):
     if run_codegen(request):
         return
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     input_np = np.ones((16, 16), dtype=np.float32)
 
     for _ in range(2):
@@ -125,7 +126,7 @@ def test_entry_symbol_lookup_codegen(request):
 def test_gelu_codegen(request, vf_fusion_dir):
     if run_codegen(request):
         return
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     t = Tester()
     t.set_passes("VfFusion")
     make_gelu_graph(t)
@@ -144,7 +145,7 @@ def test_gelu_codegen(request, vf_fusion_dir):
 def test_f16_tail_codegen(request, vf_fusion_dir):
     if run_codegen(request):
         return
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1025)
     input_np = np.random.normal(-1.0, 1.0, shape).astype(np.float16)
     y_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
@@ -175,7 +176,7 @@ def test_f16_tail_codegen(request, vf_fusion_dir):
 def test_long_chain_codegen(request, vf_fusion_dir):
     if run_codegen(request):
         return
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     input_np = np.random.normal(-1.0, 1.0, (1024, 1024)).astype(np.float32)
 
     t = Tester()
@@ -192,13 +193,88 @@ def test_long_chain_codegen(request, vf_fusion_dir):
     assert list(vf_fusion_dir.glob("vf_*.o"))
 
 
+@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+def test_dynamic_same_shape_select_codegen(request, vf_fusion_dir):
+    if run_codegen(request):
+        return
+    dvm.Kernel.set_vf_fusion(2)
+    t = Tester("vector:dyn", use_pass_opt=True)
+    x = t.load([-1], "float32")
+    y = t.load([-1], "float32")
+    condition = t.load([-1], "bool")
+    value = t.add(t.abs(x), y)
+    clipped = t.minimum(value, 1.5)
+    scaled = t.mul(y, 0.5)
+    t.store(t.cast(t.select(condition, clipped, scaled), "float16"))
+
+    shape = (3, 17, 9)
+    x_np = np.random.normal(0.0, 0.3, shape).astype(np.float32)
+    y_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
+    condition_np = np.random.randint(0, 2, shape).astype(np.bool_)
+    t.input(x, x_np)
+    t.input(y, y_np)
+    t.input(condition, condition_np)
+
+    t.codegen()
+    dump = t.dump()
+
+    assert dump.count("Custom") == 1
+    assert "Broadcast" not in dump
+    assert all(op not in dump for op in ("Abs", "Add", "Minimum", "Mul", "Select", "Cast"))
+    assert list(vf_fusion_dir.glob("vf_*.o"))
+
+
+@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+def test_dynamic_same_shape_multi_output_codegen(request):
+    if run_codegen(request):
+        return
+    dvm.Kernel.set_vf_fusion(2)
+    t = Tester("vector:dyn")
+    t.set_passes("VfFusion")
+    x = t.load([-1], "float32")
+    y = t.load([-1], "float32")
+    intermediate = t.abs(x)
+    out = t.add(intermediate, y)
+    t.store(intermediate)
+    t.store(out)
+    t.input(x, np.ones((3, 17, 9), dtype=np.float32))
+    t.input(y, np.ones((3, 17, 9), dtype=np.float32))
+
+    t.codegen()
+    dump = t.dump()
+
+    assert dump.count("Custom") == 1
+    assert "Abs" not in dump and "Add" not in dump
+
+
+@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+def test_dynamic_vf_fusion_default_mode_checks_shape_codegen(request):
+    if run_codegen(request):
+        return
+    dvm.Kernel.set_vf_fusion(1)
+    t = Tester("vector:dyn")
+    t.set_passes("VfFusion")
+    x = t.load([-1], "float32")
+    y = t.load([-1], "float32")
+    out = t.add(t.abs(x), y)
+    t.store(out)
+    t.input(x, np.ones((3, 17, 9), dtype=np.float32))
+    t.input(y, np.ones((3, 17, 9), dtype=np.float32))
+
+    t.codegen()
+    dump = t.dump()
+
+    assert "Custom" not in dump
+    assert "Abs" in dump and "Add" in dump
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(
     dvm.Device.arch() != "AscendC310",
     reason="VF Fusion only supports C310",
 )
 def test_multi_output():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     t = Tester()
     t.set_passes("VfFusion")
     make_f32_multi_output_graph(t)
@@ -215,7 +291,7 @@ def test_multi_output():
     reason="VF Fusion only supports C310",
 )
 def test_gelu():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     t = Tester()
     t.set_passes("VfFusion")
     make_gelu_graph(t)
@@ -232,7 +308,7 @@ def test_gelu():
     reason="VF Fusion only supports C310",
 )
 def test_f16_tail():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1025)
     input_np = np.random.normal(-1.0, 1.0, shape).astype(np.float16)
     y_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
@@ -257,13 +333,43 @@ def test_f16_tail():
     assert t.run_check()
 
 
+@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+@pytest.mark.skipif(
+    dvm.Device.arch() != "AscendC310",
+    reason="VF Fusion only supports C310",
+)
+def test_dynamic_same_shape_select():
+    dvm.Kernel.set_vf_fusion(2)
+    t = Tester("vector:dyn")
+    t.set_passes("VfFusion")
+    x = t.load([-1], "float32")
+    y = t.load([-1], "float32")
+    condition = t.load([-1], "bool")
+    value = t.add(t.abs(x), y)
+    clipped = t.minimum(value, 1.5)
+    scaled = t.mul(y, 0.5)
+    out = t.store(t.cast(t.select(condition, clipped, scaled), "float16"))
+
+    for shape in ((3, 17, 9), (5, 11, 7)):
+        x_np = np.random.normal(0.0, 0.3, shape).astype(np.float32)
+        y_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
+        condition_np = np.random.randint(0, 2, shape).astype(np.bool_)
+        value_np = np.abs(x_np) + y_np
+        expect = np.where(condition_np, np.minimum(value_np, 1.5), y_np * 0.5).astype(np.float16)
+        t.input(x, x_np)
+        t.input(y, y_np)
+        t.input(condition, condition_np)
+        t.run()
+        assert t.check(out, expect)
+
+
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(
     dvm.Device.arch() != "AscendC310",
     reason="VF Fusion only supports C310",
 )
 def test_reduce_boundary():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     x_np = np.random.normal(0.0, 0.2, shape).astype(np.float16)
     y_np = np.random.normal(0.0, 0.2, shape).astype(np.float16)
@@ -298,7 +404,7 @@ def test_reduce_boundary():
     reason="VF Fusion only supports C310",
 )
 def test_cycle_guard():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     x_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
 
@@ -325,7 +431,7 @@ def test_cycle_guard():
     reason="VF Fusion only supports C310",
 )
 def test_multi_fusion():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     x_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
     y_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
@@ -355,7 +461,7 @@ def test_multi_fusion():
     reason="VF Fusion only supports C310",
 )
 def test_extra_io():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     inputs_np = [
         np.random.normal(0.0, 0.2, shape).astype(np.float32) for _ in range(4)
@@ -389,7 +495,7 @@ def test_extra_io():
 )
 @pytest.mark.parametrize("shape", [(1024, 1024), (1024, 1025)])
 def test_broadcast_chain(shape):
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     x_np = np.random.normal(0.0, 0.3, shape).astype(np.float32)
     y_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
     bias_np = np.random.normal(0.5, 0.1, (1, shape[1])).astype(np.float32)
@@ -444,7 +550,7 @@ def test_broadcast_chain(shape):
 )
 @pytest.mark.parametrize("shape", [(1024, 1024), (1024, 2048)])
 def test_broadcast_regions(shape):
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     x_np = np.random.normal(0.0, 0.3, shape).astype(np.float32)
     row_np = np.random.normal(0.0, 0.2, (1, shape[1])).astype(np.float32)
     column_np = np.random.normal(0.0, 0.2, (shape[0], 1)).astype(np.float32)
@@ -494,7 +600,7 @@ def test_broadcast_regions(shape):
     reason="VF Fusion only supports C310",
 )
 def test_broadcast_select():
-    dvm.Kernel.set_vf_fusion(True)
+    dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     x_np = np.random.normal(0.0, 0.3, shape).astype(np.float32)
     y_np = np.random.normal(0.0, 0.3, shape).astype(np.float32)

@@ -66,7 +66,7 @@ class BasicBlock : public ObjectList {
     int64_t next;
     NDObject *user;
   };
-  BasicBlock(const std::vector<NDObject *> &objects, GraphTracker *tracker = nullptr);
+  BasicBlock(const std::vector<NDObject *> &objects, GraphTracker *tracker = nullptr, bool is_dynamic = false);
 
   inline size_t size() const { return size_; }
   inline size_t capacity() const { return capacity_; }
@@ -116,6 +116,7 @@ class BasicBlock : public ObjectList {
 
   std::vector<NDObject *> dels_;
   std::vector<NDObject *> news_;
+  bool is_dynamic_{false};
 
  protected:
   static int GetHead(NDObject *obj) { return obj->xbuf_; }
@@ -204,7 +205,7 @@ void CompactPeakLiveness(BasicBlock &bb);
 /// ----------
 void EliminateReshape(BasicBlock &bb);
 
-/// @brief Fuse supported C310 static pointwise subgraphs into a JIT Custom op.
+/// @brief Fuse supported C310 pointwise subgraphs into a JIT Custom op.
 /// The pass is gated by the default-off Config VF fusion switch.
 void VfFusion(BasicBlock &bb);
 
@@ -232,7 +233,7 @@ class PassOptimizer {
     }
   }
   void RunD(std::vector<NDObject *> &objects, GraphTracker *tracker) {
-    auto bb = BasicBlock(objects, tracker);
+    auto bb = BasicBlock(objects, tracker, true);
     RunPass(bb, true);
     bb.Export(objects);
     for (auto op : bb.dels_) {

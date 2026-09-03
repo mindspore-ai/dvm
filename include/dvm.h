@@ -732,7 +732,7 @@ class Config {
   virtual Config &UnsetOnlineTuner() = 0;
   virtual Config &SetLazyTuner() = 0;
   virtual Config &UnsetLazyTuner() = 0;
-  virtual Config &SetVfFusion() = 0;
+  virtual Config &SetVfFusion(int mode = 1) = 0;
   virtual Config &UnsetVfFusion() = 0;
 };
 

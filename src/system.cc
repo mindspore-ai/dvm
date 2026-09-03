@@ -810,13 +810,13 @@ Config &System::UnsetLazyTuner() {
   return *this;
 }
 
-Config &System::SetVfFusion() {
-  vf_fusion_ = true;
+Config &System::SetVfFusion(int mode) {
+  vf_fusion_ = mode;
   return *this;
 }
 
 Config &System::UnsetVfFusion() {
-  vf_fusion_ = false;
+  vf_fusion_ = 0;
   return *this;
 }
 

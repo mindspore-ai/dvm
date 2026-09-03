@@ -212,8 +212,8 @@ class VfCapabilityPartitioner {
 // partitions for an over-limit candidate.
 std::vector<VfPartition> SplitOverLimit(const VfPartition &partition, const VfFusionLimits &limits);
 
-// C310 static graph pass.  It is a no-op unless Config::SetVfFusion() was
-// called before static graph codegen.
+// C310 pointwise graph pass.  It is a no-op unless Config::SetVfFusion() was
+// called before codegen.
 void VfFusion(BasicBlock &bb);
 
 }  // namespace pass

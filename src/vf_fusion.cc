@@ -42,6 +42,8 @@
 namespace dvm::pass {
 namespace detail {
 
+constexpr int kSameShapeMode = 2;
+
 constexpr VfOverflowPolicy kOverflowPolicy = VfOverflowPolicy::kSkip;
 constexpr char kVfCodegenVersion[] = "c310-vf-v16";
 
@@ -478,7 +480,7 @@ bool WithinLimits(BasicBlock &bb, const VfPartition &partition) {
       partition.inputs.size() + partition.outputs.size() > VfFusionLimits::kMaxIO ||
       (partition.inputs.size() + partition.outputs.size() + 1 + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord >
         kMaxPayloadWords ||
-      !SameShapeAndNdd(partition)) {
+      (g_system.vf_fusion_ != kSameShapeMode && !SameShapeAndNdd(partition))) {
     return false;
   }
 
@@ -849,7 +851,10 @@ VfFusionOp::VfFusionOp(const VfPartition &partition, uint64_t func_id)
   for (size_t i = 1; i < output_count_; ++i) {
     const auto type = partition.outputs[i]->type_id_;
     xout_types_[i - 1] = type;
-    xout_data_.data[i - 1]->type_id_ = type;
+    auto *output = xout_data_.data[i - 1];
+    output->type_id_ = type;
+    output->shape_ref_ = &shape_;
+    output->nd_ = nd_;
   }
   if (output_count_ > 1) {
     SetXOut(&xout_data_);
@@ -1277,7 +1282,7 @@ bool VfFusionCompiler::WriteFile(const std::string &path, const std::string &con
 
 bool ValidateCustomMetadata(NDObject *custom, const VfPartition &partition) {
   if (custom == nullptr || custom->GetObjectType() != kCustom || partition.outputs.empty() ||
-      custom->type_id_ != partition.outputs.front()->type_id_ || !SameShapeAndNdd(custom, partition.outputs.front())) {
+      custom->type_id_ != partition.outputs.front()->type_id_) {
     return false;
   }
   const auto custom_inputs = GetInputs(custom);
@@ -1297,7 +1302,7 @@ bool ValidateCustomMetadata(NDObject *custom, const VfPartition &partition) {
     auto *ext_output = custom_op->xout_->data[i];
     auto *old_output = partition.outputs[i + 1];
     if (ext_output == nullptr || ext_output->GetObjectType() != kExtOut || ext_output->lhs_ != custom ||
-        ext_output->type_id_ != old_output->type_id_ || !SameShapeAndNdd(ext_output, old_output)) {
+        ext_output->type_id_ != old_output->type_id_) {
       return false;
     }
   }
@@ -1319,7 +1324,7 @@ void DeleteUnownedCustom(NDObject *custom) {
   delete custom;
 }
 
-bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t func_id) {
+bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t func_id, bool is_dynamic) {
   if (!IsShadowAcyclic(bb, partition)) {
     return false;
   }
@@ -1328,7 +1333,9 @@ bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t fun
   try {
     custom = new VfFusionOp(partition, func_id);
     std::vector<NDObject *> generated_ops;
-    custom->Normalize(generated_ops);
+    if (!is_dynamic) {
+      custom->Normalize(generated_ops);
+    }
     if (!generated_ops.empty() || !ValidateCustomMetadata(custom, partition)) {
       DeleteUnownedCustom(custom);
       return false;
@@ -1371,6 +1378,9 @@ bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t fun
     for (auto *user : users) {
       if (members.count(user) != 0) {
         continue;
+      }
+      if (is_dynamic && user->shape_ref_ == old->shape_ref_) {
+        user->shape_ref_ = replacement->shape_ref_;
       }
       const auto occurrences = CountInputOccurrences(user, old);
       for (size_t occurrence = 0; occurrence < occurrences; ++occurrence) {
@@ -1499,7 +1509,7 @@ void VfFusion(BasicBlock &bb) {
     if (function == functions.end()) {
       continue;
     }
-    detail::RewritePartition(bb, *it, function->second);
+    detail::RewritePartition(bb, *it, function->second, bb.is_dynamic_);
   }
 }
 

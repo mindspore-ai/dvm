@@ -1,5 +1,5 @@
 /**
- * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ * Copyright 2024-2026 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -116,6 +116,8 @@ std::pair<KernelType, uint32_t> ParseKernelType(const std::string &ker_type) {
       flags |= KernelFlag::kSpeculate;
     } else if (flag_name == "opt_fractal") {
       flags |= KernelFlag::kOptFractalTrans;
+    } else if (flag_name == "lazy") {
+      flags |= KernelFlag::kLazyCodeGen;
     } else if (flag_name == "priv1") {
       flags |= KernelFlag::kPrivate1;
     } else if (flag_name == "priv2") {

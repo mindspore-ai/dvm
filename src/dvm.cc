@@ -1097,7 +1097,11 @@ VKernel *NewKernel(KernelType type, uint32_t flags) {
       break;
     }
     case KernelType::kEager: {
-      kernel = flags & KernelFlag::kUnifyWS ? new SplitEagerW() : new VKernelE();
+      if (flags & KernelFlag::kLazyCodeGen) {
+        kernel = flags & KernelFlag::kUnifyWS ? new SplitEagerLazyW() : new SplitEagerLazy();
+      } else {
+        kernel = flags & KernelFlag::kUnifyWS ? new SplitEagerW() : new VKernelE();
+      }
       break;
     }
     default: {

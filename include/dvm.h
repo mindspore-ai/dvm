@@ -108,6 +108,7 @@ enum KernelFlag {
   kDynamic = 0x1,
   kUnifyWS = 0x2,
   kSpeculate = 0x4,
+  kLazyCodeGen = 0x8,
   kOptFractalTrans = 1u << 29,
   kPrivate1 = 1u << 30,
   kPrivate2 = 1u << 31,

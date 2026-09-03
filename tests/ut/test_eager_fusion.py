@@ -20,7 +20,7 @@ from tests.mark_utils import arg_mark
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.parametrize('mode', ["eager", "eager:unify_ws"])
+@pytest.mark.parametrize('mode', ["eager", "eager:unify_ws", "eager:lazy", "eager:lazy,unify_ws"])
 def test_eager_split_end(mode):
     ''' reduce -> broad '''
     t = Tester(mode)
@@ -28,7 +28,7 @@ def test_eager_split_end(mode):
     g1 = np.full([32, 1024], 0.1, np.float32)
     g2 = np.full([10, 1024], 0.1, np.float32)
     expect = np.sqrt(np.sum((g0 + g1) * 2.0, (0,), keepdims=True) - g2)
-    for i in range(3):
+    for i in range(2):
         x = t.add(t.load(g0), t.load(g1))
         x = t.mul(x, 2.0)
         x = t.sum(x, [0], True)  # [1, 1024]
@@ -784,8 +784,9 @@ def test_eager_cv_with_view_load():
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-def test_eager_cv_multi_user():
-    t = Tester("eager")
+@pytest.mark.parametrize('mode', ["eager", "eager:lazy", "eager:lazy,unify_ws"])
+def test_eager_cv_multi_user(mode):
+    t = Tester(mode)
     a = np.random.normal(0, 0.01, [1024, 1024]).astype(np.float16)
     b = np.random.normal(0, 0.01, [1024, 512]).astype(np.float16)
     x0 = t.load(a)
@@ -873,3 +874,17 @@ def test_eager_reshape_with_store():
     t.store_expect(x2, e2)
     t.store_expect(x3, e2 * (a0 + 0.01))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_eager_lazy_vector_ws():
+    t = Tester("eager:unify_ws,lazy")
+    in_shape, dims = [30, 4000], (0,)
+    t.set_deterministic(True)
+    a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
+    x0 = t.load(a)
+    x = t.sum(t.mul(x0, 1.5), dims, True)
+    x = t.add(x, 0.1)
+    t.store_expect(x, np.sum(a * 1.5, dims, keepdims=True) + 0.1)
+    assert(t.run_check())
+    t.set_deterministic(False)

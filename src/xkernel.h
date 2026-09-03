@@ -1,5 +1,5 @@
 /**
- * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ * Copyright 2024-2026 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -445,6 +445,43 @@ class SplitGraphDW : public SplitGraphD {
  public:
   SplitGraphDW() : SplitGraphD(KernelFlag::kUnifyWS) {}
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+};
+
+class SplitEagerLazy : public VKernelE {
+ public:
+  SplitEagerLazy() : VKernelE() {}
+  void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+  int Launch(void *stream) override;
+
+ protected:
+  uint64_t AllocArea(const EagerArea *area, WsAllocator *ws_alloc);
+  void GenKernel(EagerVector *kernel);
+  void *ws_mem_{nullptr};
+  void (*kernel_init_func_)(SplitEagerLazy *, EagerVector *, NDObject *){nullptr};
+};
+
+class SplitEagerLazyW : public SplitEagerLazy {
+ public:
+  SplitEagerLazyW() : SplitEagerLazy() { kernel_init_func_ = &RelocKernel; }
+  void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
+  static void RelocKernel(SplitEagerLazy *self, EagerVector *kernel, NDObject *dom);
+
+ protected:
+  struct _SlotWs : public WsAllocator {
+    void *Alloc(uint64_t size) override;
+    void Reloc(RelocAddr &addr) {
+      if (uint64_t idx = addr.data - 1; idx < slots_.size()) {
+        addr.gm = slots_[idx];
+      }
+    }
+    void *Reloc(void *addr) {
+      uint64_t idx = reinterpret_cast<uint64_t>(addr) - 1;
+      return idx < slots_.size() ? slots_[idx]: addr;
+    }
+    std::vector<void *> slots_;
+    size_t acc_size_;
+  };
+  _SlotWs slot_ws_;
 };
 }  // namespace dvm
 #endif  // _DVM_X_KERNEL_H_

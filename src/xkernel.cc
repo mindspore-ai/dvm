@@ -1,5 +1,5 @@
 /**
- * Copyright 2024-2025 Huawei Technologies Co., Ltd
+ * Copyright 2024-2026 Huawei Technologies Co., Ltd
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -1752,6 +1752,32 @@ class EagerArea {
     return true;
   }
 
+  void InOutReusePlan() const {
+    uint32_t index = 0;
+    size_t fused_size = fused_.size();
+    const EagerArea *cur = nullptr;
+    do {
+      cur = fused_size ? fused_[--fused_size] : this;
+      for (auto it = cur->objects_.rbegin(); it != cur->objects_.rend(); ++it) {
+        auto op = *it;
+        if (op->IsLoad()) {
+          op->index_ = index;
+          op->io_reuse_mask_ = index < 64 ? (1ull << op->index_) : 0;
+          index++;
+        } else {
+          uint64_t mask = 0;
+          if (op->InplaceProp()) {
+            op->ForInput([&mask](NDObject *in) { mask |= in->io_reuse_mask_; });
+          }
+          op->io_reuse_mask_ = mask;
+          if (auto store = _SplitKernel::GetStore(op); store != nullptr) {
+            store->io_reuse_mask_ = mask;
+          }
+        }
+      }
+    } while (cur != this);
+  }
+
   static EagerArea *Assign(_SplitKernel *k, size_t aid) {
     EagerArea *area;
     auto &pool = k->areas_;
@@ -2340,20 +2366,21 @@ class EagerDumpRef : public DumpRefHelper {
 };
 
 void _SplitKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) {
-  if (kernel_used_ == 0) return;
   std::string body_indent = indent + "  ";
   if (rgraph) {
     EagerDumpRef helper(oss);
     oss << "rgraph.eager() {" << std::endl;
-    for (auto op : objects_) {
-      if (!op->IsStore() && (op->flags_ & OBJ_FLAG_EAGER)) {
-        oss << body_indent;
-        helper.Dump(op);
-        oss << std::endl;
-        if (auto store = GetStore(op); store && store->flags_ & OBJ_FLAG_EAGER) {
+    if (kernel_begin_ >= kernel_used_) {
+      for (auto op : objects_) {
+        if (!op->IsStore() && (op->flags_ & OBJ_FLAG_EAGER)) {
           oss << body_indent;
-          helper.Dump(store);
+          helper.Dump(op);
           oss << std::endl;
+          if (auto store = GetStore(op); store && store->flags_ & OBJ_FLAG_EAGER) {
+            oss << body_indent;
+            helper.Dump(store);
+            oss << std::endl;
+          }
         }
       }
     }
@@ -2751,5 +2778,277 @@ void SplitGraphDW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloc
     CombineAllocDyn(ctx_->slot_ws_, ws_alloc);
   }
   RelocBinds();
+}
+
+namespace {
+void SetLazyArea(EagerVector *kernel, EagerArea *area) { kernel->mm_ = reinterpret_cast<CubeOp *>(area); }
+EagerArea *GetLazyArea(EagerVector *kernel) { return reinterpret_cast<EagerArea *>(kernel->mm_); }
+}  // namespace
+
+uint64_t SplitEagerLazy::AllocArea(const EagerArea *area, WsAllocator *ws_alloc) {
+  auto collect_livesss = [this](NDObject *op) {
+    if (op->IsLoad()) {
+      if (!(op->flags_ & OBJ_FLAG_EAGER)) {
+        ctx_->gen_.push_back(static_cast<NDAccess *>(op));
+      }
+    } else if (auto store = GetStore(op); store && store->addr_.gm && !GetStoreInplace(store)) {
+      ctx_->kill_.emplace_back(store, GetStoreSize(store));
+    }
+  };
+  size_t kill_begin = ctx_->kill_.size();
+  size_t node_count = area->objects_.size();
+  for (auto op : area->objects_) {
+    collect_livesss(op);
+  }
+  if (!area->fused_.empty()) {
+    for (auto &a : area->fused_) {
+      node_count += a->objects_.size();
+      for (auto op : a->objects_) {
+        collect_livesss(op);
+      }
+    }
+  }
+  bool reuse_plan = false;
+  auto &dom_dims = area->dom_->nd_.dims();
+  for (auto gen : ctx_->gen_) {
+    auto store = GetStore(gen);
+    if (store->addr_.gm == nullptr) {
+      if (!reuse_plan) {
+        reuse_plan = true;
+        area->InOutReusePlan();
+      }
+      bool inplaced = false;
+      auto gen_idx = gen->index_;
+      if (gen_idx < 64 && gen->obj_id_ == ObjectType::kLoad && gen->nd_.dims() == dom_dims) {
+        for (auto it = ctx_->kill_.begin() + kill_begin; it != ctx_->kill_.end(); ++it) {
+          auto r = it->first;
+          if (r != nullptr && (r->io_reuse_mask_ & (1ull << gen_idx)) && r->type_id_ == gen->type_id_) {
+            store->addr_.gm = r->addr_.gm;
+            it->first = nullptr;
+            inplaced = true;
+            break;
+          }
+        }
+      }
+      if (!inplaced) {
+        AllocWS(store, ws_alloc);
+      }
+    }
+    gen->addr_.gm = store->addr_.gm;
+  }
+  ctx_->gen_.clear();
+  return ((SIMD_BLOCK_SIZE + node_count * V_INSN_SIZE_MAX) + 511ul) & ~511ul;
+}
+
+void SplitEagerLazy::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  ASSERT(g_eager_pv_width == 0);
+  for (auto reloc = relocs; reloc < relocs + reloc_size; ++reloc) {
+    static_cast<NDAccess *>(reloc->io)->addr_.gm = reloc->addr;
+  }
+  int kidx = kernel_used_;
+  if (int ksize = static_cast<int>(kernels_.size()); kidx > ksize) {
+    for (int i = ksize; i < kidx; ++i) {
+      kernels_.push_back(new EagerVector());
+    }
+  }
+  ctx_->MemReset();
+  uint64_t max_code_size = 0;
+  bool has_mix = false;
+  int area_used = area_used_;
+  while (area_used > 0) {
+    auto area = areas_[--area_used].second;
+    if (area->state_ == EagerArea::kFree) {
+      continue;
+    }
+    area->state_ = EagerArea::kFree;
+    SetLazyArea(kernels_[--kidx], area);
+    uint64_t code_size = AllocArea(area, ws_alloc);
+    if (area->dom_->IsCube()) {
+      auto cube_gen = [this, ws_alloc](NDObject *in) {
+        if (auto io = static_cast<NDAccess *>(in); io->addr_.gm == nullptr && !(io->flags_ & OBJ_FLAG_EAGER)) {
+          auto store = GetStore(io);
+          io->addr_.gm = store->addr_.gm ? store->addr_.gm : AllocWS(store, ws_alloc);
+        }
+      };
+      auto mm = static_cast<CubeOp *>(area->dom_);
+      cube_gen(mm->lhs_);
+      cube_gen(mm->rhs_);
+      if (mm->bias_) {
+        cube_gen(mm->bias_);
+      }
+      if (auto output = mm->output_; !mm->atomic_add_ && !(output->flags_ & OBJ_FLAG_EAGER)) {
+        ctx_->Free(output->addr_.gm, GetStoreSize(output));
+      }
+      if (area->pattern_ & EagerArea::kPatCubeVec) {
+        has_mix = true;
+      }
+      code_size += sizeof(vCubeOp);
+    }
+    if (code_size > max_code_size) {
+      max_code_size = code_size;
+    }
+    if (kidx > 1) {
+      for (auto &kill : ctx_->kill_) {
+        if (kill.first) {
+          ctx_->Free(kill.first->addr_.gm, kill.second);
+        }
+      }
+    }
+    ctx_->kill_.clear();
+  }
+  ASSERT(kidx == 0);
+  if (max_code_size > PARAM_TABLE_LIMIT) {
+    extern_code_ = ws_alloc->Alloc(max_code_size);
+  }
+  uint64_t ws_mem_size = 0;
+  if (g_system.deterministic_) {
+    for (int i = 0; i < kernel_used_; ++i) {
+      if (auto area = GetLazyArea(kernels_[i]); area->pattern_ & EagerArea::kPatReduce) {
+        ws_mem_size = g_system.LocalMemSize() / 2 * g_system.CoreNum();
+        break;
+      }
+    }
+  }
+  if (ws_mem_size == 0 && g_system.Arch() == kAiCore_C220 && has_mix) {
+    ws_mem_size = sizeof(vMixGroupMsg) * g_system.CoreNum(CoreType::kAIC);
+  }
+  if (ws_mem_size) {
+    ws_mem_ = ws_alloc->Alloc(ws_mem_size);
+  }
+#ifdef DEBUG
+  pre_ws_size_ = ws_mem_size;
+#endif
+}
+
+void SplitEagerLazy::GenKernel(EagerVector *kernel) {
+  auto push_input = [](std::vector<NDObject *> &stack, NDObject *op) {
+    bool pend = false;
+    op->ForInput([&pend, &stack](NDObject *in) {
+      if (GetArea(in) >= 0) {
+        stack.push_back(in);
+        pend = true;
+      }
+    });
+    return pend;
+  };
+  auto build_op = [kernel](NDObject *op) {
+    if (op->SharedNdd()) {
+      op->nd_.data = op->lhs_->nd_.data;
+    }
+    kernel->EagerVector::Append(op);
+    if (op->IsSimd()) {
+      if (auto store = GetStore(op); store && store->addr_.gm) {
+        ASSERT(store->SharedNdd());
+        store->nd_.data = op->nd_.data;
+        kernel->EagerVector::Append(store);
+      }
+    }
+    SetArea(op, -1);
+  };
+  auto area = GetLazyArea(kernel);
+  kernel->Reset(area->dom_);
+  size_t fused_size = area->fused_.size();
+  auto &stack = ctx_->build_;
+  const EagerArea *cur = nullptr;
+  do {
+    cur = fused_size ? area->fused_[--fused_size] : area;
+    for (auto it = cur->objects_.rbegin(); it != cur->objects_.rend(); ++it) {
+      auto op = *it;
+      if (GetArea(op) < 0 || op->IsLoad()) continue;
+      if (push_input(stack, op)) {
+        while (!stack.empty()) {
+          auto top = stack.back();
+          if (!push_input(stack, top)) {
+            stack.pop_back();
+            if (GetArea(top) >= 0) {
+              build_op(top);
+            }
+          }
+        }
+      }
+      build_op(op);
+    }
+  } while (cur != area);
+  if (kernel_init_func_) {
+    kernel_init_func_(this, kernel, area->dom_);
+  }
+  if (area->dom_->IsCube()) {
+    auto mm = static_cast<CubeOp *>(area->dom_);
+    if (kernel->objects_.empty()) {
+      kernel->CodeGenCube(mm);
+    } else {
+      auto cube_code = kernel->CodeGenMix(mm);
+      cube_code->gm_pos = reinterpret_cast<uint64_t>(ws_mem_);
+    }
+  } else {
+    if (uint64_t ws_size = kernel->EagerVector::CodeGenV(nullptr, 0); ws_size > 0) {
+      ASSERT(ws_size <= pre_ws_size_);
+      for (auto op = kernel->code_.bind_wss_; op != nullptr; op = op->bind_list_) {
+        op->Reloc(static_cast<char *>(ws_mem_) + op->ws);
+      }
+    }
+  }
+  kernel->code_.ReserveWorkspace(0);
+}
+
+int SplitEagerLazy::Launch(void *stream) {
+  kernel_begin_ = 0; // only for dump
+  if (unlikely(g_system.enable_profile_)) {
+    for (int i = 0; i < kernel_used_; ++i) {
+      GenKernel(kernels_[i]);
+    }
+    return _SplitKernel::Launch(stream);
+  }
+  for (int i = 0; i < kernel_used_; ++i) {
+    auto k = kernels_[i];
+    GenKernel(k);
+    auto &code = k->code_;
+    if (code.target_ == Code::kTargetCube && g_system.lazy_tuner_) {
+      auto tuner = static_cast<LazyCubeTuner *>(g_system.lazy_tuner_);
+      tuner->Launch(k->mm_, code, stream);
+    } else {
+      code.Launch(extern_code_, stream);
+    }
+  }
+  return 0;
+}
+
+void *SplitEagerLazyW::_SlotWs::Alloc(uint64_t size) {
+  if (size == 0) {
+    return nullptr;
+  }
+  slots_.emplace_back(reinterpret_cast<void *>(size));
+  acc_size_ += size;
+  return reinterpret_cast<void *>(slots_.size());
+}
+
+void SplitEagerLazyW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) {
+  slot_ws_.slots_.clear();
+  slot_ws_.acc_size_ = 0;
+  SplitEagerLazy::CodeGenR(relocs, reloc_size, &slot_ws_);
+  uint8_t *mem = reinterpret_cast<uint8_t *>(ws_alloc->Alloc(slot_ws_.acc_size_));
+  for (size_t i = 0; i < slot_ws_.slots_.size(); ++i) {
+    auto size = reinterpret_cast<uint64_t>(slot_ws_.slots_[i]);
+    slot_ws_.slots_[i] = mem;
+    mem += size;
+  }
+  extern_code_ = slot_ws_.Reloc(extern_code_);
+  ws_mem_ = slot_ws_.Reloc(ws_mem_);
+}
+
+void SplitEagerLazyW::RelocKernel(SplitEagerLazy *self, EagerVector *kernel, NDObject *dom) {
+  auto &ws = static_cast<SplitEagerLazyW *>(self)->slot_ws_;
+  for (auto op : kernel->static_ops_) {
+    ws.Reloc(static_cast<NDAccess *>(op)->addr_);
+  }
+  if (dom->IsCube()) {
+    auto mm = static_cast<CubeOp *>(dom);
+    ws.Reloc(static_cast<NDAccess *>(mm->lhs_)->addr_);
+    ws.Reloc(static_cast<NDAccess *>(mm->rhs_)->addr_);
+    if (mm->bias_) {
+      ws.Reloc(static_cast<NDAccess *>(mm->bias_)->addr_);
+    }
+    ws.Reloc(mm->output_->addr_);
+  }
 }
 }  // namespace dvm

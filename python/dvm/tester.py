@@ -208,23 +208,28 @@ class Tester(Kernel):
         self.set_output(op, np.ascontiguousarray(np.zeros_like(e)))
         return op
 
+    def dump_verbose(self):
+        print("******* before tiling *******")
+        print(self.dump_r())
+        print("******* after tiling *******")
+        print(self.dump())
+        print("********* bytecode *********")
+        print(self.das())
+
     def codegen(self, verbose=False):
         if self.is_codegen:
             return
         Kernel.codegen(self, self.passes)
         if verbose:
-            print("******* before tiling *******")
-            print(self.dump_r())
-            print("******* after tiling *******")
-            print(self.dump())
-            print("********* bytecode *********")
-            print(self.das())
+            self.dump_verbose()
         if not self.is_dyn:
             self.is_codegen = True
 
     def run(self, verbose=False):
-        self.codegen(verbose)
+        self.codegen()
         Kernel.run(self)
+        if verbose:
+            self.dump_verbose()
         self.barrier()
 
     def bare_run(self):

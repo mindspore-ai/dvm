@@ -77,6 +77,9 @@ void CubeKernel::Append(NDObject *obj) {
 
 uint8_t *CubeKernel::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit) {
   ASSERT(cube_op_->output_ != nullptr);
+  if (tuner_ && tuner_->Type() == kLazyTuner) {
+    static_cast<LazyCubeTuner *>(tuner_)->SetCurrent(&code_);
+  }
   vCubeOp *cube_code = reinterpret_cast<vCubeOp *>(code_ptr);
   cube_op_->CodeGen(cube_code, tuner_);
   static_cast<NDAccess *>(cube_op_->lhs_)->addr_.Update(&cube_code->gm_a);
@@ -2280,7 +2283,12 @@ void _SplitKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloc
       if (mm->bias_) {
         cube_gen(mm->bias_);
       }
-      auto tuner = ktype_ == KernelType::kEager ? g_system.lazy_tuner_ : nullptr;
+      CubeTuner *tuner;
+      if (ktype_ == KernelType::kEager) {
+        tuner = g_system.lazy_tuner_;
+      } else {
+        tuner = IsDynamic() ? g_system.dyn_lazy_tuner_ : g_system.online_tuner_;
+      }
       if (kernel->objects_.empty()) {
         kernel->CodeGenCube(mm, tuner);
       } else {

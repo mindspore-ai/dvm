@@ -178,3 +178,19 @@ def test_split_ws_reloc():
     t.store_expect(x, np.sum(a * 1.5, dims, keepdims=True) + 0.1)
     assert(t.run_check())
     t.set_deterministic(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_tuner():
+    Tester.set_online_tuning(True)
+    t = Tester("split")
+    shape = [4096, 4096]
+    a = np.random.normal(0, 0.01, shape).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape).astype(np.float16)
+    expect = np.matmul(a.astype(np.float32), b.astype(np.float32))
+    x0 = t.load(a)
+    x1 = t.load(b)
+    x2 = t.matmul(x0, x1, False, False)
+    t.store_expect(x2, expect, 1e-3)
+    assert (t.run_check())
+    Tester.set_online_tuning(False)

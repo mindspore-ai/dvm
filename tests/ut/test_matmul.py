@@ -377,8 +377,8 @@ def test_tuning_matmul(shape_a, shape_b):
     np_a = Tester.fast_random_normal(0, 0.1, shape_a).astype(np.float16)
     np_b = Tester.fast_random_normal(0, 0.1, shape_b).astype(np.float16)
     expect = np.matmul(np_a.astype(np.float32), np_b.astype(np.float32)).astype(np.float16)
-    t = Tester("mix")
     Tester.set_online_tuning(True)
+    t = Tester("mix")
     mat_a = t.load(np_a)
     mat_b = t.load(np_b)
     res = t.matmul(mat_a, mat_b, False, False)
@@ -692,3 +692,27 @@ def test_same_matmul_vec_input(mode):
     expect = np.matmul(g0.astype(np.float32), g1.astype(np.float32)).astype(np.float16) + g1
     t.store_expect(d, expect)
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mix', [False, True])
+def test_dyn_shape_tuning(mix):
+    Tester.set_lazy_tuning(True)
+    t = Tester("mix:dyn")
+    x0 = t.load([], "float16")
+    x1 = t.load([], "float16")
+    x2 = t.matmul(x0, x1, False, False)
+    shape = [4096, 4096]
+    a = np.random.normal(0, 0.01, shape).astype(np.float16)
+    b = np.random.normal(0, 0.01, shape).astype(np.float16)
+    expect = np.matmul(a.astype(np.float32), b.astype(np.float32))
+    if mix:
+        x2 = t.add(x2, 0.1)
+        expect = expect + 0.1
+    x3 = t.store(x2)
+    for i in range(3):
+        t.input(x0, a)
+        t.input(x1, b)
+        t.run()
+        assert (t.check(x3, expect, 2e-3))
+    Tester.set_lazy_tuning(False)

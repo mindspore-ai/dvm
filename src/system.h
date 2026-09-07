@@ -204,6 +204,7 @@ class System : public Config {
   ProfilerLevel profiler_level_{Level0};
   CubeTuner *online_tuner_{nullptr};
   CubeTuner *lazy_tuner_{nullptr};
+  CubeTuner *dyn_lazy_tuner_{nullptr};
   pass::PassOptimizer *pass_opt_{nullptr};
 
   // runtime api

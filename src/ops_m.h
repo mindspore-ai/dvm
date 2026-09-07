@@ -186,7 +186,9 @@ class CubeTuner {
 
   Key GenKey(CubeOp *op, vCubeOp *code) {
     uint64_t key_batch = (uint64_t)op->batch_c0_ << 32 | (uint64_t)op->batch_c1_ << V_CUBE_BCAST_C1_OFFSET | (uint64_t)code->batch_cast;
-    uint64_t key_shape = op->m_real_ << 44 | op->n_real_ << 24 | op->k_real_ << 2;
+    uint64_t key_shape = RoundUp<uint64_t>(op->m_real_, CubeOp::BLOCK_SIZE) << 44 |
+                         RoundUp<uint64_t>(op->n_real_, CubeOp::BLOCK_SIZE) << 24 |
+                         RoundUp<uint64_t>(op->k_real_, CubeOp::BLOCK_SIZE) << 2;
     if (op->type_id_ == dvm::kFloat32) key_shape |= 4ul;
     if (op->trans_a_) key_shape |= 2ul;
     if (op->trans_b_) key_shape |= 1ul;

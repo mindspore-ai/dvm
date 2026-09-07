@@ -681,12 +681,9 @@ void System::DoInit() {
 
 System::~System() {
   delete pass_opt_;
-  if (online_tuner_) {
-    delete online_tuner_;
-  }
-  if (lazy_tuner_) {
-    delete lazy_tuner_;
-  }
+  delete online_tuner_;
+  delete lazy_tuner_;
+  delete dyn_lazy_tuner_;
   if (rt_handle_) {
     dlclose(rt_handle_);
   }
@@ -801,12 +798,17 @@ Config &System::SetLazyTuner() {
   if (lazy_tuner_ == nullptr) {
     lazy_tuner_ = new LazyCubeTuner();
   }
+  if (dyn_lazy_tuner_ == nullptr) {
+    dyn_lazy_tuner_ = new LazyCubeTuner();
+  }
   return *this;
 }
 
 Config &System::UnsetLazyTuner() {
   delete lazy_tuner_;
   lazy_tuner_ = nullptr;
+  delete dyn_lazy_tuner_;
+  dyn_lazy_tuner_ = nullptr;
   return *this;
 }
 

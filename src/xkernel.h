@@ -136,7 +136,7 @@ class MixKernel : public MixKernelBase {
 
 class DynMixKernel : public MixKernel {
  public:
-  DynMixKernel() : MixKernel(KernelFlag::kDynamic) { tuner_ = nullptr; }
+  DynMixKernel() : MixKernel(KernelFlag::kDynamic) { tuner_ = g_system.dyn_lazy_tuner_; }
   uint64_t CodeGen() override;
 
  protected:

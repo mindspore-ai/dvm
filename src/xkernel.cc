@@ -1543,7 +1543,7 @@ class EagerVector : public VectorKernel {
     static_ops_.clear();
   }
 
-  void CodeGenCube(CubeOp *mm) {
+  void CodeGenCube(CubeOp *mm, CubeTuner *tuner) {
     size_t size = code_.HeadSize() + sizeof(vCubeOp);
     code_.Alloc(size);
     vCubeOp *body = reinterpret_cast<vCubeOp *>(code_.data_ + code_.HeadSize());
@@ -1555,14 +1555,17 @@ class EagerVector : public VectorKernel {
       UpdateIdle(static_ops_);
       return;
     }
-    mm->CodeGen(body, g_system.lazy_tuner_);
+    if (tuner && tuner->Type() == kLazyTuner) {
+      static_cast<LazyCubeTuner *>(tuner)->SetCurrent(&code_);
+    }
+    mm->CodeGen(body, tuner);
     code_.block_dim_ = mm->block_dim_;
     code_.data_size_ = size;
     code_.UpdateC();
     mm_ = mm;
   }
 
-  vCubeOp *CodeGenMix(CubeOp *mm) {
+  vCubeOp *CodeGenMix(CubeOp *mm, CubeTuner *tuner) {
     size_t head_reserve = code_.HeadSize() + sizeof(vCubeOp);
     size_t post_reserve = ReserveCodeSize();  // TODO: visit size
     code_.Alloc(head_reserve + post_reserve);
@@ -1579,7 +1582,10 @@ class EagerVector : public VectorKernel {
       UpdateIdle(static_ops_);
       return cube_code;
     }
-    mm->CodeGen(cube_code, g_system.lazy_tuner_);
+    if (tuner && tuner->Type() == kLazyTuner) {
+      static_cast<LazyCubeTuner *>(tuner)->SetCurrent(&code_);
+    }
+    mm->CodeGen(cube_code, tuner);
     BuildDomain();
     ShardParam shard;
     shard.base = 0;
@@ -2274,10 +2280,11 @@ void _SplitKernel::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAlloc
       if (mm->bias_) {
         cube_gen(mm->bias_);
       }
+      auto tuner = ktype_ == KernelType::kEager ? g_system.lazy_tuner_ : nullptr;
       if (kernel->objects_.empty()) {
-        kernel->CodeGenCube(mm);
+        kernel->CodeGenCube(mm, tuner);
       } else {
-        auto cube_code = kernel->CodeGenMix(mm);
+        auto cube_code = kernel->CodeGenMix(mm, tuner);
         if (g_system.Arch() == kAiCore_C220) {
           uint64_t pos_size = sizeof(vMixGroupMsg) * mm->block_dim_;
           void *pos_mem;
@@ -2416,18 +2423,9 @@ std::string &_SplitKernel::DisAssemble() {
 }
 
 int _SplitKernel::Launch(void *stream) {
-  auto child_launch = [this, stream](EagerVector *kernel) {
-    auto &code = kernel->code_;
-    if (code.target_ == Code::kTargetCube && g_system.lazy_tuner_) {
-      auto tuner = static_cast<LazyCubeTuner *>(g_system.lazy_tuner_);
-      tuner->Launch(kernel->mm_, code, stream);
-    } else {
-      code.Launch(extern_code_, stream);
-    }
-  };
   if (likely(!g_system.enable_profile_)) {
     for (int i = kernel_begin_; i < kernel_used_; ++i) {
-      child_launch(kernels_[i]);
+      kernels_[i]->code_.Launch(extern_code_, stream);
     }
     return 0;
   }
@@ -2480,7 +2478,7 @@ int _SplitKernel::Launch(void *stream) {
     info.op_fullname = info.op_name;
     msprof_helper.InitReportNode();
     msprof_helper.Update(target);
-    child_launch(vector_kernel);
+    vector_kernel->code_.Launch(extern_code_, stream);
     msprof_helper.ReportTask();
   }
   return 0;
@@ -2975,9 +2973,9 @@ void SplitEagerLazy::GenKernel(EagerVector *kernel) {
   if (area->dom_->IsCube()) {
     auto mm = static_cast<CubeOp *>(area->dom_);
     if (kernel->objects_.empty()) {
-      kernel->CodeGenCube(mm);
+      kernel->CodeGenCube(mm, g_system.lazy_tuner_);
     } else {
-      auto cube_code = kernel->CodeGenMix(mm);
+      auto cube_code = kernel->CodeGenMix(mm, g_system.lazy_tuner_);
       cube_code->gm_pos = reinterpret_cast<uint64_t>(ws_mem_);
     }
   } else {
@@ -3002,13 +3000,7 @@ int SplitEagerLazy::Launch(void *stream) {
   for (int i = 0; i < kernel_used_; ++i) {
     auto k = kernels_[i];
     GenKernel(k);
-    auto &code = k->code_;
-    if (code.target_ == Code::kTargetCube && g_system.lazy_tuner_) {
-      auto tuner = static_cast<LazyCubeTuner *>(g_system.lazy_tuner_);
-      tuner->Launch(k->mm_, code, stream);
-    } else {
-      code.Launch(extern_code_, stream);
-    }
+    k->code_.Launch(extern_code_, stream);
   }
   return 0;
 }

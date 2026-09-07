@@ -739,9 +739,16 @@ LazyCubeTuner::~LazyCubeTuner() {
   for (auto it = context_.begin(); it != context_.end(); ++it) {
     delete it->second;
   }
+  for (auto w = wrap_->next_w_; w != wrap_;) {
+    auto next = w->next_w_;
+    delete w;
+    w = next;
+  }
+  delete wrap_;
 }
 
 void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
+  constexpr size_t kCacheTableMax = 2000;
   auto &tuning_table = CubeTuner::CacheTable();
   auto key = GenKey(op, code);
   TuningInfo *info;
@@ -749,7 +756,7 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
   auto it = tuning_table.find(key);
   if (it != tuning_table.end()) {
     info = &it->second;
-  } else {
+  } else if (tuning_table.size() < kCacheTableMax) {
     Context *ctx;
     auto ctx_it = context_.find(key);
     if (ctx_it == context_.end()) {
@@ -791,6 +798,21 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
       ctx->next_idx = (space_idx + 1) % space_size;
       ctx->gen_cnt++;
     }
+    if (space_idx != (uint32_t)-1) {
+      auto wrap = wrap_->next_w_;
+      if (wrap->ctx_) {
+        wrap = new _TunerWarp();
+        wrap->next_w_ = wrap_->next_w_;
+        wrap_->next_w_ = wrap;
+      }
+      wrap->ctx_ = ctx;
+      wrap_ = wrap;
+      ASSERT(cur_code_ != nullptr);
+      cur_code_->InsertWrap(wrap);
+    }
+  } else {
+    op->GenTiling(code);
+    return;
   }
   code->unique_id = space_idx;  // reuse
   code->m0 = op->m0_ = info->m0;
@@ -799,29 +821,6 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
   code->swizzle = info->swizzle;
   op->core_loop_ = info->core_loop;
   op->block_dim_ = info->block_dim;
-}
-
-int LazyCubeTuner::Launch(CubeOp *op, Code &code, void *stream) {
-  auto cube_code = reinterpret_cast<vCubeOp *>(code.data_ + code.HeadSize());
-  uint32_t space_idx = cube_code->unique_id;
-  if (space_idx == (uint32_t)-1) {
-    return code.Launch(nullptr, stream);
-  }
-  TimeProfiler profiler;
-  profiler.RecordStart(stream);
-  auto err = code.Launch(nullptr, stream);
-  float time = profiler.RecordEnd(stream);
-  auto ctx = context_[GenKey(op, cube_code)];
-  if (!err && (ctx->best_idx < 0 || time < ctx->best_time)) {
-    ctx->best_idx = ctx->run_cnt;
-    ctx->best_time = time;
-  }
-  ctx->run_cnt++;
-  if (ctx->run_cnt == ctx->gen_cnt) {
-    std::unique_lock<std::mutex> lock(ctx->mutex_);
-    ctx->cond_var_.notify_all();
-  }
-  return 0;
 }
 
 void LazyCubeTuner::BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space) {
@@ -866,5 +865,24 @@ void LazyCubeTuner::BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std:
     space.push_back(new TuningInfo(best_tile->m0, best_tile->n0, best_tile->k0, 1u << 16 | cnt, best_tile->core_loop,
                                    best_tile->block_dim));
   }
+}
+
+int LazyCubeTuner::_TunerWarp::LaunchWrap(void *workspace, void *stream) {
+  TimeProfiler profiler;
+  profiler.RecordStart(stream);
+  auto err = next_->LaunchWrap(workspace, stream);
+  float time = profiler.RecordEnd(stream);
+  auto ctx = const_cast<Context *>(ctx_);
+  if (!err && (ctx->best_idx < 0 || time < ctx->best_time)) {
+    ctx->best_idx = ctx->run_cnt;
+    ctx->best_time = time;
+  }
+  ctx->run_cnt++;
+  if (ctx->run_cnt == ctx->gen_cnt) {
+    std::unique_lock<std::mutex> lock(ctx->mutex_);
+    ctx->cond_var_.notify_all();
+  }
+  ctx_ = nullptr;
+  return err;
 }
 }  // namespace dvm

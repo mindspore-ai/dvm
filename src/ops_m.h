@@ -214,11 +214,14 @@ class OnlineCubeTuner : public CubeTuner {
 
 class LazyCubeTuner : public CubeTuner {
  public:
-  LazyCubeTuner() : CubeTuner(kLazyTuner) {}
+  LazyCubeTuner() : CubeTuner(kLazyTuner) {
+    wrap_ = new _TunerWarp();
+    wrap_->next_w_ = wrap_;
+  }
   ~LazyCubeTuner() override;
 
   void GenTile(CubeOp *op, vCubeOp *code) override;
-  int Launch(CubeOp *op, Code &code, void *stream);
+  void SetCurrent(Code *code) { cur_code_ = code; }
 
  protected:
   enum TuningStage { kTileTuning = 0, kSwizzleTuning };
@@ -246,6 +249,14 @@ class LazyCubeTuner : public CubeTuner {
   void BuildTileSpace(CubeOp *op, vCubeOp *code, std::vector<TuningInfo *> &space);
   void BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std::vector<TuningInfo *> &space);
   std::map<Key, Context *> context_;
+
+  struct _TunerWarp : public CodeWrap {
+    int LaunchWrap(void *workspace, void *stream) override;
+    _TunerWarp *next_w_;
+    volatile Context *ctx_{nullptr};
+  };
+  Code *cur_code_{nullptr};
+  _TunerWarp *wrap_;
 };
 }  // namespace dvm
 #endif  // _DVM_OPS_M_H_

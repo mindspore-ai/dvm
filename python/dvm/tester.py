@@ -302,9 +302,34 @@ class Tester(Kernel):
         self.codegen()
         Kernel.dry_run(self, core_id, is_cube)
 
-    def run_msprof(self, path, test_num=10):
+    def run_msprof(self, path, test_num=10, metric="ArithmeticUtilization"):
         self.codegen()
-        self.msprof(path, test_num)
+        existing_files = self._msprof_csv_files(path)
+        self.msprof(path, test_num, metric)
+        return self._export_msprof(path, existing_files)
+
+    def start_msprof(self, path, metric="ArithmeticUtilization"):
+        self.codegen()
+        self._msprof_existing_files = self._msprof_csv_files(path)
+        self.msprof_start(path, metric)
+        self._msprof_path = path
+
+    def stop_msprof(self):
+        self.msprof_stop()
+        return self._export_msprof(self._msprof_path, self._msprof_existing_files)
+
+    @staticmethod
+    def _msprof_csv_files(path):
+        result = set()
+        if not os.path.isdir(path):
+            return result
+        for root, _, files in os.walk(path):
+            for file_name in files:
+                if file_name.startswith("op_statistic") and file_name.lower().endswith(".csv"):
+                    result.add(os.path.abspath(os.path.join(root, file_name)))
+        return result
+
+    def _export_msprof(self, path, existing_files):
         if not os.path.isdir(path):
             print(f"Invalid directory: {path}")
             return
@@ -319,7 +344,9 @@ class Tester(Kernel):
                 if file_name.startswith("op_statistic") and file_name.lower().endswith(
                     ".csv"
                 ):
-                    file_path = os.path.join(root, file_name)
+                    file_path = os.path.abspath(os.path.join(root, file_name))
+                    if file_path in existing_files:
+                        continue
                     with open(file_path, "r", encoding="utf-8", newline="") as f:
                         reader = list(csv.reader(f))
                     col_widths = [

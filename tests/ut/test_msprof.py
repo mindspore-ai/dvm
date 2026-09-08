@@ -66,3 +66,82 @@ def test_mix_aic(mode):
     shutil.rmtree(path_name)
     assert ("MIX_AIC" in info)
     assert ("Dvm" in info)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_msprof_static_refresh_io(tmp_path):
+    path_name = str(tmp_path / "profile_static_refresh_io")
+    t = Tester("vector")
+    x_data = np.full((32, 256), 1.0, dtype=np.float32)
+    y_data = np.full((32, 256), 2.0, dtype=np.float32)
+    x = t.load(x_data)
+    y = t.load(y_data)
+    out = t.store(t.add(x, y))
+    t.run()
+
+    t.start_msprof(path_name)
+    try:
+        for value in (3.0, 4.0):
+            x_data = np.full((32, 256), value, dtype=np.float32)
+            y_data = np.full((32, 256), value + 1.0, dtype=np.float32)
+            t.release_io()
+            t.input(x, x_data)
+            t.input(y, y_data)
+            t.run()
+    finally:
+        info = t.stop_msprof()
+    shutil.rmtree(path_name)
+    assert t.check(out, x_data + y_data)
+    assert "AI_VECTOR" in info
+    assert "Dvm" in info
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_msprof_dynamic_refresh_io(tmp_path):
+    path_name = str(tmp_path / "profile_dynamic_refresh_io")
+    t = Tester("vector:dyn")
+    x = t.load([-1, -1], "float32")
+    y = t.load([-1, -1], "float32")
+    out = t.store(t.add(x, y))
+    t.input(x, np.ones((16, 32), dtype=np.float32))
+    t.input(y, np.ones((16, 32), dtype=np.float32))
+    t.run()
+
+    t.start_msprof(path_name)
+    try:
+        for shape in ((32, 64), (16, 128)):
+            x_data = np.full(shape, 1.5, dtype=np.float32)
+            y_data = np.full(shape, 2.5, dtype=np.float32)
+            t.release_io()
+            t.input(x, x_data)
+            t.input(y, y_data)
+            t.run()
+    finally:
+        info = t.stop_msprof()
+    shutil.rmtree(path_name)
+    assert t.check(out, x_data + y_data)
+    assert "AI_VECTOR" in info
+    assert "Dvm" in info
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_msprof_split_kernel(tmp_path):
+    path_name = str(tmp_path / "profile_split_kernel")
+    t = Tester("split:priv1")
+    x_data = np.ones((10, 4096), dtype=np.float16)
+    x = t.load(x_data)
+    value = t.add(x, 0.5)
+    t.store(value)
+    value = t.cast(value, "float32")
+    t.store(t.sum(value, (0,), True))
+    t.run()
+
+    t.start_msprof(path_name)
+    try:
+        t.run()
+        t.run()
+    finally:
+        info = t.stop_msprof()
+    shutil.rmtree(path_name)
+    assert "AI_VECTOR" in info
+    assert "Dvm" in info

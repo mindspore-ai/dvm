@@ -34,10 +34,19 @@
 namespace dvm {
 namespace {
 const size_t TEST_NUM = 10;
+}  // namespace
 
 class ProfileMgr {
  public:
-  ProfileMgr(const std::string &path) {
+  ProfileMgr(const std::string &path, const std::string &metric) {
+    static const std::unordered_map<std::string, aclprofAicoreMetrics> aicore_metrics = {
+      {"ArithmeticUtilization", ACL_AICORE_ARITHMETIC_UTILIZATION},
+      {"PipeUtilization", ACL_AICORE_PIPE_UTILIZATION},
+      {"MemoryAccess", ACL_AICORE_MEMORY_ACCESS},
+      {"L2Cache", ACL_AICORE_L2_CACHE},
+    };
+    auto iter = aicore_metrics.find(metric);
+    auto aicore_metric = iter == aicore_metrics.end() ? ACL_AICORE_ARITHMETIC_UTILIZATION : iter->second;
     aclprofInit(path.c_str(), path.length());
     int32_t device_id;
     aclrtGetDevice(&device_id);
@@ -45,7 +54,7 @@ class ProfileMgr {
     uint32_t device_num = 1;
     uint64_t mask =
       ACL_PROF_ACL_API | ACL_PROF_AICORE_METRICS | ACL_PROF_TASK_TIME | ACL_PROF_TRAINING_TRACE | ACL_PROF_AICPU;
-    acl_config_ = aclprofCreateConfig(device_list, device_num, ACL_AICORE_ARITHMETIC_UTILIZATION, nullptr, mask);
+    acl_config_ = aclprofCreateConfig(device_list, device_num, aicore_metric, nullptr, mask);
   }
   ~ProfileMgr() {
     aclprofDestroyConfig(acl_config_);
@@ -58,6 +67,7 @@ class ProfileMgr {
   aclprofConfig *acl_config_;
 };
 
+namespace {
 inline void F32ToBF16(float *input, uint16_t *output, uint32_t size) {
   while (size-- != 0) {
     *output++ = BFloat16(*input++).int_value();
@@ -164,6 +174,7 @@ class KernelRunner : public WsAllocator {
   virtual ~KernelRunner() {}
   virtual void AllocLoad(const py::buffer_info &buf, LoadInfo &load) = 0;
   virtual void AllocStore(StoreInfo &store) = 0;
+  virtual void Release(void *) {}
   virtual void Reset() = 0;
   virtual int Run(Kernel &kernel, void *workspace, bool sync) = 0;
   void *Stream() const { return stream_; }
@@ -222,6 +233,13 @@ class DevRunner : public KernelRunner {
       dev_mem_.push_back(ws);
     }
     return ws;
+  }
+
+  void Release(void *mem) override {
+    auto iter = std::find(dev_mem_.begin(), dev_mem_.end(), mem);
+    if (iter == dev_mem_.end()) return;
+    aclrtFree(mem);
+    dev_mem_.erase(iter);
   }
 
   int Run(Kernel &kernel, void *workspace, bool sync) override {
@@ -389,6 +407,10 @@ RtKernelPy::RtKernelPy(const std::string &ker_type, const std::string &run_type,
 }
 
 RtKernelPy::~RtKernelPy() {
+  if (profile_mgr_ != nullptr) {
+    profile_mgr_->ProfStop();
+    delete profile_mgr_;
+  }
   runner_->Reset();
 #ifdef VK_SIM_MODEL
   RunnerManager::Instance().ResetDevRuner();
@@ -736,8 +758,8 @@ py::object RtKernelPy::Perf() {
                         py::float_(profiler.total_us_ / float(TEST_NUM)));
 }
 
-py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
-  ProfileMgr mgr(path);
+py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num, const std::string &metric) {
+  ProfileMgr mgr(path, metric);
   if (kernel_.GetImpl()->IsSplit()) {
     runner_->Run(kernel_, workspace_, true);
     mgr.ProfStart();
@@ -773,6 +795,19 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num) {
   return py::none();
 }
 
+void RtKernelPy::MsprofStart(const std::string &path, const std::string &metric) {
+  EXCEPTION_IF(profile_mgr_ != nullptr, "msprof has already started");
+  profile_mgr_ = new ProfileMgr(path, metric);
+  profile_mgr_->ProfStart();
+}
+
+void RtKernelPy::MsprofStop() {
+  EXCEPTION_IF(profile_mgr_ == nullptr, "msprof has not started");
+  profile_mgr_->ProfStop();
+  delete profile_mgr_;
+  profile_mgr_ = nullptr;
+}
+
 void RtKernelPy::Input(py::object obj, py::object val, size_t offset) {
   if (py::isinstance<NDObjectPy>(obj)) {
     auto op = static_cast<NDAccess *>(PyToObj(obj));
@@ -795,6 +830,18 @@ void RtKernelPy::Input(py::object obj, py::object val, size_t offset) {
     ASSERT(py::isinstance<ScalarRefPy>(obj));
     auto scalar = obj.cast<std::shared_ptr<ScalarRefPy>>();
     scalar->Update(val);
+  }
+}
+
+void RtKernelPy::ReleaseIO() {
+  EXCEPTION_IF(kernel_.GetImpl()->IsSplit(), "release_io is not supported by split/eager kernels");
+  for (auto &info : loads_) {
+    runner_->Release(info.dev);
+    info.dev = nullptr;
+  }
+  for (auto &info : stores_) {
+    runner_->Release(info.dev);
+    info.dev = nullptr;
   }
 }
 
@@ -1030,6 +1077,7 @@ PYBIND11_MODULE(_dvm_py, m) {
     .def("reset", &RtKernelPy::Reset, "reset eager")
     .def("clone", &RtKernelPy::Clone, "clone kernel")
     .def("input", &RtKernelPy::Input, "get ouput array", py::arg("op"), py::arg("val"), py::arg("offset") = 0)
+    .def("release_io", &RtKernelPy::ReleaseIO, "release input and output device memory")
     .def("output", &RtKernelPy::Output, "get ouput array")
     .def("set_output", &RtKernelPy::SetOutput, "set ouput array")
     .def("clear_store_memory", &RtKernelPy::ClearStoreMemory, "clear store memory")
@@ -1037,7 +1085,9 @@ PYBIND11_MODULE(_dvm_py, m) {
          py::arg("factor") = 0)
     .def("codegen", &RtKernelPy::CodeGen, "generate code")
     .def("perf", &RtKernelPy::Perf, "perf test")
-    .def("msprof", &RtKernelPy::Msprof, "perf test")
+    .def("msprof", &RtKernelPy::Msprof, "perf test", py::arg("path"), py::arg("test_num") = 10, py::arg("metric") = "ArithmeticUtilization")
+    .def("msprof_start", &RtKernelPy::MsprofStart, "start msprof", py::arg("path"), py::arg("metric") = "ArithmeticUtilization")
+    .def("msprof_stop", &RtKernelPy::MsprofStop, "stop msprof")
     .def("run", &RtKernelPy::Run, "run kernel")
     .def("dry_run", &RtKernelPy::DryRun, "dry run vm")
     .def_static("reg_custom", &RtKernelPy::RegCustom, "register custom")

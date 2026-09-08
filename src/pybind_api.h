@@ -23,6 +23,7 @@
 
 namespace dvm {
 class KernelRunner;
+class ProfileMgr;
 class RtKernelPy : public KernelPy {
  public:
   friend class ShapeRefPy;
@@ -55,6 +56,7 @@ class RtKernelPy : public KernelPy {
   py::object Clone(py::object base, py::object remap);
 
   void Input(py::object obj, py::object val, size_t offset);
+  void ReleaseIO();
   py::object Output(py::object store);
   void SetOutput(py::object store, py::object val);
   void ClearStoreMemory(py::object store);
@@ -65,7 +67,9 @@ class RtKernelPy : public KernelPy {
 
   void DryRun(int core_idx, bool cube_core);
   py::object Perf();
-  py::object Msprof(const std::string &path, int64_t test_num);
+  py::object Msprof(const std::string &path, int64_t test_num, const std::string &metric);
+  void MsprofStart(const std::string &path, const std::string &metric);
+  void MsprofStop();
 
   py::object Custom(const std::string &full_name, py::object inputs, py::object attrs);
   py::object ExtOut(py::object op, int index) { return ObjToPy(kernel_.ExtOut(PyToObj(op), index)); }
@@ -113,6 +117,7 @@ class RtKernelPy : public KernelPy {
   std::vector<std::vector<uint16_t>> bf16s_;  // store bf16 converted from f32
 
   void *workspace_{nullptr};
+  ProfileMgr *profile_mgr_{nullptr};
   KernelRunner *runner_;
 };
 using RtKernelPyPtr = std::shared_ptr<RtKernelPy>;

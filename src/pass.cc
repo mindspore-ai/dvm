@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "pass.h"
+#include "kernel.h"
 
 namespace dvm::pass {
 
@@ -209,23 +210,26 @@ void BasicBlock::Erase(NDObject *object) {
   ObjectList::Erase(object);
   SetHead(object, -1);
   for (auto pred : GetPreds(object)) {
-    auto idx = GetHead(pred);
-    auto last = idx;
-    while (idx != -1) {
-      if (edges_[idx].user == object) {
-        if (idx == GetHead(pred)) {
-          SetHead(pred, edges_[idx].next);
-        } else {
-          edges_[last].next = edges_[idx].next;
-        }
-        break;
-      }
-      last = idx;
-      idx = edges_[idx].next;
-    }
-    ASSERT(idx != -1);
+    RemoveEdge(pred, object);
   }
   dels_.push_back(object);
+}
+
+void BasicBlock::RemoveEdge(NDObject *pred, NDObject *user) {
+  auto idx = GetHead(pred);
+  auto last = idx;
+  while (idx != -1) {
+    if (edges_[idx].user == user) {
+      if (idx == GetHead(pred)) {
+        SetHead(pred, edges_[idx].next);
+      } else {
+        edges_[last].next = edges_[idx].next;
+      }
+      return;
+    }
+    last = idx;
+    idx = edges_[idx].next;
+  }
 }
 
 NDObject *BasicBlock::Move(NDObject *pos, NDObject *obj) {
@@ -250,6 +254,8 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
       tracker_->Record(&obj->lhs_);
     }
     obj->lhs_ = update;
+    RemoveEdge(old, obj);
+    AddUser(update, obj);
     if (obj->SharedNdd()) {
       auto old_ndd = obj->nd_.data;
       auto new_ndd = update->nd_.data;
@@ -273,6 +279,8 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
       tracker_->Record(&obj->rhs_);
     }
     obj->rhs_ = update;
+    RemoveEdge(old, obj);
+    AddUser(update, obj);
   } else {
     // ops with extended inputs (xhs_)
     ASSERT(obj->flags_ & OBJ_FLAG_XHS);
@@ -283,6 +291,8 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
           tracker_->Record(&xhs->data[i]);
         }
         xhs->data[i] = update;
+        RemoveEdge(old, obj);
+        AddUser(update, obj);
         return;
       }
     }
@@ -492,6 +502,16 @@ void DeadCodeEliminate(BasicBlock &bb) {
     if (obj->reuse_dep_) {
       obj->ForInput([](NDObject *in) { in->reuse_dep_ = 1; });
     }
+    if (obj->GetObjectType() == kSplitOp && static_cast<SplitOp *>(obj)->slice_idx_ == 0) {
+      auto main = static_cast<SplitOpM *>(obj);
+      if (main->reuse_dep_) continue;
+      for (auto sib : main->siblings_) {
+        if (sib->reuse_dep_) {
+          main->reuse_dep_ = 1;
+          break;
+        }
+      }
+    }
   }
   for (auto obj = bb.Begin(); obj != bb.End();) {
     auto next = bb.Next(obj);
@@ -502,17 +522,264 @@ void DeadCodeEliminate(BasicBlock &bb) {
   }
 }
 
+namespace {
+
+class NDBindLoad : public NDLoad {
+ public:
+  NDBindLoad(NDAccess *input) : NDLoad(nullptr, input->shape_ref_, input->type_id_) {
+    SetFlag(OBJ_FLAG_LOAD_BIND);
+    addr_.gm = input;
+  }
+  ~NDBindLoad() override {
+    for (auto *bind : bind_addrs_) delete bind;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    NDLoad::Normalize(run_ops);
+    addr_used_ = 0;
+  }
+  uint64_t Emit(VectorKernel &k) override {
+    auto &input = *LoadBind();
+    if (!input.addr_.reloc_) input.addr_.Update(&input.addr_.data);
+    auto size = NDLoad::Emit(k);
+    RelocAddr *bind;
+    if (addr_used_ < static_cast<int>(bind_addrs_.size())) {
+      bind = bind_addrs_[addr_used_++];
+    } else {
+      bind = new RelocAddr();
+      bind_addrs_.push_back(bind);
+      addr_used_++;
+    }
+    bind->Update(addr_);
+    k.code_.BindOpFast(*bind, input.addr_);
+    return size;
+  }
+  NDObject *Clone(CloneHelper &h) override { return new NDBindLoad(static_cast<NDAccess *>(h.GetClone(LoadBind()))); }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "BindLoad"; }
+  std::vector<RelocAddr *> bind_addrs_;
+  int addr_used_{0};
+};
+
+class NDViewBindLoad : public NDViewLoad {
+ public:
+  NDViewBindLoad(NDViewLoad *input)
+      : NDViewLoad(nullptr, input->shape_ref_, input->src_stride_ref_, input->type_id_), input_(input) {
+    SetFlag(OBJ_FLAG_LOAD_BIND);
+  }
+  ~NDViewBindLoad() override {
+    for (auto *bind : bind_addrs_) delete bind;
+  }
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    NDViewLoad::Normalize(run_ops);
+    addr_used_ = 0;
+  }
+  uint64_t Emit(VectorKernel &k) override {
+    auto &input = *input_;
+    if (!input.addr_.reloc_) input.addr_.Update(&input.addr_.data);
+    auto size = NDViewLoad::Emit(k);
+    RelocAddr *bind;
+    if (addr_used_ < static_cast<int>(bind_addrs_.size())) {
+      bind = bind_addrs_[addr_used_++];
+    } else {
+      bind = new RelocAddr();
+      bind_addrs_.push_back(bind);
+      addr_used_++;
+    }
+    bind->Update(addr_);
+    k.code_.BindOpFast(*bind, input.addr_);
+    return size;
+  }
+  NDObject *Clone(CloneHelper &h) override {
+    auto input = static_cast<NDViewLoad *>(h.GetClone(static_cast<NDObject *>(input_)));
+    return new NDViewBindLoad(input);
+  }
+  void Dump(bool verbose, std::ostringstream &oss) override { oss << "ViewBindLoad"; }
+ private:
+  NDViewLoad *input_;
+  std::vector<RelocAddr *> bind_addrs_;
+  int addr_used_{0};
+};
+
+struct VisitState {
+  uint32_t cnt{0};
+  std::vector<uint64_t> mask;
+  std::vector<uint32_t> visit;
+  std::unordered_map<NDObject *, uint64_t> view_index;
+  std::vector<NDObject *> joins;
+  std::vector<std::pair<NDObject *, uint64_t>> stack;
+  std::unordered_set<NDObject *> join_seen;
+  std::vector<NDObject *> objects;
+};
+
+void CollectJoins(NDObject *root, VisitState &st) {
+  st.cnt++;
+  st.stack.clear();
+  st.join_seen.clear();
+  st.joins.clear();
+  auto visit = [&](NDObject *obj, uint64_t mask) {
+    auto &seen = st.visit[obj->index_];
+    if (seen != st.cnt) {
+      seen = st.cnt;
+      st.mask[obj->index_] = mask;
+      st.stack.push_back({obj, mask});
+      return;
+    }
+    auto merged = st.mask[obj->index_] | mask;
+    if (merged != st.mask[obj->index_]) {
+      st.mask[obj->index_] = merged;
+      st.stack.push_back({obj, merged});
+      if ((!obj->IsLoad() || obj->GetObjectType() == kViewLoad) && st.join_seen.insert(obj).second) st.joins.push_back(obj);
+    }
+  };
+  visit(root, 0);
+  while (!st.stack.empty()) {
+    auto [top, top_mask] = st.stack.back();
+    st.stack.pop_back();
+    auto mask = top_mask;
+    if (top->IsViewOp()) {
+      NDObject *key = top;
+      if (top->GetObjectType() == kSplitOp && static_cast<SplitOp *>(top)->slice_idx_ != 0)
+        key = static_cast<SplitOp *>(top)->main_;
+      mask |= st.view_index.try_emplace(key, 1ULL << st.view_index.size()).first->second;
+    }
+    top->ForInput([&](NDObject *in) { visit(in, mask); });
+  }
+}
+
+struct DiamondCloneHelper final : public CloneHelper {
+  std::unordered_map<NDObject *, NDObject *> map_;
+  BasicBlock *bb_{nullptr};
+  NDObject *pos_{nullptr};
+  explicit DiamondCloneHelper(BasicBlock *bb, NDObject *pos) : bb_(bb), pos_(pos) {}
+  NDObject *Insert(NDObject *clone) {
+    std::vector<NDObject *> stuff_ops;
+    clone->Normalize(stuff_ops);
+    ASSERT(stuff_ops.empty());
+    bb_->Insert(pos_, clone);
+    return clone;
+  }
+  NDObject *GetClone(NDObject *op) override {
+    auto it = map_.find(op);
+    if (it != map_.end()) return it->second;
+    if (op->IsLoad()) {
+      auto input = static_cast<NDAccess *>(op);
+      while (input->CheckFlag(OBJ_FLAG_LOAD_BIND)) input = input->LoadBind();
+      NDObject *bind;
+      if (input->GetObjectType() == kViewLoad)
+        bind = Insert(new NDViewBindLoad(static_cast<NDViewLoad *>(input)));
+      else
+        bind = Insert(new NDBindLoad(input));
+      bb_->AddUser(input, bind);
+      return bind;
+    }
+    if (op->GetObjectType() == kSplitOp) {
+      auto sib = static_cast<SplitOp *>(op);
+      auto main = sib->main_;
+      if (!map_.count(main)) {
+        auto mc = new SplitOpM(GetClone(main->lhs_), main->split_axis_ref_, main->split_size_,
+                               main->siblings_.size());
+        bb_->Insert(pos_, mc);
+        map_[main] = mc;
+        for (size_t j = 1; j < main->siblings_.size(); ++j) {
+          auto cj = mc->AddSibling();
+          bb_->Insert(pos_, cj);
+          map_[main->siblings_[j]] = cj;
+        }
+        std::vector<NDObject *> stuff_ops;
+        mc->Normalize(stuff_ops);
+        ASSERT(stuff_ops.empty());
+      }
+      return map_[op];
+    }
+    map_[op] = Insert(op->CloneUpdate(*this));
+    return map_[op];
+  }
+  IntArrayRef *GetClone(IntArrayRef *shape) override { return shape; }
+  ScalarRef *GetClone(ScalarRef *scalar) override { return scalar; }
+  void SetClone(NDObject *op, NDObject *clone) override { map_[op] = clone; }
+};
+
+bool RepairFork(BasicBlock &bb, NDObject *fork) {
+  std::vector<NDObject *> uniq;
+  std::unordered_set<NDObject *> seen;
+  for (auto u : bb.GetUsers(fork)) {
+    auto rep = u->GetObjectType() == kSplitOp ? static_cast<NDObject *>(static_cast<SplitOp *>(u)->main_) : u;
+    if (seen.insert(rep).second) uniq.push_back(rep);
+  }
+  bool split_only = false;
+  if (uniq.size() < 2) {
+    if (uniq.size() == 1 && uniq[0]->GetObjectType() == kSplitOp) {
+      auto main = static_cast<SplitOp *>(uniq[0])->main_;
+      split_only = std::count_if(main->siblings_.begin(), main->siblings_.end(),
+                                 [&](SplitOp *s) { return s->lhs_ == fork; }) >= 2;
+    }
+    if (!split_only) return false;
+  }
+
+  for (size_t u = split_only ? 0 : 1; u < uniq.size(); ++u) {
+    auto user = uniq[u];
+    if (user->IsStore()) continue;
+    DiamondCloneHelper helper(&bb, fork);
+    auto fork_clone = helper.GetClone(fork);
+    if (user->GetObjectType() == kSplitOp) {
+      for (auto sib : static_cast<SplitOp *>(user)->main_->siblings_)
+        if (sib->lhs_ == fork) { bb.UpdateInput(sib, fork, fork_clone); break; }
+    } else {
+      bb.UpdateInput(user, fork, fork_clone);
+    }
+    return true;
+  }
+  return false;
+}
+
+bool RepairOneRound(BasicBlock &bb, VisitState &st) {
+  st.objects.clear();
+  int idx = 0;
+  for (NDObject *iter = bb.Begin(); iter != bb.End(); iter = bb.Next(iter)) {
+    iter->index_ = idx++;
+    st.objects.push_back(iter);
+  }
+  st.mask.assign(st.objects.size(), 0);
+  st.visit.assign(st.objects.size(), 0);
+  st.view_index.clear();
+  for (auto store : st.objects) {
+    if (!store->IsStore() || !bb.GetUserNum(store->lhs_)) continue;
+    CollectJoins(store->lhs_, st);
+    for (auto fork : st.joins) {
+      if (RepairFork(bb, fork)) return true;
+    }
+  }
+  return false;
+}
+
+}  // namespace
+
+void EliminateDiamondView(BasicBlock &bb) {
+  int view_cnt = 0;
+  for (NDObject *iter = bb.Begin(); iter != bb.End(); iter = bb.Next(iter)) {
+    if (iter->IsViewOp() && (iter->obj_id_ != kSplitOp || static_cast<SplitOp *>(iter)->slice_idx_ == 0)) {
+      view_cnt++;
+    }
+  }
+  if (view_cnt < 2) return;
+  VisitState st;
+  for (int i = 0; i < 8; ++i) {
+    if (!RepairOneRound(bb, st)) return;
+  }
+}
+
 class PassOptimizerC220 : public PassOptimizer {
  public:
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
     DeadCodeEliminate(bb);
     if (dyn_shape) {
+      EliminateDiamondView(bb);
       CompactPeakLiveness(bb);
       VectorDoubleBuffer(bb);
       ReorderLoad(bb);
       ReorderStore(bb);
     } else {
       EliminateReshape(bb);
+      EliminateDiamondView(bb);
       CompactPeakLiveness(bb);
       VectorDoubleBuffer(bb);
       ReorderLoad(bb);
@@ -527,6 +794,7 @@ class PassOptimizerC310 : public PassOptimizer {
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
     DeadCodeEliminate(bb);
     if (dyn_shape) {
+      EliminateDiamondView(bb);
       CompactPeakLiveness(bb);
       VfFusion(bb);
       VectorDoubleBuffer(bb);
@@ -534,6 +802,7 @@ class PassOptimizerC310 : public PassOptimizer {
       ReorderStore(bb);
     } else {
       EliminateReshape(bb);
+      EliminateDiamondView(bb);
       CompactPeakLiveness(bb);
       VfFusion(bb);
       VectorDoubleBuffer(bb);

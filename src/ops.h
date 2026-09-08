@@ -463,6 +463,7 @@ class __export__ NDObject {
   bool IsCube() const { return obj_id_ == kCubeOp || obj_id_ == kGmmOp; }
   // Comm op is considered a simd op, remember use !IsComm() to exclude comm op
   bool IsSimd() const { return obj_id_ > kStore; }
+  bool IsViewOp() const { return obj_id_ == kSliceOp || obj_id_ == kSplitOp || obj_id_ == kConcat; }
   bool NeedTailCopy() const { return obj_id_ > kReduceScatter && obj_id_ <= kAllReduce; }
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }

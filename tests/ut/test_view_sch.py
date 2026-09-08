@@ -648,3 +648,140 @@ def test_sch_slice_split_slice():
     t.store_expect(x5, np.exp(e3))
     t.store_expect(x6, e4[:, 100:300])
     assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_slice_same_src_same_op():
+    t = Tester(use_pass_opt=True)
+    a0 = np.random.normal(0, 1, [4, 600]).astype(np.float32)
+    x0 = t.add(t.load(a0), 0.1)
+    s0 = t.slice(x0, [0, 0], [4, 300])
+    s1 = t.slice(x0, [0, 150], [4, 300])
+    z = t.add(s0, s1)
+    e = a0 + 0.1
+    t.store_expect(z, e[:, 0:300] + e[:, 150:450])
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_slice_deep_diamond():
+    t = Tester(use_pass_opt=True)
+    a0 = np.random.normal(0, 1, [4, 600]).astype(np.float32)
+    x0 = t.add(t.load(a0), 0.1)
+    s0 = t.slice(x0, [0, 0], [4, 300])
+    s1 = t.slice(x0, [0, 150], [4, 300])
+    p0 = t.mul(s0, 0.5)
+    p1 = t.add(s1, 0.2)
+    z = t.add(p0, p1)
+    e = a0 + 0.1
+    t.store_expect(z, e[:, 0:300] * 0.5 + (e[:, 150:450] + 0.2))
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_split_slice_same_src_concat():
+    t = Tester(use_pass_opt=True)
+    a0 = np.random.normal(0, 1, [4, 600]).astype(np.float32)
+    x0 = t.add(t.load(a0), 0.1)
+    s0a, s0b = t.split(x0, 1, 300, 2)
+    sl1 = t.slice(x0, [0, 150], [4, 300])
+    c = t.concat([s0a, sl1], 1)
+    e = a0 + 0.1
+    t.store_expect(t.exp(c), np.exp(np.concatenate([e[:, 0:300], e[:, 150:450]], axis=1)))
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_diamond_nested_right():
+    t = Tester(use_pass_opt=True)
+    a0 = np.arange(240, dtype=np.float32).reshape(4, 60)
+    x = t.add(t.load(a0), 0.0)
+    s1 = t.slice(x, [0, 0], [4, 15])
+    s2 = t.slice(x, [0, 30], [4, 30])
+    s3 = t.slice(s2, [0, 0], [4, 15])
+    s4 = t.slice(s2, [0, 15], [4, 15])
+    d1 = t.add(s3, s4)
+    d2 = t.add(s1, d1)
+    e_d1 = a0[:, 30:45] + a0[:, 45:60]
+    t.store_expect(d2, a0[:, 0:15] + e_d1)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_diamond_nested_both():
+    t = Tester(use_pass_opt=True)
+    a0 = np.arange(240, dtype=np.float32).reshape(4, 60)
+    x = t.add(t.load(a0), 0.0)
+    s1 = t.slice(x, [0, 0], [4, 30])
+    s2 = t.slice(s1, [0, 0], [4, 15])
+    s3 = t.slice(s1, [0, 15], [4, 15])
+    d1 = t.add(s2, s3)
+    s4 = t.slice(x, [0, 30], [4, 30])
+    s5 = t.slice(s4, [0, 0], [4, 15])
+    s6 = t.slice(s4, [0, 15], [4, 15])
+    d2 = t.add(s5, s6)
+    d3 = t.add(d1, d2)
+    e_d1 = a0[:, 0:15] + a0[:, 15:30]
+    e_d2 = a0[:, 30:45] + a0[:, 45:60]
+    t.store_expect(d3, e_d1 + e_d2)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_slice_bcast_concat_direct_join():
+    t = Tester(use_pass_opt=True)
+    a0 = np.arange(240, dtype=np.float32).reshape(4, 60)
+    a1 = np.arange(240, dtype=np.float32).reshape(4, 60) + 1000
+    x = t.add(t.load(a0), 0.0)
+    s1 = t.slice(x, [0, 30], [4, 1])
+    c1 = t.concat([x, t.load(a1)], 1)
+    b1 = t.broadcast(s1, [4, 120])
+    z = t.add(b1, c1)
+    e_c1 = np.concatenate([a0, a1], axis=1)
+    e_s1 = np.broadcast_to(a0[0:4, 30:31], [4, 120])
+    t.store_expect(z, e_s1 + e_c1)
+    t.store_expect(c1, e_c1)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_diamond_view_load():
+    t = Tester(use_pass_opt=True)
+    a0 = np.arange(144, dtype=np.float32).reshape(4, 36)
+    vl = t.view_load([4, 36], [36, 1], a0)
+    x = t.add(vl, 0.0)
+    s0a, s0b, s0c = t.split(x, 1, 12, 3)
+    sl = t.slice(x, [0, 12], [4, 12])
+    z = t.add(s0b, sl)
+    t.store_expect(z, 2 * a0[:, 12:24])
+    assert t.run_check(True)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_diamond_join_view_load_non_contig():
+    t = Tester(use_pass_opt=True)
+    a0 = np.arange(64, dtype=np.float32).reshape(8, 8)
+    vl = t.view_load([8, 4], [8, 2], a0)
+    s0a, s0b = t.split(vl, 1, 2, 2)
+    sl = t.slice(vl, [0, 2], [8, 2])
+    z = t.add(s0b, sl)
+    t.store_expect(z, 2 * a0[:, [4, 6]])
+    assert t.run_check(True)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_sch_diamond_dyn():
+    t = Tester("vector:dyn", use_pass_opt=True)
+    x = t.load([-1, 120], "float32")
+    y = t.add(x, 0.0)
+    s0 = t.slice(y, [0, 0], [4, 60])
+    s1 = t.slice(y, [0, 60], [4, 60])
+    z = t.add(s0, s1)
+    out = t.store(z)
+    for nrows in [4, 8, 16]:
+        a = np.arange(nrows * 120, dtype=np.float32).reshape(nrows, 120)
+        t.input(x, a)
+        expect = a[:4, 0:60] + a[:4, 60:120]
+        t.set_output(out, np.zeros_like(expect))
+        t.run()
+        assert t.check(out, expect)

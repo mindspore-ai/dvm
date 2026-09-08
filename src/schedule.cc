@@ -563,8 +563,6 @@ uint64_t AddPengLoad(std::vector<NDObject *> &ios, const std::vector<NDObject *>
   return num;
 }
 
-bool IsViewOpObj(NDObject *op) { return op->obj_id_ == kSliceOp || op->obj_id_ == kSplitOp || op->obj_id_ == kConcat; }
-
 void ApplySliceSpace(SliceOp *slice) {
   for (auto &sd : slice->sdims_) {
     if (int i = sd.index; slice->nd_[i] == 1 && slice->lhs_->nd_[i] > 1) {
@@ -1048,7 +1046,7 @@ class GroupCollector {
  public:
   using LoadInfo = GeneralViewSchGen::LoadInfo;
   struct VisitInfo {
-    uint32_t view_mask;
+    uint64_t view_mask;
     uint32_t count{0};
     uint32_t load_count{0};
   };
@@ -1070,9 +1068,9 @@ class GroupCollector {
       auto top = stack_.back();
       stack_.pop_back();
       auto &visit = visited_[top->index_];
-      uint32_t top_mask = visit.view_mask;
-      if (IsViewOpObj(top)) {
-        uint32_t mask = 1u << GetViewIndex(top);
+      uint64_t top_mask = visit.view_mask;
+      if (top->IsViewOp()) {
+        uint64_t mask = 1ULL << GetViewIndex(top);
         top_mask |= mask;
         view_mask_ |= mask;
         if (top->obj_id_ == kConcat) {
@@ -1135,7 +1133,7 @@ class GroupCollector {
   std::vector<LoadInfo> loads_;
   std::vector<VisitInfo> visited_;
   uint32_t visit_cnt_{0};
-  uint32_t view_mask_;
+  uint64_t view_mask_;
 };
 }  // namespace
 
@@ -1147,15 +1145,15 @@ GeneralViewSchGen::GeneralViewSchGen(VectorKernel *kernel, const std::vector<NDO
   for (int i = 0; i < static_cast<int>(kernel->load_num_); ++i) {
     gc.SetIOIndex(static_ops[i], i);
   }
-  uint32_t concat_mask = 0;
+  uint64_t concat_mask = 0;
   for (auto *op : objects) {
-    if (IsViewOpObj(op)) {
+    if (op->IsViewOp()) {
       int view_idx = view_ops_.size();
       gc.SetViewIndex(op, view_idx);
       view_ops_.push_back(op);
       if (op->obj_id_ == kConcat) {
         concat_view_idx_ = view_idx;
-        concat_mask = 1u << view_idx;
+        concat_mask = 1ULL << view_idx;
       }
     }
   }
@@ -1255,7 +1253,7 @@ int64_t GeneralViewSchGen::CodeGen() {
       ios[i]->flags_ &= ~OBJ_FLAG_DEAD;
     }
   };
-  auto apply_view_space = [this](uint32_t view_mask) {
+  auto apply_view_space = [this](uint64_t view_mask) {
     for (size_t i = 0; i < view_ops_.size(); ++i) {
       if ((view_mask >> i) & 1) {
         ApplyViewOpSpace(view_ops_[i]);
@@ -1291,10 +1289,18 @@ int64_t GeneralViewSchGen::CodeGen() {
         uint64_t byte_offset = 0;
         uint32_t bcast_mask = load_bcast_mask_[g.load_infos[i].io_idx];
         auto view_mask = g.load_infos[i].view_mask;
+        uint32_t chain_mask = bcast_mask;
+        if ((view_mask >> concat_view_idx_) & 1) {
+          for (size_t j = 0; j < view_ops_.size(); ++j) {
+            if ((view_mask >> j) & 1 && j != static_cast<size_t>(concat_view_idx_)) {
+              chain_mask |= GetBCast(view_ops_[j]);
+            }
+          }
+        }
         for (size_t j = 0; j < view_ops_.size(); ++j) {
           if ((view_mask >> j) & 1) {
             if (j == static_cast<size_t>(concat_view_idx_)) {
-              if (!((bcast_mask >> cat_dim) & 1)) {
+              if (!((chain_mask >> cat_dim) & 1)) {
                 byte_offset += (*acc->stride_)[cat_dim] * slice_start;
               }
             } else {

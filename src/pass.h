@@ -73,6 +73,7 @@ class BasicBlock : public ObjectList {
 
   NDObject *Insert(NDObject *pos, NDObject *object);
   void Erase(NDObject *object);
+  void RemoveEdge(NDObject *pred, NDObject *user);
   NDObject *Move(NDObject *pos, NDObject *object);
   void UpdateInput(NDObject *obj, NDObject *old, NDObject *update);
 
@@ -217,6 +218,8 @@ void InsertRemovePad(BasicBlock &block);
 void VectorDoubleBuffer(BasicBlock &block);
 
 void DeadCodeEliminate(BasicBlock &bb);
+
+void EliminateDiamondView(BasicBlock &bb);
 
 using Pass = void (*)(BasicBlock &);
 

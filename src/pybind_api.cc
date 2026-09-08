@@ -628,6 +628,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
         {"VectorDoubleBuffer", {pass::VectorDoubleBuffer, false}},
         {"DeadCodeEliminate", {pass::DeadCodeEliminate, false}},
         {"EliminateReshape", {pass::EliminateReshape, true}},
+        {"EliminateDiamondView", {pass::EliminateDiamondView, false}},
         {"InsertRemovePad", {pass::InsertRemovePad, true}},
         {"VfFusion", {pass::VfFusion, false}}};
       for (auto &name : names_) {

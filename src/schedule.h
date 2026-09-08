@@ -143,7 +143,7 @@ class GeneralViewSchGen : public SchGenHelper {
  public:
   struct LoadInfo {
     int io_idx;
-    uint32_t view_mask;
+    uint64_t view_mask;
   };
   struct Group {
     std::vector<NDObject *> static_ops;

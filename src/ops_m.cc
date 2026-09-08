@@ -187,11 +187,30 @@ void CubeOp::InferTactics(Tactics &t) const {
     m_real *= lhs_->nd_[2];
     if (lhs_->nd_.size() > 3) m_real *= lhs_->nd_[3];
   }
-  int64_t k_stride = g_system.L2Size() / (m_real + n_real_) / 2;
-  if ((k_stride << 1) < k_real_ && k_real_ > MAX_SPLIT_K) {
-    t.enable_splitk = true;
-    t.k_stride = std::min(k_stride / ALIGN_256 * ALIGN_256, MAX_SPLIT_K);
-    t.k_stride = std::max(t.k_stride, MIN_SPLIT_K);
+  if (k_real_ > MAX_SPLIT_K) {
+    const uint64_t input_size = (m_real + n_real_) * k_real_ * ITEM_SIZE[lhs_->type_id_];
+    const uint64_t output_size = m_real * n_real_ * sizeof(float);
+    const uint64_t min_output_size = g_system.L0CSize() * g_system.CoreNum(CoreType::kAIC);
+
+    uint64_t input_limit = g_system.L2Size();
+    if (!trans_a_ && trans_b_) {
+      input_limit = g_system.L2Size() * 3 / 2;
+    }
+    uint64_t split_num = 1;
+    if (output_size >= min_output_size && input_size > input_limit) {
+      uint64_t input_budget;
+      if (output_size < g_system.L2Size() / 2)
+        input_budget = (g_system.L2Size() - output_size) * 0.8;
+      else {
+        input_budget = g_system.L2Size() / 2;
+      }
+      split_num = CeilDiv(input_size, input_budget);
+    }
+    if (split_num > 1) {
+      const uint64_t stride = RoundUp<uint64_t>(CeilDiv<uint64_t>(k_real_, split_num), ALIGN_256);
+      t.k_stride = std::clamp<uint64_t>(stride, MIN_SPLIT_K, MAX_SPLIT_K);
+      t.enable_splitk = true;
+    }
   }
 
   if (bias_ && bias_->type_id_ == kBFloat16 && g_system.Arch() == kAiCore_C220) {

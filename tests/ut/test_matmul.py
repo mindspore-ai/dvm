@@ -58,7 +58,7 @@ def test_matmul(trans):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
-@pytest.mark.parametrize('m, n, k', [[300, 5000, 40000]])
+@pytest.mark.parametrize('m, n, k', [[300, 5000, 40000], [1024, 4096, 32768], [4, 4096, 32768]])
 @pytest.mark.parametrize('trans', [[False, True], [True, True], [False, False], [True, False]])
 def test_matmul_split_k(m, n, k, trans):
     shape_a = [k, m] if trans[0] else [m, k]

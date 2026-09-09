@@ -982,6 +982,12 @@ void DumpRefHelper::DumpGraph(const std::string &indent, const std::string &name
 void VKernel::Append(NDObject *obj) {}
 uint64_t VKernel::CodeGen() { return 0; }
 
+void VKernel::Inspect(Inspector &sp) {
+  if (!g_system.IsInitialized() && code_.block_dim_) {
+    sp.Warn("LaunchNone") << "DVM is not fully initialized.\n";
+  }
+}
+
 std::string &VKernel::DisAssemble() {
   std::ostringstream oss;
   code_.DisAssemble(oss);
@@ -1869,6 +1875,13 @@ void VKernelS::Dump(std::ostringstream &oss, const std::string &indent, bool rgr
     return;
   }
   VectorKernel::Dump(oss, indent, rgraph);
+}
+
+void VKernelS::Inspect(Inspector &sp) {
+  VectorKernel::Inspect(sp);
+  for (auto op : build_ops_) {
+    op->Inspect(sp);
+  }
 }
 
 void VKernelS::ManualTiling() {

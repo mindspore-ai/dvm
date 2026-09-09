@@ -391,6 +391,7 @@ struct ObjectMeta {
   void (*shape_prop[kObjectBulk])(NDObject *, int64_t &);
 };
 
+class Inspector;
 class VectorKernel;
 
 // dynamic flags
@@ -450,6 +451,7 @@ class __export__ NDObject {
   virtual uint64_t Emit(VectorKernel &k) = 0;
   virtual NDObject *Clone(CloneHelper &h);
   virtual void Dump(bool verbose, std::ostringstream &oss);
+  virtual void Inspect(Inspector &sp);
 
   void *operator new(size_t size) { return mem_pool_.Get(size); }
   void operator delete(void *ptr) { std::free(ptr); }
@@ -819,6 +821,7 @@ class UnaryOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  void Inspect(Inspector &sp) override;
   int GetOpType() const { return op_type_; }
 
  protected:
@@ -921,6 +924,7 @@ class BinaryScalarOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  void Inspect(Inspector &sp) override;
   int GetOpType() const { return op_type_; }
   scode_t GetScalar() const { return scalar_; }
   virtual bool IsScalarRef() const { return false; }
@@ -976,6 +980,7 @@ class BinaryOp : public NDObject {
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  void Inspect(Inspector &sp) override;
   int GetOpType() const { return op_type_; }
 
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);

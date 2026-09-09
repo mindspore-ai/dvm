@@ -76,6 +76,7 @@ class MixKernelBase : public CubeKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
+  void Inspect(Inspector &sp) override;
 
   void NormalizePost() {
     if (post_fusion_ && !post_fusion_->NormBuild()) {

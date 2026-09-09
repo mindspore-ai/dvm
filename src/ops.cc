@@ -617,6 +617,8 @@ NDObject *NDObject::Clone(CloneHelper &h) {
 
 void NDObject::Dump(bool verbose, std::ostringstream &oss) { oss << "NDObject"; }
 
+void NDObject::Inspect(Inspector &sp) {}
+
 void NDObject::TileCollectSimt(NDObject *op, TileInfo &info) { info.flags |= ObjectMeta::kSimt; }
 
 bool NDAccess::IsSupportView() const {
@@ -2129,6 +2131,12 @@ NDObject *UnaryOp::Clone(CloneHelper &h) { return new UnaryOp(op_type_, h.GetClo
 
 void UnaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << unary_id_list[op_type_].name; }
 
+void UnaryOp::Inspect(Inspector &sp) {
+  if (auto id = unary_id_list[op_type_].ids[type_id_]; id == V_NONE) {
+    sp.Error("NoInsn") << "unary map to none insn: op=" << op_type_ << ", dtype=" << type_id_ << ".\n";
+  }
+}
+
 uint64_t RemovePadOp::Emit(VectorKernel &k) {
   const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD,
                                                       V_REMOVEPAD};
@@ -2256,6 +2264,12 @@ void BinaryScalarOp::Dump(bool verbose, std::ostringstream &oss) {
     oss << "<";
     DumpScalarCode(oss, scalar_, type_id_);
     oss << ">";
+  }
+}
+
+void BinaryScalarOp::Inspect(Inspector &sp) {
+  if (auto id = binarys_id_list[op_type_].ids[type_id_]; id == V_NONE) {
+    sp.Error("NoInsn") << "binarys map to none insn: op=" << op_type_ << ", dtype=" << type_id_ << ".\n";
   }
 }
 
@@ -2393,6 +2407,12 @@ NDObject *BinaryOp::Clone(CloneHelper &h) {
 }
 
 void BinaryOp::Dump(bool verbose, std::ostringstream &oss) { oss << binary_id_list[op_type_].name; }
+
+void BinaryOp::Inspect(Inspector &sp) {
+  if (auto id = binary_id_list[op_type_].ids[type_id_]; id == V_NONE) {
+    sp.Error("NoInsn") << "binary map to none insn: op=" << op_type_ << ", dtype=" << type_id_ << ".\n";
+  }
+}
 
 static void BinaryShapeProp(const IntArrayRef *lhs, const IntArrayRef *rhs, ShapeWithRef &shape,
                             int64_t &sym_dim_next) {

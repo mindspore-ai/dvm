@@ -1753,6 +1753,11 @@ const char *Kernel::Das() const {
   return das.c_str();
 }
 
+const char *Kernel::Inspect() const {
+  std::string &sp = kernel_->Inspect();
+  return sp.c_str();
+}
+
 Config &Config::Instance() { return g_system; }
 
 bool Config::IsInitialized() const { return g_system.IsInitialized(); }

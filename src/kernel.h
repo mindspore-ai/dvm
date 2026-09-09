@@ -29,6 +29,19 @@ namespace dvm {
 class MsprofHelper;
 class IdleCleanWrap;
 
+class Inspector {
+ public:
+  std::ostringstream &Warn(const char *type) {
+    oss_ << "[W][" << type << "] ";
+    return oss_;
+  }
+  std::ostringstream &Error(const char *type) {
+    oss_ << "[E][" << type << "] ";
+    return oss_;
+  }
+  std::ostringstream oss_;
+};
+
 #define K_FLAG_BEGIN ((uint32_t)KernelFlag::kSpeculate)
 #define K_FLAG_SIMT (K_FLAG_BEGIN << 1)
 #define K_FLAG_DIS_DUP_TILING (K_FLAG_BEGIN << 2)
@@ -44,11 +57,18 @@ class VKernel {
   virtual int Launch(void *stream);
   virtual uint64_t CodeGen();
   virtual void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) = 0;
+  virtual void Inspect(Inspector &sp);
   virtual void Clone(VKernel *base, CloneHelper &helper);
   std::string &DumpGraph(bool rgraph = false) {
     std::ostringstream oss;
     Dump(oss, "", rgraph);
     dump_str_ = oss.str();
+    return dump_str_;
+  }
+  std::string &Inspect() {
+    Inspector sp;
+    Inspect(sp);
+    dump_str_ = sp.oss_.str();
     return dump_str_;
   }
   virtual std::string &DisAssemble();
@@ -320,6 +340,7 @@ class VKernelS : public VectorKernel {
   uint64_t CodeGen() override;
   void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
+  void Inspect(Inspector &sp) override;
 
   bool NormBuild();
 

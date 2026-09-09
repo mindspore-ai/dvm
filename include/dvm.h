@@ -633,6 +633,12 @@ class Kernel {
   const char *Das() const;
 
   /**
+   * @brief Inspect current kernel and do validation check.
+   * @return result of inspection report.
+   */
+  const char *Inspect() const;
+
+  /**
    * @brief Get implement kernel.
    */
   VKernel *GetImpl() const { return kernel_; }

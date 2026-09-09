@@ -243,6 +243,13 @@ void MixKernelBase::Clone(VKernel *base, CloneHelper &helper) {
   }
 }
 
+void MixKernelBase::Inspect(Inspector &sp) {
+  CubeKernel::Inspect(sp);
+  if (post_fusion_) {
+    post_fusion_->Inspect(sp);
+  }
+}
+
 MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_limit, size_t code_reserve) {
   ASSERT(post_fusion_ != nullptr);
   if (cube_op_->batch_fold_) {

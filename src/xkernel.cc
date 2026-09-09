@@ -703,6 +703,7 @@ uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
   if (tactics.enable_splitk) {
     size_t k_stride = tactics.k_stride;
     size_t split_num = CeilDiv(static_cast<size_t>(cube_op_->k_real_), k_stride) - 1;
+    const size_t SplitKOpNum = dom->obj_id_ == kGmmOp ? 5 : 4;
     size_t k_mng_begin = mng_.size();
     size_t offset_a = 0;
     size_t offset_b = 0;
@@ -726,6 +727,11 @@ uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
       if (dom->lhs_->CheckFlag(OBJ_FLAG_LOAD_NZ)) lhs->SetFlag(OBJ_FLAG_LOAD_NZ);
       if (dom->rhs_->CheckFlag(OBJ_FLAG_LOAD_NZ)) rhs->SetFlag(OBJ_FLAG_LOAD_NZ);
       auto op = s->BuildCube(dom, lhs, rhs, nullptr, mng_);
+      if (op->obj_id_ == kGmmOp) {
+        auto mm = static_cast<GmmOp *>(op);
+        auto groups = mm->group_list_;
+        mm->group_list_ = mng_.emplace_back(new NDLoad(nullptr, groups->shape_ref_, groups->type_id_));
+      }
       op->SetRealShape(cube_op_->m_real_, cube_op_->n_real_, k_stride, offset_a, offset_b);
       op->SetOutFp32(i > 0);
       op->output_->type_id_ = DataType::kFloat32;
@@ -740,13 +746,21 @@ uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
     dom->output_->type_id_ = DataType::kFloat32;
     auto load = mng_.emplace_back(new NDLoad(nullptr, dom->shape_ref_, kFloat32));
     auto cast = mng_.emplace_back(new CastOp(load, dom->lhs_->type_id_));
-    main_s->mix_k_.SetSload(load);
-    main_s->mix_k_.Append(load);
-    main_s->mix_k_.Append(cast);
+    MixStageV *post_s = nullptr;
+    VKernel *post_kernel = &main_s->mix_k_;
+    if (dom->obj_id_ == kGmmOp) {
+      // Grouped M tiles do not use the ordinary MatMul C/V synchronization protocol.
+      post_s = new MixStageV(flags_);
+      post_kernel = &post_s->vec_k_;
+    } else {
+      main_s->mix_k_.SetSload(load);
+    }
+    post_kernel->Append(load);
+    post_kernel->Append(cast);
     NDAccess *real_out = nullptr;
     if (!cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
       real_out = new NDStore(cast);
-      main_s->mix_k_.Append(real_out);
+      post_kernel->Append(real_out);
       mng_.emplace_back(real_out);
     }
     if (post_fusion_) {
@@ -759,14 +773,24 @@ uint64_t MixKernel::StageCodeGen(const CubeOp::Tactics &tactics) {
       main_s->mix_k_.orig_sload_ = sload_;
     }
     stage_kernel_->AppendStage(main_s);
+    if (post_s) {
+      stage_kernel_->AppendStage(post_s);
+    }
     auto ws_size = stage_kernel_->CodeGen();
     auto &code = stage_kernel_->code_;
     code.BindWorkspace(dom->output_->addr_, ws_size);
+    if (post_s) {
+      code.BindWorkspace(static_cast<NDAccess *>(load)->addr_, ws_size);
+    }
     for (size_t i = 0; i < split_num; ++i) {
       auto mm = static_cast<CubeOp *>(mng_[k_mng_begin]);
-      k_mng_begin += 4;
+      k_mng_begin += SplitKOpNum;
       code.BindOp(static_cast<NDAccess *>(mm->lhs_)->addr_, static_cast<NDAccess *>(dom->lhs_)->addr_);
       code.BindOp(static_cast<NDAccess *>(mm->rhs_)->addr_, static_cast<NDAccess *>(dom->rhs_)->addr_);
+      if (mm->obj_id_ == kGmmOp) {
+        code.BindOp(static_cast<NDAccess *>(static_cast<GmmOp *>(mm)->group_list_)->addr_,
+                    static_cast<NDAccess *>(static_cast<GmmOp *>(dom)->group_list_)->addr_);
+      }
       code.BindWorkspace(mm->output_->addr_, ws_size);
     }
     if (real_out) {

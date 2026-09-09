@@ -536,6 +536,7 @@ class __export__ NDObject {
   };
   static MemPool<512, 8192> mem_pool_;
   static const ObjectMeta meta_;
+  static void TileCollectSimt(NDObject *op, TileInfo &info);
 };
 
 class NDAccess : public NDObject {
@@ -605,25 +606,17 @@ class NDLoad : public NDAccess {
   uint64_t EmitView(VectorKernel &k);
 };
 
-class NDSimtLoad : public NDLoad {
- public:
-  NDSimtLoad(void *src, IntArrayRef *shape_ref, DataType type_id, ObjectType obj_id)
-      : NDLoad(src, shape_ref, type_id) {
-    obj_id_ = obj_id;
-  }
-  static void TileCollect(NDObject *op, TileInfo &info) { info.flags |= ObjectMeta::kSimt; }
-};
-
-class NDGatherLoad : public NDSimtLoad {
+class NDGatherLoad : public NDLoad {
  public:
   NDGatherLoad(void *src, IntArrayRef *src_shape_ref, NDAccess *index, int axis, DataType type_id,
                vGatherLoad::GatherMode gather_mode)
-      : NDSimtLoad(src, &shape_, type_id, ObjectType::kGatherLoad),
+      : NDLoad(src, &shape_, type_id),
         src_shape_ref_(src_shape_ref),
         index_(index),
         axis_(axis),
-        gather_mode_(gather_mode) {}
-
+        gather_mode_(gather_mode) {
+    obj_id_ = ObjectType::kGatherLoad;
+  }
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;

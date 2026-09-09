@@ -639,6 +639,9 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
   for (int i = 0; i < slice_cnt; ++i) {
     auto &s = slice_ios_[i];
     TravelInput(stack, concat->slices_[i].input, [&s, i](NDObject *in) {
+      if (in->reuse_dep_ == i) {
+        return false;
+      }
       if (in->IsLoad()) {
         s.ios.push_back(in);
         s.load_num++;
@@ -657,7 +660,10 @@ ConcatSchGen::ConcatSchGen(VectorKernel *kernel, ConcatOp *concat, const std::ve
     int joined = kInvalidDomain;
     TravelInput(stack, store, [&joined, &pend_load, kInvalidDomain](NDObject *in) -> bool {
       if (in->IsLoad()) {
-        pend_load.push_back(in);
+        auto it = std::find_if(pend_load.begin(), pend_load.end(), [in](NDObject *x) { return x == in; });
+        if (it == pend_load.end()) {
+          pend_load.push_back(in);
+        }
       }
       if (auto dom = in->reuse_dep_; dom != kInvalidDomain) {
         if (joined == kInvalidDomain) {
@@ -775,6 +781,9 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
   std::vector<NDObject *> stack;
   std::vector<NDObject *> pend_load;
   TravelInput(stack, split->lhs_, [&pend_load, kSplitDomain](NDObject *in) {
+    if (in->reuse_dep_ == kSplitDomain) {
+      return false;
+    }
     in->reuse_dep_ = kSplitDomain;
     if (in->IsLoad()) {
       pend_load.push_back(in);
@@ -794,7 +803,10 @@ SplitSchGen::SplitSchGen(VectorKernel *kernel, SplitOpM *split, const std::vecto
     TravelInput(stack, store, [&](NDObject *in) -> bool {
       auto dom = in->reuse_dep_;
       if (in->IsLoad() && dom != kSplitDomain) {
-        pend_load.push_back(in);
+        auto it = std::find_if(pend_load.begin(), pend_load.end(), [in](NDObject *x) { return x == in; });
+        if (it == pend_load.end()) {
+          pend_load.push_back(in);
+        }
       }
       if (dom != kInvalidDomain && dom != kSliceDomain) {
         if (joined == kInvalidDomain) {

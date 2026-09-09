@@ -478,7 +478,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // LoadDummy
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // MultiLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                         // GlobalAccess
-    {kGenLoad, F_IP, nullptr, nullptr, NDSimtLoad::TileCollect},                                         // GatherLoad
+    {kGenLoad, F_IP, nullptr, nullptr, NDObject::TileCollectSimt},                                       // GatherLoad
     {kGenLoad, 0, NDViewLoad::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},                    // ViewLoad
     {kGenLoad, F_IP, nullptr, NDAccess::FoldProp, NDAccess::TileCollect},                                // Load
     {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},        // ViewStore
@@ -616,6 +616,8 @@ NDObject *NDObject::Clone(CloneHelper &h) {
 }
 
 void NDObject::Dump(bool verbose, std::ostringstream &oss) { oss << "NDObject"; }
+
+void NDObject::TileCollectSimt(NDObject *op, TileInfo &info) { info.flags |= ObjectMeta::kSimt; }
 
 bool NDAccess::IsSupportView() const {
   if (obj_id_ == kViewLoad || obj_id_ == kViewStore || obj_id_ == kLoadDummy || obj_id_ == kLoad) {

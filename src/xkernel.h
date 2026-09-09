@@ -462,7 +462,7 @@ class SplitEagerLazy : public VKernelE {
 
 class SplitEagerLazyW : public SplitEagerLazy {
  public:
-  SplitEagerLazyW() : SplitEagerLazy() { kernel_init_func_ = &RelocKernel; }
+  SplitEagerLazyW() : SplitEagerLazy() {}
   void CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAllocator *ws_alloc) override;
   static void RelocKernel(SplitEagerLazy *self, EagerVector *kernel, NDObject *dom);
 

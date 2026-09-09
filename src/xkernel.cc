@@ -2497,7 +2497,7 @@ class SlotWsAllocator : public WsAllocator {
   SlotWsAllocator(SplitContext::SlotWorkspace &ws) : ws_(ws) {}
   void *Alloc(uint64_t size) override {
     if (size > 0) {
-      ws_.emplace_back(size, nullptr);
+      ws_.emplace_back(RoundUp(size, 512ul), nullptr);
     }
     return reinterpret_cast<void *>(ws_.size());
   }
@@ -2701,10 +2701,9 @@ void SplitGraphD::Clone(VKernel *base, CloneHelper &helper) {
 }
 
 namespace {
-static size_t CombineAssign(SplitContext::SlotWorkspace &ws) {
+static size_t CombineAssign(const SplitContext::SlotWorkspace &ws) {
   size_t total_size = 0;
   for (auto &slot : ws) {
-    slot.first = RoundUp(slot.first, 512ul);
     total_size += slot.first;
   }
   return total_size;
@@ -3017,6 +3016,7 @@ void *SplitEagerLazyW::_SlotWs::Alloc(uint64_t size) {
   if (size == 0) {
     return nullptr;
   }
+  size = RoundUp(size, 512ul);
   slots_.emplace_back(reinterpret_cast<void *>(size));
   acc_size_ += size;
   return reinterpret_cast<void *>(slots_.size());
@@ -3026,11 +3026,15 @@ void SplitEagerLazyW::CodeGenR(const RelocEntry *relocs, size_t reloc_size, WsAl
   slot_ws_.slots_.clear();
   slot_ws_.acc_size_ = 0;
   SplitEagerLazy::CodeGenR(relocs, reloc_size, &slot_ws_);
-  uint8_t *mem = reinterpret_cast<uint8_t *>(ws_alloc->Alloc(slot_ws_.acc_size_));
-  for (size_t i = 0; i < slot_ws_.slots_.size(); ++i) {
-    auto size = reinterpret_cast<uint64_t>(slot_ws_.slots_[i]);
-    slot_ws_.slots_[i] = mem;
-    mem += size;
+  kernel_init_func_ = nullptr;
+  if (slot_ws_.acc_size_) {
+    uint8_t *mem = reinterpret_cast<uint8_t *>(ws_alloc->Alloc(slot_ws_.acc_size_));
+    for (size_t i = 0; i < slot_ws_.slots_.size(); ++i) {
+      auto size = reinterpret_cast<uint64_t>(slot_ws_.slots_[i]);
+      slot_ws_.slots_[i] = mem;
+      mem += size;
+    }
+    kernel_init_func_ = &RelocKernel;
   }
   extern_code_ = slot_ws_.Reloc(extern_code_);
   ws_mem_ = slot_ws_.Reloc(ws_mem_);

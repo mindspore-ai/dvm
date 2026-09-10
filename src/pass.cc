@@ -501,10 +501,8 @@ void DeadCodeEliminate(BasicBlock &bb) {
   for (auto obj = bb.ReverseBegin(); obj != bb.ReverseEnd(); obj = bb.Prev(obj)) {
     if (obj->reuse_dep_) {
       obj->ForInput([](NDObject *in) { in->reuse_dep_ = 1; });
-    }
-    if (obj->GetObjectType() == kSplitOp && static_cast<SplitOp *>(obj)->slice_idx_ == 0) {
+    } else if (obj->GetObjectType() == kSplitOp && static_cast<SplitOp *>(obj)->slice_idx_ == 0) {
       auto main = static_cast<SplitOpM *>(obj);
-      if (main->reuse_dep_) continue;
       for (auto sib : main->siblings_) {
         if (sib->reuse_dep_) {
           main->reuse_dep_ = 1;

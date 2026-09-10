@@ -1086,6 +1086,7 @@ class GroupCollector {
         top_mask |= mask;
         view_mask_ |= mask;
         if (top->obj_id_ == kConcat) {
+          EXCEPTION_IF((top_mask & ~mask) != 0, "split/slice is not allowed directly or indirectly after concat");
           continue;
         }
       } else if (top->IsLoad()) {
@@ -1164,6 +1165,7 @@ GeneralViewSchGen::GeneralViewSchGen(VectorKernel *kernel, const std::vector<NDO
       gc.SetViewIndex(op, view_idx);
       view_ops_.push_back(op);
       if (op->obj_id_ == kConcat) {
+        EXCEPTION_IF(concat_mask != 0, "at most one concat op in the same kernel");
         concat_view_idx_ = view_idx;
         concat_mask = 1ULL << view_idx;
       }

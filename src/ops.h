@@ -1058,6 +1058,11 @@ class SelectOp : public FlexOp {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 
+  // GraphKernel re-runs shape propagation while partitioning a symbolic
+  // graph. Select has three broadcastable inputs, so its output shape must
+  // be propagated explicitly just like BinaryOp/CompareOp.
+  static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
+
  private:
   XhsN<1> xhs_data_;
   std::vector<NDObject *> stuff_ops_[3];

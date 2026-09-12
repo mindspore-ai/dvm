@@ -66,6 +66,20 @@ def test_split_static_reshape():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_static_select_broadcast():
+    t = Tester("split:priv1")
+    cond_data = np.random.choice([True, False], size=(2, 1, 4)).astype(bool)
+    lhs_data = np.random.normal(0, 0.1, (1, 3, 4)).astype(np.float32)
+    rhs_data = np.random.normal(0, 0.1, (2, 3, 1)).astype(np.float32)
+    cond = t.load(cond_data)
+    lhs = t.load(lhs_data)
+    rhs = t.load(rhs_data)
+    out = t.select(cond, lhs, rhs)
+    t.store_expect(out, np.where(cond_data, lhs_data, rhs_data))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_split_static_matmul_reduce_shared_rhs():
     t = Tester("split:priv1")
     k, n, m = 1024, 1280, 640

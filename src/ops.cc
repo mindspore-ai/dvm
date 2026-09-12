@@ -501,7 +501,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},  // BroadcastS
     {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::TileCollect,
      ReduceOp::ShapeProp},                                                                   // Reduce
-    {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr},                       // Select
+    {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, SelectOp::ShapeProp},   // Select
     {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                            // ElemAny
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                     // RemovePad
     {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, PowerOp::ShapeProp},                  // Power
@@ -2559,6 +2559,36 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
     if (xhs_bc) insert_broadcast(2);
   }
   nd_ = lhs_->nd_;
+}
+
+void SelectOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
+  auto *select = static_cast<SelectOp *>(op);
+  const IntArrayRef *inputs[] = {
+      select->xhs_->data[0]->shape_ref_,
+      select->lhs_->shape_ref_,
+      select->rhs_->shape_ref_,
+  };
+  size_t max_size = 0;
+  for (auto input : inputs) {
+    max_size = std::max(max_size, input->size);
+  }
+  select->shape_.Resize(max_size);
+  for (size_t i = 0; i < max_size; ++i) {
+    int64_t result = 1;
+    for (auto input : inputs) {
+      size_t offset = max_size - input->size;
+      int64_t dim = i < offset ? 1 : input->data[i - offset];
+      if (dim == 1 || result == dim) {
+        continue;
+      }
+      if (result == 1) {
+        result = dim;
+      } else {
+        result = sym_dim_next--;
+      }
+    }
+    select->shape_[i] = result;
+  }
 }
 
 SelectOp::~SelectOp() {

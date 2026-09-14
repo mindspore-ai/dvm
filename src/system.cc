@@ -329,6 +329,7 @@ const SocConfig soc_configs[] = {
   {"Ascend910_9382", kAscend910_9382, kAiCore_C220, 24, 192 * MB, 5.0f},
   {"Ascend910_9372", kAscend910_9372, kAiCore_C220, 20, 192 * MB, 5.0f},
   {"Ascend910_9362", kAscend910_9362, kAiCore_C220, 20, 168 * MB, 5.0f},
+  {"Ascend910_9363", kAscend910_9363, kAiCore_C220, 20, 168 * MB, 5.0f},
   {"Ascend950PR_9579", kAscend950PR_9579, kAiCore_C310, 28, 128 * MB, 3.2258065f},
   {"Ascend950PR_9589", kAscend950PR_9589, kAiCore_C310, 32, 128 * MB, 3.2258065f},
   {"Ascend950PR_9599", kAscend950PR_9599, kAiCore_C310, 36, 128 * MB, 3.2258065f},

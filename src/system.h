@@ -90,6 +90,7 @@ enum SocType {
   kAscend910_9382,
   kAscend910_9372,
   kAscend910_9362,
+  kAscend910_9363,
   // C310(PR)
   kAscend950PR_9579,
   kAscend950PR_9589,

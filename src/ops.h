@@ -652,6 +652,7 @@ class NDViewLoad : public NDLoad {
   DimArray src_stride_;
 };
 
+class ReduceOp;
 class NDStore : public NDAccess {
  public:
   NDStore(NDObject *src) : NDAccess(nullptr, src, src->type_id_, ObjectType::kStore) { shape_ref_ = src->shape_ref_; }
@@ -665,7 +666,8 @@ class NDStore : public NDAccess {
   void Dump(bool verbose, std::ostringstream &oss) override;
 
  protected:
-  uint64_t EmitView(VectorKernel &k);
+  uint64_t EmitView(VectorKernel &k, uint64_t *insn);
+  uint64_t EmitAtomicView(VectorKernel &k, ReduceOp *red);
 };
 
 class NDViewStore : public NDStore {
@@ -1323,6 +1325,7 @@ class ReduceOp : public _ReduceOp {
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
   bool KeepDims() const { return keepdims_; }
+  const DimArray &RoundTile() const { return round_tile_; }
 
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 

@@ -57,6 +57,7 @@ enum vAccInsnID {
   V_PEER_LOAD_MIX, // [c220]
   V_STORE,
   V_STORE_ATOMIC,
+  V_STORE_ATOMIC_WRAP,
   V_STORE_COND,
   V_STORE_VIEW,
   V_STORE_VIEW_X,
@@ -1745,10 +1746,10 @@ struct vStoreAtomic {
   uint64_t round_rank;
   uint64_t cum_flag;
   uint64_t red_op;
-  uint64_t atmoic_type;
+  uint64_t atomic_type;
   // pc[0]: tile_stride(18) << 13 | c_xn(13)
   // pc[1]: round_rank(4) << 60 | cum_flag(2) << 58 | pad_size(8) << 50 | iter_size(18) << 32 | iter_tail(16) << 16 |
-  // atmoic_type(2) << 14| red_op(2) << 12| iter_num(12)
+  // atomic_type(2) << 14| red_op(2) << 12| iter_num(12)
   // pc[2]: to
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomic &op) {
     op.tile_stride = vGetBitRange(head, V_M_HEAD_EXT_OFFSET + V_C_X_BITS, 18);
@@ -1759,7 +1760,7 @@ struct vStoreAtomic {
     op.pad_size = (data >> 50) & 0xfful;
     op.iter_size = (data >> 32) & 0x3fffful;
     op.iter_tail = (data >> 16) & 0xfffful;
-    op.atmoic_type = (data >> 14) & 0x3ul;
+    op.atomic_type = (data >> 14) & 0x3ul;
     op.red_op = (data >> 12) & 0x3ul;
     op.iter_num = data & 0xffful;
     op.to = pc[2];
@@ -1770,12 +1771,40 @@ struct vStoreAtomic {
     uint64_t ext = op.tile_stride << 13 | vCompactX(op.xn);
     pc[0] = vMakeAccHead(id, ext, size);
     pc[1] = op.round_rank << 60 | op.cum_flag << 58 | op.pad_size << 50 | op.iter_size << 32 | op.iter_tail << 16 |
-            op.atmoic_type << 14 | op.red_op << 12 | op.iter_num;
+            op.atomic_type << 14 | op.red_op << 12 | op.iter_num;
     pc[2] = op.to;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vStoreAtomic::ROUND_OFFSET + i] = rounds[i];
     }
     return size;
+  }
+};
+
+struct vStoreAtomicW {
+  enum { ROUND_OFFSET = 1 };
+  uint64_t round_rank;
+  uint64_t red_op;
+  uint64_t atomic_type;
+  // pc[0]: atomic_type(2) << 4 | red_op(2) << 2 | round_rank(2)
+  // pc[1 ~ (round_rank+1)/2]: round
+  // pc[(round_rank+1)/2]: body
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vStoreAtomicW &op) {
+    op.round_rank = (head >> V_M_HEAD_EXT_OFFSET) & 0x3ul;
+    op.red_op = (head >> (V_M_HEAD_EXT_OFFSET + 2)) & 0x3ul;
+    op.atomic_type = (head >> (V_M_HEAD_EXT_OFFSET + 4)) & 0x3ul;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vStoreAtomicW &op, const uint64_t *rounds) {
+    uint64_t round_size = (op.round_rank + 1) / 2;
+    uint64_t ext = op.atomic_type << 4 | op.red_op << 2 | op.round_rank;
+    pc[0] = vMakeAccHead(id, ext, 0);
+    for (uint64_t i = 0; i < round_size; ++i) {
+      pc[vStoreAtomicW::ROUND_OFFSET + i] = rounds[i];
+    }
+    return vStoreAtomicW::ROUND_OFFSET + round_size;
+  }
+  __aicore_inline__ void EncodeSize(bcodeptr_t pc, uint64_t size) { pc[0] |= size << V_M_HEAD_SIZE_OFFSET; }
+  __aicore_inline__ bcodeptr_t GetBody(bcodeptr_t pc, const vStoreAtomicW &op) {
+    return pc + (vStoreAtomicW::ROUND_OFFSET + (op.round_rank + 1) / 2);
   }
 };
 

@@ -29,6 +29,8 @@ std::unordered_map<std::string, vCompareType> cmp_insn_id = {
   {"LessEqual", V_CMP_LE}, {"Equal", V_CMP_EQ}, {"NotEqual", V_CMP_NE},
 };
 
+size_t DumpInsn(uint64_t *insn, std::ostringstream &oss, uint64_t &pipe);
+
 template <typename T>
 void DumpVal(const std::string &name, T val, std::ostringstream &oss) {
   oss << name << "(" << val << ")";
@@ -274,6 +276,19 @@ void DumpStoreAtomic(const DumpInfo &dump_info, std::ostringstream &oss) {
     oss << ", ";
     DumpRounds(op.round_rank, dump_info.insn + vStoreAtomic::ROUND_OFFSET, oss);
   }
+}
+
+void DumpStoreAtomicW(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vStoreAtomicW op;
+  vStoreAtomicW::Decode(dump_info.insn, *dump_info.insn, op);
+  oss << "@atomic(red_type=" << op.red_op << ", dtype=" << op.atomic_type;
+  if (op.round_rank > 0) {
+    oss << ", cum=";
+    DumpRounds(op.round_rank, dump_info.insn + vStoreAtomicW::ROUND_OFFSET, oss);
+  }
+  oss << ")\n     ";
+  uint64_t pipe;
+  DumpInsn(vStoreAtomicW::GetBody(dump_info.insn, op), oss, pipe);
 }
 
 void DumpLoadDummy(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "dummy_load.u8.0"; }
@@ -870,6 +885,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_PEER_LOAD_MIX, &DumpPeerDMA<name_peer_load_mix>},
   {V_STORE, &DumpStore},
   {V_STORE_ATOMIC, &DumpStoreAtomic},
+  {V_STORE_ATOMIC_WRAP, &DumpStoreAtomicW},
   {V_STORE_COND, &DumpStoreCond},
   {V_SSTORE, &DumpSStore},
   {V_STORE_AG, &DumpStoreAG},

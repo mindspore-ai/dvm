@@ -143,6 +143,17 @@ inline ReduceOp *GetStoreReduceOp(NDObject *lhs) {
   return nullptr;
 }
 
+inline uint64_t GetAtomicStoreType(DataType type_id) {
+  if (type_id == kFloat32) {
+    return V_ATOMIC_FP32;
+  } else if (type_id == kBFloat16) {
+    return V_ATOMIC_BF16;
+  } else {
+    ASSERT(type_id == kFloat16);
+    return V_ATOMIC_FP16;
+  }
+}
+
 NDObject *InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject *> &stuff_ops,
                                       size_t &stuff_idx) {
   // output shape is not dst_shape, but the last inbetween shape, which just need only one broadcast op to reach the
@@ -540,17 +551,30 @@ class AtomicCleanWrap : public CodeWrap {
     auto type = store->type_id_;
     KernelBuilder b(&kernel_);
     auto op = b.Broadcast(GetRedInitScalar(red_op), &clear_shape_, type);
-    store_ = static_cast<NDStore *>(b.Store(store->addr_.gm, op));
+    if (store->obj_id_ == ObjectType::kStore) {
+      store_ = static_cast<NDStore *>(b.Store(store->addr_.gm, op));
+    } else {
+      ASSERT(store->obj_id_ == ObjectType::kViewStore);
+      auto stride = static_cast<NDViewStore *>(store)->dst_stride_ref_;
+      store_ = static_cast<NDStore *>(b.Store(store->addr_.gm, op, stride));
+    }
   }
 
   void CodeGen(Code &code, NDAccess *store) {
     clear_shape_data_ = std::accumulate(store->shape_ref_->data, store->shape_ref_->data + store->shape_ref_->size, 1LL,
                                         std::multiplies{});
-    if (g_system.deterministic_) {
-      clear_shape_data_ += 32 / sizeof(float);
-    }
     kernel_.CodeGen();
     code.BindOpFast(store_->addr_, store->addr_);
+  }
+
+  void CodeGenView(Code &code, NDAccess *store) {
+    if (store->obj_id_ == ObjectType::kStore) {
+      CodeGen(code, store);
+    } else {
+      clear_shape_ = *store->shape_ref_;
+      kernel_.CodeGen();
+      code.BindOpFast(store_->addr_, store->addr_);
+    }
   }
 
   int LaunchWrap(void *workspace, void *stream) override {
@@ -624,8 +648,9 @@ void NDObject::TileCollectSimt(NDObject *op, TileInfo &info) { info.flags |= Obj
 bool NDAccess::IsSupportView() const {
   if (obj_id_ == kViewLoad || obj_id_ == kViewStore || obj_id_ == kLoadDummy || obj_id_ == kLoad) {
     return true;
-  } 
-  if (obj_id_ == kStore && lhs_->obj_id_ != kReduce && lhs_->obj_id_ != kRemovePad && lhs_->obj_id_ != kElementAny) {
+  }
+  if (obj_id_ == kStore && (lhs_->obj_id_ != kReduce || !g_system.deterministic_) && lhs_->obj_id_ != kRemovePad &&
+      lhs_->obj_id_ != kElementAny) {
     return true;
   }
   return false;
@@ -1362,7 +1387,10 @@ void NDStore::Shard(const ShardParam &sp) {
 
 uint64_t NDStore::Emit(VectorKernel &k) {
   if (stride_) {
-    return EmitView(k);
+    if (auto red_op = GetStoreReduceOp(lhs_); red_op != nullptr && !red_op->RoundTile().empty()) {
+      return EmitAtomicView(k, red_op);
+    }
+    return EmitView(k, insn_);
   }
   int64_t lead_align = nd_.lead_stride();
   int64_t lead_dim = nd_.lead_dim();
@@ -1449,21 +1477,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
         op.tile_stride = dst_tile_stride_ * ITEM_SIZE[type_id_];
         op.round_rank = round_tile.size();
         op.red_op = red_op->red_op_;
-        switch (type_id_) {
-          case kFloat32:
-            op.atmoic_type = V_ATOMIC_FP32;
-            break;
-          case kBFloat16:
-            op.atmoic_type = V_ATOMIC_BF16;
-            break;
-          case kFloat16:
-            op.atmoic_type = V_ATOMIC_FP16;
-            break;
-          default:
-            ASSERT(false);
-            op.atmoic_type = V_ATOMIC_FP16;
-            break;
-        }
+        op.atomic_type = GetAtomicStoreType(type_id_);
         addr_.Update(insn_ + vStoreAtomic::RELOC_OFFSET);
         code_size = vStoreAtomic::Encode(insn_, V_STORE_ATOMIC, op, rounds);
         auto clean_wrap = red_op->clean_wrap_;
@@ -1540,7 +1554,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
   return vStore::Encode(insn_, vAccInsnID::V_STORE, op, rounds);
 }
 
-uint64_t NDStore::EmitView(VectorKernel &k) {
+uint64_t NDStore::EmitView(VectorKernel &k, uint64_t *insn) {
   DimArray &dst_stride_ = *stride_;
   int tail_dim = k.tile_region_.depth ? k.tile_region_.starts[k.tile_region_.depth - 1] : nd_.size() - 1;
   int64_t tail_size = k.GetTailSize(nd_.data);
@@ -1622,7 +1636,7 @@ uint64_t NDStore::EmitView(VectorKernel &k) {
     if (tail_size) {
       op.tail_size = op.tail_size / nd_[tail_dim] * tail_size;
     }
-    uint64_t *var_insn = insn_ + vViewStoreX::VAR_OFFSET;
+    uint64_t *var_insn = insn + vViewStoreX::VAR_OFFSET;
     uint64_t src_stride = nd_.stride(lead_idx) * item_size;
     for (int i = 1; i < tile_start; ++i, ++var_insn) {
       *var_insn = vViewStore::EncodeLoop(fold_dim[i], fold_stride[i], src_stride);
@@ -1637,11 +1651,11 @@ uint64_t NDStore::EmitView(VectorKernel &k) {
       *var_insn = vViewStore::EncodeTile(space, fold_stride[i]);
       space *= fold_dim[i];
     }
-    addr_.Update(insn_ + vViewStoreX::RELOC_OFFSET);
-    return vViewStoreX::Encode(insn_, V_STORE_VIEW_X, op);
+    addr_.Update(insn + vViewStoreX::RELOC_OFFSET);
+    return vViewStoreX::Encode(insn, V_STORE_VIEW_X, op);
   }
   vViewStore op;
-  uint64_t *var_insn = insn_ + vViewStore::VAR_OFFSET;
+  uint64_t *var_insn = insn + vViewStore::VAR_OFFSET;
   op.xn = lhs_->xbuf_;
   op.to = addr_.data;
   op.offset = offset_bytes_;
@@ -1672,14 +1686,50 @@ uint64_t NDStore::EmitView(VectorKernel &k) {
   if (op.loop_depth == 0 && loop_start == 1) {
     op.tail_size *= ITEM_SIZE[type_id_];
   }
-  op.tile_depth = fold_dim.size() - tile_start;
   uint64_t space = 1;
+  while (static_cast<size_t>(tile_start) < fold_dim.size() && fold_stride[tile_start] == 0) {
+    space *= fold_dim[tile_start++];
+  }
+  op.tile_depth = fold_dim.size() - tile_start;
   for (size_t i = tile_start; i < fold_dim.size(); ++i, ++var_insn) {
     *var_insn = vViewStore::EncodeTile(space, fold_stride[i]);
     space *= fold_dim[i];
   }
-  addr_.Update(insn_ + vViewStore::RELOC_OFFSET);
-  return vViewStore::Encode(insn_, V_STORE_VIEW, op);
+  addr_.Update(insn + vViewStore::RELOC_OFFSET);
+  return vViewStore::Encode(insn, V_STORE_VIEW, op);
+}
+
+uint64_t NDStore::EmitAtomicView(VectorKernel &k, ReduceOp *red) {
+  ASSERT(k.GetVisitor<RedVisitCoder>() == nullptr);
+  vStoreAtomicW op;
+  op.red_op = red->red_op_;
+  op.atomic_type = GetAtomicStoreType(type_id_);
+  auto &round_tile = red->RoundTile();
+  uint64_t rounds[2];
+  op.round_rank = round_tile.size();
+  if (!red->CheckFlag(OBJ_FLAG_REDUCE_NO_CUM) && (op.round_rank & 1)) {
+    BuildDimRounds(round_tile, rounds);
+  }
+  uint64_t size = vStoreAtomicW::Encode(insn_, V_STORE_ATOMIC_WRAP, op, rounds);
+  size += EmitView(k, insn_ + size);
+  vStoreAtomicW::EncodeSize(insn_, size);
+  Code &code = k.code_;
+  auto clean_wrap = red->clean_wrap_;
+  if (clean_wrap == nullptr) {
+    red->clean_wrap_ = clean_wrap = new AtomicCleanWrap(this, op.red_op);
+  } else {
+    for (auto w = code.wrap_;  w != &code; w = w->next_) {
+      if (w == clean_wrap) {
+        clean_wrap = nullptr;
+        break;
+      }
+    }
+  }
+  if (clean_wrap) {
+    clean_wrap->CodeGenView(code, this);
+    code.InsertWrap(clean_wrap);
+  }
+  return size;
 }
 
 NDObject *NDStore::Clone(CloneHelper &h) { return new NDStore(h.GetClone(lhs_)); }

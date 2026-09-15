@@ -1790,7 +1790,7 @@ __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) 
     set_atomic_f32();
     set_atomic_add();
   } else {
-    if (op.atmoic_type == V_ATOMIC_FP32) {
+    if (op.atomic_type == V_ATOMIC_FP32) {
       set_atomic_f32();
     } else {
       set_atomic_f16();
@@ -1808,6 +1808,36 @@ __aicore_inline__ void StoreAtomic(bcodeptr_t pc, uint64_t head, uint64_t tile) 
   }
   set_atomic_none();
   OVER_WRITE_CHECK(pc, head, op.tile_stride * tile_idx + op.iter_num * op.iter_size);
+}
+
+__aicore_inline__ void StoreAtomicW(bcodeptr_t pc, uint64_t head, uint64_t tile) {
+  vStoreAtomicW op;
+  vStoreAtomicW::Decode(pc, head, op);
+  if (op.round_rank == 1 || op.round_rank == 3) {
+    bcodeptr_t rpc = pc + vStoreAtomicW::ROUND_OFFSET;
+    if (RoundUpTileIdx<kRoundCacheStoreAtomic>(tile, TileIdx(tile), op.round_rank, rpc) == INVALID_INT) {
+      return;
+    }
+  }
+  if (likely(op.red_op == V_RED_SUM)) {
+    set_atomic_f32();
+    set_atomic_add();
+  } else {
+    if (op.atomic_type == V_ATOMIC_FP32) {
+      set_atomic_f32();
+    } else {
+      set_atomic_f16();
+    }
+    if (op.red_op == V_RED_MAX) {
+      set_atomic_max();
+    } else {
+      set_atomic_min();
+    }
+  }
+  pc = op.GetBody(pc, op);
+  head = *pc;
+  ((OpFunc)(GetFunc(head >> V_HEAD_ID_OFFSET, RegTable()->vm_code_base)))(pc, head, tile);
+  set_atomic_none();
 }
 
 /******************************************************
@@ -2033,6 +2063,7 @@ extern "C" __global__ __aicore__ void dvm_mix_aiv(uint64_t ffts_addr, uint64_t e
     }
     tile |= count << V_TILE_COUNT_OFFSET;
     vBlockInit(blockidx, blocknum);
+    RegTable()->vm_code_base = main_addr;
     pipe_barrier(PIPE_ALL);
   } else if (ktype == V_ENTRY_TYPE_VE) {
     if (entry & V_ENTRY_FLAG_CUBE_MIX) {
@@ -2152,6 +2183,7 @@ DEF_DISP_LOAD(V_LOAD_VIEW_TRANS, ViewLoadT(pc, head, tile))
 DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
 DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
+DEF_DISP_STORE(V_STORE_ATOMIC_WRAP, StoreAtomicW(pc, head, tile))
 DEF_DISP_STORE(V_STORE_VIEW, ViewStore(pc, head, tile))
 
 DEF_DISP_SIMD(V_COPY, Copy(pc, head))

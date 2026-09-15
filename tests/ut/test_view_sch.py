@@ -400,6 +400,22 @@ def test_sch_concat_shared_load_sideway_store():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("in_shape, cat_dim, red_dim", [
+    ([600, 128], 0, (1,)), # no atomic
+    ([100, 4000], 1, (0,)), # red dim != cat dim
+    ([32, 9000], 0, (0,)), # red dim == cat dim
+])
+def test_sch_concat_reduce(in_shape, cat_dim, red_dim):
+    t = Tester()
+    a0 = np.random.normal(0, 0.05, in_shape).astype(np.float32)
+    a1 = np.random.normal(0, 0.04, in_shape).astype(np.float32)
+    x0 = t.concat([t.load(a0), t.load(a1)], cat_dim)
+    x1 = t.sum(x0, red_dim, True)
+    t.store_expect(x1, np.sum(np.concatenate([a0, a1], axis=cat_dim), red_dim, keepdims=True))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("shape1, broad_shape1, shape2, cat_dim", [
     ([1, 512], [20, 512], [4, 5, 512], 1), # broadcast reshape, concat no reshape: prop ok
     ([1, 512], [20, 512], [20, 4, 128], 1), # broadcast no reshape, concat reshape: prop ok

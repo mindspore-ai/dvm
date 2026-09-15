@@ -410,6 +410,7 @@ def test_view_store_broadcast_3d(slice_shape, out_shape, broadcast_shape):
     assert (t.run_check())
 
 
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("dtype", [np.float16, np.float32])
 def test_view_store_x(dtype):
     t = Tester()
@@ -428,4 +429,36 @@ def test_view_store_x_transpose():
     a = np.random.normal(0, 1, [2000, 4000]).astype(np.float32)
     x = t.load(a)
     t.view_store_expect(x, [1, 2000], np.swapaxes(a, 0, 1))
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("in_shape, dims, out_shape, tile_depth, out_stride", [
+    ([100, 1000], (0,), [100, 1200], 1, [1200, 1]),
+    ([10, 16, 1000], (1,), [10, 18, 1100], 2, [18 * 1100, 1100, 1]),
+    ([20, 8, 1000], (0,), [20, 10, 1200], 2, [10 * 1200, 1200, 1]),
+    ([10, 8, 12, 1000], (0, 2), [10, 10, 16, 1000], 3, [10 * 16 * 1000, 16 * 1000, 1000, 1]),
+])
+def test_view_store_atomic_sum(in_shape, dims, out_shape, tile_depth, out_stride):
+    t = Tester()
+    a = np.random.normal(-0.5, 0.5, in_shape).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.sum(x0, dims, True)
+    res = np.sum(a, dims, keepdims=True)
+    e = np.full(out_shape, 0.0, np.float32)
+    rank_size = len(out_shape)
+    res_shape = res.shape
+    if rank_size == 1:
+        e[:res_shape[0]] = res
+    elif rank_size == 2:
+        e[:res_shape[0], :res_shape[1]] = res
+    elif rank_size == 3:
+        e[:res_shape[0], :res_shape[1], :res_shape[2]] = res
+    else:
+        assert(rank_size == 4)
+        e[:res_shape[0], :res_shape[1], :res_shape[2], :res_shape[3]] = res
+    t.view_store_expect(x1, out_stride, e)
+    for i in range(tile_depth):
+        idx = rank_size - i - 1
+        t.tile(idx, idx, in_shape[i])
     assert (t.run_check())

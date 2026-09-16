@@ -3126,6 +3126,9 @@ void ReduceOp::Tile(const TileParam &tp) {
 
 uint64_t ReduceOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
+  if (round_tile_.empty()) {
+    return _ReduceOp::Emit(k);
+  }
   if (ws_num_ == 2) {
     return EmitDeterm(k);
   }
@@ -3200,11 +3203,8 @@ void ReduceOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
 }
 
 namespace {
-bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCoder &coder) {
+void GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCoder &coder) {
   auto round_depth = round_tile.size();
-  if (round_depth == 0) {
-    return false;
-  }
   uint32_t core_limit = k.code_.block_dim_;
   if (round_depth == 1) {
     auto v = reinterpret_cast<vVisitRed1 *>(coder.code_);
@@ -3256,7 +3256,6 @@ bool GenTileVisit(VectorKernel &k, const DimArray &round_tile, RedVisitCoder &co
     coder.visit_id_ = V_VISIT_RED_4;
     coder.block_num_ = std::min<uint32_t>(core_limit, k.tile_num_ / r2);
   }
-  return true;
 }
 
 void AddTileVisit(size_t round_depth, RedVisitCoder *coder) {
@@ -3293,9 +3292,7 @@ uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
   auto coder = k.GetVisitor<RedVisitCoder>();
   uint64_t ws_offset;
   if (likely(coder == nullptr)) {
-    if (!GenTileVisit(k, round_tile_, *visit_)) {
-      return _ReduceOp::Emit(k);
-    }
+    GenTileVisit(k, round_tile_, *visit_);
     k.AddVisitor(visit_);
     ws_offset = 0;  // TODO: multi workspace
     visit_->ws_size_ = ndd_.stride_back() * sizeof(float) * visit_->block_num_;

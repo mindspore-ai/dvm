@@ -1172,7 +1172,7 @@ int64_t VectorKernel::Analyze() {
         continue;
       }
       int reuse_flag = OP_LIVE_D(op) ? REUSE_READY : REUSE_REJECT;
-      if (!(op->flags_ & OBJ_FLAG_WORKSPACE)) {
+      if (!(op->flags_ & (OBJ_FLAG_WORKSPACE | OBJ_FLAG_XHS | OBJ_FLAG_XOUT))) {
         if (auto kill = op->lhs_; kill && LivenessEnd(op, kill)) {
           if (reuse_flag == REUSE_READY && LhsInplaceCheck(op)) {
             op->flags_ |= OBJ_FLAG_REUSE_LHS;
@@ -1987,8 +1987,14 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
         auto end_dim = static_cast<ReduceOp *>(op)->EndDim();
         auto size = ndd->stride(end_dim);
         if (size > tile_size_limit || size == ndd->stride_back()) {
+          for (auto red : post_reduces_) {
+            static_cast<ReduceOp *>(red)->SetCum();
+          }
           return true;
         }
+      }
+      for (auto red : post_reduces_) {
+        static_cast<ReduceOp *>(red)->UnsetCum();
       }
     }
     return false;

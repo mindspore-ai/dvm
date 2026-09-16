@@ -116,7 +116,7 @@ public:
     xhs_data_.data[0] = c;
     xhs_data_.data[1] = d;
     SetXhs(&xhs_data_);
-    ws_num_ = 1;
+    SetWs(1);
   }
   void Normalize(std::vector<NDObject *> &) override {
     ndd_.Reset();

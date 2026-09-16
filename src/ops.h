@@ -721,14 +721,22 @@ class __export__ FlexOp : public NDObject {
   };
 
   enum { kWsMax = 2 };
-  FlexOp(NDObject *lhs, NDObject *rhs, DataType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {
-    flags_ |= OBJ_FLAG_WORKSPACE;
-  }
+  FlexOp(NDObject *lhs, NDObject *rhs, DataType type_id, ObjectType obj_id) : NDObject(lhs, rhs, type_id, obj_id) {}
   ~FlexOp() override = default;
+
   void SetXhs(Xhs *xhs) {
     xhs_ = xhs;
     flags_ |= OBJ_FLAG_XHS;
   }
+  void SetWs(int num, bool inplace = false) {
+    ws_num_ = num;
+    flags_ |= inplace ? (OBJ_FLAG_WORKSPACE | OBJ_FLAG_FLEX_INPL_WS) : OBJ_FLAG_WORKSPACE;
+  }
+  void UnsetWs() {
+    ws_num_ = 0;
+    flags_ &= ~(OBJ_FLAG_WORKSPACE | OBJ_FLAG_FLEX_INPL_WS);
+  }
+
   Xhs *xhs_{nullptr};
   int ws_num_{0};
   uint64_t wss_[kWsMax];
@@ -891,7 +899,7 @@ class PackOp : public FlexOp {
  public:
   PackOp(NDObject *lo, NDObject *hi) : FlexOp(lo, hi, DataType::kInt64, ObjectType::kPack) {
     ASSERT(lo->type_id_ == kInt32 && hi->type_id_ == kInt32);
-    ws_num_ = 1;
+    SetWs(1, false);
     shape_ref_ = lo->shape_ref_;
   }
   void Normalize(std::vector<NDObject *> &run_ops) override { nd_ = lhs_->nd_; }
@@ -941,10 +949,7 @@ class CompareScalarOp : public FlexOp {
   CompareScalarOp(int op_type, NDObject *input, scode_t scalar)
       : FlexOp(input, nullptr, input->type_id_, ObjectType::kCompareS), scalar_(scalar) {
     if (g_system.Arch() == kAiCore_C220) {
-      ws_num_ = 1;
-      flags_ |= OBJ_FLAG_FLEX_INPL_WS;
-    } else {
-      wss_[0] = 0;
+      SetWs(1, true);
     }
     cmp_op_ = op_type;
     shape_ref_ = input->shape_ref_;
@@ -996,10 +1001,7 @@ class PowerOp : public FlexOp {
  public:
   PowerOp(NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kPower) {
     if (g_system.Arch() == kAiCore_C220) {
-      ws_num_ = 2;
-    } else {
-      wss_[0] = 0;
-      wss_[1] = 0;
+      SetWs(2, false);
     }
     shape_ref_ = &norm_.shape_;
   }
@@ -1021,10 +1023,7 @@ class CompareOp : public FlexOp {
       type_id_ = kInt32;
     }
     if (g_system.Arch() == kAiCore_C220) {
-      ws_num_ = 1;
-      flags_ |= OBJ_FLAG_FLEX_INPL_WS;
-    } else {
-      wss_[0] = 0;
+      SetWs(1, true);
     }
     cmp_op_ = op_type;
     shape_ref_ = &norm_.shape_;
@@ -1046,9 +1045,7 @@ class SelectOp : public FlexOp {
  public:
   SelectOp(NDObject *cond, NDObject *lhs, NDObject *rhs) : FlexOp(lhs, rhs, lhs->type_id_, ObjectType::kSelect) {
     if (g_system.Arch() == kAiCore_C220) {
-      ws_num_ = 1;
-    } else {
-      wss_[0] = 0;
+      SetWs(1, false);
     }
     shape_ref_ = &shape_;
     xhs_data_.data[0] = cond;
@@ -1310,13 +1307,12 @@ class ReduceOp : public _ReduceOp {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
     if (g_system.deterministic_ && red_op_ == ReduceType::kSum) {
-      ws_num_ = 2;
+      SetWs(2, true);
       visit_ = new RedVisitCoder();
     } else {
-      ws_num_ = 1;
+      SetWs(1, true);
       visit_ = nullptr;
     }
-    flags_ |= OBJ_FLAG_FLEX_INPL_WS;
   }
   ~ReduceOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
@@ -1326,6 +1322,15 @@ class ReduceOp : public _ReduceOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
   bool KeepDims() const { return keepdims_; }
   const DimArray &RoundTile() const { return round_tile_; }
+
+  void SetCum() {
+    if (!g_system.deterministic_) SetWs(1, true);
+    flags_ &= ~OBJ_FLAG_REDUCE_NO_CUM;
+  }
+  void UnsetCum() {
+    if (!g_system.deterministic_) UnsetWs();
+    flags_ |= OBJ_FLAG_REDUCE_NO_CUM;
+  }
 
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 

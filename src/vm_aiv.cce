@@ -349,6 +349,9 @@ __aicore_inline__ void InitPackOffset(__ubuf__ uint32_t *offset, uint64_t count)
   for (uint64_t idx = 0; idx < TYPE_SHIFT(uint32_t); ++idx) {
     offset[idx] = static_cast<uint32_t>(idx);
   }
+  // Publish the scalar-initialized offsets before the vector pipeline reads them.
+  set_flag(PIPE_S, PIPE_V, EVENT_ID0);
+  wait_flag(PIPE_S, PIPE_V, EVENT_ID0);
   for (uint64_t cur_count = TYPE_SHIFT(uint32_t); cur_count < count;) {
     uint64_t copy_count = cur_count < count - cur_count ? cur_count : count - cur_count;
     set_vector_mask(0, copy_count);

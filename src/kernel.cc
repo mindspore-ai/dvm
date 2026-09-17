@@ -1993,12 +1993,12 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
           return true;
         }
       }
-      for (auto red : post_reduces_) {
-        static_cast<ReduceOp *>(red)->UnsetCum();
-      }
     }
     return false;
   };
+  for (auto red : post_reduces_) {
+    static_cast<ReduceOp *>(red)->UnsetCum();
+  }
   int64_t live_peak = 0;
   int64_t tile_size_limit = 0;
   if constexpr (dyn_shape) {

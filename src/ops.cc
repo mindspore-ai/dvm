@@ -119,7 +119,7 @@ uint64_t EmitCopy(bcodeptr_t insn, uint64_t xd, uint64_t xn, uint64_t bytes) {
 }
 
 NDObject *GetBroadcastOp(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject *> &stuff_ops,
-                         size_t &stuff_idx) {
+                         size_t stuff_idx) {
   dvm::_BroadcastOp *broadcast_op = nullptr;
   if (stuff_idx < stuff_ops.size()) {
     broadcast_op = static_cast<dvm::_BroadcastOp *>(stuff_ops[stuff_idx]);
@@ -129,7 +129,6 @@ NDObject *GetBroadcastOp(NDObject *obj, const DimArray &dst_shape, std::vector<N
     stuff_ops.push_back(broadcast_op);
   }
   broadcast_op->ndd_.Reset(dst_shape);
-  stuff_idx++;
   return broadcast_op;
 }
 
@@ -154,35 +153,32 @@ inline uint64_t GetAtomicStoreType(DataType type_id) {
   }
 }
 
-NDObject *InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject *> &stuff_ops,
-                                      size_t &stuff_idx) {
+std::pair<NDObject *, size_t> InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape,
+                                                          std::vector<NDObject *> &stuff_ops, size_t stuff_idx) {
   // output shape is not dst_shape, but the last inbetween shape, which just need only one broadcast op to reach the
   // dst_shape
   bool broadcast_flag = false;
   auto temp_shape = obj->nd_.dims();  // TODO: inplace optimize
-  const auto &src_shape = obj->nd_;
   dvm::NDObject *output_obj = obj;
-  for (size_t i = 0; i < src_shape.size(); i++) {
-    if (src_shape[i] != dst_shape[i]) {
+  for (size_t i = 0; i < temp_shape.size(); i++) {
+    if (dst_shape[i] == 1) continue;
+    if (temp_shape[i] != dst_shape[i]) {
       broadcast_flag = true;
       temp_shape[i] = dst_shape[i];
     } else if (broadcast_flag) {
-      if (temp_shape == dst_shape) {
-        break;
-      }
       broadcast_flag = false;
-      output_obj = GetBroadcastOp(output_obj, temp_shape, stuff_ops, stuff_idx);
+      output_obj = GetBroadcastOp(output_obj, temp_shape, stuff_ops, stuff_idx++);
     }
   }
-  return output_obj;
+  return std::make_pair(output_obj, stuff_idx);
 }
 
-NDObject *InsertImplicitBroadcast(NDObject *obj, const DimArray &dst_shape, std::vector<NDObject *> &stuff_ops,
-                                  size_t &stuff_idx) {
+std::pair<NDObject *, size_t> InsertImplicitBroadcast(NDObject *obj, const DimArray &dst_shape,
+                                                      std::vector<NDObject *> &stuff_ops, size_t stuff_idx) {
   // output shape is dst_shape
-  auto new_input = InsertBroadcastOpsInBetween(obj, dst_shape, stuff_ops, stuff_idx);
-  auto last_broadcast_op = GetBroadcastOp(new_input, dst_shape, stuff_ops, stuff_idx);
-  return last_broadcast_op;
+  auto stuff = InsertBroadcastOpsInBetween(obj, dst_shape, stuff_ops, stuff_idx);
+  stuff.first = GetBroadcastOp(stuff.first, dst_shape, stuff_ops, stuff.second++);
+  return stuff;
 }
 
 uint64_t SelectSimdWidth(uint64_t iter_size, DataType type_id) {
@@ -2412,24 +2408,22 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject *> &run_o
   }
   if (self->flags_ & OBJ_FLAG_EAGER) {
     if (lhs_need_broadcast) {
-      size_t stuff_idx = run_ops.size();
-      self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, run_ops, stuff_idx);
+      std::tie(self->lhs_, std::ignore) = InsertImplicitBroadcast(self->lhs_, nd, run_ops, run_ops.size());
     }
     if (rhs_need_broadcast) {
-      size_t stuff_idx = run_ops.size();
-      self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, run_ops, stuff_idx);
+      std::tie(self->rhs_, std::ignore) = InsertImplicitBroadcast(self->rhs_, nd, run_ops, run_ops.size());
     }
   } else {
     if (lhs_need_broadcast) {
-      size_t stuff_idx = 0;
-      self->lhs_ = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, stuff_idx);
+      size_t stuff_idx;
+      std::tie(self->lhs_, stuff_idx) = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, 0);
       for (size_t i = 0; i < stuff_idx; ++i) {
         run_ops.push_back(lhs_stuff_ops_[i]);
       }
     }
     if (rhs_need_broadcast) {
-      size_t stuff_idx = 0;
-      self->rhs_ = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, stuff_idx);
+      size_t stuff_idx;
+      std::tie(self->rhs_, stuff_idx) = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, 0);
       for (size_t i = 0; i < stuff_idx; ++i) {
         run_ops.push_back(rhs_stuff_ops_[i]);
       }
@@ -2589,17 +2583,14 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
     if (nd[i] != xhs_dim) xhs_bc = true;
   }
   if (flags_ & OBJ_FLAG_EAGER) {
-    auto insert_broadcast = [&run_ops, &nd](NDObject *input) -> NDObject * {
-      size_t stuff_idx = run_ops.size();
-      return InsertImplicitBroadcast(input, nd, run_ops, stuff_idx);
-    };
-    if (lhs_bc) lhs_ = insert_broadcast(lhs_);
-    if (rhs_bc) rhs_ = insert_broadcast(rhs_);
-    if (xhs_bc) xhs_->data[0] = insert_broadcast(xhs_->data[0]);
+    size_t ops_size = run_ops.size();
+    if (lhs_bc) std::tie(lhs_, std::ignore) = InsertImplicitBroadcast(lhs_, nd, run_ops, ops_size);
+    if (rhs_bc) std::tie(rhs_, std::ignore) = InsertImplicitBroadcast(rhs_, nd, run_ops, ops_size);
+    if (xhs_bc) std::tie(xhs_->data[0], std::ignore) = InsertImplicitBroadcast(xhs_->data[0], nd, run_ops, ops_size);
   } else {
     auto insert_broadcast = [&input, &run_ops, this, &nd](size_t idx) {
-      size_t stuff_idx = 0;
-      *input[idx] = InsertImplicitBroadcast(*input[idx], nd, stuff_ops_[idx], stuff_idx);
+      size_t stuff_idx;
+      std::tie(*input[idx], stuff_idx) = InsertImplicitBroadcast(*input[idx], nd, stuff_ops_[idx], 0);
       for (size_t i = 0; i < stuff_idx; ++i) {
         run_ops.push_back(stuff_ops_[idx][i]);
       }
@@ -2768,11 +2759,10 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
     ndd_.dims[dims - 1 - i] = shape_[i];
   }
   if (flags_ & OBJ_FLAG_EAGER) {
-    size_t stuff_idx = run_ops.size();
-    lhs_ = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, run_ops, stuff_idx);
+    std::tie(lhs_, std::ignore) = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, run_ops, run_ops.size());
   } else {
-    size_t stuff_idx = 0;
-    lhs_ = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, stuff_ops_, stuff_idx);
+    size_t stuff_idx;
+    std::tie(lhs_, stuff_idx) = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, stuff_ops_, 0);
     for (size_t i = 0; i < stuff_idx; ++i) {
       run_ops.push_back(stuff_ops_[i]);
     }

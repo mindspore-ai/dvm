@@ -1324,12 +1324,16 @@ class ReduceOp : public _ReduceOp {
   const DimArray &RoundTile() const { return round_tile_; }
 
   void SetCum() {
-    if (!g_system.deterministic_) SetWs(1, true);
-    flags_ &= ~OBJ_FLAG_REDUCE_NO_CUM;
+    if (!g_system.deterministic_) {
+      SetWs(1, true);
+      flags_ &= ~OBJ_FLAG_REDUCE_NO_CUM;
+    }
   }
   void UnsetCum() {
-    if (!g_system.deterministic_) UnsetWs();
-    flags_ |= OBJ_FLAG_REDUCE_NO_CUM;
+    if (!g_system.deterministic_) {
+      UnsetWs();
+      flags_ |= OBJ_FLAG_REDUCE_NO_CUM;
+    }
   }
 
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);

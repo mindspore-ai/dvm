@@ -744,7 +744,7 @@ class __export__ FlexOp : public NDObject {
 
   Xhs *xhs_{nullptr};
   int ws_num_{0};
-  uint64_t wss_[kWsMax];
+  uint64_t wss_[kWsMax]{};
 };
 
 template <typename T>

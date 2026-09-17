@@ -242,6 +242,14 @@ NDObject *BasicBlock::Move(NDObject *pos, NDObject *obj) {
 }
 
 void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
+  auto Rebind = [this, old, update, obj](NDObject *&slot) {
+    if (tracker_) {
+      tracker_->Record(&slot);
+    }
+    slot = update;
+    RemoveEdge(old, obj);
+    AddUser(update, obj);
+  };
   if (obj->GetObjectType() == kConcat) {
     for (auto &s : static_cast<ConcatOp *>(obj)->slices_) {
       if (s.input == old) {
@@ -250,12 +258,7 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
     }
   }
   if (obj->lhs_ == old) {
-    if (tracker_) {
-      tracker_->Record(&obj->lhs_);
-    }
-    obj->lhs_ = update;
-    RemoveEdge(old, obj);
-    AddUser(update, obj);
+    Rebind(obj->lhs_);
     if (obj->SharedNdd()) {
       auto old_ndd = obj->nd_.data;
       auto new_ndd = update->nd_.data;
@@ -274,30 +277,25 @@ void BasicBlock::UpdateInput(NDObject *obj, NDObject *old, NDObject *update) {
         }
       }
     }
+    return;
   } else if (obj->rhs_ == old) {
-    if (tracker_) {
-      tracker_->Record(&obj->rhs_);
-    }
-    obj->rhs_ = update;
-    RemoveEdge(old, obj);
-    AddUser(update, obj);
+    Rebind(obj->rhs_);
+    return;
   } else {
     // ops with extended inputs (xhs_)
     ASSERT(obj->flags_ & OBJ_FLAG_XHS);
     auto xhs = static_cast<FlexOp *>(obj)->xhs_;
-    for (int i = 0; i < xhs->in_num; ++i) {
-      if (xhs->data[i] == old) {
-        if (tracker_) {
-          tracker_->Record(&xhs->data[i]);
+    if (xhs != nullptr) {
+      for (int i = 0; i < xhs->in_num; ++i) {
+        if (xhs->data[i] == old) {
+          Rebind(xhs->data[i]);
+          return;
         }
-        xhs->data[i] = update;
-        RemoveEdge(old, obj);
-        AddUser(update, obj);
-        return;
       }
     }
-    ASSERT(false);
   }
+  RemoveEdge(old, obj);
+  AddUser(update, obj);
 }
 
 void ReorderStore(BasicBlock &block) {
@@ -451,7 +449,6 @@ void EliminateReshape(BasicBlock &bb) {
     }
     for (auto succ : bb.GetUsers(op)) {
       bb.UpdateInput(succ, op, lhs);
-      bb.AddUser(lhs, succ);
     }
     bb.Erase(op);
   }

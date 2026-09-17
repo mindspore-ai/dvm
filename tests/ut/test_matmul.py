@@ -716,3 +716,19 @@ def test_dyn_shape_tuning(mix):
         t.run()
         assert (t.check(x3, expect, 2e-3))
     Tester.set_lazy_tuning(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.mix
+def test_matmul_nz_single_row_tile():
+    # K forces NZ input while M=1 exercises the single-row Cube path.
+    rng = np.random.default_rng(17)
+    np_a = rng.normal(0, 0.1, (1, 80000)).astype(np.float16)
+    np_b = rng.normal(0, 0.1, (80000, 256)).astype(np.float16)
+    expect = np_a.astype(np.float32) @ np_b.astype(np.float32)
+    t = Tester("mix")
+    a = t.load(np_a)
+    b = t.load(np_b)
+    c = t.matmul(a, b, False, False)
+    t.store_expect(c, expect, 2e-3)
+    assert t.run_check()

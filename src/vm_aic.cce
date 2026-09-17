@@ -198,8 +198,8 @@ class MatMul {
                                            uint64_t m_actual) {
     // load L1 to L0A: zN -> zZ
     uint64_t m_round = RoundUp(m_actual, BLOCK_SIZE);
-    // GEMV mode
-    if ((m_actual == 1 && !(flags & V_CUBE_FLAG_TRANS_A))) {
+    // GEMV requires a contiguous ND row; NZ keeps a full fractal for one row.
+    if (m_actual == 1 && !(flags & (V_CUBE_FLAG_TRANS_A | V_CUBE_FLAG_INPUT_A_NZ))) {
       load_cbuf_to_ca(
         dst,
         src + k_part_idx * k0_part_len,
@@ -285,7 +285,7 @@ class MatMul {
                                        uint64_t m_actual,
                                        uint64_t n_actual,
                                        uint64_t k0_actual) {
-    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+    if (m_actual == 1 && (flags & (V_CUBE_FLAG_TRANS_A | V_CUBE_FLAG_INPUT_A_NZ))) {
       m_actual = 16;
     }
     mad(
@@ -340,7 +340,7 @@ class MatMul {
                                         uint64_t m_actual, 
                                         uint64_t n_actual,
                                         uint64_t k0_actual) {
-    if (m_actual == 1 && (flags & V_CUBE_FLAG_TRANS_A)) {
+    if (m_actual == 1 && (flags & (V_CUBE_FLAG_TRANS_A | V_CUBE_FLAG_INPUT_A_NZ))) {
       m_actual = 16;
     }
     mad(

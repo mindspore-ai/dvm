@@ -191,6 +191,11 @@ class DimArray {
     }
     return res;
   }
+  size_t lead_dim() const {
+    size_t i = 0;
+    for (; i < size_ - 1 && data_[i] == 1; ++i) {}
+    return i;
+  }
   template <typename T>
   int64_t &operator[](T i) {
     return data_[i];
@@ -1200,14 +1205,16 @@ class SliceOp : public NDObject {
   ShapeWithRef shape_;
 };
 
-class _BroadcastOp : public NDObject {
+class _BroadcastOp : public FlexOp {
  public:
-  explicit _BroadcastOp(NDObject *input) : NDObject(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
+  explicit _BroadcastOp(NDObject *input) : FlexOp(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
     nd_.data = &ndd_;
   }
   ~_BroadcastOp() override = default;
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+  void SetRemovePad() { SetWs(1, true); }
+  void UnsetRemovePad() { UnsetWs(); }
 
   static void TileCollect(NDObject *op, TileInfo &info);
   static void FoldProp(NDObject *op, PropRange &range);

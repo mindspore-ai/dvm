@@ -107,6 +107,8 @@ static const scode_t reduce_init_value[][ReduceType::kReduceTypeEnd] = {
   {0, 0xFF800000, 0x7F800000},  // V_FLOAT32
 };
 
+static const vSimdInsnID removepad_id_list[SIMD_DTYPE_END] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD, V_REMOVEPAD};
+
 uint64_t EmitCopy(bcodeptr_t insn, uint64_t xd, uint64_t xn, uint64_t bytes) {
   if (xd == xn) {
     return vNop::Encode(insn);
@@ -153,19 +155,31 @@ inline uint64_t GetAtomicStoreType(DataType type_id) {
   }
 }
 
-std::pair<NDObject *, size_t> InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape,
+std::pair<NDObject *, size_t> InsertBroadcastOpsInBetween(NDObject *obj, const DimArray &dst_shape, size_t lead_dim,
                                                           std::vector<NDObject *> &stuff_ops, size_t stuff_idx) {
   // output shape is not dst_shape, but the last inbetween shape, which just need only one broadcast op to reach the
   // dst_shape
-  bool broadcast_flag = false;
   auto temp_shape = obj->nd_.dims();  // TODO: inplace optimize
+  size_t end_dim = temp_shape.size();
+  bool last_broadcast_idx = false;
+  if (end_dim < dst_shape.size()) {
+    for (size_t i = end_dim; i < dst_shape.size(); ++i) {
+      if (dst_shape[i] > 1) {
+        last_broadcast_idx = true;
+        break;
+      }
+    }
+  }
+  if (!last_broadcast_idx) {
+    while (end_dim > 0 && temp_shape[end_dim - 1] == dst_shape[end_dim - 1]) end_dim--;
+  }
+  bool broadcast_flag = false;
   dvm::NDObject *output_obj = obj;
-  for (size_t i = 0; i < temp_shape.size(); i++) {
-    if (dst_shape[i] == 1) continue;
+  for (size_t i = lead_dim; i < end_dim; i++) {
     if (temp_shape[i] != dst_shape[i]) {
       broadcast_flag = true;
       temp_shape[i] = dst_shape[i];
-    } else if (broadcast_flag) {
+    } else if (broadcast_flag && dst_shape[i] > 1) {
       broadcast_flag = false;
       output_obj = GetBroadcastOp(output_obj, temp_shape, stuff_ops, stuff_idx++);
     }
@@ -173,12 +187,21 @@ std::pair<NDObject *, size_t> InsertBroadcastOpsInBetween(NDObject *obj, const D
   return std::make_pair(output_obj, stuff_idx);
 }
 
-std::pair<NDObject *, size_t> InsertImplicitBroadcast(NDObject *obj, const DimArray &dst_shape,
-                                                      std::vector<NDObject *> &stuff_ops, size_t stuff_idx) {
+size_t InsertImplicitBroadcast(NDObject *&obj, const DimArray &dst_shape, std::vector<NDObject *> &stuff_ops,
+                               size_t stuff_idx) {
   // output shape is dst_shape
-  auto stuff = InsertBroadcastOpsInBetween(obj, dst_shape, stuff_ops, stuff_idx);
-  stuff.first = GetBroadcastOp(stuff.first, dst_shape, stuff_ops, stuff.second++);
-  return stuff;
+  size_t lead_dim = dst_shape.lead_dim();
+  NDObject *input = obj;
+  auto stuff = InsertBroadcastOpsInBetween(input, dst_shape, lead_dim, stuff_ops, stuff_idx);
+  obj = GetBroadcastOp(stuff.first, dst_shape, stuff_ops, stuff.second);
+  if (g_system.Arch() == kAiCore_C220) {
+    auto lead_op = static_cast<_BroadcastOp *>(stuff_ops[stuff_idx]);
+    lead_op->UnsetRemovePad();
+    if (dst_shape[lead_dim] != input->nd_[lead_dim]) {
+      lead_op->SetRemovePad();
+    }
+  }
+  return stuff.second + 1;
 }
 
 uint64_t SelectSimdWidth(uint64_t iter_size, DataType type_id) {
@@ -503,14 +526,14 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                                     // Extract
     {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, nullptr},                                      // Pack
     {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                                // BinaryS
-    {kGenSimd1, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect,
+    {kGenFlex, F_DM, nullptr, _BroadcastOp::FoldProp, _BroadcastOp::TileCollect,
      BroadcastOp::ShapeProp},                      // BroadcastTo
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},  // BroadcastS
     {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::TileCollect,
      ReduceOp::ShapeProp},                                                                   // Reduce
     {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, SelectOp::ShapeProp},   // Select
     {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                            // ElemAny
-    {kGenSimd1, F_IP | F_NS, nullptr, nullptr, nullptr},                                     // RemovePad
+    {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                              // RemovePad
     {kGenFlex, F_IP | F_NS, nullptr, nullptr, nullptr, PowerOp::ShapeProp},                  // Power
     {kGenFlex, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, CompareOp::ShapeProp},  // Compare
     {kGenFlex, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                               // CompareS
@@ -2184,8 +2207,6 @@ void UnaryOp::Inspect(Inspector &sp) {
 }
 
 uint64_t RemovePadOp::Emit(VectorKernel &k) {
-  const static vSimdInsnID id_list[SIMD_DTYPE_END] = {V_NONE, V_REMOVEPAD_U16, V_REMOVEPAD_U16, V_REMOVEPAD,
-                                                      V_REMOVEPAD};
   if (nd_.lead_dim() == nd_.lead_stride() || nd_.stride_back() == nd_.lead_stride()) {
     return CopyOp::Emit(k);
   }
@@ -2195,7 +2216,7 @@ uint64_t RemovePadOp::Emit(VectorKernel &k) {
   op.repeat = nd_.stride_back() / nd_.lead_stride();
   op.iter_num = nd_.lead_dim();
   op.rs = GetBlocks(nd_.lead_stride());
-  return vRemovePad::Encode(insn_, id_list[type_id_], op);
+  return vRemovePad::Encode(insn_, removepad_id_list[type_id_], op);
 }
 
 NDObject *RemovePadOp::Clone(CloneHelper &h) { return new RemovePadOp(h.GetClone(lhs_)); }
@@ -2408,22 +2429,20 @@ void _BinaryNormalizer::Normalize(NDObject *self, std::vector<NDObject *> &run_o
   }
   if (self->flags_ & OBJ_FLAG_EAGER) {
     if (lhs_need_broadcast) {
-      std::tie(self->lhs_, std::ignore) = InsertImplicitBroadcast(self->lhs_, nd, run_ops, run_ops.size());
+      InsertImplicitBroadcast(self->lhs_, nd, run_ops, run_ops.size());
     }
     if (rhs_need_broadcast) {
-      std::tie(self->rhs_, std::ignore) = InsertImplicitBroadcast(self->rhs_, nd, run_ops, run_ops.size());
+      InsertImplicitBroadcast(self->rhs_, nd, run_ops, run_ops.size());
     }
   } else {
     if (lhs_need_broadcast) {
-      size_t stuff_idx;
-      std::tie(self->lhs_, stuff_idx) = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, 0);
+      size_t stuff_idx = InsertImplicitBroadcast(self->lhs_, nd, lhs_stuff_ops_, 0);
       for (size_t i = 0; i < stuff_idx; ++i) {
         run_ops.push_back(lhs_stuff_ops_[i]);
       }
     }
     if (rhs_need_broadcast) {
-      size_t stuff_idx;
-      std::tie(self->rhs_, stuff_idx) = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, 0);
+      size_t stuff_idx = InsertImplicitBroadcast(self->rhs_, nd, rhs_stuff_ops_, 0);
       for (size_t i = 0; i < stuff_idx; ++i) {
         run_ops.push_back(rhs_stuff_ops_[i]);
       }
@@ -2584,13 +2603,12 @@ void SelectOp::Normalize(std::vector<NDObject *> &run_ops) {
   }
   if (flags_ & OBJ_FLAG_EAGER) {
     size_t ops_size = run_ops.size();
-    if (lhs_bc) std::tie(lhs_, std::ignore) = InsertImplicitBroadcast(lhs_, nd, run_ops, ops_size);
-    if (rhs_bc) std::tie(rhs_, std::ignore) = InsertImplicitBroadcast(rhs_, nd, run_ops, ops_size);
-    if (xhs_bc) std::tie(xhs_->data[0], std::ignore) = InsertImplicitBroadcast(xhs_->data[0], nd, run_ops, ops_size);
+    if (lhs_bc) ops_size = InsertImplicitBroadcast(lhs_, nd, run_ops, ops_size);
+    if (rhs_bc) ops_size = InsertImplicitBroadcast(rhs_, nd, run_ops, ops_size);
+    if (xhs_bc) ops_size = InsertImplicitBroadcast(xhs_->data[0], nd, run_ops, ops_size);
   } else {
     auto insert_broadcast = [&input, &run_ops, this, &nd](size_t idx) {
-      size_t stuff_idx;
-      std::tie(*input[idx], stuff_idx) = InsertImplicitBroadcast(*input[idx], nd, stuff_ops_[idx], 0);
+      size_t stuff_idx = InsertImplicitBroadcast(*input[idx], nd, stuff_ops_[idx], 0);
       for (size_t i = 0; i < stuff_idx; ++i) {
         run_ops.push_back(stuff_ops_[idx][i]);
       }
@@ -2713,6 +2731,27 @@ uint64_t _BroadcastOp::EmitBroadcastX(uint64_t *p, int end_dim) {
                                                               V_BROADCAST_X_B16, V_BROADCAST_X_B32,
                                                               V_BROADCAST_X_B32, V_BROADCAST_X_B64};
   ASSERT(id_list[type_id_] != V_NONE);
+  if (op.lead_pad == 0) {
+    op.lead_num *= op.iter_num;
+    op.iter_num = 1;
+  }
+  if (ws_num_ > 0 && op.iter_num > 1 && op.lead_pad > 0) {
+    vRemovePad compact;
+    compact.xd = wss_[0];
+    compact.xn = op.xn;
+    compact.repeat = op.iter_num;
+    compact.iter_num = op.lead_num;
+    compact.rs = GetBlocks(lhs_->nd_.lead_stride());
+    auto size = vRemovePad::Encode(p, removepad_id_list[type_id_], compact);
+    op.xn = compact.xd;
+    op.lead_num = op.lead_num * op.iter_num;
+    op.iter_num = 1;
+    op.lead_pad = 0;
+    tail_insn_ = p + size;
+    size += vBroadcastX::Encode(tail_insn_, id_list[type_id_], op);
+    tail_insn_[0] |= 1ul << V_HEAD_BAR_FLAG_OFFSET;
+    return size;
+  }
   return vBroadcastX::Encode(p, id_list[type_id_], op);
 }
 
@@ -2758,13 +2797,34 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
     }
     ndd_.dims[dims - 1 - i] = shape_[i];
   }
+  size_t lead_dim = ndd_.dims.lead_dim();
+  bool broadcast_x = ndd_.dims[lead_dim] != lhs_->nd_[lead_dim];
   if (flags_ & OBJ_FLAG_EAGER) {
-    std::tie(lhs_, std::ignore) = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, run_ops, run_ops.size());
+    size_t stuff_idx = run_ops.size();
+    std::tie(lhs_, std::ignore) = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, lead_dim, run_ops, stuff_idx);
+    if (broadcast_x && g_system.Arch() == kAiCore_C220) {
+      if (stuff_idx == run_ops.size()) {
+        SetRemovePad();
+      } else {
+        static_cast<_BroadcastOp *>(run_ops[stuff_idx])->SetRemovePad();
+      }
+    }
   } else {
     size_t stuff_idx;
-    std::tie(lhs_, stuff_idx) = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, stuff_ops_, 0);
+    std::tie(lhs_, stuff_idx) = InsertBroadcastOpsInBetween(lhs_, ndd_.dims, lead_dim, stuff_ops_, 0);
     for (size_t i = 0; i < stuff_idx; ++i) {
       run_ops.push_back(stuff_ops_[i]);
+    }
+    if (g_system.Arch() == kAiCore_C220) {
+      _BroadcastOp *lead_op = this;
+      UnsetRemovePad();
+      if (stuff_idx) {
+        lead_op = static_cast<_BroadcastOp *>(stuff_ops_[0]);
+        lead_op ->UnsetRemovePad();
+      }
+      if (broadcast_x) {
+        lead_op->SetRemovePad();
+      }
     }
   }
 }

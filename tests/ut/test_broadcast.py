@@ -261,3 +261,16 @@ def test_broadcastx_repeat_unalign():
     y = t.broadcast(x, [555555, 16])
     t.store_expect(y, np.broadcast_to(a, [555555, 16]))
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_broadcastx_removepad():
+    t = Tester()
+    a = np.random.normal(0, 0.1, [40, 20, 17, 1]).astype(np.float32)
+    x0 = t.load(a)
+    x1 = t.broadcast(x0, [40, 20, 17, 32])
+    x2 = t.sum(x1, (1,), True)
+    t.store_expect(x2, np.sum(np.broadcast_to(a, [40, 20, 17, 32]), (1,), keepdims=True))
+    t.tile(3, 3, 40)
+    assert(t.run_check())
+ 

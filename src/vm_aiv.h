@@ -138,13 +138,7 @@ typedef void (*OpFunc)(__bcode__ uint64_t *pc, uint64_t head, uint64_t tile);
 #ifndef __VM_DRY_RUN__
 #define VA_BCODE_BASE_UB (get_sys_va_base() + VA_UB_OFFSET + PC_BASE)
 #define DEF_DRY_FUNC(offset, op, func)
-__aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) {
-#if __VM_ARCH__ == 310
-  return base_addr + (id << V_C310_FUNC_OFFSET_SHIFT);
-#else
-  return base_addr + id;
-#endif
-}
+__aicore_inline__ uint8_t *GetFunc(uint64_t id, uint8_t *base_addr) { return base_addr + (id << 2); }
 #endif
 
 enum RoundCacheMode { kRoundCacheLoad, kRoundCacheStore, kRoundCacheStoreAtomic, kRoundCacheNone };

@@ -17,9 +17,7 @@ import sys
 import re
 import warnings
 
-C310_FUNC_OFFSET_SHIFT = 2
 FUNC_OFFSET_MASK = 0xffff
-C310_FUNC_ADDR_LIMIT = 1 << (16 + C310_FUNC_OFFSET_SHIFT)
 
 
 def process_address(ins_name, address, arch):
@@ -36,17 +34,12 @@ def process_address(ins_name, address, arch):
         ValueError: If the address is not aligned to the offset unit.
     """
     addr = int(address, 16)
-    if arch == "c310":
-        if addr >= C310_FUNC_ADDR_LIMIT:
-            warnings.warn(f"{ins_name}, Address exceeds 18-bit range.")
-        if addr & ((1 << C310_FUNC_OFFSET_SHIFT) - 1):
-            raise ValueError(f"{ins_name}, Address is not 4-byte aligned.")
-        return hex((addr >> C310_FUNC_OFFSET_SHIFT) & FUNC_OFFSET_MASK)
-
-    head = int(address[:-4], 16)
-    if head != 0:
-        warnings.warn(f"{ins_name}, Address exceeds 0xFFFF.")
-    return '0x' + address[-4:]
+    if addr & 3:
+        raise ValueError(f"{ins_name}, Address is not 4-byte aligned.")
+    compact_addr = addr >> 2
+    if compact_addr > FUNC_OFFSET_MASK:
+        warnings.warn(f"{ins_name}, Address exceeds 18-bit range.")
+    return hex(compact_addr)
 
 
 def extract_instruction_name(line):

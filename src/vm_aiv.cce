@@ -2182,10 +2182,8 @@ TILE_LOOP:
 DEF_DISP_LOAD(V_LOAD, Load(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_DUMMY, void(0))
 DEF_DISP_LOAD(V_LOAD_VIEW, ViewLoad(pc, head, tile))
-DEF_DISP_LOAD(V_LOAD_VIEW_TRANS, ViewLoadT(pc, head, tile))
 DEF_DISP_STORE(V_STORE, Store(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC, StoreAtomic(pc, head, tile))
-DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
 DEF_DISP_STORE(V_STORE_ATOMIC_WRAP, StoreAtomicW(pc, head, tile))
 DEF_DISP_STORE(V_STORE_VIEW, ViewStore(pc, head, tile))
 
@@ -2311,8 +2309,10 @@ DEF_DISP_SIMD(V_CAST_FP32_TO_INT64, CAST(pc, vconv_f322s64z, head, tile, float, 
 DEF_DISP_SIMD(V_CAST_INT64_TO_FP32, CAST(pc, vconv_s642f32z, head, tile, int64_t, float))
 DEF_DISP_SIMD(V_CAST_INT64_TO_INT32, CAST(pc, vconv_s642s32, head, tile, int64_t, int32_t))
 
+DEF_DISP_LOAD(V_LOAD_VIEW_TRANS, ViewLoadT(pc, head, tile))
 DEF_DISP_LOAD(V_LOAD_VIEW_X, ViewLoadX(pc, head, tile))
 DEF_DISP_STORE(V_STORE_VIEW_X, ViewStoreX(pc, head, tile))
+DEF_DISP_STORE(V_STORE_COND, CondStore(pc, head, tile))
 
 DEF_DISP_VISIT(V_VISIT_RED_1, VisitRed_1)
 DEF_DISP_VISIT(V_VISIT_RED_2, VisitRed_2)

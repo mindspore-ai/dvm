@@ -250,13 +250,11 @@ enum vAtomicType {
 // head(load/store):
 //  ID(16) << 48 | ext(34) << 14 | wait_event(3) << 11 | set_event(3) << 8 | len(4) << 4 |
 //  wait_flag(1) << 3 | set_flag(1) << 2 | reserved(1) << 1 | SIMD_FLAG(1)
-// c310 stores the dispatch function offset in 4B units.
 
 // common area
 #define V_HEAD_SIMD_FLAG_OFFSET 0
 #define V_HEAD_ID_OFFSET 48
 #define V_HEAD_ID_MASK 0xfffful
-#define V_C310_FUNC_OFFSET_SHIFT 2
 #define V_HEAD_EVENT_MASK 0x7ul
 
 // simd

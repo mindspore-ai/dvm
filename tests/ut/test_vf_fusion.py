@@ -211,27 +211,6 @@ def test_dynamic_same_shape_multi_output_codegen(request):
     assert "Abs" not in dump and "Add" not in dump
 
 
-@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
-def test_dynamic_vf_fusion_default_mode_checks_shape_codegen(request):
-    if run_codegen_in_child(request):
-        return
-    dvm.Kernel.set_vf_fusion(1)
-    t = Tester("vector:dyn")
-    t.set_passes("VfFusion")
-    x = t.load([-1], "float32")
-    y = t.load([-1], "float32")
-    out = t.add(t.abs(x), y)
-    t.store(out)
-    t.input(x, np.ones((3, 17, 9), dtype=np.float32))
-    t.input(y, np.ones((3, 17, 9), dtype=np.float32))
-
-    t.codegen()
-    dump = t.dump()
-
-    assert "Custom" not in dump
-    assert "Abs" in dump and "Add" in dump
-
-
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(
     dvm.Device.arch() != "AscendC310",

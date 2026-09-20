@@ -21,6 +21,19 @@ from tests.mark_utils import arg_mark
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_view_bytecode_reservation():
+    t = Tester('vector', use_pass_opt=True)
+    for channels in range(1024, 864, -32):
+        data = np.random.normal(0, 0.2, (4, channels, 7, 7)).astype(np.float32)
+        stride = [channels * 49, 49, 7, 1]
+        x = t.view_load([4, 32, 7, 7], stride, data)
+        expected = np.zeros_like(data)
+        expected[:, :32] = data[:, :32]
+        t.view_store_expect(x, stride, expected)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize("in_shape, slice_shape, tile_depth, tile_tail", [
     ([30, 1000], [20, 500], 0, 0),
     ([30, 500], [20, 200], 1, 7),  # tile 1 with tail

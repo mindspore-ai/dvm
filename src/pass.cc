@@ -346,7 +346,7 @@ void InsertRemovePad(BasicBlock &block) {
   auto min_type_id = kDataTypeEnd;
   for (NDObject *op = block.Begin(); op != block.End(); op = block.Next(op)) {
     auto obj_type = op->GetObjectType();
-    if (obj_type == kReshape || obj_type == kConcat || obj_type == kSplitOp) {
+    if (obj_type == kConcat || obj_type == kSplitOp) {
       return;
     }
     max_depth = std::max(max_depth, op->nd_.size());

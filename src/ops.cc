@@ -680,6 +680,7 @@ void NDAccess::TileCollect(NDObject *op, TileInfo &info) {
   if (acc->stride_ == nullptr) {
     return;
   }
+  info.code_reserve += (op->nd_.size() + 1) * sizeof(uint64_t);
   auto &stride = *acc->stride_;
   if (op->CheckFlag(OBJ_FLAG_VIEW_LOAD_FRACTAL)) {
     info.lead_depth = std::min(info.lead_depth, 1);

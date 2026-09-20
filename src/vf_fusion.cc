@@ -104,27 +104,48 @@ bool IsSupportedCompareScalar(const CompareScalarOp *op) {
   return !op->IsScalarRef() && *CompareScalarIntrinsic(op->GetCmpType()) != '\0';
 }
 
-bool IsCapabilityNode(NDObject *op) {
+bool IsCapabilityNode(NDObject *op, bool is_dynamic) {
   if (op->type_id_ == kInt64) {
     return false;
   }
-  switch (op->GetObjectType()) {
-    case kUnary:
-      return IsSupportedUnary(static_cast<UnaryOp *>(op));
-    case kBinary:
-      return IsSupportedBinary(static_cast<BinaryOp *>(op));
-    case kBinaryS:
-      return IsSupportedBinaryScalar(static_cast<BinaryScalarOp *>(op));
-    case kCast:
-      return true;
-    case kCompare:
-      return true;
-    case kCompareS:
-      return IsSupportedCompareScalar(static_cast<CompareScalarOp *>(op));
-    case kSelect:
-      return GetInputs(op).size() == 3;
-    default:
+  for (auto *input : GetInputs(op)) {
+    if (input->type_id_ == kInt64) {
       return false;
+    }
+  }
+  const auto type = op->GetObjectType();
+  if (!is_dynamic || g_system.vf_fusion_ == kSameShapeMode) {
+    switch (type) {
+      case kUnary:
+        return IsSupportedUnary(static_cast<UnaryOp *>(op));
+      case kBinary:
+        return IsSupportedBinary(static_cast<BinaryOp *>(op));
+      case kBinaryS:
+        return IsSupportedBinaryScalar(static_cast<BinaryScalarOp *>(op));
+      case kCast:
+        return true;
+      case kCompare:
+        return true;
+      case kCompareS:
+        return IsSupportedCompareScalar(static_cast<CompareScalarOp *>(op));
+      case kSelect:
+        return GetInputs(op).size() == 3;
+      default:
+        return false;
+    }
+  } else {
+    switch (type) {
+      case kUnary:
+        return IsSupportedUnary(static_cast<UnaryOp *>(op));
+      case kBinaryS:
+        return IsSupportedBinaryScalar(static_cast<BinaryScalarOp *>(op));
+      case kCast:
+        return true;
+      case kCompareS:
+        return IsSupportedCompareScalar(static_cast<CompareScalarOp *>(op));
+      default:
+        return false;
+    }
   }
 }
 
@@ -439,57 +460,6 @@ VfPartition BuildPartition(const VfGraphContext &graph, std::vector<NDObject *> 
   return partition;
 }
 
-bool SameShapeAndNdd(const VfPartition &partition) {
-  if (partition.nodes.empty()) {
-    return false;
-  }
-  if (partition.nodes.front()->nd_.data == nullptr) {
-    return false;
-  }
-  const auto &dims = partition.nodes.front()->nd_.dims();
-  const auto *shape = partition.nodes.front()->shape_ref_;
-  if (shape == nullptr) {
-    return false;
-  }
-  auto same = [&](NDObject *node) {
-    if (node == nullptr || node->nd_.data == nullptr || node->shape_ref_ == nullptr || !(node->nd_.dims() == dims) ||
-        node->shape_ref_->size != shape->size) {
-      return false;
-    }
-    for (size_t i = 0; i < shape->size; ++i) {
-      if (node->shape_ref_->data[i] != shape->data[i]) {
-        return false;
-      }
-    }
-    return true;
-  };
-  for (auto *node : partition.nodes) {
-    if (!same(node)) {
-      return false;
-    }
-  }
-  for (auto *node : partition.inputs) {
-    if (!same(node)) {
-      return false;
-    }
-  }
-  return true;
-}
-
-bool SameShapeAndNdd(const NDObject *lhs, const NDObject *rhs) {
-  if (lhs == nullptr || rhs == nullptr || lhs->nd_.data == nullptr || rhs->nd_.data == nullptr ||
-      lhs->shape_ref_ == nullptr || rhs->shape_ref_ == nullptr || !(lhs->nd_.dims() == rhs->nd_.dims()) ||
-      lhs->shape_ref_->size != rhs->shape_ref_->size) {
-    return false;
-  }
-  for (size_t i = 0; i < lhs->shape_ref_->size; ++i) {
-    if (lhs->shape_ref_->data[i] != rhs->shape_ref_->data[i]) {
-      return false;
-    }
-  }
-  return true;
-}
-
 size_t VfInstructionCost(const NDObject *node) {
   switch (node->GetObjectType()) {
     case kCompare:
@@ -527,8 +497,7 @@ bool VfSplitPolicy::CanAttemptSplit(const VfPartitionMetrics &metrics) const {
 }
 
 bool VfSplitPolicy::HasValidInterface(const VfPartition &partition) const {
-  return !partition.inputs.empty() && !partition.outputs.empty() &&
-         (g_system.vf_fusion_ == kSameShapeMode || SameShapeAndNdd(partition));
+  return !partition.inputs.empty() && !partition.outputs.empty();
 }
 
 bool VfSplitPolicy::HasSafePlacement(const VfPartition &partition) const {
@@ -894,6 +863,7 @@ VfFusionOp::VfFusionOp(const VfPartition &partition, uint64_t func_id)
   ASSERT(input_count_ > 0 && output_count_ > 0);
   ASSERT(input_count_ + output_count_ <= VfFusionLimits::kMaxIO);
   func_id_ = func_id;
+  shape_ = *partition.outputs.front()->shape_ref_;
   if (input_count_ > 2) {
     xhs_data_.in_num = static_cast<int>(input_count_ - 2);
     xhs_data_.free_mask = 0;
@@ -917,7 +887,10 @@ VfFusionOp::VfFusionOp(const VfPartition &partition, uint64_t func_id)
 
 void VfFusionOp::Normalize(std::vector<NDObject *> &) {
   ndd_.Reset(lhs_->nd_.dims());
-  shape_ = *lhs_->shape_ref_;
+  shape_.Resize(ndd_.size());
+  for (size_t i = 0; i < ndd_.size(); ++i) {
+    shape_[i] = ndd_.dims[ndd_.size() - 1 - i];
+  }
   for (int i = 0; i < xout_data_.out_num; ++i) {
     auto *output = xout_data_.data[i];
     output->type_id_ = xout_types_[i];
@@ -1477,7 +1450,7 @@ std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
   std::vector<WorkingPartition> partitions;
   for (auto it = graph.topological_order.rbegin(); it != graph.topological_order.rend(); ++it) {
     auto *node = *it;
-    if (!IsCapabilityNode(node)) {
+    if (!IsCapabilityNode(node, graph.bb.is_dynamic_)) {
       continue;
     }
     const size_t base = partitions.size();

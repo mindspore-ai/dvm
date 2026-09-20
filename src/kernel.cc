@@ -1059,14 +1059,14 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   code_.block_dim_ = core_limit;
   CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
   auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
-  ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
+  ASSERT(static_cast<uint64_t>(code_end - code_ptr) + SIMD_BLOCK_SIZE <= code_reserve);
   return code_end;
 }
 
 uint8_t *VectorKernel::DoTileGen(int64_t live_peak, uint8_t *code_ptr, uint64_t code_reserve) {
   CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
   auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
-  ASSERT(static_cast<uint64_t>(code_end - code_ptr) <= code_reserve);
+  ASSERT(static_cast<uint64_t>(code_end - code_ptr) + SIMD_BLOCK_SIZE <= code_reserve);
   return code_end;
 }
 

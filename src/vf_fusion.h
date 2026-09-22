@@ -159,6 +159,7 @@ class VfFusionOp final : public CustomOp {
   void Normalize(std::vector<NDObject *> &) override;
   void TileCollect(TileInfo &info) override;
   uint64_t EmitEx(uint64_t *payload) override;
+  NDObject *Clone(CloneHelper &h) override;
 
  private:
   const size_t input_count_;

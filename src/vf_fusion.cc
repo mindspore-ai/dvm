@@ -885,6 +885,30 @@ VfFusionOp::VfFusionOp(const VfPartition &partition, uint64_t func_id)
   }
 }
 
+NDObject *VfFusionOp::Clone(CloneHelper &h) {
+  VfPartition partition;
+  partition.inputs.reserve(input_count_);
+  partition.inputs.push_back(h.GetClone(lhs_));
+  if (input_count_ > 1) {
+    partition.inputs.push_back(h.GetClone(rhs_));
+  }
+  for (size_t i = 2; i < input_count_; ++i) {
+    partition.inputs.push_back(h.GetClone(xhs_data_.data[i - 2]));
+  }
+
+  partition.outputs.reserve(output_count_);
+  partition.outputs.push_back(this);
+  for (int i = 0; i < xout_data_.out_num; ++i) {
+    partition.outputs.push_back(xout_data_.data[i]);
+  }
+
+  auto *clone = new VfFusionOp(partition, func_id_);
+  for (int i = 0; i < xout_data_.out_num; ++i) {
+    h.SetClone(xout_data_.data[i], clone->xout_data_.data[i]);
+  }
+  return clone;
+}
+
 void VfFusionOp::Normalize(std::vector<NDObject *> &) {
   ndd_.Reset(lhs_->nd_.dims());
   shape_.Resize(ndd_.size());

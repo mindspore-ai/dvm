@@ -3010,6 +3010,12 @@ uint64_t _ReduceOp::Emit(VectorKernel &k) {
 
 void _ReduceOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Reduce"; }
 
+NDObject *_ReduceOp::Clone(CloneHelper &h) {
+  auto op = new _ReduceOp(h.GetClone(lhs_), red_op_);
+  op->SetRange(start_dim_, end_dim_);
+  return op;
+}
+
 void _ReduceOp::DimChanged(NDObject *op) {
   auto &input_axis = op->lhs_->nd_;
   auto &output_axis = op->nd_;

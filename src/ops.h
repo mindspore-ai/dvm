@@ -1283,6 +1283,7 @@ class _ReduceOp : public FlexOp {
     MESS(start_dim_, 100);
     MESS(end_dim_, 80);
   }
+  NDObject *Clone(CloneHelper &h) override;
   uint64_t Emit(VectorKernel &k) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
 

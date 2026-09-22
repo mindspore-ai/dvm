@@ -336,6 +336,31 @@ def test_dynamic_long_chain():
     dvm.Device.arch() != "AscendC310",
     reason="VF Fusion only supports C310",
 )
+def test_spec_vf_fusion_clone(request):
+    if run_codegen_in_child(request):
+        return
+    dvm.Kernel.set_vf_fusion(2)
+    shape = (2, 3, 4, 64)
+    input_np = np.random.normal(0.0, 0.03, shape).astype(np.float32)
+
+    t = Tester("vector:spec")
+    t.set_passes("VfFusion")
+    x = t.load(input_np)
+    fused = t.add(t.abs(x), 0.25)
+    reduced = t.sum(fused, (0,), True)
+    t.spec_next()
+    out = t.mul(reduced, 0.5)
+    expect = np.sum(np.abs(input_np) + 0.25, axis=(0,), keepdims=True) * 0.5
+    t.store_expect(out, expect)
+
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(
+    dvm.Device.arch() != "AscendC310",
+    reason="VF Fusion only supports C310",
+)
 def test_reduce_boundary():
     dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)

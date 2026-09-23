@@ -475,3 +475,22 @@ def test_view_store_atomic_sum(in_shape, dims, out_shape, tile_depth, out_stride
         idx = rank_size - i - 1
         t.tile(idx, idx, in_shape[i])
     assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("dtype", [np.float16, np.float32])
+def test_view_load_x_mixed_gather_workspace(dtype):
+    rows, width = 65, 17
+    t = Tester('vector', use_pass_opt=True)
+    rng = np.random.default_rng(42)
+    result, expected = None, None
+    # Exercise every custom mask and overwrite a longer mask with a shorter one.
+    for stride in [2, 3, 5, 6, 8, 4, 7, 3]:
+        data = rng.uniform(-1, 1, size=(rows, 4, width * stride)).astype(dtype)
+        x = t.view_load([4, rows, width], [width * stride, 4 * width * stride, stride], data)
+        x = t.cast(x, 'float32')
+        ref = data[..., ::stride].transpose(1, 0, 2).astype(np.float32)
+        result = x if result is None else t.add(result, x)
+        expected = ref if expected is None else expected + ref
+    t.store_expect(result, expected, 0)
+    assert t.run_check()

@@ -235,12 +235,12 @@ class PassOptimizer {
       mng.insert(mng.end(), bb.news_.begin(), bb.news_.end());
     }
   }
-  void RunD(std::vector<NDObject *> &objects, GraphTracker *tracker) {
+  void RunD(std::vector<NDObject *> &objects, std::vector<NDObject *> &mng, GraphTracker *tracker) {
     auto bb = BasicBlock(objects, tracker, true);
     RunPass(bb, true);
     bb.Export(objects);
-    for (auto op : bb.dels_) {
-      delete op;
+    if (!bb.dels_.empty()) {
+      mng.insert(mng.end(), bb.dels_.begin(), bb.dels_.end());
     }
   }
   virtual void RunPass(BasicBlock &bb, bool dyn_shape) = 0;

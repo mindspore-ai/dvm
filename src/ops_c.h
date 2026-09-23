@@ -61,9 +61,7 @@ class CommOp : public NDObject {
   void SetXbufSize(uint32_t size) { xbuf_size_ = size; }
   void SetCubeOp(CubeOp *op) { cube_op_ = op; }
   void TileReserve(TileInfo &info) {
-    if (info.code_reserve < code_reserve_) {
-      info.code_reserve = code_reserve_;
-    }
+    info.code_reserve += code_reserve_;
     if (info.event_reserve < 2) {
       info.event_reserve = 2;
     }

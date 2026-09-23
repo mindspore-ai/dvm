@@ -1762,6 +1762,9 @@ VKernelS::~VKernelS() {
   for (auto op : build_ops_) {
     delete op;
   }
+  for (auto op : adopt_ops_) {
+    delete op;
+  }
 }
 
 uint64_t VKernelS::CodeGen() {
@@ -1842,7 +1845,7 @@ bool VKernelS::NormBuild() {
   if (IsDynamic()) {
     Clear();
     if (static_ops_.empty()) {
-      Optimize<true>(build_ops_, nullptr);
+      Optimize<true>(build_ops_, adopt_ops_);
       StaticInit(build_ops_);
       SchInit(build_ops_);
     }
@@ -1853,7 +1856,7 @@ bool VKernelS::NormBuild() {
     if (!Normalize(true)) {
       return false;
     }
-    Optimize<false>(build_ops_, nullptr);
+    Optimize<false>(objects_, build_ops_);
     StaticInit(objects_);
     SchInit(objects_);
   }
@@ -1931,21 +1934,23 @@ void _SpecVector::Append(NDObject *obj) {
           if (!red->KeepDims()) {
             in = new ReshapeOp(red, red->shape_ref_);
             VKernelS::Append(in);
-            stage_ids_[in] = last_stage_;
+            in->index_ = stage_ids_.size();
+            stage_ids_.push_back(last_stage_);
           }
           red->insn_ = reinterpret_cast<uint64_t *>(in);
         } else if (!red->KeepDims()) {
           in = reinterpret_cast<NDObject *>(red->insn_);
         }
-      } else if (in->IsLoad() && stage_ids_[in] < 0) {
-        stage_ids_[in] = last_stage_;
+      } else if (in->IsLoad() && stage_ids_[in->index_] < 0) {
+        stage_ids_[in->index_] = last_stage_;
       }
     });
   }
   VKernelS::Append(obj);
+  obj->index_ = stage_ids_.size();
   int sid;
   if (obj->IsStore()) {
-    sid = stage_ids_[obj->lhs_];
+    sid = stage_ids_[obj->lhs_->index_];
   } else if (obj->IsLoad()) {
     sid = -1;
   } else {
@@ -1954,15 +1959,15 @@ void _SpecVector::Append(NDObject *obj) {
       obj->insn_ = nullptr;
     }
   }
-  stage_ids_[obj] = sid;
+  stage_ids_.push_back(sid);
 }
 
 void _SpecVector::Clone(VKernel *base, CloneHelper &helper) {
   auto k = static_cast<_SpecVector *>(base);
   for (size_t i = 0; i < k->build_ops_.size(); ++i) {
     auto op = k->build_ops_[i];
-    if (op->IsSimd() && k->stage_ids_[op] != last_stage_) {
-      ASSERT(k->stage_ids_[op] == last_stage_ + 1);
+    if (op->IsSimd() && k->stage_ids_[i] != last_stage_) {
+      ASSERT(k->stage_ids_[i] == last_stage_ + 1);
       Next();
     }
     Append(op->CloneUpdate(helper));
@@ -2004,7 +2009,8 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
   if constexpr (dyn_shape) {
     Clear();
     if (static_ops_.empty()) {
-      Optimize<true>(build_ops_, nullptr);
+      BuildFallKernel(true);
+      Optimize<true>(build_ops_, adopt_ops_);
       StaticInit(build_ops_);
     }
     if (!Normalize(true)) {
@@ -2018,18 +2024,17 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       return FallCodeGen();
     }
   } else {
-    Optimize<true>(build_ops_, nullptr);  // build_ops_ is refered by stage_ids_, donot use static optimize
+    BuildFallKernel(false);
     if (!Normalize(true)) {
       return FallCodeGen();
     }
-    GraphTracker tracker;
+    Optimize<false>(objects_, build_ops_);
     StaticInit(objects_);
     BuildDomain();
     PrepareTiling();
     live_peak = Analyze();
     tile_size_limit = TileSizeLimit(live_peak);
     if (reduce_fall_check(tile_size_limit)) {
-      tracker.Recover();
       return FallCodeGen();
     }
   }
@@ -2071,8 +2076,7 @@ class RemapKernel : public T {
 #define SET_SSTORE(op, st) do { (op)->insn_ = reinterpret_cast<uint64_t *>(st); } while (0)
 #define GET_SSTORE(op) reinterpret_cast<NDStore *>((op)->insn_)
 
-template <bool dyn_shape>
-uint64_t SpecVector<dyn_shape>::FallCodeGen() {
+void _SpecVector::BuildFallKernel(bool dyn_shape) {
   struct _CloneHelper : public CloneHelper {
     IntArrayRef *GetClone(IntArrayRef *shape) override { return shape; }
     ScalarRef *GetClone(ScalarRef *scalar) override { return scalar; }
@@ -2080,121 +2084,132 @@ uint64_t SpecVector<dyn_shape>::FallCodeGen() {
     void SetClone(NDObject *op, NDObject *clone) {}
     std::vector<NDObject *> clones_;
   };
-  if (fall_kernel_ == nullptr) {
-    {
-      std::vector<int> uf(build_ops_.size());
-      for (size_t i = 0; i < uf.size(); ++i) uf[i] = i;
-      auto Find = [&uf](int i) -> int {
-        while (uf[i] != i) { uf[i] = uf[uf[i]]; i = uf[i]; }
-        return i;
-      };
-      for (size_t i = 0; i < build_ops_.size(); ++i) {
-        auto op = build_ops_[i];
-        op->index_ = i;
-        if (stage_ids_.find(op) == stage_ids_.end()) { // pass opt add new node
-          stage_ids_[op] = stage_ids_[op->lhs_];
-        }
-      }
-      for (size_t i = 0; i < build_ops_.size(); ++i) {
-        build_ops_[i]->ForInput([&](NDObject *in) {
-          auto in_idx = in->index_;
-          while (static_cast<size_t>(in_idx) >= build_ops_.size() || in != build_ops_[in_idx]) {
-            in = in->lhs_;
-            in_idx = in->index_;
-          }
-          if (stage_ids_[build_ops_[in_idx]] == stage_ids_[build_ops_[i]]) {
-            int a = Find(i), b = Find(in->index_);
-            if (a != b) uf[a] = b;
-          }
-        });
-      }
-      std::vector<int> comp_id(build_ops_.size(), -1);
-      int new_sid = 0;
-      for (int s = 0; s <= last_stage_; ++s) {
-        std::vector<int> roots;
-        for (size_t i = 0; i < build_ops_.size(); ++i) {
-          if (stage_ids_[build_ops_[i]] != s) continue;
-          int root = Find(i);
-          int cid = 0;
-          for (; cid < (int)roots.size(); ++cid)
-            if (roots[cid] == root) break;
-          if (cid == (int)roots.size()) roots.push_back(root);
-          comp_id[i] = new_sid + cid;
-        }
-        new_sid += roots.size();
-      }
-      for (size_t i = 0; i < build_ops_.size(); ++i) {
-        if (comp_id[i] >= 0) stage_ids_[build_ops_[i]] = comp_id[i];
-      }
-      last_stage_ = new_sid - 1;
+  {
+    std::vector<int> uf(build_ops_.size());
+    for (size_t i = 0; i < uf.size(); ++i) uf[i] = i;
+    auto Find = [&uf](int i) -> int {
+      while (uf[i] != i) { uf[i] = uf[uf[i]]; i = uf[i]; }
+      return i;
+    };
+    for (auto op : build_ops_) {
+      op->reuse_dep_ = op->IsStore() ? 1 : 0;
     }
-    auto stage_kernel = new RemapKernel<StagesKernel>();
-    if constexpr (dyn_shape) {
-      stage_kernel->SetDynamic();
+    for (auto it = build_ops_.rbegin(); it != build_ops_.rend(); ++it) {
+      if (auto op = *it; op->reuse_dep_) {
+        op->ForInput([](NDObject *in) { in->reuse_dep_ = 1; });
+      }
     }
-    for (int i = 0; i <= last_stage_; ++i) {
-      stage_kernel->AddStage(new std::conditional_t<dyn_shape, VKernelD, VKernelS>());
-    }
-    _CloneHelper  helper;
-    helper.clones_.reserve(build_ops_.size());
     for (size_t i = 0; i < build_ops_.size(); ++i) {
-      auto out_sid = stage_ids_[build_ops_[i]];
-      if (out_sid == -1) continue; // load only
-      auto src_op = build_ops_[i];
-      src_op->index_ = i;
-      if (src_op->obj_id_ == ObjectType::kStore) {
-        if (auto sstore = GET_SSTORE(helper.GetClone(src_op->lhs_))) {
-          stage_kernel->Remap(static_cast<NDAccess *>(sstore), static_cast<NDAccess *>(src_op));
-          helper.clones_.push_back(sstore);
-          auto stage = stage_kernel->StageAt(out_sid);
-          for (auto &ss : stage->sstores_) {
-            if (ss.store == sstore) {
-              ss.is_out = true;
-              break;
-            }
-          }
-          continue;
-        }
+      auto op = build_ops_[i];
+      if (!op->reuse_dep_) {
+        stage_ids_[i] = -1;
       }
-      auto clone_op = src_op->Clone(helper);
-      INIT_SSTORE(clone_op);
-      clone_op->index_ = i;
-      helper.clones_.push_back(clone_op);
-      if (!clone_op->IsSimd()) {
-        stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
-        if (clone_op->obj_id_ == ObjectType::kStore) {
-          SET_SSTORE(clone_op->lhs_, clone_op);
+      op->ForInput([&](NDObject *in) {
+        auto in_idx = in->index_;
+        while (static_cast<size_t>(in_idx) >= stage_ids_.size() || in != build_ops_[in_idx]) {
+          in = in->lhs_;
+          in_idx = in->index_;
         }
-      }
-      clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
-        auto in_sid = stage_ids_[build_ops_[in->index_]];
-        if (in_sid == out_sid) {
-          return;
+        if (stage_ids_[in_idx] == stage_ids_[i]) {
+          int a = Find(i), b = Find(in->index_);
+          if (a != b) uf[a] = b;
         }
-        auto out_stage = stage_kernel->StageAt(out_sid);
-        NDAccess *load;
-        if (in->IsLoad()) {
-          load = static_cast<NDAccess *>(in->Clone(helper));
-          stage_kernel->Remap(load, static_cast<NDAccess *>(build_ops_[in->index_]));
-        } else {
-          auto store = GET_SSTORE(in);
-          if (store == nullptr) {
-            store = new NDStore(in);
-            SET_SSTORE(in, store);
-            auto in_stage = stage_kernel->StageAt(in_sid);
-            in_stage->kernel->Append(store);
-            in_stage->StageStore(store);
-          }
-          load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
-          out_stage->StageLoad(load, store);
-        }
-        out_stage->kernel->Append(load);
-        in = load;
       });
-      stage_kernel->StageAt(out_sid)->kernel->Append(clone_op);
     }
-    fall_kernel_ = stage_kernel;
+    std::vector<int> comp_id(build_ops_.size(), -1);
+    int new_sid = 0;
+    for (int s = 0; s <= last_stage_; ++s) {
+      std::vector<int> roots;
+      for (size_t i = 0; i < build_ops_.size(); ++i) {
+        if (stage_ids_[i] != s) continue;
+        int root = Find(i);
+        int cid = 0;
+        for (; cid < (int)roots.size(); ++cid)
+          if (roots[cid] == root) break;
+        if (cid == (int)roots.size()) roots.push_back(root);
+        comp_id[i] = new_sid + cid;
+      }
+      new_sid += roots.size();
+    }
+    for (size_t i = 0; i < build_ops_.size(); ++i) {
+      if (comp_id[i] >= 0) stage_ids_[i] = comp_id[i];
+    }
+    last_stage_ = new_sid - 1;
   }
+  auto stage_kernel = new RemapKernel<StagesKernel>();
+  if (dyn_shape) {
+    stage_kernel->SetDynamic();
+    for (int i = 0; i <= last_stage_; ++i) {
+      stage_kernel->AddStage(new VKernelD());
+    }
+  } else {
+    for (int i = 0; i <= last_stage_; ++i) {
+      stage_kernel->AddStage(new VKernelS());
+    }
+  }
+  _CloneHelper  helper;
+  helper.clones_.resize(build_ops_.size());
+  for (size_t i = 0; i < build_ops_.size(); ++i) {
+    auto out_sid = stage_ids_[i];
+    if (out_sid == -1) continue; // load only
+    auto src_op = build_ops_[i];
+    src_op->index_ = i;
+    if (src_op->obj_id_ == ObjectType::kStore) {
+      if (auto sstore = GET_SSTORE(helper.GetClone(src_op->lhs_))) {
+        stage_kernel->Remap(static_cast<NDAccess *>(sstore), static_cast<NDAccess *>(src_op));
+        helper.clones_.push_back(sstore);
+        auto stage = stage_kernel->StageAt(out_sid);
+        for (auto &ss : stage->sstores_) {
+          if (ss.store == sstore) {
+            ss.is_out = true;
+            break;
+          }
+        }
+        continue;
+      }
+    }
+    auto clone_op = src_op->Clone(helper);
+    INIT_SSTORE(clone_op);
+    clone_op->index_ = i;
+    helper.clones_[i] = clone_op;
+    if (!clone_op->IsSimd()) {
+      stage_kernel->Remap(static_cast<NDAccess *>(clone_op), static_cast<NDAccess *>(src_op));
+      if (clone_op->obj_id_ == ObjectType::kStore) {
+        SET_SSTORE(clone_op->lhs_, clone_op);
+      }
+    }
+    clone_op->ForInput([this, out_sid, stage_kernel, &helper](NDObject *&in) {
+      auto in_sid = stage_ids_[in->index_];
+      if (in_sid == out_sid) {
+        return;
+      }
+      auto out_stage = stage_kernel->StageAt(out_sid);
+      NDAccess *load;
+      if (in->IsLoad()) {
+        load = static_cast<NDAccess *>(in->Clone(helper));
+        stage_kernel->Remap(load, static_cast<NDAccess *>(build_ops_[in->index_]));
+      } else {
+        auto store = GET_SSTORE(in);
+        if (store == nullptr) {
+          store = new NDStore(in);
+          SET_SSTORE(in, store);
+          auto in_stage = stage_kernel->StageAt(in_sid);
+          in_stage->kernel->Append(store);
+          in_stage->StageStore(store);
+        }
+        load = new NDLoad(nullptr, in->shape_ref_, in->type_id_);
+        out_stage->StageLoad(load, store);
+      }
+      out_stage->kernel->Append(load);
+      in = load;
+    });
+    stage_kernel->StageAt(out_sid)->kernel->Append(clone_op);
+  }
+  fall_kernel_ = stage_kernel;
+}
+
+template <bool dyn_shape>
+uint64_t SpecVector<dyn_shape>::FallCodeGen() {
   use_fall_ = true;
   auto ws_size = fall_kernel_->CodeGen();
   code_ = std::move(fall_kernel_->code_);

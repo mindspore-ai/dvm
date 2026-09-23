@@ -105,7 +105,7 @@ struct TileInfo {
     lead_affine = PropRange::ELEMWISE;
     flags = 0;
     ext_ws = 0;
-    code_reserve = 0;
+    code_reserve = SIMD_BLOCK_SIZE;
     event_reserve = 0;
   }
   int lead_depth;

@@ -171,7 +171,7 @@ class VectorKernel : public VKernel {
   int64_t AnalyzeTileSizeLimit() { return TileSizeLimit(Analyze()); }
 
   uint64_t ReserveCodeSize() const {
-    auto res = SIMD_BLOCK_SIZE + objects_.size() * V_INSN_SIZE_MAX + tile_info_.code_reserve;
+    auto res = objects_.size() * V_INSN_SIZE_MAX + tile_info_.code_reserve;
     return (res + 511ul) & ~511ul;  // 512B align
   }
 
@@ -270,12 +270,12 @@ class VectorKernel : public VKernel {
   int64_t Analyze();
   void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
   template <bool dyn_shape>
-  void Optimize(std::vector<NDObject *> &build_ops, GraphTracker *tracker) {
+  void Optimize(std::vector<NDObject *> &objects, std::vector<NDObject *> &mng) {
     if (auto opt = g_system.pass_opt_) {
       if (dyn_shape) {
-        opt->RunD(build_ops, tracker);
+        opt->RunD(objects, mng, nullptr);
       } else {
-        opt->Run(objects_, build_ops, tracker);
+        opt->Run(objects, mng, nullptr);
       }
     }
   }
@@ -389,6 +389,7 @@ class VKernelS : public VectorKernel {
     int64_t factor;
   };
   std::vector<DimTile> tiles_;
+  std::vector<NDObject *> adopt_ops_;
 };
 
 class VKernelD : public VKernelS {  // TODO: remove VKernelD
@@ -406,9 +407,10 @@ class _SpecVector : public VKernelD {
   void Next() { last_stage_++; }
 
  protected:
+  void BuildFallKernel(bool dyn_shape);
   bool use_fall_{false};
   int last_stage_{0};
-  std::unordered_map<NDObject *, int> stage_ids_;
+  std::vector<int> stage_ids_;
   std::vector<NDObject *> post_reduces_;
   VKernel *fall_kernel_{nullptr};
 };

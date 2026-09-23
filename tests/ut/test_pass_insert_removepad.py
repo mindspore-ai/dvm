@@ -157,10 +157,15 @@ def test_remove_pad_multi_user():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_remove_pad_reduce_sum_after_cast():
+@pytest.mark.parametrize('shape1, shape2', [
+    ((32, 1, 4096, 1), (32, 1, 1, 24)), # no emit pad
+    ((1024, 64, 1), (1024, 1, 5)), # emit pad and cum
+    ((2, 800, 64, 1), (1, 800, 1, 5)), # emit pad only
+])
+def test_remove_pad_reduce_sum_after_cast(shape1, shape2):
     t = Tester()
-    a = np.random.normal(0, 1, (32, 1, 4096, 1)).astype(np.float16)
-    b = np.random.normal(0, 1, (32, 1, 1, 24)).astype(np.float16)
+    a = np.random.normal(0, 1, shape1).astype(np.float16)
+    b = np.random.normal(0, 1, shape2).astype(np.float16)
     expect = np.sum((a + b).astype(np.float32), axis=(0,), keepdims=False)
     x0 = t.load(a)
     x1 = t.load(b)

@@ -384,15 +384,16 @@ void InsertRemovePad(BasicBlock &block) {
       }
       if (iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE) {
         if (obj_id == kReduce) {
-          static_cast<ReduceOp *>(iter->lhs_)->UnsetCum();
+          iter->lhs_->SetFlag(OBJ_FLAG_REDUCE_RMPAD_EN);
+        } else {
+          auto remove_pad = new RemovePadOp(iter->lhs_);
+          remove_pad->nd_ = iter->lhs_->nd_;
+          if (auto tracker = block.Tracker()) {
+            tracker->Record(&iter->lhs_);
+          }
+          iter->lhs_ = remove_pad;
+          block.Insert(iter, remove_pad);
         }
-        auto remove_pad = new RemovePadOp(iter->lhs_);
-        remove_pad->nd_ = iter->lhs_->nd_;
-        if (auto tracker = block.Tracker()) {
-          tracker->Record(&iter->lhs_);
-        }
-        iter->lhs_ = remove_pad;
-        block.Insert(iter, remove_pad);
       }
     }
   }

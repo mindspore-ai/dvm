@@ -668,8 +668,9 @@ bool NDAccess::IsSupportView() const {
   if (obj_id_ == kViewLoad || obj_id_ == kViewStore || obj_id_ == kLoadDummy || obj_id_ == kLoad) {
     return true;
   }
-  if (obj_id_ == kStore && (lhs_->obj_id_ != kReduce || !g_system.deterministic_) && lhs_->obj_id_ != kRemovePad &&
-      lhs_->obj_id_ != kElementAny) {
+  if (obj_id_ == kStore &&
+      (lhs_->obj_id_ != kReduce || (!g_system.deterministic_ && !lhs_->CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN))) &&
+      lhs_->obj_id_ != kRemovePad && lhs_->obj_id_ != kElementAny) {
     return true;
   }
   return false;
@@ -1414,7 +1415,6 @@ uint64_t NDStore::Emit(VectorKernel &k) {
   }
   int64_t lead_align = nd_.lead_stride();
   int64_t lead_dim = nd_.lead_dim();
-  bool no_pad = lhs_->obj_id_ == kRemovePad;
   ASSERT(lead_align == lhs_->nd_.lead_stride());
   uint64_t dst_tile_stride_ = nd_.stride_back() / lead_align * lead_dim;
   if (lhs_->obj_id_ == kElementAny) {
@@ -1472,7 +1472,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
           op.iter_size = 0;
         } else {
           op.iter_size = lead_dim * ITEM_SIZE[type_id_];
-          op.pad_size = no_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+          op.pad_size = lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         }
         op.cond_offset = insn_ - red_op->tail_insn_ - vReduceJoin::STORE_COND_OFFSET;
         op.round_rank = round_tile.size();
@@ -1484,9 +1484,10 @@ uint64_t NDStore::Emit(VectorKernel &k) {
         vStoreAtomic op;
         op.to = addr_.data;
         op.xn = lhs_->xbuf_;
-        op.cum_flag = (!red_op->CheckFlag(OBJ_FLAG_REDUCE_NO_CUM)) && (round_tile.size() & 1);
+        op.cum_flag = red_op->CheckFlag(OBJ_FLAG_REDUCE_EMIT_CUM);
         op.iter_size = lead_dim * ITEM_SIZE[type_id_];
-        op.pad_size = no_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - op.iter_size;
+        op.pad_size =
+          red_op->CheckFlag(OBJ_FLAG_REDUCE_EMIT_RMPAD) ? 0 : lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = nd_.stride_back() / lead_align;
         if (tail_size == 0 || red_op->InRange(k.GetTailDim())) {
           op.iter_tail = op.iter_num;
@@ -1549,7 +1550,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
   }
   vStore op;
   uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
-  uint64_t pad_size = no_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
+  uint64_t pad_size = lhs_->obj_id_ == kRemovePad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
   uint64_t body_iter = nd_.stride_back() / lead_align;
   uint64_t tail_iter;
   if (body_iter == 1) {
@@ -1727,7 +1728,7 @@ uint64_t NDStore::EmitAtomicView(VectorKernel &k, ReduceOp *red) {
   auto &round_tile = red->RoundTile();
   uint64_t rounds[2];
   op.round_rank = round_tile.size();
-  if (!red->CheckFlag(OBJ_FLAG_REDUCE_NO_CUM) && (op.round_rank & 1)) {
+  if (red->CheckFlag(OBJ_FLAG_REDUCE_EMIT_CUM)) {
     BuildDimRounds(round_tile, rounds);
   }
   uint64_t size = vStoreAtomicW::Encode(insn_, V_STORE_ATOMIC_WRAP, op, rounds);
@@ -3189,35 +3190,52 @@ uint64_t ReduceOp::Emit(VectorKernel &k) {
   if (ws_num_ == 2) {
     return EmitDeterm(k);
   }
-  if (CheckFlag(OBJ_FLAG_REDUCE_NO_CUM) || !(round_tile_.size() & 1)) {
+  uint64_t iter_size = ndd_.lead_dim() * ITEM_SIZE[type_id_];
+  bool rm_pad = CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN) && iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE &&
+                ndd_.stride_back() > ndd_.lead_stride();
+  bool cum = round_tile_.size() & 1;
+  if (ws_num_ == 0 || (!rm_pad && !cum)) {
     return _ReduceOp::Emit(k);
   }
   auto out_xbuf = xbuf_;
   xbuf_ = wss_[0];
   uint64_t size = _ReduceOp::Emit(k);
-  vAtomicCum op;
-  uint64_t rounds[2];
-  BuildDimRounds(round_tile_, rounds);
-  op.xd = out_xbuf;
-  op.xn = xbuf_;
   xbuf_ = out_xbuf;
-  op.count = ndd_.stride_back();
-  op.round_rank = round_tile_.size();
-  op.red_op = red_op_;
-  tail_insn_ = insn_ + size;
-  size += vAtomicCum::Encode(tail_insn_, type_id_ == kFloat32 ? V_ATOMICCUM : V_ATOMICCUM_FP16, op, rounds);
-  *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+  int64_t stride_count = ndd_.stride_back();
+  if (rm_pad) {
+    vRemovePad op;
+    op.xd = cum ? wss_[0] : xbuf_;
+    op.xn = wss_[0];
+    op.repeat = stride_count / ndd_.lead_stride();
+    op.iter_num = ndd_.lead_dim();
+    op.rs = GetBlocks(ndd_.lead_stride());
+    tail_insn_ = insn_ + size;
+    size += vRemovePad::Encode(tail_insn_, removepad_id_list[type_id_], op);
+    *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+    flags_ |= OBJ_FLAG_REDUCE_EMIT_RMPAD;
+    stride_count = op.repeat * op.iter_num;
+  }
+  if (cum) {
+    vAtomicCum op;
+    uint64_t rounds[2];
+    BuildDimRounds(round_tile_, rounds);
+    op.xd = xbuf_;
+    op.xn = wss_[0];
+    op.count = stride_count;
+    op.round_rank = round_tile_.size();
+    op.red_op = red_op_;
+    tail_insn_ = insn_ + size;
+    size += vAtomicCum::Encode(tail_insn_, type_id_ == kFloat32 ? V_ATOMICCUM : V_ATOMICCUM_FP16, op, rounds);
+    *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+    flags_ |= OBJ_FLAG_REDUCE_EMIT_CUM;
+  }
   return size;
 }
 
 NDObject *ReduceOp::Clone(CloneHelper &h) {
   NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_.front()->lhs_;
   auto dims_ref = h.GetClone(dims_ref_);
-  auto op = new ReduceOp(h.GetClone(input), red_op_, dims_ref, keepdims_);
-  if (CheckFlag(OBJ_FLAG_REDUCE_NO_CUM)) {
-    op->SetFlag(OBJ_FLAG_REDUCE_NO_CUM);
-  }
-  return op;
+  return new ReduceOp(h.GetClone(input), red_op_, dims_ref, keepdims_);
 }
 
 void ReduceOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {

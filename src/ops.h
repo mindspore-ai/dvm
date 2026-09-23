@@ -416,6 +416,8 @@ class VectorKernel;
 #define OBJ_FLAG_STORE_SHARD_BCAST1 (1u << 14)
 #define OBJ_FLAG_STORE_SHARD_ROUND (1u << 15)
 #define OBJ_FLAG_BROKER_AFFINED (1u << 15)  // reshape, onehot
+#define OBJ_FLAG_REDUCE_EMIT_CUM (1u << 13)
+#define OBJ_FLAG_REDUCE_EMIT_RMPAD (1u << 14)
 
 // static flags
 #define OBJ_FLAG_WORKSPACE (1u << 16)
@@ -431,9 +433,9 @@ class VectorKernel;
 #define OBJ_FLAG_LOAD_BIND (1u << 29)
 #define OBJ_FLAG_LOAD_PINGPONG (1u << 30)
 #define OBJ_FLAG_LOAD_FROM_CUBE (1u << 31)
-#define OBJ_FLAG_REDUCE_NO_CUM (1u << 30)
 #define OBJ_FLAG_VIEW_LOAD_FRACTAL (1u << 31)
 #define OBJ_FLAG_VIEW_LOAD_FRACTAL_ROW_MAJOR (1u << 28)
+#define OBJ_FLAG_REDUCE_RMPAD_EN (1u << 30)
 
 class __export__ NDObject {
  public:
@@ -1332,16 +1334,10 @@ class ReduceOp : public _ReduceOp {
   const DimArray &RoundTile() const { return round_tile_; }
 
   void SetCum() {
-    if (!g_system.deterministic_) {
-      SetWs(1, true);
-      flags_ &= ~OBJ_FLAG_REDUCE_NO_CUM;
-    }
+    if (!g_system.deterministic_) SetWs(1, true);
   }
   void UnsetCum() {
-    if (!g_system.deterministic_) {
-      UnsetWs();
-      flags_ |= OBJ_FLAG_REDUCE_NO_CUM;
-    }
+    if (!g_system.deterministic_) UnsetWs();
   }
 
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);

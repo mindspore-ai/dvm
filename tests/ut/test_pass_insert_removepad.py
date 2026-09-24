@@ -194,3 +194,27 @@ def test_remove_pad_reduce_sum_after_cast_deterministic():
     t.set_passes("InsertRemovePad")
     assert (t.run_check())
     t.set_deterministic(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_remove_pad_dyn_shape():
+    t = Tester("vector:dyn")
+    x0 = t.load([-1, -1, -1], "float32")
+    x1 = t.load([-1, -1, -1], "float32")
+    x2 = t.add(x0, x1)
+    out1 = t.store(x2)
+    x3 = t.mul(x2, 0.5)
+    x4 = t.sum(x3, [2], True)
+    out2 = t.store(x4)
+    t.set_passes("InsertRemovePad")
+    iters = [([40, 2000, 3], [40, 1, 3]), ([40, 2000, 32], [40, 2000, 32]), ([2000, 5, 32], [1, 5, 32])]
+    for shape1, shape2 in iters:
+        ax = np.random.normal(0, 0.1, shape1).astype(np.float32)
+        bx = np.random.normal(0, 0.1, shape2).astype(np.float32)
+        t.input(x0, ax)
+        t.input(x1, bx)
+        t.run()
+        e1 = ax + bx
+        e2 = np.sum(e1 * 0.5, (2,), keepdims=True)
+        assert(t.check(out1, e1))
+        assert(t.check(out2, e2, 1e-4))

@@ -67,16 +67,12 @@ class SchGenHelper : public VectorSchedule {
   }
  protected:
   void AllocStride(NDAccess *acc);
-  void ResetStrides() {
-    for (size_t i = 0; i < ext_stride_used_; ++i) {
-      ext_strides_[i].acc->stride_ = nullptr;
-    }
-    ext_stride_used_ = 0;
-  }
+  void ResetStrides();
 
   struct ExtStride {
     NDAccess *acc;
     DimArray stride;
+    NDObject *rm_pad{nullptr};
   };
   size_t ext_stride_used_{0};
   std::vector<ExtStride> ext_strides_;

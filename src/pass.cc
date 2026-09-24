@@ -341,7 +341,86 @@ void ReorderLoad(BasicBlock &block) {
   }
 }
 
+namespace {
+class RmPadStore final : public NDStore {
+ public:
+  RmPadStore(NDStore *store) : NDStore(store->addr_.gm, store->lhs_), store_(store) {
+    rm_pad_ = new RemovePadOp(store->lhs_);
+  }
+  ~RmPadStore() override { delete rm_pad_; }
+  void Normalize(std::vector<NDObject *> &run_ops) override {
+    lhs_ = rm_pad_->lhs_;
+    if (NeedRemovePad(lhs_)) {
+      rm_pad_->Normalize(run_ops);
+      run_ops.push_back(rm_pad_);
+      lhs_ = rm_pad_;
+    }
+    NDStore::Normalize(run_ops);
+  }
+  uint64_t Emit(VectorKernel &k) override {
+    auto size = NDStore::Emit(k);
+    store_->addr_.Update(addr_);
+    return size;
+  }
+  bool NeedRemovePad(NDObject *input) {
+    constexpr uint64_t kMinSizeLimit = 2048;
+    if (auto &dims = input->nd_.dims(); !dims.empty()) {
+      for (size_t i = 0; i < dims.size() - 1; ++i) {
+        if (dims[i] != 1) {
+          uint64_t lead_size = dims[i] * ITEM_SIZE[type_id_];
+          if (lead_size % SIMD_BLOCK_SIZE && lead_size < SIMD_REPEAT_SIZE) {
+            uint64_t total_size = lead_size;
+            for (size_t j = i + 1; j < dims.size(); ++j) {
+              total_size *= dims[j];
+            }
+            if (total_size > g_system.CoreNum() * kMinSizeLimit) {
+              return true;
+            }
+          }
+          break;
+        }
+      }
+    }
+    return false;
+  }
+  NDStore *store_;
+  RemovePadOp *rm_pad_;
+};
+} // namespace
+
 void InsertRemovePad(BasicBlock &block) {
+  if (block.is_dynamic_) {
+    bool fold_reject = false;
+    for (auto op = block.Begin(); op != block.End(); op = block.Next(op)) {
+      auto obj_type = op->GetObjectType();
+      if (obj_type == kConcat || obj_type == kSplitOp) {
+        return;
+      }
+      if (obj_type == kBroadcastTo || obj_type == kReduce) {
+        fold_reject = true;
+      }
+    }
+    if (fold_reject) {
+      for (auto op = block.Begin(); op != block.End(); op = block.Next(op)) {
+        if (op->GetObjectType() != kStore) continue;
+        auto input = op->lhs_;
+        if (uint64_t item_size = ITEM_SIZE[input->type_id_]; item_size != 2 && item_size != 4) {
+          continue;
+        }
+        if (input->obj_id_ == kReduce) {
+          if (!g_system.deterministic_) {
+            input->SetFlag(OBJ_FLAG_REDUCE_RMPAD_EN);
+          }
+        } else if (input->obj_id_ != kElementAny) {
+          auto store = new RmPadStore(static_cast<NDStore *>(op));
+          block.Insert(op, store);
+          block.Erase(op);
+          op = store;
+        }
+      }
+    }
+    return;
+  }
   size_t max_depth = 1;
   auto min_type_id = kDataTypeEnd;
   for (NDObject *op = block.Begin(); op != block.End(); op = block.Next(op)) {
@@ -352,7 +431,6 @@ void InsertRemovePad(BasicBlock &block) {
     max_depth = std::max(max_depth, op->nd_.size());
     min_type_id = std::min(min_type_id, op->type_id_);
   }
-
   TileInfo info;
   info.Reset(max_depth);
   for (NDObject *op = block.Begin(); op != block.End(); op = block.Next(op)) {

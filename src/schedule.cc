@@ -185,6 +185,32 @@ void SchGenHelper::AllocStride(NDAccess *acc) {
     ext.stride[i] = cur_stride;
     cur_stride *= dims[i];
   }
+  ext.rm_pad = nullptr;
+  if (acc->obj_id_ == kStore) {
+    auto input = acc->lhs_;
+    if (input->obj_id_ == kRemovePad) {
+      acc->lhs_ = input->lhs_;
+      ext.rm_pad = input;
+    } else if (input->CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN)) {
+      input->flags_ &= ~OBJ_FLAG_REDUCE_RMPAD_EN;
+      ext.rm_pad = acc;
+    }
+  }
+}
+
+void SchGenHelper::ResetStrides() {
+  for (size_t i = 0; i < ext_stride_used_; ++i) {
+    auto &ext = ext_strides_[i];
+    ext.acc->stride_ = nullptr;
+    if (ext.rm_pad) {
+      if (ext.acc->lhs_->obj_id_ == kReduce) {
+        ext.acc->lhs_->SetFlag(OBJ_FLAG_REDUCE_RMPAD_EN);
+      } else {
+        ext.acc->lhs_ = ext.rm_pad;
+      }
+    }
+  }
+  ext_stride_used_ = 0;
 }
 
 FractalSchGen::FractalSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {

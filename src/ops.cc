@@ -668,9 +668,7 @@ bool NDAccess::IsSupportView() const {
   if (obj_id_ == kViewLoad || obj_id_ == kViewStore || obj_id_ == kLoadDummy || obj_id_ == kLoad) {
     return true;
   }
-  if (obj_id_ == kStore &&
-      (lhs_->obj_id_ != kReduce || (!g_system.deterministic_ && !lhs_->CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN))) &&
-      lhs_->obj_id_ != kRemovePad && lhs_->obj_id_ != kElementAny) {
+  if (obj_id_ == kStore && (lhs_->obj_id_ != kReduce || !g_system.deterministic_) && lhs_->obj_id_ != kElementAny) {
     return true;
   }
   return false;
@@ -1550,7 +1548,8 @@ uint64_t NDStore::Emit(VectorKernel &k) {
   }
   vStore op;
   uint64_t iter_size = lead_dim * ITEM_SIZE[type_id_];
-  uint64_t pad_size = lhs_->obj_id_ == kRemovePad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
+  bool rm_pad = lhs_->obj_id_ == kReduce ? lhs_->CheckFlag(OBJ_FLAG_REDUCE_EMIT_RMPAD) : lhs_->obj_id_ == kRemovePad;
+  uint64_t pad_size = rm_pad ? 0 : lead_align * ITEM_SIZE[type_id_] - iter_size;
   uint64_t body_iter = nd_.stride_back() / lead_align;
   uint64_t tail_iter;
   if (body_iter == 1) {
@@ -3184,11 +3183,8 @@ void ReduceOp::Tile(const TileParam &tp) {
 
 uint64_t ReduceOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
-  if (round_tile_.empty()) {
-    return _ReduceOp::Emit(k);
-  }
   if (ws_num_ == 2) {
-    return EmitDeterm(k);
+    return round_tile_.empty() ? _ReduceOp::Emit(k) : EmitDeterm(k);
   }
   uint64_t iter_size = ndd_.lead_dim() * ITEM_SIZE[type_id_];
   bool rm_pad = CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN) && iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE &&

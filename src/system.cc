@@ -579,6 +579,7 @@ void System::DoInit() {
     (void)aclFinalize();
   });
 #endif
+  pass_opt_ = pass::CreateOptimizer(arch_);
   auto acl_handle = dlopen("libascendcl.so", RTLD_LAZY | RTLD_LOCAL);
 #ifndef VK_SIM_MODEL
   auto ret = MsprofRegisterCallback(0, ProfCommandHandler);
@@ -677,7 +678,6 @@ void System::DoInit() {
   err |= get_function(bin_handle, "dvm", &func_handles_[Code::kTargetMix]);
   EXCEPTION_IF(err != ACL_SUCCESS, "reg mix failed");
   code_launch_ = arch_ == kAiCore_C220 ? CodeLaunchACL_C220 : CodeLaunchACL_C310;
-  pass_opt_ = pass::CreateOptimizer(arch_);
 }
 
 System::~System() {

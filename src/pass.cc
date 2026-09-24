@@ -845,21 +845,15 @@ class PassOptimizerC220 : public PassOptimizer {
  public:
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
     DeadCodeEliminate(bb);
-    if (dyn_shape) {
-      EliminateDiamondView(bb);
-      CompactPeakLiveness(bb);
-      VectorDoubleBuffer(bb);
-      ReorderLoad(bb);
-      ReorderStore(bb);
-    } else {
+    if (!dyn_shape) {
       EliminateReshape(bb);
-      EliminateDiamondView(bb);
-      CompactPeakLiveness(bb);
-      VectorDoubleBuffer(bb);
-      ReorderLoad(bb);
-      ReorderStore(bb);
-      InsertRemovePad(bb);
     }
+    EliminateDiamondView(bb);
+    CompactPeakLiveness(bb);
+    VectorDoubleBuffer(bb);
+    ReorderLoad(bb);
+    ReorderStore(bb);
+    InsertRemovePad(bb);
   }
 };
 
@@ -867,22 +861,15 @@ class PassOptimizerC310 : public PassOptimizer {
  public:
   void RunPass(BasicBlock &bb, bool dyn_shape) override {
     DeadCodeEliminate(bb);
-    if (dyn_shape) {
-      EliminateDiamondView(bb);
-      CompactPeakLiveness(bb);
-      VfFusion(bb);
-      VectorDoubleBuffer(bb);
-      ReorderLoad(bb);
-      ReorderStore(bb);
-    } else {
+    if (!dyn_shape) {
       EliminateReshape(bb);
-      EliminateDiamondView(bb);
-      CompactPeakLiveness(bb);
-      VfFusion(bb);
-      VectorDoubleBuffer(bb);
-      ReorderLoad(bb);
-      ReorderStore(bb);
     }
+    EliminateDiamondView(bb);
+    CompactPeakLiveness(bb);
+    VfFusion(bb);
+    VectorDoubleBuffer(bb);
+    ReorderLoad(bb);
+    ReorderStore(bb);
   }
 };
 

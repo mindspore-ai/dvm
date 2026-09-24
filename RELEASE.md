@@ -2,6 +2,20 @@
 
 ---
 
+### r2.11(2026.9.24: a9b23a6c)
++ add view schedule: slice/concat/split fusion. fractal transpose. dup tiling for unfriendly inner axis.
++ add c310 affinity: add vf fusion support. add simt support(gatherload). c310 insn optimize(viewload/viewstore/broadcast).
++ optimize dynamic shape: add dynamic shape optimize pass support. add lazy tuner support.
++ ops: add custom op support. add int64 support for some op. add permute(spec only).
++ cube: (c220) support ND2NZ for large input stride. Improve MatMul splitk cache budgeting.
++ pass: add dce. add double buffer.
++ kernel: vkernele support lazy codegen to optimize codegen overhead.
++ codegen: remove redundant stuff broadcast. use removepad to optimize broadcastx.
++ tuner: gen cache key with block align. add lazy tuner max table limit.
++ dfx: extract DumpR from Dump. add inspect support.
++ makefile: support no gcc compiler such as clang.
++ refactor: implement padstore by viewstore. support emit view of load/store. add TileRegion and extract TileGen for VectorKernel. add PassOptimizer.
+
 ### r2.10(2026.5.14: 76d7c4a1)
 + new kernel support: auto speculation vector kernel. symbolic graph kernel. stagekernel support nested use.
 + view ops: new support of view store. new support of view load x. view load support ub broadcast reuse.

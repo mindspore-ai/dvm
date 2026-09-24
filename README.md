@@ -8,7 +8,7 @@
 #### 项目介绍
 DVM(Device Virtual Machine)是当前业界唯一的微秒级实时AI算子编译和执行框架，可以实现对深度神经网络中的手写或融合算子在运行时根据具体Shape做实时算子编译和执行。通过实时编译技术，使得DVM可以原生支持动态Shape、动态图等动态网络场景的高性能图算融合和算子执行。除此之外，DVM也可以用于静态Shape图算融合、自定义手写算子等其它传统算子执行优化场景。当前，DVM已应用于[MindSpore](https://gitcode.com/mindspore/mindspore)、[TorchNPU](https://gitcode.com/Ascend/pytorch)等多个下游AI框架，用于实现图模式或Eager模式的自动图算融合优化。对于大部分网络场景，都可获得较为显著的整网融合性能收益。
 
-DVM支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构
+DVM支持Ascend NPU硬件，并覆盖c220、c310系列芯片架构。
 
 #### 环境配置
 DVM支持在linux下进行编译执行，并依赖如下环境配置：
@@ -28,18 +28,17 @@ DVM支持在linux下进行编译执行，并依赖如下环境配置：
    cd dvm
    source env.sh
    ```
-3. DVM编译, 生成DVM库(libdvm.a)以及pybind接口库(_dvm_py.so)：
+3. DVM编译: 生成DVM库(libdvm.a)以及pybind接口库(_dvm_py.so)。
    ```bash
    make -j32
    ```
-   Host侧编译器由`CXX`指定；不设置时使用Make默认的`g++`。例如使用Clang编译：
+   如果需要使用非g++编译器进行host代码编译，可以通过`CXX`环境变量进行指定，例如：
    ```bash
    CXX=clang++ make -j32
    ```
-   集成到其它C++工程时，DVM与上层工程应使用ABI兼容的C++标准库和编译选项。
-4. DVM验证执行。包括基于DVM相关接口定义算子计算逻辑以及执行算子。 DVM当前支持两种使用方式：
+4. DVM执行：基于DVM接口实现算子计算逻辑的定义表达，然后进行下发执行。 DVM当前支持两种表达和执行方式：
    + 使用python接口: 如 ```python examples/01_add.py```。 这种方式主要用于DVM功能验证或自定义算子表达；
-   + 使用C++接口: 需要用户程序包含libdvm.a, 并基于DVM的C++接口进行算子定义和执行。具体示例可参考: [cc example](examples/cc/README.md)
+   + 使用C++接口: 需要用户程序包含libdvm.a, 并基于DVM的C++接口进行算子定义和执行。可参考示例: [cc example](examples/cc/README.md)。
 
 
 #### 贡献

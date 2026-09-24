@@ -185,13 +185,12 @@ void SchGenHelper::AllocStride(NDAccess *acc) {
     ext.stride[i] = cur_stride;
     cur_stride *= dims[i];
   }
-  ext.rm_pad = nullptr;
   if (acc->obj_id_ == kStore) {
     auto input = acc->lhs_;
     if (input->obj_id_ == kRemovePad) {
       acc->lhs_ = input->lhs_;
       ext.rm_pad = input;
-    } else if (input->CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN)) {
+    } else if (input->obj_id_ == kReduce && input->CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN)) {
       input->flags_ &= ~OBJ_FLAG_REDUCE_RMPAD_EN;
       ext.rm_pad = acc;
     }
@@ -208,6 +207,7 @@ void SchGenHelper::ResetStrides() {
       } else {
         ext.acc->lhs_ = ext.rm_pad;
       }
+      ext.rm_pad = nullptr;
     }
   }
   ext_stride_used_ = 0;

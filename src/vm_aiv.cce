@@ -2106,13 +2106,17 @@ TILE_LOOP:
     if (count == 1) {
       tile |= 1ul << V_TILE_END_FLAG_OFFSET;
     }
+    uint64_t back_wait_mask = IsBeginTile(tile) ? 0 : (1ul << V_HEAD_BACK_WAIT_OFFSET);
+    uint64_t back_set_mask = IsEndTile(tile) ? 0 : (1ul << V_HEAD_BACK_SET_OFFSET);
     bcodeptr_t pc = reinterpret_cast<bcodeptr_t >(VA_BCODE_BASE_UB);
     for (uint64_t head = *pc; head != 0; head = *pc) {
+      bcodeptr_t op_pc = pc;
       if (head & (0x1ul << V_HEAD_SIMD_FLAG_OFFSET)) {
+        pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
         if (head & (0x1ul << V_HEAD_BAR_FLAG_OFFSET)) {
           pipe_barrier(PIPE_V);
         }
-        if ((head & (0x1ul << V_HEAD_BACK_WAIT_OFFSET)) && !IsBeginTile(tile)) {
+        if (head & back_wait_mask) {
           event_t event = event_t((head >> V_HEAD_B_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           wait_flag(PIPE_MTE3, PIPE_V, event);
         }
@@ -2120,19 +2124,18 @@ TILE_LOOP:
           event_t event = event_t((head >> V_HEAD_WAIT_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           wait_flag(PIPE_MTE2, PIPE_V, event);
         }
-        ((OpFunc)(GetFunc(head >> V_HEAD_ID_OFFSET, main_addr)))(pc, head, tile);
+        ((OpFunc)(GetFunc(head >> V_HEAD_ID_OFFSET, main_addr)))(op_pc, head, tile);
         if (head & (0x1ul << V_HEAD_SET_FLAG_OFFSET)) {
           event_t event = event_t((head >> V_HEAD_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           set_flag(PIPE_V, PIPE_MTE3, event);
         }
-        if ((head & (0x1ul << V_HEAD_BACK_SET_OFFSET)) && !IsEndTile(tile)) {
+        if (head & back_set_mask) {
           event_t event = event_t((head >> V_HEAD_B_SET_EVENT_OFFSET) & V_HEAD_EVENT_MASK);
           set_flag(PIPE_V, PIPE_MTE2, event);
         }
-        pc += (head >> V_HEAD_SIZE_OFFSET) & V_HEAD_SIZE_MASK;
       } else {
-        ((OpFunc)(GetFunc(head >> V_HEAD_ID_OFFSET, main_addr)))(pc, head, tile);
         pc += (head >> V_M_HEAD_SIZE_OFFSET) & V_M_HEAD_SIZE_MASK;
+        ((OpFunc)(GetFunc(head >> V_HEAD_ID_OFFSET, main_addr)))(op_pc, head, tile);
       }
     }
     tile |= 1ul << V_TILE_N_BEGIN_FLAG_OFFSET;

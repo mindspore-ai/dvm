@@ -979,8 +979,8 @@ class _BinaryNormalizer {
   _BinaryNormalizer() = default;
   ~_BinaryNormalizer();
   void Normalize(NDObject *self, std::vector<NDObject *> &run_ops);
-  std::vector<NDObject *> lhs_stuff_ops_;
-  std::vector<NDObject *> rhs_stuff_ops_;
+  NDObject *lhs_stuff_{nullptr};
+  NDObject *rhs_stuff_{nullptr};
   ShapeWithRef shape_;
 };
 
@@ -1071,7 +1071,7 @@ class SelectOp : public FlexOp {
 
  private:
   XhsN<1> xhs_data_;
-  std::vector<NDObject *> stuff_ops_[3];
+  NDObject *stuff_ops_[3] = {nullptr};
   ShapeWithRef shape_;
 };
 
@@ -1207,44 +1207,29 @@ class SliceOp : public NDObject {
   ShapeWithRef shape_;
 };
 
-class _BroadcastOp : public FlexOp {
- public:
-  explicit _BroadcastOp(NDObject *input) : FlexOp(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
-    nd_.data = &ndd_;
-  }
-  ~_BroadcastOp() override = default;
-  uint64_t Emit(VectorKernel &k) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-  void SetRemovePad() { SetWs(1, true); }
-  void UnsetRemovePad() { UnsetWs(); }
-
-  static void TileCollect(NDObject *op, TileInfo &info);
-  static void FoldProp(NDObject *op, PropRange &range);
-
-  NDSpaceData ndd_;
-
- private:
-  uint64_t EmitBroadcastX(uint64_t *p, int end_dim);
-  uint64_t EmitBroadcastY(uint64_t *p, int start_dim, int end_dim);
-};
-
 // expect shape is align: equal rank
-class BroadcastOp : public _BroadcastOp {
+class BroadcastOp : public FlexOp {
  public:
-  BroadcastOp(NDObject *input, IntArrayRef *shape_ref) : _BroadcastOp(input) {
+  BroadcastOp(NDObject *input, IntArrayRef *shape_ref)
+      : FlexOp(input, nullptr, input->type_id_, ObjectType::kBroadcastTo) {
+    nd_.data = &ndd_;
     dst_shape_ref_ = shape_ref;
     shape_ref_ = &shape_;
   }
-  ~BroadcastOp() override;
   void Normalize(std::vector<NDObject *> &run_ops) override;
+  uint64_t Emit(VectorKernel &k) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
   NDObject *Clone(CloneHelper &h) override;
 
+  static void TileCollect(NDObject *op, TileInfo &info);
+  static void FoldProp(NDObject *op, PropRange &range);
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
  private:
-  std::vector<NDObject *> stuff_ops_;
+  NDSpaceData ndd_;
   IntArrayRef *dst_shape_ref_;
   ShapeWithRef shape_;
+  uint32_t range_num_;
 };
 
 class BroadcastScalarOp : public NDObject {

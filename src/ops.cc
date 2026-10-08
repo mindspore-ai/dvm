@@ -2670,7 +2670,7 @@ uint64_t BroadcastOp::Emit(VectorKernel &k) {
       lead_num *= iter_num;
       iter_num = 1;
     }
-    if (ws_num_ > 0 && iter_num > 1 && lead_pad > 0) {
+    if (g_system.Arch() == kAiCore_C220 && ws_num_ > 0 && iter_num > 1 && lead_pad > 0) {
       uint64_t pad_out = wss_[0];
       if (!(ridx & 2)) {
         std::swap(xout, pad_out);

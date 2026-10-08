@@ -590,59 +590,56 @@ __aicore_inline__ void BroadcastX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   __ubuf__ T *xn = (__ubuf__ T *)(op.xn);
   uint64_t count = op.count;
   uint64_t rs = count >> BlockDataShift(T);
-  uint64_t tail = (op.lead_num & 7);
-  for (uint64_t i = 0; i < op.iter_num; ++i) {
-    // Use 254 (not 255) to avoid 32B misalignment when xn is uint16_t.
-    uint64_t repeat = op.lead_num >> 3;
-    for (; repeat > 254; repeat -= 254) {
-      vbrcb(xd, xn, rs, rs * VBRCB_NUM, 254);
-      xd += count * 254 * VBRCB_NUM;
-      xn += 254 * VBRCB_NUM;
+  uint64_t full_repeat = op.lead_num >> 3;
+  uint64_t tail = op.lead_num & 7;
+  set_vector_mask(0, count);
+  if (full_repeat != 0) {
+    for (uint64_t i = 0; i < op.iter_num; ++i) {
+      // Use 254 (not 255) to avoid 32B misalignment when xn is uint16_t.
+      uint64_t repeat = full_repeat;
+      for (; repeat > 254; repeat -= 254) {
+        vbrcb(xd, xn, rs, rs * VBRCB_NUM, 254);
+        xd += count * 254 * VBRCB_NUM;
+        xn += 254 * VBRCB_NUM;
+      }
+      vbrcb(xd, xn, rs, rs * VBRCB_NUM, repeat);
+      xd += count * (repeat * VBRCB_NUM + tail);
+      xn += repeat * VBRCB_NUM + tail + op.lead_pad;
     }
-    vbrcb(xd, xn, rs, rs * VBRCB_NUM, repeat);
-    xd += count * (repeat * VBRCB_NUM + tail);
-    xn += repeat * VBRCB_NUM + tail + op.lead_pad;
+    if (count > TYPE_SHIFT(T)) {
+      xd = (__ubuf__ T *)(op.xd);
+      pipe_barrier(PIPE_V);
+      for (uint64_t i = 0; i < op.iter_num; ++i) {
+        uint64_t repeat = full_repeat * VBRCB_NUM;
+        for (; repeat > 255; repeat -= 255) {
+          vcopy(xd, xd, 255, 1, 0, rs, rs);
+          xd += 255 * count;
+        }
+        vcopy(xd, xd, repeat, 1, 0, rs, rs);
+        xd += (repeat + tail) * count;
+      }
+    }
   }
+  // Expand tail rows directly from the compact workspace blocks.
   if (tail > 0) {
-    xd = (__ubuf__ T *)(op.xd);
-    xn = (__ubuf__ T *)(op.xn);
+    uint64_t dst_step = count * op.lead_num;
+    uint64_t src_step = op.lead_num + op.lead_pad;
+    xd = (__ubuf__ T *)(op.xd) + count * (full_repeat * VBRCB_NUM);
+    xn = (__ubuf__ T *)(op.xn) + full_repeat * VBRCB_NUM;
     __ubuf__ T *ws = (__ubuf__ T *)(WORKSPACE);
     for (uint64_t i = 0; i < op.iter_num; ++i) {
-      uint64_t repeat = op.lead_num >> 3;
-      xd += count * repeat * VBRCB_NUM;
-      xn += repeat * VBRCB_NUM;
       pipe_barrier(PIPE_V);
-      if constexpr (sizeof(T) == sizeof(uint16_t)) {
-        if (repeat & 1ul) {
-          vbrcb(ws, xn - VBRCB_NUM, 1, 8, 2);
-          pipe_barrier(PIPE_V);
-          copy_ubuf_to_ubuf(xd, ws + BlockNum(T), 0, tail, 1, 0, rs - 1);
-        } else {
-          vbrcb(ws, xn, 1, 0, 1);
-          pipe_barrier(PIPE_V);
-          copy_ubuf_to_ubuf(xd, ws, 0, tail, 1, 0, rs - 1);
-        }
+      if (sizeof(T) == sizeof(uint16_t) && (full_repeat & 1ul)) {
+        vbrcb(ws, xn - VBRCB_NUM, 1, 8, 2);
+        pipe_barrier(PIPE_V);
+        vcopy(xd, ws + BlockNum(T), tail, 1, 0, rs, 1);
       } else {
         vbrcb(ws, xn, 1, 0, 1);
         pipe_barrier(PIPE_V);
-        copy_ubuf_to_ubuf(xd, ws, 0, tail, 1, 0, rs - 1);
+        vcopy(xd, ws, tail, 1, 0, rs, 1);
       }
-      xd += count * tail;
-      xn += tail + op.lead_pad;
-    }
-  }
-  if (count > TYPE_SHIFT(T)) {
-    set_vector_mask(0, count);
-    xd = (__ubuf__ T *)(op.xd);
-    pipe_barrier(PIPE_V);
-    for (uint64_t i = 0; i < op.iter_num; ++i) {
-      uint64_t repeat = op.lead_num;
-      for (; repeat > 255; repeat -= 255) {
-        vcopy(xd, xd, 255, 1, 0, rs, rs);
-        xd += 255 * count;
-      }
-      vcopy(xd, xd, repeat, 1, 0, rs, rs);
-      xd += repeat * count;
+      xd += dst_step;
+      xn += src_step;
     }
   }
 }

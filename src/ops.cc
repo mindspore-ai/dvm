@@ -465,8 +465,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_IP | F_NS | F_LR | F_DM, nullptr, nullptr, nullptr},                                // BinaryS
     {kGenFlex, F_DM, nullptr, BroadcastOp::FoldProp, BroadcastOp::TileCollect, BroadcastOp::ShapeProp},  // BroadcastTo
     {kGenSimd0, F_IP, nullptr, nullptr, nullptr},                                                        // BroadcastS
-    {kGenFlex, F_LR | F_LD, _ReduceOp::DimChanged, _ReduceOp::FoldProp, _ReduceOp::TileCollect,
-     ReduceOp::ShapeProp},                                                                   // Reduce
+    {kGenFlex, F_LR | F_LD, nullptr, ReduceOp::FoldProp, ReduceOp::TileCollect, ReduceOp::ShapeProp},    // Reduce
     {kGenSimd3, F_IP | F_NS | F_LR | F_RR, nullptr, nullptr, nullptr, SelectOp::ShapeProp},   // Select
     {kGenSimd1, F_LD, nullptr, nullptr, nullptr},                                            // ElemAny
     {kGenSimd1, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr},                              // RemovePad
@@ -1423,7 +1422,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
         op.pad_size =
           red_op->CheckFlag(OBJ_FLAG_REDUCE_EMIT_RMPAD) ? 0 : lead_align * ITEM_SIZE[type_id_] - op.iter_size;
         op.iter_num = nd_.stride_back() / lead_align;
-        if (tail_size == 0 || red_op->InRange(k.GetTailDim())) {
+        if (tail_size == 0 || !red_op->nd_.data->PointwiseTile(k.GetTailDim())) {
           op.iter_tail = op.iter_num;
         } else {
           ASSERT(op.iter_num > 1);  // inner reduce is divided. outer reduce is not lead
@@ -1662,8 +1661,9 @@ uint64_t NDStore::EmitAtomicView(VectorKernel &k, ReduceOp *red) {
   op.atomic_type = GetAtomicStoreType(type_id_);
   auto &round_tile = red->RoundTile();
   uint64_t rounds[2];
-  op.round_rank = round_tile.size();
+  op.round_rank = 0;
   if (red->CheckFlag(OBJ_FLAG_REDUCE_EMIT_CUM)) {
+    op.round_rank = round_tile.size();
     BuildDimRounds(round_tile, rounds);
   }
   uint64_t size = vStoreAtomicW::Encode(insn_, V_STORE_ATOMIC_WRAP, op, rounds);
@@ -2841,44 +2841,90 @@ void BroadcastInt64ScalarOp::Dump(bool verbose, std::ostringstream &oss) {
   }
 }
 
-void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
+void ReduceOp::FoldProp(NDObject *op, PropRange &range) {
   auto &lhs_nd = op->lhs_->nd_;
-  auto &ndd = static_cast<_ReduceOp *>(op)->ndd_;
+  auto &ndd = static_cast<ReduceOp *>(op)->ndd_;
   BroadReduceFoldProp<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, range);
 }
 
-void _ReduceOp::TileCollect(NDObject *op, TileInfo &info) {
-  auto self = static_cast<_ReduceOp *>(op);
+void ReduceOp::TileCollect(NDObject *op, TileInfo &info) {
+  auto self = static_cast<ReduceOp *>(op);
   if (self->ws_num_ == 2 && info.event_reserve < 2) {
     info.event_reserve = 2;
   }
   auto &lhs_nd = self->lhs_->nd_;
   auto &ndd = self->ndd_;
+  int range_num = 0;
+  bool in_red = false;
+  for (size_t i = 0; i < ndd.size(); ++i) {
+    if (!in_red) {
+      if (ndd[i] != lhs_nd[i]) {
+        in_red = true;
+        range_num++;
+      }
+    } else if (ndd[i] != 1) {
+      in_red = false;
+    }
+  }
+  if (range_num > 1) {
+    info.code_reserve += sizeof(uint64_t) * 3 * range_num;
+  }
   BroadReduceTileCollect<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, info);
   info.flags = ObjectMeta::kSimdDim;
 }
 
-uint64_t _ReduceOp::Emit(VectorKernel &k) {
-  if (ndd_.strides.empty()) {
-    ndd_.UpdateStride(k.LeadAlign());
+uint64_t ReduceOp::EmitBody(VectorKernel &k, uint64_t xbuf, uint64_t xws) {
+  DimArray ranges;
+  int ridx = 0;
+  for (size_t i = 0; i < ndd_.size(); ++i) {
+    if ((ridx & 1) == 0) {
+      if (ndd_[i] != lhs_->nd_[i]) {
+        ranges[ridx++] = i;
+      }
+    } else if (ndd_[i] > 1) {
+      ranges[ridx++] = i - 1;
+    }
   }
-  ASSERT(red_op_ < ReduceType::kReduceTypeEnd);
-  if (ndd_.lead_dim() == lhs_->nd_.lead_dim() && ndd_.stride_back() == lhs_->nd_.stride_back()) {
-    return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
-  } else if (start_dim_ <= lhs_->nd_.lead_idx()) {  // reduce x
-    ASSERT(start_dim_ >= 0 && end_dim_ >= 0);
+  if (ridx == 0) {
+    return EmitCopy(insn_, xbuf, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
+  }
+  if (ridx & 1) {
+    ranges[ridx++] = ndd_.size() - 1;
+  }
+  uint64_t tail_size = k.GetTailSize(lhs_->nd_.data);
+  int tail_dim = k.GetTailDim();
+  auto emit_reduce_y = [this, &ranges, tail_size, tail_dim](uint64_t *insn, int64_t eidx, uint64_t xd, uint64_t xn) {
+    auto start_dim = ranges[eidx];
+    auto end_dim = ranges[eidx + 1];
+    vReduceY op;
+    op.xd = xd;
+    op.xn = xn;
+    op.iter_size = ndd_.stride(start_dim);
+    op.red_size = lhs_->nd_.stride(end_dim) / lhs_->nd_.stride(start_dim - 1);
+    ASSERT(op.red_size > 1);
+    if (tail_size > 0 && tail_dim >= start_dim && tail_dim <= end_dim) {
+      op.red_tail = op.red_size / lhs_->nd_[tail_dim] * tail_size;
+    } else {
+      op.red_tail = op.red_size;
+    }
+    op.dup_num = lhs_->nd_.stride_back() / lhs_->nd_.stride(end_dim);
+    return vReduceY::Encode(insn, reduce_y_list[type_id_][red_op_], op);
+  };
+  uint64_t xout = ridx & 2 ? xbuf : xws;
+  uint64_t size;
+  if (auto start_dim = ranges[0]; start_dim == lhs_->nd_.lead_idx()) {  // reduce x
+    auto end_dim = ranges[1];
     vReduceX op;
-    op.xd = xbuf_;
+    op.xd = xout;
     op.xn = lhs_->xbuf_;
-    op.red_size = lhs_->nd_.stride(end_dim_);
+    op.red_size = lhs_->nd_.stride(end_dim);
     uint64_t clr_tail = 0;
-    uint64_t tail_size = static_cast<uint64_t>(k.GetTailSize(lhs_->nd_.data));
-    if (tail_size == 0 || k.GetTailDim() > end_dim_) {
+    if (tail_size == 0 || tail_dim > end_dim) {
       op.simd_width = SelectSimdWidth(op.red_size, type_id_);
       op.red_tail = op.red_size;
-    } else if (k.GetTailDim() > lhs_->nd_.lead_idx()) {
-      op.simd_width = SelectSimdWidth(lhs_->nd_.stride(k.GetTailDim() - 1), type_id_);
-      op.red_tail = op.red_size / lhs_->nd_[k.GetTailDim()] * tail_size;
+    } else if (tail_dim > lhs_->nd_.lead_idx()) {
+      op.simd_width = SelectSimdWidth(lhs_->nd_.stride(tail_dim - 1), type_id_);
+      op.red_tail = op.red_size / lhs_->nd_[tail_dim] * tail_size;
     } else {
       op.simd_width = SelectSimdWidth(lhs_->nd_.lead_stride(), type_id_);
       op.red_tail = RoundUp(tail_size, op.simd_width);
@@ -2886,7 +2932,7 @@ uint64_t _ReduceOp::Emit(VectorKernel &k) {
         clr_tail = tail_size;
       }
     }
-    op.dup_size = lhs_->nd_.stride_back() / lhs_->nd_.stride(end_dim_);
+    op.dup_size = lhs_->nd_.stride_back() / lhs_->nd_.stride(end_dim);
     if (auto lead_dim = ndd_.lead_dim(); lead_dim > 1) {
       op.dup_block = lead_dim;
       op.dup_pad = ndd_.lead_stride() - lead_dim;
@@ -2894,63 +2940,27 @@ uint64_t _ReduceOp::Emit(VectorKernel &k) {
       op.dup_block = op.dup_size;
       op.dup_pad = 0;
     }
-    uint64_t size = 0;
-    uint32_t insn_num = 1;
     if (lhs_->nd_.lead_dim() != lhs_->nd_.lead_stride() || clr_tail > 0) {
       size = EmitClearPad(insn_, lhs_, clr_tail, op.simd_width, GetRedInitScalarEncode(red_op_, type_id_));
       tail_insn_ = insn_ + size;
-      insn_num++;
+      size += vReduceX::Encode(tail_insn_, reduce_x_list[type_id_][red_op_], op);
+      *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
+    } else {
+      size = vReduceX::Encode(tail_insn_, reduce_x_list[type_id_][red_op_], op);
     }
-    size += vReduceX::Encode(tail_insn_, reduce_x_list[type_id_][red_op_], op);
-    if (insn_num > 1) {
+  } else {
+    size = emit_reduce_y(insn_, 0, xout, lhs_->xbuf_);
+  }
+  if (ridx > 2) {
+    uint64_t xin = xout == xbuf ? xws : xbuf;
+    for (int64_t i = 2; i < ridx; i += 2) {
+      std::swap(xout, xin);
+      tail_insn_ = insn_ + size;
+      size += emit_reduce_y(tail_insn_, i, xout, xin);
       *(tail_insn_) |= 0x1ul << V_HEAD_BAR_FLAG_OFFSET;
     }
-    return size;
-  } else {
-    vReduceY op;
-    op.xd = xbuf_;
-    op.xn = lhs_->xbuf_;
-    op.iter_size = ndd_.stride(start_dim_);
-    op.red_size = lhs_->nd_.stride(end_dim_) / op.iter_size;
-    ASSERT(op.red_size > 1);
-    int64_t tail_size = k.GetTailSize(lhs_->nd_.data);
-    if (tail_size > 0 && InRange(k.GetTailDim())) {
-      op.red_tail = op.red_size / lhs_->nd_[k.GetTailDim()] * tail_size;
-    } else {
-      op.red_tail = op.red_size;
-    }
-    op.dup_num = ndd_.stride_back() / ndd_.stride(end_dim_);
-    return vReduceY::Encode(insn_, reduce_y_list[type_id_][red_op_], op);
   }
-}
-
-void _ReduceOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Reduce"; }
-
-NDObject *_ReduceOp::Clone(CloneHelper &h) {
-  auto op = new _ReduceOp(h.GetClone(lhs_), red_op_);
-  op->SetRange(start_dim_, end_dim_);
-  return op;
-}
-
-void _ReduceOp::DimChanged(NDObject *op) {
-  auto &input_axis = op->lhs_->nd_;
-  auto &output_axis = op->nd_;
-  ASSERT(input_axis.size() == output_axis.size());
-  size_t i = 0;
-  while (i < input_axis.size() && input_axis[i] == 1) {
-    ++i;
-  }
-  size_t lead_dim = i;
-  while (i < input_axis.size() && input_axis[i] == output_axis[i]) {
-    ++i;
-  }
-  int start = i == lead_dim ? 0 : i;
-  while (i < input_axis.size() && input_axis[i] != output_axis[i]) {
-    ++i;
-  }
-  int end = i - 1;
-  ASSERT(start <= end);
-  reinterpret_cast<_ReduceOp *>(op)->SetRange(start, end);
+  return size;
 }
 
 void ReduceOp::Dump(bool verbose, std::ostringstream &oss) {
@@ -2964,9 +2974,6 @@ void ReduceOp::Dump(bool verbose, std::ostringstream &oss) {
 }
 
 ReduceOp::~ReduceOp() {
-  for (auto op : stuff_ops_) {
-    delete op;
-  }
   if (clean_wrap_ != nullptr) {
     delete clean_wrap_;
   }
@@ -2976,115 +2983,43 @@ ReduceOp::~ReduceOp() {
 }
 
 void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
-  DimArray dims;
-  DimArray shape_dims;
-  ASSERT(dims_ref_ != nullptr);
-  NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_[0]->lhs_;
-  auto input_shape_ref = input->shape_ref_;
-  // update dims
-  auto lhs_dim = input_shape_ref->size;
-  if (dims_ref_->size == 0) {
-    shape_dims.resize(lhs_dim);
-    dims.resize(lhs_dim);
-    for (int64_t i = 0; i < static_cast<int64_t>(lhs_dim); ++i) {
-      shape_dims[i] = i;
-      dims[i] = i;
-    }
+  auto in_size = lhs_->shape_ref_->size;
+  size_t nd_size = lhs_->nd_.size();
+  ndd_.Reset(nd_size);
+  if (in_size == 0) {
     shape_.Resize(0);
     if (keepdims_) {
-      for (size_t i = 0; i < lhs_dim; ++i) {
+      for (size_t i = 0; i < in_size; ++i) {
         shape_[i] = 1;
       }
-      shape_.Resize(lhs_dim);
+      shape_.Resize(in_size);
+    }
+    for (size_t i = 0; i < nd_size; ++i) {
+      ndd_.dims[i] = 1;
     }
   } else {
-    size_t dim_size = dims_ref_->size;
-    for (size_t i = 0; i < dim_size; i++) {
+    std::memcpy(shape_.shape, lhs_->shape_ref_->data, sizeof(int64_t) * in_size);
+    for (size_t i = 0; i < dims_ref_->size; i++) {
       auto dim = dims_ref_->data[i];
-      if (dim < 0) {
-        dim += lhs_dim;
-      }
-      if (i == 0 || dim > shape_dims[i - 1]) {
-        shape_dims[i] = dim;
-      } else {
-        size_t i_pos = i;
-        for (; i_pos > 0 && shape_dims[i_pos - 1] > dim; --i_pos) {
-          shape_dims[i_pos] = shape_dims[i_pos - 1];
-        }
-        shape_dims[i_pos] = dim;
-      }
+      shape_[dim >= 0 ? dim : dim + in_size] = 1;
     }
-    // update shape_ref_
-    size_t shape_size = 0;
-    size_t dim_idx = 0;
-    for (size_t i = 0; i < lhs_dim; ++i) {
-      if (dim_idx >= dim_size || static_cast<int64_t>(i) != shape_dims[dim_idx]) {
-        shape_[shape_size++] = input_shape_ref->data[i];
-      } else {
-        dim_idx++;
-        if (keepdims_) {
-          shape_[shape_size++] = 1;
+    shape_.Resize(in_size);
+    for (size_t i = 0; i < nd_size; ++i) {
+      ndd_.dims[i] = shape_[in_size - 1 - i];
+    }
+    if (!keepdims_) {
+      for (size_t i = 0; i < dims_ref_->size; i++) {
+        auto dim = dims_ref_->data[i];
+        shape_[dim >= 0 ? dim : dim + in_size] = -1;
+      }
+      size_t out_size = 0;
+      for (size_t i = 0; i < in_size; i++) {
+        if (shape_[i] != -1) {
+          shape_[out_size++] = shape_[i];
         }
       }
+      shape_.Resize(out_size);
     }
-    shape_.Resize(shape_size);
-    // update dims
-    int64_t back_idx = shape_dims[dim_size - 1] + 1;
-    int64_t back_end = input->nd_.size() - 1;
-    while (back_idx <= back_end && input->nd_[back_end - back_idx] == 1) {  // align fold may flip dims
-      shape_dims[dim_size++] = back_idx++;
-    }
-    shape_dims.resize(dim_size);
-    dims.resize(dim_size);
-    for (size_t i = 0; i < dim_size; ++i) {
-      dims[i] = lhs_dim - shape_dims[dim_size - i - 1] - 1;
-    }
-  }
-  size_t stuff_idx = 0;
-  int red_start = -1, red_end = -1, red_ext = -1, lead_dim = -1;
-  for (size_t i = 0; i < dims.size(); ++i) {
-    auto d = dims[i];
-    if (input->nd_[d] == 1) continue;
-    if (d != red_ext) {
-      if (lead_dim == -1) {
-        for (lead_dim = 0; lead_dim < d && input->nd_[lead_dim] == 1; lead_dim++);
-      }
-      if (red_start >= 0) {
-        _ReduceOp *obj;
-        if (flags_ & OBJ_FLAG_EAGER) {
-          obj = new _ReduceOp(input, red_op_);
-        } else {
-          if (stuff_idx == stuff_ops_.size()) {
-            stuff_ops_.push_back(new _ReduceOp(input, red_op_));
-          }
-          obj = stuff_ops_[stuff_idx];
-        }
-        stuff_idx++;
-        obj->ndd_.Reset(input->nd_.dims());
-        for (int j = red_start; j <= red_end; ++j) {
-          obj->ndd_.dims[j] = 1;
-        }
-        obj->ndd_.strides.resize(0);  // force update stride
-        // align tile may revert to 0. let lead reduce to 0
-        obj->SetRange(red_start == lead_dim ? 0 : red_start, red_end);
-        run_ops.push_back(obj);
-        input = obj;
-      }
-      red_start = d;
-    }
-    red_end = d;
-    for (red_ext = d + 1; red_ext < static_cast<int>(input->nd_.size()) && input->nd_[red_ext] == 1; red_ext++);
-  }
-  ndd_.Reset(input->nd_.dims());
-  if (red_start != -1) {
-    lhs_ = input;
-    for (int j = red_start; j <= red_end; ++j) {
-      ndd_.dims[j] = 1;
-    }
-    SetRange(red_start == lead_dim ? 0 : red_start, red_end);
-  } else {
-    ASSERT(stuff_idx == 0);
-    start_dim_ = end_dim_ = -1;
   }
   if (visit_) {
     visit_->Clear();
@@ -3094,25 +3029,22 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
 
 void ReduceOp::Tile(const TileParam &tp) {
   CollectRoundTile(ndd_.dims, tp, round_tile_);
-  _ReduceOp::Tile(tp);
+  NDObject::Tile(tp);
 }
 
 uint64_t ReduceOp::Emit(VectorKernel &k) {
   ndd_.UpdateStride(k.LeadAlign());
   if (ws_num_ == 2) {
-    return round_tile_.empty() ? _ReduceOp::Emit(k) : EmitDeterm(k);
+    return round_tile_.empty() ? EmitBody(k, xbuf_, wss_[0]) : EmitDeterm(k);
   }
   uint64_t iter_size = ndd_.lead_dim() * ITEM_SIZE[type_id_];
   bool rm_pad = CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN) && iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE &&
                 ndd_.stride_back() > ndd_.lead_stride();
   bool cum = round_tile_.size() & 1;
   if (ws_num_ == 0 || (!rm_pad && !cum)) {
-    return _ReduceOp::Emit(k);
+    return EmitBody(k, xbuf_, xbuf_);
   }
-  auto out_xbuf = xbuf_;
-  xbuf_ = wss_[0];
-  uint64_t size = _ReduceOp::Emit(k);
-  xbuf_ = out_xbuf;
+  uint64_t size = EmitBody(k, wss_[0], xbuf_);
   int64_t stride_count = ndd_.stride_back();
   if (rm_pad) {
     vRemovePad op;
@@ -3145,9 +3077,8 @@ uint64_t ReduceOp::Emit(VectorKernel &k) {
 }
 
 NDObject *ReduceOp::Clone(CloneHelper &h) {
-  NDObject *input = stuff_ops_.empty() ? lhs_ : stuff_ops_.front()->lhs_;
   auto dims_ref = h.GetClone(dims_ref_);
-  return new ReduceOp(h.GetClone(input), red_op_, dims_ref, keepdims_);
+  return new ReduceOp(h.GetClone(lhs_), red_op_, dims_ref, keepdims_);
 }
 
 void ReduceOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
@@ -3288,11 +3219,9 @@ uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
     ws_offset = coder->ws_size_;
     coder->ws_size_ += ndd_.stride_back() * sizeof(float) * coder->block_num_;
   }
-  auto out_xbuf = xbuf_;
-  xbuf_ = wss_[0];
-  uint64_t size = _ReduceOp::Emit(k);
+  uint64_t size = EmitBody(k, wss_[0], xbuf_);
   vReduceJoin op;
-  op.xd = xbuf_ = out_xbuf;
+  op.xd = xbuf_;
   op.xn = wss_[0];
   op.xs = wss_[1];
   if (ndd_.lead_stride() == ndd_.lead_dim()) {

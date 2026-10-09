@@ -1262,45 +1262,14 @@ class BroadcastInt64ScalarOp : public BroadcastScalarOp {
   scode_t high_;
 };
 
-class _ReduceOp : public FlexOp {
- public:
-  _ReduceOp(NDObject *input, int red_op)
-      : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op) {
-    nd_.data = &ndd_;
-    MESS(start_dim_, 100);
-    MESS(end_dim_, 80);
-  }
-  NDObject *Clone(CloneHelper &h) override;
-  uint64_t Emit(VectorKernel &k) override;
-  void Dump(bool verbose, std::ostringstream &oss) override;
-
-  static void TileCollect(NDObject *op, TileInfo &info);
-  static void FoldProp(NDObject *op, PropRange &range);
-
-  void SetRange(int start, int end) {
-    start_dim_ = start;
-    end_dim_ = end;
-  }
-  bool InRange(int dim) const { return dim >= start_dim_ && dim <= end_dim_; }
-  int EndDim() const { return end_dim_; }
-
-  static void DimChanged(NDObject *op);
-
-  NDSpaceData ndd_;
-  int red_op_;
-
- protected:
-  int start_dim_;
-  int end_dim_;
-};
-
 class AtomicCleanWrap;
-class ReduceOp : public _ReduceOp {
+class ReduceOp : public FlexOp {
  public:
   ReduceOp(NDObject *input, int red_op, IntArrayRef *dims_ref, bool keepdims)
-      : _ReduceOp(input, red_op), keepdims_(keepdims) {
+      : FlexOp(input, nullptr, input->type_id_, ObjectType::kReduce), red_op_(red_op), keepdims_(keepdims) {
     dims_ref_ = dims_ref;
     shape_ref_ = &shape_;
+    nd_.data = &ndd_;
     if (g_system.deterministic_ && red_op_ == ReduceType::kSum) {
       SetWs(2, true);
       visit_ = new RedVisitCoder();
@@ -1325,6 +1294,8 @@ class ReduceOp : public _ReduceOp {
     if (!g_system.deterministic_) UnsetWs();
   }
 
+  static void TileCollect(NDObject *op, TileInfo &info);
+  static void FoldProp(NDObject *op, PropRange &range);
   static void ShapeProp(NDObject *op, int64_t &sym_dim_next);
 
   RedVisitCoder *visit_;
@@ -1332,14 +1303,16 @@ class ReduceOp : public _ReduceOp {
 
  private:
   uint64_t EmitDeterm(VectorKernel &k);
+  uint64_t EmitBody(VectorKernel &k, uint64_t xbuf, uint64_t xws);
 
-  std::vector<_ReduceOp *> stuff_ops_;
   ShapeWithRef shape_;
+  NDSpaceData ndd_;
+  int red_op_;
   bool keepdims_;
   IntArrayRef *dims_ref_;
   DimArray round_tile_;
-
   RelocAddr ws_reloc_;
+  friend NDStore;
 };
 
 class OneHotOp : public NDObject {

@@ -1982,6 +1982,21 @@ void _SpecVector::Dump(std::ostringstream &oss, const std::string &indent, bool 
   }
 }
 
+static bool ReduceTileInfer(NDObject *red, const NDSpaceData *dom, int64_t tile_limit) {
+  auto &in_nd = red->lhs_->nd_.dims();
+  auto &nd = red->nd_.dims();
+  bool pointwise = false;
+  for (int i = nd.size() - 1; i >= 0; --i) {
+    if (in_nd[i] != nd[i]) {
+      return dom->stride(i) > tile_limit || !pointwise;
+    }
+    if (nd[i] > 1) {
+      pointwise = true;
+    }
+  }
+  return false;
+}
+
 template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::CodeGen() {
   auto reduce_fall_check = [this](int64_t tile_size_limit) -> bool {
@@ -1989,9 +2004,7 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       auto ndd = dom_->nd_.data;
       const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
       for (auto op : post_reduces_) {
-        auto end_dim = static_cast<ReduceOp *>(op)->EndDim();
-        auto size = ndd->stride(end_dim);
-        if (size > tile_size_limit || size == ndd->stride_back()) {
+        if (ReduceTileInfer(op, ndd, tile_size_limit)) {
           for (auto red : post_reduces_) {
             static_cast<ReduceOp *>(red)->SetCum();
           }
@@ -2431,12 +2444,9 @@ bool SpecVecBase::ReduceSpec() {
     InitMeta(op);
     if (op->IsSimd() && op->obj_id_ != ObjectType::kReduce) {
       op->ForInput([this](NDObject *in) {
-        if (in->obj_id_ == ObjectType::kReduce && !GetMeta(in)->IsCut()) {
-          auto size = dom_->nd_.stride(static_cast<ReduceOp *>(in)->EndDim());
-          if (size > LazyTileLimit() || size == dom_->nd_.stride_back()) {
-            ctx_.spec_ops_.push_back(in);
-            GetMeta(in)->SetCut();
-          }
+        if (in->obj_id_ == ObjectType::kReduce && !GetMeta(in)->IsCut() && ReduceTileInfer(in, dom_->nd_.data, LazyTileLimit())) {
+          ctx_.spec_ops_.push_back(in);
+          GetMeta(in)->SetCut();
         }
       });
     }
@@ -2613,10 +2623,6 @@ bool SpecVecBase::PermPropCheck(int prop, const DimArray &inv_perm) {
       return false;
     } else if (obj->obj_id_ == ObjectType::kBroadcastTo) {
       if (IsRangeSplited(inv_perm, obj->lhs_->nd_.dims(), obj->nd_.dims())) {
-        return false;
-      }
-    } else if (obj->obj_id_ == ObjectType::kReduce) {
-      if (IsRangeSplited(inv_perm, obj->nd_.dims(), obj->lhs_->nd_.dims())) {
         return false;
       }
     }

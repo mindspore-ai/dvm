@@ -100,14 +100,16 @@ struct PropRange {
 };
 
 struct TileInfo {
-  void Reset(int init_depth) {
+  static constexpr uint32_t kAffineOnlyFlags = -1;
+  void Reset(int init_depth, bool affine_only = false) {
     lead_depth = init_depth;
     lead_affine = PropRange::ELEMWISE;
-    flags = 0;
+    flags = affine_only ? kAffineOnlyFlags : 0;
     ext_ws = 0;
     code_reserve = SIMD_BLOCK_SIZE;
     event_reserve = 0;
   }
+  bool IsGen() const { return flags != kAffineOnlyFlags; }
   int lead_depth;
   int lead_affine;
   uint32_t flags;
@@ -1229,7 +1231,6 @@ class BroadcastOp : public FlexOp {
   NDSpaceData ndd_;
   IntArrayRef *dst_shape_ref_;
   ShapeWithRef shape_;
-  uint32_t range_num_;
 };
 
 class BroadcastScalarOp : public NDObject {

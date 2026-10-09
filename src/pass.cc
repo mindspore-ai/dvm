@@ -432,7 +432,7 @@ void InsertRemovePad(BasicBlock &block) {
     min_type_id = std::min(min_type_id, op->type_id_);
   }
   TileInfo info;
-  info.Reset(max_depth);
+  info.Reset(max_depth, true);
   for (NDObject *op = block.Begin(); op != block.End(); op = block.Next(op)) {
     if (auto ndd = op->Ndd(); ndd != nullptr && ndd->dims.size() != max_depth) {
       ndd->dims.resize(max_depth, 1);

@@ -549,7 +549,7 @@ class SpecVecBase : public VKernelS {
   }
   void SplitBuild();
 
-  bool PermPropCheck(int prop, const DimArray &perm);
+  bool PermPropCheck(int prop);
   void PermPropUpdate(int prop, const DimArray &perm);
 
   SpecVecContext &ctx_;

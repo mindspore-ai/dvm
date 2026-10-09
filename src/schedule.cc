@@ -538,31 +538,21 @@ int64_t FractalSchGen::CodeGen() {
     int h_idx_;
   };
 
-  int64_t result = 0;
-  for (auto op : kernel_->objects_) {
-    if ((op->obj_id_ == ObjectType::kBroadcastTo || op->obj_id_ == ObjectType::kReduce) &&
-        op->lhs_->nd_[0] != op->nd_[0]) {
-      result = -1;
-      break;
+  for (auto op : kernel_->static_ops_) {
+    auto acc = static_cast<NDAccess *>(op);
+    if (acc->stride_ == nullptr) {
+      AllocStride(acc);
     }
   }
-  if (!result) {
-    for (auto op : kernel_->static_ops_) {
-      auto acc = static_cast<NDAccess *>(op);
-      if (acc->stride_ == nullptr) {
-        AllocStride(acc);
-      }
-    }
-    FractalDunGen gen(*this, h_idx, item_size);
-    if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
-      gen.CodeGenRect(fractal_mask);
-    } else {
-      gen.CodeGen(fractal_mask);
-    }
-    ResetStrides();
+  FractalDunGen gen(*this, h_idx, item_size);
+  if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
+    gen.CodeGenRect(fractal_mask);
+  } else {
+    gen.CodeGen(fractal_mask);
   }
+  ResetStrides();
   FractalDunGen::ClearFractal(fractal_mask, kernel_->static_ops_);
-  return result;
+  return 0;
 }
 
 namespace {

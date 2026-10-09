@@ -2585,46 +2585,12 @@ void PermuteDimArray(DimArray &dims, const DimArray &perm) {
   }
 }
 
-static bool IsRangeSplited(const DimArray &inv_perm, const DimArray &small, const DimArray &big) {
-  int64_t small_size = small.size();
-  int64_t big_size = big.size();
-  size_t i = 0;
-  while (i < inv_perm.size()) {
-    auto e1 = inv_perm[i] < small_size ? small[inv_perm[i]] : 1;
-    auto e2 = inv_perm[i] < big_size ? big[inv_perm[i]] : 1;
-    i++;
-    if (e1 != e2) {
-      break;
-    }
-  }
-  while (i < inv_perm.size()) {
-    auto e1 = inv_perm[i] < small_size ? small[inv_perm[i]] : 1;
-    i++;
-    if (e1 > 1) {
-      break;
-    }
-  }
-  while (i < inv_perm.size()) {
-    auto e1 = inv_perm[i] < small_size ? small[inv_perm[i]] : 1;
-    auto e2 = inv_perm[i] < big_size ? big[inv_perm[i]] : 1;
-    if (e1 != e2) {
-      return true;
-    }
-    i++;
-  }
-  return false;
-};
-
-bool SpecVecBase::PermPropCheck(int prop, const DimArray &inv_perm) {
+bool SpecVecBase::PermPropCheck(int prop) {
   constexpr uint64_t black_mask = 1ull << kGatherLoad | 1ull << kLoad | 1ull << kStore | 1ull << kPermute;
   for (auto obj : objects_) {
     if (obj->prop_id_ != prop) continue;
     if ((1ull << obj->obj_id_) & black_mask) {
       return false;
-    } else if (obj->obj_id_ == ObjectType::kBroadcastTo) {
-      if (IsRangeSplited(inv_perm, obj->lhs_->nd_.dims(), obj->nd_.dims())) {
-        return false;
-      }
     }
   }
   return true;
@@ -2682,15 +2648,15 @@ bool SpecVecBase::PermuteSpec() {
     bool fall_back = (out_prop == in_prop) || ((side_mask >> out_prop) & 1ull);
     if (!fall_back) {
       auto &perm = perm_op->GetNddPerm();
-      DimArray inv_perm;
-      inv_perm.resize(perm.size());
-      for (size_t k = 0; k < perm.size(); ++k) {
-        inv_perm[perm[k]] = k;
-      }
-      if (PermPropCheck(in_prop, inv_perm)) {
+      if (PermPropCheck(in_prop)) {
         PermPropUpdate(in_prop, perm);
         perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
-      } else if (PermPropCheck(out_prop, perm)) {
+      } else if (PermPropCheck(out_prop)) {
+        DimArray inv_perm;
+        inv_perm.resize(perm.size());
+        for (size_t k = 0; k < perm.size(); ++k) {
+          inv_perm[perm[k]] = k;
+        }
         PermPropUpdate(out_prop, inv_perm);
         perm_op->SetFlag(OBJ_FLAG_BROKER_AFFINED);
       } else {

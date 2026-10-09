@@ -2594,36 +2594,13 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
   auto dims = dst_shape_ref_->size;
   ndd_.Reset(dims);
   shape_.Resize(dims);
-  range_num_ = 0;
-  auto in_shape = lhs_->shape_ref_->data;
-  auto in_size = lhs_->shape_ref_->size;
-  bool in_broadcast = false;
   for (size_t i = 0; i < dims; ++i) {
     shape_[i] = dst_shape_ref_->data[i];
     if (shape_[i] == -1) {
       // e.g. x_shape (4, 1), dst_shape (2, -1, 1) --> dst_shape (2, 4, 1)
-      shape_[i] = in_shape[in_size + i - dims];
+      shape_[i] = lhs_->shape_ref_->data[lhs_->shape_ref_->size + i - dims];
     }
     ndd_.dims[dims - 1 - i] = shape_[i];
-    if (shape_[i] != 1) {
-      int64_t in_dim = i < in_size ? in_shape[i] : 1;
-      if (in_dim > 1 && in_broadcast) {
-        in_broadcast = false;
-      } else if (in_dim == 1 && !in_broadcast) {
-        in_broadcast = true;
-        range_num_++;
-      }
-    }
-  }
-  // TODO: schedule split should set ws if broadcast split
-  auto broadcast_x = [this]() {
-    auto lead = ndd_.dims.lead_dim();
-    return lead < lhs_->nd_.size() && ndd_[lead] != lhs_->nd_[lead];
-  };
-  if (range_num_ > 1 || (g_system.Arch() == kAiCore_C220 && broadcast_x())) {
-    SetWs(1, true);
-  } else {
-    UnsetWs();
   }
 }
 
@@ -2739,10 +2716,36 @@ NDObject *BroadcastOp::Clone(CloneHelper &h) {
 }
 
 void BroadcastOp::TileCollect(NDObject *op, TileInfo &info) {
-  auto &lhs_nd = op->lhs_->nd_;
   auto self = static_cast<BroadcastOp *>(op);
-  info.code_reserve += sizeof(uint64_t) * 2 * self->range_num_;
-  BroadReduceTileCollect<PropRange::BROADCAST>(lhs_nd.data->dims, self->ndd_.dims, info);
+  auto &lhs_nd = op->lhs_->nd_.dims();
+  auto &ndd = self->ndd_.dims;
+  if (info.IsGen()) {
+    uint64_t range_num = 0;
+    bool in_broadcast = false;
+    for (size_t i = 0; i < ndd.size(); ++i) {
+      if (!in_broadcast) {
+        if (ndd[i] != lhs_nd[i]) {
+          in_broadcast = true;
+          range_num++;
+        }
+      } else if (lhs_nd[i] != 1) {
+        in_broadcast = false;
+      }
+    }
+    if (range_num > 1) {
+      info.code_reserve += sizeof(uint64_t) * 2 * (range_num - 1);
+    }
+    auto broadcast_x = [&lhs_nd, &ndd]() {
+      auto lead = ndd.lead_dim();
+      return lead < lhs_nd.size() && ndd[lead] != lhs_nd[lead];
+    };
+    if (range_num > 1 || (g_system.Arch() == kAiCore_C220 && broadcast_x())) {
+      self->SetWs(1, true);
+    } else {
+      self->UnsetWs();
+    }
+  }
+  BroadReduceTileCollect<PropRange::BROADCAST>(lhs_nd, ndd, info);
 }
 
 void BroadcastOp::FoldProp(NDObject *op, PropRange &range) {
@@ -2849,28 +2852,30 @@ void ReduceOp::FoldProp(NDObject *op, PropRange &range) {
 
 void ReduceOp::TileCollect(NDObject *op, TileInfo &info) {
   auto self = static_cast<ReduceOp *>(op);
-  if (self->ws_num_ == 2 && info.event_reserve < 2) {
-    info.event_reserve = 2;
-  }
   auto &lhs_nd = self->lhs_->nd_;
   auto &ndd = self->ndd_;
-  int range_num = 0;
-  bool in_red = false;
-  for (size_t i = 0; i < ndd.size(); ++i) {
-    if (!in_red) {
-      if (ndd[i] != lhs_nd[i]) {
-        in_red = true;
-        range_num++;
+  if (info.IsGen()) {
+    int range_num = 0;
+    bool in_red = false;
+    for (size_t i = 0; i < ndd.size(); ++i) {
+      if (!in_red) {
+        if (ndd[i] != lhs_nd[i]) {
+          in_red = true;
+          range_num++;
+        }
+      } else if (ndd[i] != 1) {
+        in_red = false;
       }
-    } else if (ndd[i] != 1) {
-      in_red = false;
     }
-  }
-  if (range_num > 1) {
-    info.code_reserve += sizeof(uint64_t) * 3 * range_num;
+    if (range_num > 1) {
+      info.code_reserve += sizeof(uint64_t) * 3 * range_num;
+    }
+    if (self->ws_num_ == 2 && info.event_reserve < 2) {
+      info.event_reserve = 2;
+    }
+    info.flags |= ObjectMeta::kSimdDim;
   }
   BroadReduceTileCollect<PropRange::REDUCE>(ndd.dims, lhs_nd.data->dims, info);
-  info.flags = ObjectMeta::kSimdDim;
 }
 
 uint64_t ReduceOp::EmitBody(VectorKernel &k, uint64_t xbuf, uint64_t xws) {

@@ -73,7 +73,7 @@ __aicore_inline__ MaskReg UpdateMask(uint32_t &scalar) {
 }
 
 template <typename T>
-__aicore_inline__ MaskReg SetMask(uint32_t scalar) {
+__simd_callee__ __aicore_inline__ MaskReg SetMask(uint32_t scalar) {
   MaskReg reg;
   if constexpr (sizeof(T) == 1) {
     reg = plt_b8(scalar, POST_UPDATE);
@@ -1090,6 +1090,184 @@ __aicore_inline__ void ReduceX(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+// Deprecated: retained for comparison with the register-accumulation implementation.
+template <vReduceOpType RED_TYPE, typename T>
+[[deprecated("Use ReduceYLoop")]]
+__aicore_inline__ void ReduceYDeprecated(__ubuf__ T *xd, __ubuf__ T *xn, uint64_t red_count, uint16_t dup_count,
+                                       uint32_t iter_size) {
+  uint64_t stride_size = iter_size * red_count;
+  ReduceBisectLoop<RED_TYPE>(xd, xn, red_count, dup_count, stride_size, iter_size, xd);
+  if (dup_count > 1) {
+    auto lenburst = iter_size >> BlockDataShift(T);
+    copy_ubuf_to_ubuf(xd, xn, 0, dup_count, lenburst, (stride_size >> BlockDataShift(T)) - lenburst, 0);
+  }
+}
+
+template <vReduceOpType RED_TYPE, typename T>
+__simd_callee__ __aicore_inline__ void ReduceLoop(RegTensor<T> &accum, RegTensor<T> &value, __ubuf__ T *xn,
+                                               uint32_t offset, uint16_t load_count, uint32_t load_stride,
+                                               vector_bool mask) {
+  vlds(accum, xn, offset, NORM);
+  for (uint16_t r = 1; r < load_count; ++r) {
+    vlds(value, xn, offset + r * load_stride, NORM);
+    BisectReduce<RED_TYPE>(accum, accum, value, mask);
+  }
+}
+
+template <vReduceOpType RED_TYPE, typename T>
+__simd_callee__ __aicore_inline__ void ReduceLoop4(RegTensor<T> &accum, RegTensor<T> &value, __ubuf__ T *xn,
+                                                uint32_t offset, uint16_t block_count, uint16_t tail_count,
+                                                uint32_t load_stride, vector_bool mask) {
+  RegTensor<T> accum1, accum2, accum3;
+  vlds(accum, xn, offset, NORM);
+  vlds(accum1, xn, offset + load_stride, NORM);
+  vlds(accum2, xn, offset + 2 * load_stride, NORM);
+  vlds(accum3, xn, offset + 3 * load_stride, NORM);
+  for (uint16_t r = 1; r < block_count; ++r) {
+    vlds(value, xn, offset + 4 * r * load_stride, NORM);
+    BisectReduce<RED_TYPE>(accum, accum, value, mask);
+    vlds(value, xn, offset + (4 * r + 1) * load_stride, NORM);
+    BisectReduce<RED_TYPE>(accum1, accum1, value, mask);
+    vlds(value, xn, offset + (4 * r + 2) * load_stride, NORM);
+    BisectReduce<RED_TYPE>(accum2, accum2, value, mask);
+    vlds(value, xn, offset + (4 * r + 3) * load_stride, NORM);
+    BisectReduce<RED_TYPE>(accum3, accum3, value, mask);
+  }
+  for (uint16_t r = 0; r < tail_count; ++r) {
+    vlds(value, xn, offset + (4 * block_count + r) * load_stride, NORM);
+    BisectReduce<RED_TYPE>(accum, accum, value, mask);
+  }
+  BisectReduce<RED_TYPE>(accum, accum, accum2, mask);
+  BisectReduce<RED_TYPE>(accum1, accum1, accum3, mask);
+  BisectReduce<RED_TYPE>(accum, accum, accum1, mask);
+}
+
+template <uint16_t SHIFT, uint16_t ROW_SIZE, vReduceOpType RED_TYPE, typename T>
+__simd_callee__ __aicore_inline__ void FoldPackedRows(RegTensor<T> &accum, RegTensor<T> &value) {
+  if constexpr (SHIFT >= ROW_SIZE) {
+    using IndexT = typename std::conditional<sizeof(T) == 4, int32_t, int16_t>::type;
+    RegTensor<IndexT> index;
+    vci(index, (IndexT)SHIFT, INC_ORDER);
+    // Merge the upper half of the row slots into the lower half, keeping columns aligned.
+    vselr((RegTensor<UintFor<T>> &)value, (RegTensor<UintFor<T>> &)accum, (RegTensor<UintFor<T>> &)index);
+    vector_bool mask = SetMask<T>(SHIFT);
+    BisectReduce<RED_TYPE>(accum, accum, value, mask);
+    FoldPackedRows<SHIFT / 2, ROW_SIZE, RED_TYPE, T>(accum, value);
+  }
+}
+
+template <vReduceOpType RED_TYPE, typename T>
+__aicore_inline__ void ReduceLoop4(__ubuf__ T *xd, __ubuf__ T *xn, uint16_t red_count, uint16_t dup_count,
+                                 uint32_t row_size) {
+  constexpr uint32_t vector_lanes = BlockNum(T);
+  const uint16_t output_vectors = CeilDiv(row_size, vector_lanes);
+  const uint32_t group_stride = row_size * red_count;
+  constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();
+  if (red_count < 4) {
+    __VEC_SCOPE__ {
+      RegTensor<T> accum, value;
+      for (uint16_t i = 0; i < dup_count; ++i) {
+        uint32_t remaining = row_size;
+        for (uint16_t j = 0; j < output_vectors; ++j) {
+          vector_bool reduce_mask = UpdateMask<T>(remaining);
+          uint32_t offset = i * group_stride + j * vector_lanes;
+          ReduceLoop<RED_TYPE>(accum, value, xn, offset, red_count, row_size, reduce_mask);
+          vsts(accum, xd, i * row_size + j * vector_lanes, distValue, reduce_mask);
+        }
+      }
+    }
+    return;
+  }
+  const uint16_t block_count = red_count >> 2;
+  const uint16_t tail_count = red_count & 3;
+  __VEC_SCOPE__ {
+    RegTensor<T> accum, value;
+    for (uint16_t i = 0; i < dup_count; ++i) {
+      uint32_t remaining = row_size;
+      for (uint16_t j = 0; j < output_vectors; ++j) {
+        vector_bool reduce_mask = UpdateMask<T>(remaining);
+        uint32_t offset = i * group_stride + j * vector_lanes;
+        ReduceLoop4<RED_TYPE>(accum, value, xn, offset, block_count, tail_count, row_size, reduce_mask);
+        vsts(accum, xd, i * row_size + j * vector_lanes, distValue, reduce_mask);
+      }
+    }
+  }
+}
+
+// Pack consecutive rows into each vector, then fold the row slots in registers.
+// Requires a power-of-two row width and at least one complete input vector per group.
+template <uint16_t ROW_SIZE, vReduceOpType RED_TYPE, typename T>
+__aicore_inline__ void ReducePackLoop4(__ubuf__ T *xd, __ubuf__ T *xn, uint16_t red_count, uint16_t dup_count) {
+  constexpr uint32_t vector_lanes = BlockNum(T);
+  const uint32_t group_stride = (uint32_t)ROW_SIZE * red_count;
+  const uint16_t load_count = group_stride / vector_lanes;
+  const uint16_t tail_lanes = group_stride & (vector_lanes - 1);
+  const uint16_t tail_vector_count = tail_lanes != 0;
+  constexpr auto distValue = std::integral_constant<DistVST, DistSTValue<T>()>();
+  if (load_count < 4) {
+    __VEC_SCOPE__ {
+      RegTensor<T> accum, value;
+      vector_bool reduce_mask = SetMask<T>(vector_lanes);
+      vector_bool tail_mask = SetMask<T>(tail_lanes);
+      vector_bool store_mask = SetMask<T>(ROW_SIZE);
+      for (uint16_t i = 0; i < dup_count; ++i) {
+        uint32_t offset = i * group_stride;
+        ReduceLoop<RED_TYPE>(accum, value, xn, offset, load_count, vector_lanes, reduce_mask);
+        for (uint16_t r = 0; r < tail_vector_count; ++r) {
+          vlds(value, xn, offset + (uint32_t)load_count * vector_lanes, NORM);
+          BisectReduce<RED_TYPE>(value, accum, value, tail_mask);
+          vsel(accum, value, accum, tail_mask);
+        }
+        FoldPackedRows<vector_lanes / 2, ROW_SIZE, RED_TYPE, T>(accum, value);
+        vsts(accum, xd, (uint32_t)i * ROW_SIZE, distValue, store_mask);
+      }
+    }
+    return;
+  }
+  const uint16_t block_count = load_count >> 2;
+  const uint16_t tail_count = load_count & 3;
+  __VEC_SCOPE__ {
+    RegTensor<T> accum, value;
+    vector_bool reduce_mask = SetMask<T>(vector_lanes);
+    vector_bool tail_mask = SetMask<T>(tail_lanes);
+    vector_bool store_mask = SetMask<T>(ROW_SIZE);
+    for (uint16_t i = 0; i < dup_count; ++i) {
+      uint32_t offset = i * group_stride;
+      ReduceLoop4<RED_TYPE>(accum, value, xn, offset, block_count, tail_count, vector_lanes, reduce_mask);
+      for (uint16_t r = 0; r < tail_vector_count; ++r) {
+        vlds(value, xn, offset + (uint32_t)load_count * vector_lanes, NORM);
+        BisectReduce<RED_TYPE>(value, accum, value, tail_mask);
+        vsel(accum, value, accum, tail_mask);
+      }
+      FoldPackedRows<vector_lanes / 2, ROW_SIZE, RED_TYPE, T>(accum, value);
+      vsts(accum, xd, (uint32_t)i * ROW_SIZE, distValue, store_mask);
+    }
+  }
+}
+
+template <vReduceOpType RED_TYPE, typename T>
+__aicore_inline__ void ReduceYLoop(__ubuf__ T *xd, __ubuf__ T *xn, uint16_t red_count, uint16_t dup_count,
+                                 uint32_t iter_size) {
+  // Initialize from a complete vector; one to three vectors use the single-accumulator loop.
+  if ((uint32_t)red_count * iter_size >= BlockNum(T)) {
+    switch (iter_size) {
+      case 8:
+        ReducePackLoop4<8, RED_TYPE>(xd, xn, red_count, dup_count);
+        return;
+      case 16:
+        ReducePackLoop4<16, RED_TYPE>(xd, xn, red_count, dup_count);
+        return;
+      case 32:
+        ReducePackLoop4<32, RED_TYPE>(xd, xn, red_count, dup_count);
+        return;
+      case 64:
+        ReducePackLoop4<64, RED_TYPE>(xd, xn, red_count, dup_count);
+        return;
+    }
+  }
+  ReduceLoop4<RED_TYPE>(xd, xn, red_count, dup_count, iter_size);
+}
+
 template <vReduceOpType RED_TYPE, typename T>
 __aicore_inline__ void ReduceY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vReduceY op;
@@ -1102,12 +1280,7 @@ __aicore_inline__ void ReduceY(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     copy_ubuf_to_ubuf(xd, xn, 0, 1, lenburst, 0, 0);
     return;
   }
-  uint64_t stride_size = op.iter_size * red_size;
-  ReduceBisectLoop<RED_TYPE>(xd, xn, red_size, op.dup_num, stride_size, op.iter_size, (__ubuf__ T *)(op.xd));
-  if (op.dup_num > 1) {
-    auto lenburst = op.iter_size >> BlockDataShift(T);
-    copy_ubuf_to_ubuf(xd, xn, 0, op.dup_num, lenburst, (stride_size >> BlockDataShift(T)) - lenburst, 0);
-  }
+  ReduceYLoop<RED_TYPE>(xd, xn, red_size, op.dup_num, op.iter_size);
 }
 
 __aicore_inline__ void ReduceJoin(bcodeptr_t pc, uint64_t head, uint64_t tile) {

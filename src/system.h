@@ -187,6 +187,8 @@ class System : public Config {
   uint64_t L2CacheLineSize() const { return l2_cache_line_size_; }
   float L2DdrBandwidthRatio() const { return l2_ddr_bandwidth_ratio_; }
   uint64_t L1Size() const { return l1_size_; }
+  // Capacity of each L0A/L0B, in bytes.
+  uint64_t L0ABSize() const { return 64 * 1024; }
   uint64_t L0CSize() const { return l0c_size_; }
   uint64_t CoreNum(CoreType core_type = CoreType::kAIV) const {
     return core_type == CoreType::kAIV ? vector_core_num_ : cube_core_num_;

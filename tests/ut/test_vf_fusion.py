@@ -396,7 +396,8 @@ def test_reduce_boundary():
     dvm.Device.arch() != "AscendC310",
     reason="VF Fusion only supports C310",
 )
-def test_cycle_guard():
+@pytest.mark.parametrize("extra_ops, regions", [(0, 2), (24, 6), (64, 12)])
+def test_cycle_guard(extra_ops, regions):
     dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     x_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
@@ -405,16 +406,52 @@ def test_cycle_guard():
     t.set_passes("VfFusion")
     x = t.load(x_np)
     first = t.add(t.abs(x), 0.25)
+    for _ in range(extra_ops):
+        first = t.abs(first)
     # Contracting both VF regions would create Custom -> Reshape -> Custom.
     bridge = t.reshape(t.reshape(first, (512, 2048)), shape)
     out = t.abs(t.add(first, bridge))
+    for _ in range(extra_ops):
+        out = t.abs(out)
     t.store_expect(out, np.abs(2 * (np.abs(x_np) + 0.25)))
 
     t.codegen()
     dump = t.dump()
 
-    assert dump.count("Custom") == 2
+    assert dump.count("Custom") == regions
     assert dump.count("Reshape") == 2
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(
+    dvm.Device.arch() != "AscendC310",
+    reason="VF Fusion only supports C310",
+)
+@pytest.mark.parametrize("depth", [1, 26])
+def test_diamond_fusion(depth):
+    dvm.Kernel.set_vf_fusion(1)
+    input_np = np.linspace(-1.0, 1.0, 32 * 65, dtype=np.float32).reshape(32, 65)
+    t = Tester()
+    t.set_passes("VfFusion")
+    value = t.load(input_np)
+    expect = input_np
+    for index in range(depth):
+        left = t.abs(value)
+        right = t.add(value, 0.25)
+        joined = t.add(left, right)
+        value = t.mul(t.add(joined, joined), 0.25)
+        joined_np = np.abs(expect) + (expect + np.float32(0.25))
+        expect = (joined_np + joined_np) * np.float32(0.25)
+        if index == 0:
+            intermediate = left
+    t.store_expect(intermediate, np.abs(input_np))
+    t.store_expect(value, expect)
+
+    t.codegen()
+    dump = t.dump()
+    assert dump.count("Custom") == 1 if depth == 1 else dump.count("Custom") > 1
+    assert all(op not in dump for op in ("Abs", "Add", "Mul"))
     assert t.run_check()
 
 

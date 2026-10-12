@@ -40,6 +40,7 @@
 
 #include "pass.h"
 #include "system.h"
+#include "utils.h"
 
 namespace dvm::pass {
 namespace detail {
@@ -315,116 +316,15 @@ NDObject *FindSafeInsertionPoint(BasicBlock &bb, const VfPartition &partition) {
   return FindSafeInsertionPoint(bb, partition, IndexObjects(CollectObjects(bb)));
 }
 
-// Build a shadow graph that contracts every member of `partition` into a
-// single node.  This catches exactly the cycles that a real Custom rewrite
-// could introduce while keeping the original BasicBlock untouched.
-bool IsShadowAcyclic(BasicBlock &bb, const VfPartition &partition) {
-  if (partition.nodes.empty()) {
-    return false;
-  }
-  const auto objects = CollectObjects(bb);
-  NodeSet members(partition.nodes.begin(), partition.nodes.end());
-  NDObject *contracted = partition.nodes.front();
-  std::unordered_set<NDObject *> shadow_nodes;
-  shadow_nodes.reserve(objects.size());
-  for (auto *obj : objects) {
-    shadow_nodes.insert(members.count(obj) ? contracted : obj);
-  }
-
-  std::unordered_map<NDObject *, size_t> indegree;
-  std::unordered_map<NDObject *, std::vector<NDObject *>> users;
-  for (auto *node : shadow_nodes) {
-    indegree[node] = 0;
-  }
-  for (auto *obj : objects) {
-    auto *to = members.count(obj) ? contracted : obj;
-    obj->ForInput([&](NDObject *input) {
-      auto *from = members.count(input) ? contracted : input;
-      if (from == to || shadow_nodes.count(from) == 0) {
-        return;
-      }
-      users[from].push_back(to);
-      ++indegree[to];
-    });
-  }
-
-  std::queue<NDObject *> ready;
-  for (const auto &entry : indegree) {
-    if (entry.second == 0) {
-      ready.push(entry.first);
-    }
-  }
-  size_t visited = 0;
-  while (!ready.empty()) {
-    auto *node = ready.front();
-    ready.pop();
-    ++visited;
-    for (auto *user : users[node]) {
-      auto &degree = indegree[user];
-      if (degree == 0) {
-        return false;
-      }
-      if (--degree == 0) {
-        ready.push(user);
-      }
-    }
-  }
-  return visited == shadow_nodes.size();
-}
-
 struct WorkingPartition {
   bool alive{true};
   std::vector<NDObject *> nodes;
+  size_t representative;
 };
 
-bool WouldCreateCycle(BasicBlock &bb, const NodeSet &merged_nodes,
-                      const std::unordered_map<NDObject *, size_t> &assignment,
-                      const std::vector<WorkingPartition> &partitions) {
-  // This follows CapabilityBasedPartitioner's key rule: when the DFS reaches
-  // an already assigned partition, traverse all of that partition's outgoing
-  // edges as if the partition were already a contracted node.
-  for (auto *root : merged_nodes) {
-    for (auto *first_user : bb.GetUsers(root)) {
-      if (merged_nodes.count(first_user) != 0) {
-        continue;
-      }
-      std::vector<NDObject *> stack = {first_user};
-      NodeSet visited;
-      while (!stack.empty()) {
-        auto *node = stack.back();
-        stack.pop_back();
-        if (!visited.insert(node).second) {
-          continue;
-        }
-        if (merged_nodes.count(node) != 0) {
-          return true;
-        }
-        auto assigned = assignment.find(node);
-        if (assigned != assignment.end()) {
-          const auto &partition = partitions[assigned->second];
-          NodeSet partition_nodes(partition.nodes.begin(), partition.nodes.end());
-          for (auto *partition_node : partition.nodes) {
-            for (auto *user : bb.GetUsers(partition_node)) {
-              if (partition_nodes.count(user) == 0) {
-                stack.push_back(user);
-              }
-            }
-          }
-        } else {
-          for (auto *user : bb.GetUsers(node)) {
-            stack.push_back(user);
-          }
-        }
-      }
-    }
-  }
-  return false;
-}
-
-void SortUniqueByIndex(std::vector<NDObject *> &objects, const NodeIndex &indices) {
+void SortByIndex(std::vector<NDObject *> &objects, const NodeIndex &indices) {
   std::sort(objects.begin(), objects.end(),
             [&](NDObject *lhs, NDObject *rhs) { return indices.at(lhs) < indices.at(rhs); });
-  objects.erase(std::unique(objects.begin(), objects.end()), objects.end());
 }
 
 VfPartition BuildPartition(const VfGraphContext &graph, std::vector<NDObject *> nodes) {
@@ -456,7 +356,7 @@ VfPartition BuildPartition(const VfGraphContext &graph, std::vector<NDObject *> 
       partition.outputs.push_back(node);
     }
   }
-  SortUniqueByIndex(partition.inputs, graph.topological_indices);
+  SortByIndex(partition.inputs, graph.topological_indices);
   return partition;
 }
 
@@ -509,8 +409,7 @@ bool VfSplitPolicy::HasSafePlacement(const VfPartition &partition) const {
       return false;
     }
   }
-  return FindSafeInsertionPoint(graph_.bb, partition, graph_.list_indices) != nullptr &&
-         IsShadowAcyclic(graph_.bb, partition);
+  return FindSafeInsertionPoint(graph_.bb, partition, graph_.list_indices) != nullptr;
 }
 
 VfPartitionDisposition VfSplitPolicy::Classify(const VfPartition &partition) const {
@@ -1376,10 +1275,6 @@ void DeleteUnownedCustom(NDObject *custom) {
 }
 
 bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t func_id, bool is_dynamic) {
-  if (!IsShadowAcyclic(bb, partition)) {
-    return false;
-  }
-
   NDObject *custom = nullptr;
   try {
     custom = new VfFusionOp(partition, func_id);
@@ -1408,8 +1303,6 @@ bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t fun
     return false;
   }
 
-  // All fallible metadata checks have completed.  From here mutation is a
-  // single graph transaction whose shadow graph was already Kahn-validated.
   auto *insertion_point = FindSafeInsertionPoint(bb, partition);
   if (insertion_point == nullptr) {
     DeleteUnownedCustom(custom);
@@ -1470,6 +1363,7 @@ std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
     return {};
   }
 
+  std::optional<DagReachability> reachability;
   std::unordered_map<NDObject *, size_t> assignment;
   std::vector<WorkingPartition> partitions;
   for (auto it = graph.topological_order.rbegin(); it != graph.topological_order.rend(); ++it) {
@@ -1478,31 +1372,40 @@ std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
       continue;
     }
     const size_t base = partitions.size();
-    partitions.push_back({true, {node}});
+    const size_t keep = graph.topological_indices.at(node);
+    partitions.push_back({true, {node}, keep});
     assignment[node] = base;
 
     std::vector<size_t> merge_candidates;
     for (auto *user : graph.bb.GetUsers(node)) {
       auto user_partition = assignment.find(user);
-      if (user_partition != assignment.end() && user_partition->second != base &&
-          partitions[user_partition->second].alive) {
+      if (user_partition != assignment.end()) {
         merge_candidates.push_back(user_partition->second);
       }
     }
     std::sort(merge_candidates.begin(), merge_candidates.end(), [&](size_t lhs, size_t rhs) {
-      return graph.topological_indices.at(partitions[lhs].nodes.front()) <
-             graph.topological_indices.at(partitions[rhs].nodes.front());
+      return partitions[lhs].representative < partitions[rhs].representative;
     });
     merge_candidates.erase(std::unique(merge_candidates.begin(), merge_candidates.end()), merge_candidates.end());
+    if (!merge_candidates.empty() && !reachability.has_value()) {
+      // Include unsupported nodes: paths through them can forbid a contraction.
+      std::vector<std::vector<size_t>> successors(graph.topological_order.size());
+      for (size_t i = 0; i < graph.topological_order.size(); ++i) {
+        for (auto *user : graph.bb.GetUsers(graph.topological_order[i])) {
+          const auto found = graph.topological_indices.find(user);
+          if (found != graph.topological_indices.end()) {
+            successors[i].push_back(found->second);
+          }
+        }
+      }
+      reachability.emplace(successors);
+    }
     for (size_t other : merge_candidates) {
-      if (!partitions[other].alive) {
+      const size_t drop = partitions[other].representative;
+      if (reachability->WouldCreateCycle(keep, drop)) {
         continue;
       }
-      NodeSet merged(partitions[base].nodes.begin(), partitions[base].nodes.end());
-      merged.insert(partitions[other].nodes.begin(), partitions[other].nodes.end());
-      if (WouldCreateCycle(graph.bb, merged, assignment, partitions)) {
-        continue;
-      }
+      reachability->Contract(keep, drop);
       partitions[base].nodes.insert(partitions[base].nodes.end(), partitions[other].nodes.begin(),
                                     partitions[other].nodes.end());
       for (auto *merged_node : partitions[other].nodes) {
@@ -1515,7 +1418,7 @@ std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
   std::vector<VfPartition> result;
   for (auto &partition : partitions) {
     if (partition.alive) {
-      SortUniqueByIndex(partition.nodes, graph.topological_indices);
+      SortByIndex(partition.nodes, graph.topological_indices);
       result.push_back(BuildPartition(graph, std::move(partition.nodes)));
     }
   }
@@ -1559,6 +1462,8 @@ std::vector<VfPartition> SplitPartition(const VfGraphContext &graph, const VfPar
       if (best[end].valid && best[begin].parts + 1 > best[end].parts) {
         continue;
       }
+      // A proposal is convex: no dependency path can leave and re-enter it.
+      // A contiguous slice of its topologically ordered members is also convex.
       std::vector<NDObject *> nodes(partition.nodes.begin() + begin, partition.nodes.begin() + end);
       auto candidate = BuildPartition(graph, std::move(nodes));
       const auto metrics = policy.Measure(candidate);
@@ -1570,7 +1475,6 @@ std::vector<VfPartition> SplitPartition(const VfGraphContext &graph, const VfPar
       state.boundary_values = best[begin].boundary_values + (end == node_count ? 0 : candidate.outputs.size());
       state.square_cost = best[begin].square_cost + cost * cost;
       state.previous = begin;
-      // Whole-graph legality checks are only needed for a competitive candidate.
       if ((!best[end].valid || score(state) < score(best[end])) && policy.CanFuse(candidate, metrics)) {
         state.tail = std::move(candidate);
         best[end] = std::move(state);

@@ -57,7 +57,7 @@ class MatMul {
     m_loop = op->m_loop;
     n_loop = op->n_loop;
     k_loop = op->k_loop;
-    shuffle_k = blockidx % k_loop;
+    shuffle_k = 0;
     k_actual = (shuffle_k == k_loop - 1) ? (k_real - shuffle_k * k0) : k0;
     op_ = op;
   }

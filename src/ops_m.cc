@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <limits>
 #include "acl/acl_rt.h"
 #include "kernel.h"
@@ -26,6 +27,12 @@
 namespace dvm {
 namespace {
 constexpr std::array<uint32_t, 7> kTileV2Sizes = {1024, 512, 256, 128, 64, 32, 16};
+constexpr std::array<uint32_t, 20> kTileV4Sizes = {
+  1024, 768, 512, 384, 320, 256, 224, 208, 192, 176, 160, 144, 128, 112, 96, 80, 64, 48, 32, 16};
+constexpr uint64_t MIN_TATL_BLOCK_SIZE = 4096;
+constexpr double CUBE_BOUND_RATIO = 0.85;
+// Ascend950 AICoreMemoryRates.l2_rate / BF16 Cube throughput. Clock cancels.
+constexpr double kL2BytesPerCubeOp = 100.0 / 8192;
 constexpr float kDdrBandwidthRatio = 1.0f;
 constexpr uint64_t kPerCoreL2ReserveElements[kAiCoreArchEnd] = {
   256 * 128 * 8,  // C220
@@ -75,6 +82,7 @@ class TileHelper {
   }
 
   bool GetCandidate(uint32_t x, uint32_t y, TileCand *candidate) const;
+  bool GetCandidateMN(uint32_t m0, uint32_t n0, TileCand *candidate) const;
 
  private:
   const CubeOp *mm_;
@@ -130,6 +138,47 @@ bool TileHelper::GetCandidate(uint32_t x, uint32_t y, TileCand *candidate) const
   return true;
 }
 
+bool TileHelper::GetCandidateMN(uint32_t m0, uint32_t n0, TileCand *candidate) const {
+  if (m0 > round_m_ || n0 > round_n_ || n0 > n_align_max_ || m0 * n0 > l0c_max_) return false;
+  // Match the device's L0 K slice; the host k0 stores the L1 depth.
+  const uint32_t item_size = ITEM_SIZE[mm_->lhs_->type_id_];
+  const uint32_t l0_elements = g_system.L0ABSize() / (2 * item_size);
+  const uint32_t max_mn = std::max(m0, n0);
+  const uint32_t l0_k = std::min(round_k_, RoundDown(l0_elements / max_mn, CubeOp::BLOCK_SIZE));
+  if (l0_k == 0) return false;
+  const uint32_t k_align = !mm_->trans_a_ || mm_->trans_b_ ? 512 / item_size : CubeOp::BLOCK_SIZE;
+  const uint32_t max_steps = std::min(CeilDiv(round_k_, l0_k), 8u);
+  uint32_t l1_k = 0;
+  uint64_t selected_bytes = 0;
+  for (uint32_t step = 1; step <= max_steps; ++step) {
+    const uint32_t depth = std::min(round_k_, l0_k * step);
+    const uint64_t transfer_bytes = static_cast<uint64_t>(max_mn) * depth * item_size;
+    if (depth > MATMUL_ALIGN_MAX || static_cast<uint64_t>(m0 + n0) * depth > l1_max_ ||
+        transfer_bytes * 4 > g_system.L1Size()) {
+      break;
+    }
+    const bool needs_alignment = l1_k % k_align != 0;
+    const bool prefer_alignment = needs_alignment && depth % (256 / item_size) == 0;
+    const bool grow_transfer = selected_bytes < 48 * 1024 && (needs_alignment || depth % k_align == 0);
+    if (l1_k == 0 || prefer_alignment || grow_transfer) {
+      l1_k = depth;
+      selected_bytes = transfer_bytes;
+    }
+  }
+  if (l1_k == 0) return false;
+  candidate->m0 = m0;
+  candidate->n0 = n0;
+  candidate->k0 = l1_k;
+  candidate->m_loop = CeilDiv(op_->m_real, m0);
+  candidate->n_loop = CeilDiv(op_->n_real, n0);
+  const uint64_t core_loop = static_cast<uint64_t>(candidate->m_loop) * candidate->n_loop *
+                             mm_->batch_c0_ * mm_->batch_c1_;
+  if (core_loop > std::numeric_limits<uint32_t>::max()) return false;
+  candidate->core_loop = core_loop;
+  candidate->block_dim = std::min(candidate->core_loop, core_num_);
+  return true;
+}
+
 template <size_t N, typename Visit, typename Stop>
 void ForEachCubeTilePair(const std::array<uint32_t, N> &candidates, Visit &&visit, Stop &&stop) {
   for (size_t x = 0; x < N; ++x) {
@@ -166,8 +215,9 @@ void CubeOp::InferTactics(Tactics &t) const {
   t.enable_bias_cast = false;
   t.lhs_nz = false;
   t.rhs_nz = false;
+  if (g_system.Arch() == kAiCore_C310) return;
+
   auto CheckPadOrND2NZ = [this](int64_t size, int64_t &pad, bool &nd2nz) {
-    if (g_system.Arch() != kAiCore_C220) return;
     constexpr int64_t max_nd2nz_stride = std::numeric_limits<uint16_t>::max();
     // GMM does not support NZ inputs yet.
     if (obj_id_ == kCubeOp && RoundUp(size, ALIGN_256) > max_nd2nz_stride) {
@@ -213,7 +263,7 @@ void CubeOp::InferTactics(Tactics &t) const {
     }
   }
 
-  if (bias_ && bias_->type_id_ == kBFloat16 && g_system.Arch() == kAiCore_C220) {
+  if (bias_ && bias_->type_id_ == kBFloat16) {
     t.enable_bias_cast = true;
   }
 }
@@ -465,7 +515,7 @@ void CubeOp::GenTiling(vCubeOp *op) {
   static int tiling_ver = -1;
   if (tiling_ver == -1) {
     const char *ver = getenv("DVM_MATMUL_TILING");
-    tiling_ver = ver != nullptr ? std::stoi(ver) : 3;
+    tiling_ver = ver != nullptr ? std::stoi(ver) : (g_system.Arch() == kAiCore_C310 ? 4 : 3);
   }
   switch (tiling_ver) {
     case 1: {
@@ -481,9 +531,107 @@ void CubeOp::GenTiling(vCubeOp *op) {
       TileV2(op, V_CUBE_SWIZ_VISIT_DIAGONAL_Z);
       break;
     }
+    case 4: {
+      TileV4(op);
+      break;
+    }
     default:
       break;
   }
+}
+
+void CubeOp::TileV4(vCubeOp *op) {
+  const uint32_t core_num = g_system.CoreNum(CoreType::kAIC);
+  const uint32_t item_size = ITEM_SIZE[lhs_->type_id_];
+  const uint64_t batch = static_cast<uint64_t>(batch_c0_) * batch_c1_;
+  const uint32_t round_m = RoundUp(op->m_real, BLOCK_SIZE);
+  const uint32_t round_n = RoundUp(op->n_real, BLOCK_SIZE);
+  const uint32_t round_k = RoundUp(op->k_real, BLOCK_SIZE);
+  const uint32_t l0_elements = g_system.L0ABSize() / (2 * item_size);
+  const uint64_t l0c_elements = g_system.L0CSize() / sizeof(float);
+  const double bandwidth_ratio = g_system.L2DdrBandwidthRatio();
+  const double shape_ratio = 1.0 / op->m_real + 1.0 / op->n_real;
+  const double input_bytes =
+      static_cast<double>(batch) * (static_cast<double>(op->m_real) + op->n_real) * op->k_real * item_size;
+  const double cache_usage = std::max(1.0, input_bytes / g_system.L2Size());
+  double cube_edge = kL2BytesPerCubeOp + cache_usage * (1 - bandwidth_ratio) * shape_ratio -
+                     (1 + bandwidth_ratio) / op->k_real;
+  // Use the raw bandwidth edge to choose input alignment and K reserves before searching.
+  const uint32_t seed_m = std::min(round_m, 256u);
+  const uint32_t seed_n = std::min<uint64_t>(round_n, RoundDown(l0c_elements / seed_m, uint64_t{BLOCK_SIZE}));
+  const bool memory_bound = 1.0 / seed_m + 1.0 / seed_n > cube_edge;
+  uint32_t inner_align;
+  uint32_t min_l0_k;
+  uint32_t k_inner_align;
+  if (memory_bound) {
+    inner_align = 128 / item_size;
+    min_l0_k = BLOCK_SIZE;
+    k_inner_align = (batch == 1 ? 256u : 512u) / item_size;
+  } else {
+    inner_align = 64 / item_size;
+    min_l0_k = 128 / item_size;
+    k_inner_align = 512 / item_size;
+  }
+  min_l0_k = std::min(round_k, min_l0_k);
+  const uint32_t min_l1_k = std::min(round_k, !trans_a_ || trans_b_ ? k_inner_align : BLOCK_SIZE);
+  const uint32_t m_align = trans_a_ ? inner_align : BLOCK_SIZE;
+  // Align short-K outputs to 256 bytes for Fixpipe bandwidth.
+  const uint32_t n_align = op->k_real < 1.0 / (shape_ratio * bandwidth_ratio) ? 256 / item_size :
+                           (trans_b_ ? BLOCK_SIZE : inner_align);
+  auto Balance = [&](const TileHelper::TileCand &tile) {
+    const uint64_t tiles = tile.core_loop;
+    const uint64_t main_waves = CeilDiv(tiles, uint64_t{core_num}) - 1;
+    const uint64_t tail_split = core_num / (tiles - main_waves * core_num);
+    const uint64_t padded_m = op->m_real <= BLOCK_SIZE ? op->m_real : tile.m0;
+    const uint64_t padded_n = op->n_real <= BLOCK_SIZE ? op->n_real : tile.n0;
+    double tail_wave = 1.0;
+    // CANN's tail score assumes device-side subdivision of the final wave.
+    // The current kernel executes whole tiles, so tail_wave < 1 overestimates
+    // load balance. Matching device-side subdivision is deferred to a follow-up.
+    if (main_waves && batch == 1 && padded_m * padded_n / tail_split >= MIN_TATL_BLOCK_SIZE) {
+      const uint64_t split_m = std::sqrt(tail_split);
+      const uint64_t split_n = tail_split / split_m;
+      tail_wave = 1.0 / (split_m * split_n);
+    }
+    return static_cast<double>(batch) * op->m_real * op->n_real /
+           (core_num * (main_waves + tail_wave) * padded_m * padded_n);
+  };
+  TileHelper helper(this, op);
+  TileHelper::TileCand best;
+  double best_ratio = std::numeric_limits<double>::max();
+  double best_balance = 0;
+  double best_score = std::numeric_limits<double>::max();
+  cube_edge *= CUBE_BOUND_RATIO;
+  auto tile_select = [&](uint32_t m, uint32_t n) {
+    TileHelper::TileCand candidate;
+    if (!helper.GetCandidateMN(m, n, &candidate)) return;
+    if ((m % m_align != 0 && m != round_m) || (n % n_align != 0 && n != round_n)) return;
+    const uint32_t max_mn = std::max(m, n);
+    if (max_mn * min_l0_k > l0_elements ||
+        static_cast<uint64_t>(max_mn) * min_l1_k * item_size * 4 > g_system.L1Size()) return;
+    const double ratio = 1.0 / candidate.m0 + 1.0 / candidate.n0;
+    if (best_balance >= 0.9 && ratio > best_ratio && ratio > cube_edge && cube_edge > 0) return;
+    const double balance = Balance(candidate);
+    const bool cube_better = ratio <= cube_edge && balance > best_balance;
+    const double score = ratio / balance;
+    if (cube_better || score < best_score || (std::abs(score - best_score) < 1e-9 && balance > best_balance)) {
+      if (cube_better) cube_edge = ratio;
+      best = candidate;
+      best_ratio = ratio;
+      best_balance = balance;
+      best_score = score;
+    }
+  };
+  ForEachCubeTilePair(kTileV4Sizes, tile_select, [] { return false; });
+  EXCEPTION_IF(best.block_dim == 0, "TileV4 cannot encode MatMul tile");
+  op->m0 = m0_ = best.m0;
+  op->n0 = n0_ = best.n0;
+  op->k0 = k0_ = best.k0;
+  core_loop_ = best.core_loop;
+  block_dim_ = best.block_dim;
+  // Use the existing nZ walk with CANN's four-tile window.
+  const uint32_t window = std::min(4u, CeilDiv(op->m_real, op->m0));
+  op->swizzle = vCubeOp::SwizzleEncode(V_CUBE_SWIZ_VISIT_nZ, window);
 }
 
 void CubeOp::CodeGen(vCubeOp *op, CubeTuner *tuner) {

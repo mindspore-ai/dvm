@@ -133,6 +133,7 @@ class CubeOp : public NDObject {
   void Tile(vCubeOp *code);
   void TileV1(vCubeOp *op);
   void TileV2(vCubeOp *op, uint32_t swizzle_type);
+  void TileV4(vCubeOp *op);
 
   size_t offset_a_{0};
   size_t offset_b_{0};

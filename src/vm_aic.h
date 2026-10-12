@@ -98,7 +98,11 @@ class TileVisitor {
     if (m.flags & V_CUBE_FLAG_GROUP_K) {
       m.k_real = static_cast<uint64_t>(stride);
       m.k_loop = CeilDiv(m.k_real, m.k0);
+#if __VM_ARCH__ == 220
       m.shuffle_k = vBlockIdx() % m.k_loop;
+#else
+      m.shuffle_k = 0;
+#endif
       m.k_actual = (m.shuffle_k == m.k_loop - 1) ? (m.k_real - m.shuffle_k * m.k0) : m.k0;
     } else {
       m.m_real = static_cast<uint64_t>(stride);

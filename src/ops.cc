@@ -2107,7 +2107,7 @@ uint64_t PermuteOp::Emit(VectorKernel &k) {
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
 
-NDObject *PermuteOp::Clone(CloneHelper &h) { return new PermuteOp(h.GetClone(lhs_), dims_ref_); }
+NDObject *PermuteOp::Clone(CloneHelper &h) { return new PermuteOp(h.GetClone(lhs_), h.GetClone(dims_ref_)); }
 
 void PermuteOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Permute"; }
 
@@ -2712,7 +2712,7 @@ uint64_t BroadcastOp::Emit(VectorKernel &k) {
 void BroadcastOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Broadcast"; }
 
 NDObject *BroadcastOp::Clone(CloneHelper &h) {
-  return new BroadcastOp(h.GetClone(lhs_), dst_shape_ref_);
+  return new BroadcastOp(h.GetClone(lhs_), h.GetClone(dst_shape_ref_));
 }
 
 void BroadcastOp::TileCollect(NDObject *op, TileInfo &info) {

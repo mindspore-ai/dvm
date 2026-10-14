@@ -1393,7 +1393,7 @@ uint64_t NDStore::Emit(VectorKernel &k) {
       return vStoreRS::Encode(insn_, V_STORE_RS, op, rounds);
     }
     if (auto red_op = GetStoreReduceOp(lhs_); red_op != nullptr) {
-      if (k.GetVisitor<RedVisitCoder>()) {
+      if (red_op->visit_ != nullptr) {
         ASSERT(tail_size == 0);
         vStoreCond op;
         op.xn = lhs_->xbuf_;
@@ -1655,7 +1655,7 @@ uint64_t NDStore::EmitView(VectorKernel &k, uint64_t *insn) {
 }
 
 uint64_t NDStore::EmitAtomicView(VectorKernel &k, ReduceOp *red) {
-  ASSERT(k.GetVisitor<RedVisitCoder>() == nullptr);
+  ASSERT(red->visit_ == nullptr);
   vStoreAtomicW op;
   op.red_op = red->red_op_;
   op.atomic_type = GetAtomicStoreType(type_id_);
@@ -3045,7 +3045,7 @@ uint64_t ReduceOp::Emit(VectorKernel &k) {
   uint64_t iter_size = ndd_.lead_dim() * ITEM_SIZE[type_id_];
   bool rm_pad = CheckFlag(OBJ_FLAG_REDUCE_RMPAD_EN) && iter_size % SIMD_BLOCK_SIZE && iter_size < SIMD_REPEAT_SIZE &&
                 ndd_.stride_back() > ndd_.lead_stride();
-  bool cum = round_tile_.size() & 1;
+  bool cum = (round_tile_.size() & 1) && !g_system.deterministic_;
   if (ws_num_ == 0 || (!rm_pad && !cum)) {
     return EmitBody(k, xbuf_, xbuf_);
   }
@@ -3224,7 +3224,7 @@ uint64_t ReduceOp::EmitDeterm(VectorKernel &k) {
     ws_offset = coder->ws_size_;
     coder->ws_size_ += ndd_.stride_back() * sizeof(float) * coder->block_num_;
   }
-  uint64_t size = EmitBody(k, wss_[0], xbuf_);
+  uint64_t size = EmitBody(k, wss_[0], wss_[1]);
   vReduceJoin op;
   op.xd = xbuf_;
   op.xn = wss_[0];

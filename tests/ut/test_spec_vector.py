@@ -131,6 +131,36 @@ def test_dyn_spec_fall_reduce():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('fallback_first', [False, True])
+def test_dyn_spec_rmsnorm_reloc(fallback_first):
+    t = Tester("vector:spec,dyn")
+    x = t.load([-1, -1], "float16")
+    gamma = t.load([-1], "float16")
+    width = t.scalar(dvm.int64)
+    x_fp32 = t.cast(x, "float32")
+    square_sum = t.sum(t.mul(x_fp32, x_fp32), [1], True)
+    t.spec_next()
+    rstd = t.div(1.0, t.sqrt(t.add(t.div(square_sum, width), 1e-6)))
+    normalized = t.cast(t.mul(x_fp32, rstd), "float16")
+    out = t.store(t.mul(normalized, gamma))
+    shapes = [(2, 8192), (3, 65536), (17, 129), (4, 32768)]
+    if fallback_first:
+        shapes = shapes[1:] + shapes[:1]
+    rng = np.random.default_rng(17)
+    for rows, cols in shapes * 2:
+        x_data = rng.normal(0, 1, (rows, cols)).astype(np.float16)
+        gamma_data = rng.normal(1, 0.1, (cols,)).astype(np.float16)
+        t.input(x, x_data)
+        t.input(gamma, gamma_data)
+        width.update(cols)
+        t.run()
+        x_ref = x_data.astype(np.float32)
+        rstd_ref = 1.0 / np.sqrt(np.mean(x_ref * x_ref, axis=1, keepdims=True) + 1e-6)
+        expect = (x_ref * rstd_ref).astype(np.float16) * gamma_data
+        assert(t.check(out, expect, 3e-3))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_spec_dead_code():
     t = Tester("vector:spec", use_pass_opt=True)
     a = np.random.normal(0.0, 0.3, [1024]).astype(np.float32)

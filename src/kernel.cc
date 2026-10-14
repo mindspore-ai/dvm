@@ -2071,11 +2071,11 @@ class RemapKernel : public T {
  public:
   void Remap(NDAccess *op, NDAccess *orig) {
     remap_.emplace_back(op, orig);
-    orig->addr_.Update(&orig->addr_.data);
   }
   uint64_t CodeGen() override {
     auto ws_size = T::CodeGen();
     for (auto &r : remap_) {
+      r.second->addr_.Update(&r.second->addr_.data);
       this->code_.BindOpFast(r.first->addr_, r.second->addr_);
     }
     return ws_size;

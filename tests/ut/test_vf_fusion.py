@@ -671,3 +671,26 @@ def test_broadcast_select():
     assert dump.count("ExtOut") == 1
     assert all(op not in dump for op in ("Abs", "Add", "Sub", "Mul", "Compare", "Minimum", "Select", "Cast"))
     assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() != "AscendC310", reason="VF Fusion only supports C310")
+@pytest.mark.parametrize("output_count", [7, 8, 9])
+def test_custom_instruction_length_boundary(output_count):
+    dvm.Kernel.set_vf_fusion(1)
+    shape = (4, 4, 1)
+    t = Tester()
+    t.set_passes("VfFusion")
+    arrays = [np.full(shape, i + 0.25, dtype=np.float32) for i in range(7)]
+    loads = [t.load(array) for array in arrays]
+    first = t.add(loads[0], loads[1])
+    expected = arrays[0] + arrays[1]
+    outputs = [(first, expected)]
+    outputs.extend((t.add(first, load), expected + array)
+                   for load, array in zip(loads[2:], arrays[2:]))
+    for i in range(output_count - len(outputs)):
+        outputs.append((t.mul(first, i + 2.0), expected * (i + 2.0)))
+    for value, expect in outputs:
+        t.store_expect(value, expect)
+
+    assert t.run_check()

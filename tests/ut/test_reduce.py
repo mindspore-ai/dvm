@@ -253,6 +253,24 @@ def test_max_min_atomic_determ():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('dims', [(0,), (0, 2)])
+def test_mixed_reduce_determ(dims):
+    t = Tester()
+    t.set_deterministic(True)
+    try:
+        a = np.ones((128, 9, 257), dtype=np.float32)
+        a[0] = 2
+        a[1] = -2
+        x = t.load(a)
+        t.store_expect(t.sum(x, dims, False), np.sum(a, axis=dims), 0)
+        t.store_expect(t.max(x, dims, False), np.max(a, axis=dims), 0)
+        t.store_expect(t.min(x, dims, False), np.min(a, axis=dims), 0)
+        assert t.run_check()
+    finally:
+        t.set_deterministic(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('in_shape, dims', [[[1024, 1000], (0, 1)],
                                             [[3, 4, 120, 136], (0, 2, 3)],
                                             [[3, 1280, 2, 2], (0, 2, 3)]])

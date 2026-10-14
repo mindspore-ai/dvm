@@ -39,7 +39,7 @@ struct VfFusionLimits {
   // lowering sequences which emit more than one vector instruction.
   static constexpr size_t kMaxOps = 12;
   static constexpr size_t kMaxInstructionCost = 16;
-  static constexpr size_t kMaxIO = 16;
+  static constexpr size_t kMaxIO = 14;
 };
 
 struct VfPartition {

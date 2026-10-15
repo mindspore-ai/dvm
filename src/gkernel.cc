@@ -47,22 +47,52 @@ class GraphSpliter {
   static inline constexpr uint32_t kPatCube = 1u << 5;
   // structure pattern
   static inline constexpr uint32_t kPatReducePost = 1u << 10;
+  static inline constexpr uint32_t kPatCubePost = 1u << 11;
+  static inline constexpr uint32_t kPatHorizontal = 1u << 12;
+
+  static inline constexpr uint32_t kPatMaskOp = (1u << 10) - 1;
 
   struct Area {
     int id;
     uint32_t pattern;
+    uint32_t epoch{0};
+    int peak_live;
+    uint32_t item_size;
     IntArrayRef *shape;
     std::vector<NDObject *> ops;
-    std::map<int, std::unordered_set<NDObject *>> borders;
-    uint64_t reach_mask;
-    StagesKernel::Stage *stage;
+    std::map<int, std::vector<NDObject *>> borders;
+    StagesKernel::Stage *stage{nullptr};
+
+    int64_t GetSpace(int64_t init_size = 1) const {
+      constexpr int64_t kDynDimSpace= 512;
+      int64_t size = init_size;
+      for (size_t i = 0; i < shape->size; ++i) {
+        size *= shape->data[i] > 0 ? shape->data[i] : kDynDimSpace;
+      }
+      return size;
+    }
+
+    void AddBorder(int prod_id, NDObject *op) {
+      auto &prods = borders[prod_id];
+      if (std::find(prods.begin(), prods.end(), op) == prods.end()) {
+        prods.push_back(op);
+      }
+    }
+
+    void AddBorders(int prod_id, const std::vector<NDObject *> &ops) {
+      for (auto op : ops) {
+        AddBorder(prod_id, op);
+      }
+    }
   };
 
-#define PATTERN_CALL(pat)             \
-  do {                                \
-    PatternMerge(&GraphSpliter::pat); \
-    if (sym_dump_) DumpArea(#pat);    \
-  } while (0)
+  struct Candidate {
+    Area *a;
+    Area *b;
+    int64_t score;
+    uint32_t pattern;
+    int peak_live;
+  };
 
   void Run(GraphKernel *kernel) {
     int64_t sym_dim_next = -10000;
@@ -71,8 +101,6 @@ class GraphSpliter {
       op->prop_id_ = -1;
     }
     InitArea(kernel->build_ops_);
-    BuildBorder();
-    InitReachMask();
     if (sym_dump_ < 0) {
       sym_dump_ = getenv("DVM_SPLIT_SYM_DUMP") ? 1 : 0;
     }
@@ -83,11 +111,20 @@ class GraphSpliter {
       std::cout << "\n************ shape prop ************\n" << kernel->DumpGraph(true) << std::endl;
       DumpArea("init");
     }
-    PATTERN_CALL(BroadCons);
-    PATTERN_CALL(ReduceProd);
-    PATTERN_CALL(ReduceCons);
-    PATTERN_CALL(ReshapeProd);
-    PATTERN_CALL(CubeCons);
+    constexpr int kMaxIterNum = 10;
+    for (int iter = 0; iter < kMaxIterNum; ++iter) {
+      auto cands = CollectCandidates();
+      if (cands.empty()) break;
+      uint32_t epoch = fuse_epoch_;
+      for (auto &c : cands) {
+        if (c.a->epoch <= epoch && c.b->epoch <= epoch) {
+          DoFuse(c);
+        }
+      }
+      if (sym_dump_) {
+        DumpArea("loop");
+      }
+    }
     BuildStage(kernel);
     for (auto area : areas_) {
       delete area;
@@ -95,84 +132,6 @@ class GraphSpliter {
     if (sym_dump_) {
       std::cout << "\n************ split ************\n" << kernel->DumpGraph(true) << std::endl;
     }
-  }
-
-  Area *BroadCons(Area *area) {
-    if (area->pattern > kPatBroadcast) {
-      return nullptr;
-    }
-    for (const auto &bt : area->borders) {
-      auto b = areas_[bt.first];
-      if (b->pattern <= kPatBroadcast && ShapeAffine(b->shape, area->shape) && !CheckCycle(area, b) &&
-          std::find_if(b->ops.begin(), b->ops.end(), [this, area](NDObject *op) {
-            return stores_.count(op) && ShapesEqual(op->shape_ref_, area->shape);
-          }) == b->ops.end()) {
-        return b;
-      }
-    }
-    return nullptr;
-  }
-
-  Area *ReduceProd(Area *area) {
-    if (area->pattern > kPatReduce) {
-      return nullptr;
-    }
-    for (const auto &bt : area->borders) {
-      auto b = areas_[bt.first];
-      if (b->pattern <= kPatBroadcast && ShapesEqual(area->shape, b->shape) && !CheckCycle(area, b)) {
-        return b;
-      }
-    }
-    return nullptr;
-  }
-
-  Area *ReduceCons(Area *area) {
-    if (area->pattern & ~(kPatBroadcast | kPatElemwise)) {
-      return nullptr;
-    }
-    for (auto &[id, prods] : area->borders) {
-      auto b = areas_[id];
-      if ((b->pattern & kPatReduce) && !CheckCycle(area, b) &&
-          std::find_if(prods.begin(), prods.end(), [this, area](NDObject *op) {
-            return op->obj_id_ == ObjectType::kReduce && ShapesEqual(op->shape_ref_, area->shape);
-          }) != prods.end()) {
-        area->pattern |= kPatReducePost;
-        return b;
-      }
-    }
-    return nullptr;
-  }
-
-  Area *ReshapeProd(Area *area) {
-    if (area->pattern & kPatReshape) {
-      return nullptr;
-    }
-    for (auto op : area->ops) {
-      if (op->obj_id_ != ObjectType::kReshape || op->prop_id_ == op->lhs_->prop_id_) {
-        continue;
-      }
-      auto a = areas_[op->lhs_->prop_id_];
-      if (!(a->pattern & ~(kPatElemwise | kPatBroadcast)) && !CheckCycle(area, a)) {
-        return a;
-      }
-    }
-    return nullptr;
-  }
-
-  Area *CubeCons(Area *area) {
-    if (area->pattern & ~kPatElemwise) {
-      return nullptr;
-    }
-    for (auto &[id, prods] : area->borders) {
-      auto b = areas_[id];
-      if ((b->pattern & kPatCube) && !CheckCycle(area, b) &&
-          std::find_if(prods.begin(), prods.end(), [this, area](NDObject *op) {
-            return op->obj_id_ == ObjectType::kCubeOp && ShapesEqual(op->shape_ref_, area->shape);
-          }) != prods.end()) {
-        return b;
-      }
-    }
-    return nullptr;
   }
 
   void BuildStage(GraphKernel *graph_kernel) {
@@ -208,7 +167,7 @@ class GraphSpliter {
         indegrees[area->id]++;
       }
     }
-    std::priority_queue<int> ready;
+    std::priority_queue<int, std::vector<int>, std::greater<int>> ready;
     for (auto area_id : active_ids) {
       if (indegrees[area_id] == 0) {
         ready.push(area_id);
@@ -312,7 +271,7 @@ class GraphSpliter {
   }
 
  protected:
-  bool ShapesEqual(const IntArrayRef *a, const IntArrayRef *b) {
+  bool ShapeEqual(const IntArrayRef *a, const IntArrayRef *b) {
     if (a == b) return true;
     if (a == nullptr || b == nullptr || a->size != b->size) return false;
     for (size_t i = 0; i < a->size; ++i) {
@@ -332,162 +291,352 @@ class GraphSpliter {
   }
 
   bool CheckCycle(Area *area, Area *prod) {
-    if (area->id < 64) {
-      return (prod->reach_mask >> area->id) & 1;
-    } else {
-      std::unordered_set<Area *> visited;
-      std::function<bool(Area *)> dfs;
-      dfs = [this, &dfs, area, &visited](Area *a) -> bool {
-        if (a == area) return true;
-        if (!visited.count(a)) {
-          visited.insert(a);
-          for (const auto &bt : a->borders) {
-            if (dfs(areas_[bt.first])) return true;
-          }
-        }
-        return false;
-      };
-      return dfs(prod);
-    }
-  }
-
-  void MergeArea(Area *prod, Area *cons) {
-    prod->pattern |= cons->pattern;
-    cons->pattern = kPatNone;
-    prod->shape = cons->shape;
-    prod->reach_mask |= cons->reach_mask;
-    for (auto op : cons->ops) {
-      op->prop_id_ = prod->id;
-    }
-    cons->ops.insert(cons->ops.end(), prod->ops.begin(), prod->ops.end());
-    std::swap(prod->ops, cons->ops);
+    std::unordered_set<Area *> visited;
+    std::function<bool(Area *)> dfs;
+    dfs = [this, &dfs, area, &visited](Area *a) -> bool {
+      if (a == area) return true;
+      if (!visited.insert(a).second) return false;
+      for (const auto &bt : a->borders) {
+        if (dfs(areas_[bt.first])) return true;
+      }
+      return false;
+    };
+    return dfs(prod);
   }
 
   void InitArea(const std::vector<NDObject *> &build_ops) {
     int next_area_id = 0;
+    std::unordered_set<NDObject *> lives;
     for (auto it = build_ops.rbegin(); it != build_ops.rend(); ++it) {
       auto op = *it;
+      if (!op->IsStore() && lives.count(op) == 0) {
+        continue;
+      }
+      op->ForInput([&lives](NDObject *in) { lives.insert(in); });
+    }
+    for (auto op : build_ops) {
       if (!op->IsSimd()) {
+        op->prop_id_ = -1;
         if (op->obj_id_ == ObjectType::kStore) {
-          stores_[op->lhs_] = static_cast<NDAccess *>(op);
+          stores_.emplace(op->lhs_, static_cast<NDAccess *>(op));
         }
         continue;
       }
-      if (op->prop_id_ == -1) {
-        auto area = new Area();
-        bool hold_back;
-        if (op->obj_id_ == ObjectType::kBroadcastTo) {
-          area->pattern = kPatBroadcast;
-          area->shape = op->shape_ref_;
-          hold_back = true;
-        } else if (op->obj_id_ == ObjectType::kReduce) {
-          area->pattern = kPatReduce;
-          area->shape = op->lhs_->shape_ref_;
-          hold_back = false;
-        } else if (op->obj_id_ == ObjectType::kReshape) {
-          area->pattern = kPatReshape;
-          area->shape = op->shape_ref_;
-          hold_back = true;
-        } else if (op->obj_id_ == ObjectType::kCubeOp) {
-          area->pattern = kPatCube;
-          area->shape = op->shape_ref_;
-          hold_back = true;
-        } else {
-          area->pattern = kPatElemwise;
-          area->shape = op->shape_ref_;
-          hold_back = false;
-        }
-        area->id = next_area_id++;
-        op->prop_id_ = area->id;
-        area->ops.push_back(op);
-        areas_.push_back(area);
-        if (hold_back) {
-          continue;
+      if (lives.count(op) == 0) continue;
+      auto area = new Area();
+      if (op->obj_id_ == ObjectType::kBroadcastTo) {
+        area->pattern = kPatBroadcast;
+        area->shape = op->shape_ref_;
+      } else if (op->obj_id_ == ObjectType::kReduce) {
+        area->pattern = kPatReduce;
+        area->shape = op->lhs_->shape_ref_;
+      } else if (op->obj_id_ == ObjectType::kReshape) {
+        area->pattern = kPatReshape;
+        area->shape = op->shape_ref_;
+      } else if (op->obj_id_ == ObjectType::kCubeOp) {
+        area->pattern = kPatCube;
+        area->shape = op->shape_ref_;
+      } else {
+        area->pattern = kPatElemwise;
+        area->shape = op->shape_ref_;
+        if (op->rhs_) {
+          op->ForInput([this, area](NDObject *in) {
+            if (area->pattern == kPatElemwise && !ShapeEqual(area->shape, in->shape_ref_)) {
+              area->pattern = kPatBroadcast;
+            }
+          });
         }
       }
-      auto area = areas_[op->prop_id_];
-      op->ForInput([&area, this](NDObject *in) {
-        if (!in->IsLoad() && in->obj_id_ != ObjectType::kCubeOp && in->obj_id_ != ObjectType::kReduce &&
-            in->obj_id_ != ObjectType::kReshape) {
-          if (in->prop_id_ == -1) {
-            if (ShapesEqual(in->shape_ref_, area->shape)) {
-              area->ops.push_back(in);
-              in->prop_id_ = area->id;
-            }
-          } else if (auto a = areas_[in->prop_id_]; a != area) {
-            if (ShapesEqual(a->shape, area->shape) && !CheckCycle(area, a)) {
-              MergeArea(a, area);
-              area = a;
-            }
-          }
+      area->id = next_area_id++;
+      op->prop_id_ = area->id;
+      area->item_size = ITEM_SIZE[op->type_id_];
+      area->ops.push_back(op);
+      area->peak_live = 1;
+      op->ForInput([this, op, area](NDObject *in) {
+        if (in->IsLoad()) {
+          consumers_[in].push_back(op);
+        } else if (in->prop_id_ != -1) {
+          ASSERT(in->prop_id_ != area->id);
+          area->AddBorder(in->prop_id_, in);
+          consumers_[in].push_back(op);
         }
+        area->peak_live++;
       });
+      areas_.push_back(area);
     }
   }
 
-  void BuildBorder() {
-    for (auto a : areas_) {
-      if (a->pattern == kPatNone) continue;
-      for (auto op : a->ops) {
-        op->ForInput([this, a](NDObject *in) {
-          if (!in->IsLoad() && in->prop_id_ != a->id) {
-            a->borders[in->prop_id_].insert(in);
+  template <typename T>
+  void TravelInput(NDObject *root, const T &func) {
+    std::vector<NDObject *> &stack = temp_ops_;
+    stack.push_back(root);
+    while (!stack.empty()) {
+      auto top = stack.back();
+      stack.pop_back();
+      if (func(top)) {
+        top->ForInput([&stack](NDObject *in) { stack.push_back(in); });
+      }
+    }
+  }
+
+  bool ReducePostCheck(NDObject *red) {
+    auto dims = static_cast<ReduceOp *>(red)->DimRef();
+    if (dims->size == 0) {
+      return false;
+    }
+    auto shape = red->lhs_->shape_ref_;
+    int64_t min_dim = shape->size - 1;
+    int64_t size = shape->data[min_dim];
+    while (size > 0 && size > 32 * 1024 && min_dim > 0) {
+      min_dim--;
+      size *= shape->data[min_dim];
+    }
+    for (size_t i = 0; i < dims->size; ++i) {
+      auto x = dims->data[i];
+      if (x < 0) {
+        x += shape->size;
+      }
+      if (x <= min_dim) return false;
+    }
+    return true;
+  }
+
+  std::pair<uint32_t, int64_t> VFuseCheck(Area *prod, Area *cons) {
+    constexpr uint32_t kAffineMask = kPatElemwise | kPatBroadcast | kPatReduce;
+    constexpr int64_t kPhaseAffine = 2;
+    constexpr int64_t kPhaseCV = 1;
+    constexpr int64_t kPhaseReshape = 0;
+    const auto &borders = cons->borders.at(prod->id);
+    uint32_t prod_op_mask = prod->pattern & kPatMaskOp;
+    uint32_t cons_op_mask = cons->pattern & kPatMaskOp;
+    NDObject *prod_reduce = nullptr;
+    if (prod_op_mask & kPatReduce) {
+      for (auto op : borders) {
+        TravelInput(op, [&prod_reduce, prod](NDObject *x) {
+          if (x->prop_id_ != prod->id) return true;
+          if (x->obj_id_ == kReduce) {
+            prod_reduce = x;
           }
+          return prod_reduce != nullptr;
         });
       }
     }
+    auto in_range = [](uint32_t pat, uint32_t mask) { return (pat & ~mask) == 0; };
+    auto phase_score = [](int64_t phase) { return phase << 60; };
+    if (in_range(prod_op_mask, kAffineMask) && in_range(cons_op_mask, kAffineMask)) {
+      if (prod_reduce) {
+        if (prod->GetSpace() == cons->GetSpace() && ReducePostCheck(prod_reduce)) {
+          return std::make_pair(kPatReducePost, phase_score(kPhaseAffine));
+        }
+        return std::make_pair(kPatNone, 0);
+      }
+      if (ShapeEqual(cons->shape, prod->shape)) {
+        return std::make_pair(kPatElemwise, phase_score(kPhaseAffine));
+      }
+      if (ShapeAffine(prod->shape, cons->shape)) {
+        return std::make_pair(kPatBroadcast, phase_score(kPhaseAffine));
+      }
+      if (ShapeAffine(cons->shape, prod->shape)) {
+        // TODO: broadcast store
+      }
+    } else if (prod_op_mask == kPatCube) {
+      if (in_range(cons_op_mask, kPatElemwise | kPatBroadcast) && ShapeEqual(prod->shape, cons->shape) &&
+          cons->ops.size() < 8) {
+        return std::make_pair(kPatCubePost, phase_score(kPhaseCV));
+      }
+    } else if (in_range(prod_op_mask, kAffineMask | kPatReshape) &&
+               in_range(cons_op_mask, kAffineMask | kPatReshape)) {
+      if (cons_op_mask == kPatReshape) {
+        return std::make_pair(kPatReshape, phase_score(kPhaseReshape) + 2);
+      }
+      if (prod_op_mask == kPatReshape) {
+        return std::make_pair(kPatReshape, phase_score(kPhaseReshape) + 1);
+      }
+      if (borders.size() == 1 && (*borders.begin())->obj_id_ == kReshape) {
+        if (prod_reduce) {
+          if (!(cons_op_mask & kPatBroadcast) && ReducePostCheck(prod_reduce)) {
+            return std::make_pair(kPatReducePost, phase_score(kPhaseReshape));
+          }
+          return std::make_pair(kPatNone, 0);
+        }
+        return std::make_pair(kPatReshape, phase_score(kPhaseReshape));
+      }
+    }
+    return std::make_pair(kPatNone, 0);
   }
 
-  void InitReachMask() {
-    for (auto a : areas_) {
-      a->reach_mask = 0;
-      for (const auto &bt : a->borders) {
-        if (bt.first < 64) {
-          a->reach_mask |= 1ull << bt.first;
+  bool HFuseCheck(Area *x, Area *y) {
+    if ((x->pattern & kPatCube) || (y->pattern & kPatCube)) {
+      return false;
+    }
+    if (!ShapeEqual(x->shape, y->shape)) {
+      return false;
+    }
+    auto find_reduce = [](Area *a) -> ReduceOp * {
+      for (auto op : a->ops) {
+        if (op->obj_id_ == kReduce) {
+          return static_cast<ReduceOp *>(op);
+        }
+      }
+      return nullptr;
+    };
+    auto red_x = find_reduce(x);
+    auto red_y = find_reduce(y);
+    if (red_x != nullptr && red_y != nullptr && !ShapeEqual(red_x->DimRef(), red_y->DimRef())) {
+      return false;
+    }
+    if (CheckCycle(x, y) || CheckCycle(y, x)) {
+      return false;
+    }
+    return true;
+  }
+
+  int PeakLiveOps(Area *x, Area *y) {
+    std::vector<NDObject *> &seq = temp_ops_;
+    seq.reserve(x->ops.size() + y->ops.size());
+    seq.insert(seq.end(), x->ops.begin(), x->ops.end());
+    seq.insert(seq.end(), y->ops.begin(), y->ops.end());
+    std::unordered_set<NDObject *> lives;
+    int cur_live = 0, peak_live = 0;
+    for (auto it = seq.rbegin(); it != seq.rend(); ++it) {
+      auto op = *it;
+      bool need_store = false;
+      if (lives.count(op) == 0) {
+        lives.insert(op);
+        cur_live++;
+        need_store = true;
+      } else if (stores_.find(op) != stores_.end()) {
+        need_store = true;
+      }
+      op->ForInput([&lives, &cur_live](NDObject *in) {
+        if (lives.count(in) == 0) {
+          lives.insert(in);
+          cur_live++;
+        }
+      });
+      if (cur_live > peak_live) {
+        peak_live = cur_live;
+      }
+      if (!need_store) {
+        cur_live--;
+      }
+    }
+    seq.clear();
+    return peak_live;
+  }
+
+  std::pair<int64_t, int> GetScore(Area *x, Area *y, int64_t shared) {
+    int64_t x_space = x->GetSpace(x->item_size);
+    int64_t y_space = y->GetSpace(y->item_size);
+    int64_t score = shared * x_space;
+    auto it = y->borders.find(x->id);
+    if (it != y->borders.end()) {
+      auto &ops = it->second;
+      score += y_space * ops.size();
+      for (auto op : ops) {
+        if (stores_.find(op) != stores_.end()) continue;
+        auto &cons = consumers_[op];
+        if (std::find_if(cons.begin(), cons.end(), [y](NDObject *p) { return p->prop_id_ != y->id; }) == cons.end()) {
+          score += x_space;
         }
       }
     }
-    for (auto it = areas_.rbegin(); it != areas_.rend(); ++it) {
-      auto a = *it;
-      for (const auto &bt : a->borders) {
-        if (auto b = areas_[bt.first]; b->id < 64) {
-          a->reach_mask |= b->reach_mask;
+    int64_t fuse_space = std::max(x_space, y_space);
+    int peak_live = PeakLiveOps(x, y);
+    if (static_cast<uint64_t>(peak_live * fuse_space) > g_system.CoreNum() * g_system.LocalMemSize()) {
+      constexpr int64_t kLiveRatio = 3;
+      int base_peak = std::max(x->peak_live, y->peak_live);
+      score -= static_cast<int64_t>(peak_live - base_peak) / kLiveRatio * fuse_space;
+    }
+    return std::make_pair(score, peak_live);
+  }
+
+  std::vector<Candidate> CollectCandidates() {
+    auto pair_key = [](Area *x, Area *y) {
+      uint64_t lo = x->id;
+      uint64_t hi = y->id;
+      if (lo > hi) {
+        std::swap(lo, hi);
+      }
+      return lo << 32 | hi;
+    };
+    std::vector<Candidate> cands;
+    std::unordered_map<uint64_t, int> pair_shared;
+    std::vector<Area *> distinct;
+    for (auto &entry : consumers_) {
+      distinct.clear();
+      for (auto op : entry.second) {
+        Area *x = areas_[op->prop_id_];
+        if (std::find(distinct.begin(), distinct.end(), x) == distinct.end()) {
+          distinct.push_back(x);
+        }
+      }
+      if (distinct.size() > 1) {
+        for (size_t i = 0; i < distinct.size(); ++i) {
+          for (size_t j = i + 1; j < distinct.size(); ++j) {
+            pair_shared[pair_key(distinct[i], distinct[j])]++;
+          }
         }
       }
     }
+    for (auto cons : areas_) {
+      if (cons->pattern == kPatNone) continue;
+      for (auto &entry : cons->borders) {
+        auto prod = areas_[entry.first];
+        if (prod->pattern == kPatNone) continue;
+        auto [pattern, phase_score] = VFuseCheck(prod, cons);
+        if (pattern == kPatNone || CheckCycle(cons, prod)) continue;
+        int shared = 0;
+        if (auto it = pair_shared.find(pair_key(prod, cons)); it != pair_shared.end()) {
+          shared = it->second;
+        }
+        if (auto [score, peak_live] = GetScore(prod, cons, shared); score > 0) {
+          cands.push_back({prod, cons, score + phase_score, pattern, peak_live});
+        }
+      }
+    }
+    for (auto &[key, count] : pair_shared) {
+      auto x = areas_[static_cast<int>(key >> 32)];
+      auto y = areas_[static_cast<int>(key & 0xffffffff)];
+      if (x->pattern == kPatNone || y->pattern == kPatNone || !HFuseCheck(x, y)) continue;
+      if (auto [score, peak_live] = GetScore(x, y, count); score > 0) {
+        cands.push_back({x, y, score, kPatHorizontal, peak_live});
+      }
+    }
+    std::sort(cands.begin(), cands.end(), [](const Candidate &l, const Candidate &r) {
+      return l.score >= r.score;
+    });
+    return cands;
   }
 
-  void PatternMerge(Area *(GraphSpliter::*pattern)(Area *)) {
-    bool merged = true;
-    while (merged) {
-      merged = false;
-      for (auto area : areas_) {
-        if (area->pattern == kPatNone) continue;
-        auto m = (this->*pattern)(area);
-        if (m == nullptr) continue;
-        MergeArea(m, area);
-        auto &borders = m->borders;
-        for (auto &[id, prods] : area->borders) {
-          if (id == m->id) continue;
-          if (auto it = borders.find(id); it != borders.end()) {
-            it->second.merge(prods);
-          } else {
-            borders.emplace(id, prods);
-          }
-        }
-        for (auto a : areas_) {
-          if (a == m || a->pattern == kPatNone) continue;
-          if (auto it = a->borders.find(area->id); it != a->borders.end()) {
-            if (auto it2 = a->borders.find(m->id); it2 != a->borders.end()) {
-              it2->second.merge(it->second);
-            } else {
-              a->borders.emplace(m->id, std::move(it->second));
-              a->borders.erase(it);
-            }
-          }
-        }
-        merged = true;
-        break;
+  void DoFuse(const Candidate &c) {
+    Area *surv = c.a;
+    Area *abs = c.b;
+    surv->pattern |= abs->pattern | c.pattern;
+    abs->pattern = kPatNone;
+    if (surv->item_size < abs->item_size) {
+      surv->item_size = abs->item_size;
+    }
+    if (c.pattern != kPatReducePost && c.pattern != kPatCubePost) {
+      surv->shape = abs->shape;
+    }
+    for (auto op : abs->ops) {
+      op->prop_id_ = surv->id;
+    }
+    surv->ops.insert(surv->ops.end(), abs->ops.begin(), abs->ops.end());
+    surv->epoch = abs->epoch = ++fuse_epoch_;
+    surv->peak_live = c.peak_live;
+    for (auto &[id, prods] : abs->borders) {
+      if (id != surv->id) {
+        surv->AddBorders(id, prods);
+      }
+    }
+    surv->borders.erase(abs->id);
+    for (auto cons : areas_) {
+      if (cons->pattern == kPatNone) continue;
+      if (auto it = cons->borders.find(abs->id); it != cons->borders.end()) {
+        cons->AddBorders(surv->id, it->second);
+        cons->borders.erase(it);
       }
     }
   }
@@ -506,9 +655,13 @@ class GraphSpliter {
         }
         std::cout << "]" << std::endl;
         for (auto &[id, prods] : area->borders) {
-          std::cout << "   border: area=" << id << ", cross=[";
+          std::cout << "   inport: id=" << id << ", ops=[";
+          size_t num = prods.size();
           for (auto op : prods) {
-            std::cout << op->index_ << ", ";
+            std::cout << op->index_;
+            if (--num) {
+              std::cout << ", ";
+            }
           }
           std::cout << "]" << std::endl;
         }
@@ -519,6 +672,9 @@ class GraphSpliter {
   std::vector<Area *> areas_;
   std::unordered_map<NDObject *, NDAccess *> stores_;
   std::unordered_map<NDAccess *, std::vector<NDAccess *>> swap_loads_;
+  std::unordered_map<NDObject *, std::vector<NDObject *>> consumers_;
+  std::vector<NDObject *> temp_ops_;
+  uint32_t fuse_epoch_{0};
 };
 
 GraphKernel::GraphKernel(uint32_t flags) : StagesKernel(flags) {}

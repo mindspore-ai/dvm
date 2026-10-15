@@ -216,3 +216,15 @@ def test_split_dyn_shape():
         t.run()
         assert(t.check(o1, x0_data * 0.6 + x2_data))
         assert(t.check(o2, x4_data - x0_data * 0.6))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_split_static_horizontal_shared_load():
+    t = Tester("split:priv1")
+    x_data = np.random.normal(0, 0.1, [64, 1024]).astype(np.float16)
+    x = t.load(x_data)
+    a = t.add(x, 0.1)
+    b = t.mul(x, 2.0)
+    t.store_expect(a, x_data + 0.1)
+    t.store_expect(b, x_data * 2.0)
+    assert (t.run_check())

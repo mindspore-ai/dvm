@@ -1287,6 +1287,7 @@ class ReduceOp : public FlexOp {
   void Dump(bool verbose, std::ostringstream &oss) override;
   bool KeepDims() const { return keepdims_; }
   const DimArray &RoundTile() const { return round_tile_; }
+  const IntArrayRef *DimRef() const { return dims_ref_; }
 
   void SetCum() {
     if (!g_system.deterministic_) SetWs(1, true);

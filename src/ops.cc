@@ -728,11 +728,12 @@ uint64_t NDLoad::Emit(VectorKernel &k) {
     constexpr int SHARD_N = 0;
     if (flags_ & OBJ_FLAG_LOAD_FROM_CC_ONCE) {
       *insn_ = vMakeAccHead(V_LOAD_DUMMY, 0, 1);
-      vCopy op;
+      vCubeCopy op;
       op.xd = xbuf_;
-      op.xn = k.local_mem_size_;
+      op.xn = k.GetVisitor<MixVisitCoder>()->ub_once_base_;
       op.lenburst = GetBlocks(src_tile_stride_);
-      return vCopy::Encode(insn_ + 1, V_COPY_CUBE_TILE, op) + 1;
+      op.tile_offset = (k.tile_num_ + 1) / 2;
+      return vCubeCopy::Encode(insn_ + 1, V_COPY_CUBE_TILE, op) + 1;
     } else if (flags_ & OBJ_FLAG_LOAD_FROM_CC) {
       vccload op;
       op.xn = xbuf_;

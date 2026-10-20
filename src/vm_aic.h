@@ -85,7 +85,7 @@ class TileVisitor {
         m.gm_b += m.kb_align * m.n_align;
         m.gm_bias += m.n_real * m.BiasTypeSize();
       }
-      if (!(m.flags & V_CUBE_FLAG_PINGPONG_STORE)) {
+      if (!(m.flags & (V_CUBE_FLAG_PINGPONG_STORE | V_CUBE_FLAG_STORE_UB | V_CUBE_FLAG_STORE_UB_ONCE))) {
         m.gm_c += m.m_real * m.n_real * (m.flags & V_CUBE_FLAG_OUT_FP32 ? sizeof(float) : sizeof(uint16_t));
       }
       group_info_ += (m.m_loop * m.n_loop) << V_GMM_BLOCK_OFF_OFFSET;

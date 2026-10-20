@@ -48,7 +48,10 @@ struct RedVisitCoder : public VisitCoder {
   uint8_t code_[BCODE_MAX];
 };
 
-class MixVisitCoder : public VisitCoder {};
+class MixVisitCoder : public VisitCoder {
+ public:
+  uint64_t ub_once_base_{0};
+};
 
 struct RelocAddr {
   void Reloc(void *dst) {

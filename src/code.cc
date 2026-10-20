@@ -745,6 +745,15 @@ void DumpCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
   oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn);
 }
 
+void DumpCubeCopy(const DumpInfo &dump_info, std::ostringstream &oss) {
+  vCubeCopy op;
+  auto head = *dump_info.insn;
+  vCubeCopy::Decode(dump_info.insn, head, op);
+  oss << "32x" << op.lenburst;
+  oss << " " << reinterpret_cast<void *>(op.xd) << ", " << reinterpret_cast<void *>(op.xn) << " //";
+  DumpVal("tile_offset", op.tile_offset, oss);
+}
+
 void DumpNop(const DumpInfo &dump_info, std::ostringstream &oss) { oss << "0"; }
 
 void DumpClearPad(const DumpInfo &dump_info, std::ostringstream &oss) {
@@ -898,7 +907,7 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
 
 std::unordered_map<uint64_t, std::tuple<DumpFunc *, std::string, std::string>> op_dump_info_table = {
   {V_COPY, {&DumpCopy, "Copy", "u8"}},
-  {V_COPY_CUBE_TILE, {&DumpCopy, "CopyCubeTile", "u8"}},
+  {V_COPY_CUBE_TILE, {&DumpCubeCopy, "CopyCubeTile", "u8"}},
   {V_NOP, {&DumpNop, "Nop", "u8"}},
   {V_BROADCAST_X_B32, {&DumpBroadcastX, "BroadcastX", "b32"}},
   {V_BROADCAST_X_B64, {&DumpBroadcastX, "BroadcastX", "b64"}},

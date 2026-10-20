@@ -588,6 +588,11 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
     uint8_t unit_flag = 0b11;
     uint64_t src_stride = RoundUp(m_actual, BLOCK_SIZE);
     QuantMode_t type = GetQuantMode<T>();
+    if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
+      set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+      wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
+      unit_flag = 0b00;
+    }
     if (mat.flags & V_CUBE_FLAG_PINGPONG_STORE) {
       uint64_t blockidx = visit.vBlockIdx();
       uint64_t blocknum = visit.vBlockNum();
@@ -601,35 +606,19 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
     } else if (mat.flags & V_CUBE_FLAG_STORE_UB_ONCE) {
       uint64_t subtile0, subtile1, dst;
       vCubeOp::UbInfoDecode(mat.ub_c, dst, subtile0, subtile1);
-      uint64_t aiv_m = CeilDiv(mat.m0, subtile0 + subtile1) * subtile0;
+      uint64_t split_m = CeilDiv(mat.m0, subtile0 + subtile1) * subtile0;
       uint64_t n_size = RoundUp(n_actual, BLOCK_SIZE);
-      for (uint64_t i = 0; i < 2; i++, dst += aiv_m * mat.n0 * sizeof(T)) {
+      for (uint64_t i = 0; i < 2; i++) {
         wait_intra_block(PIPE_FIX, V_INTRA_UB_MIX_BACKWARD_ID + i * V_INTRA_BLOCK_AIV_OFFSET);
-        uint64_t l_m = i * aiv_m;
-        uint64_t r_m = (i + 1) * aiv_m;
-        if (m_actual > r_m) {
-          r_m = max(RoundDown(r_m, BLOCK_SIZE), l_m);
-          uint64_t move_m = r_m - l_m;
-          if (move_m > 0) {
-            mat.StoreC((__ubuf__ T *)dst, l0c + l_m * BLOCK_SIZE, unit_flag, type, move_m, n_size, mat.n0, src_stride,
-                       i);
-          }
-          if (aiv_m > move_m) {
-            mat.StoreC((__ubuf__ T *)dst + move_m * mat.n0, l0c + r_m * BLOCK_SIZE, 0b10, type, aiv_m - move_m, n_size,
-                       mat.n0, src_stride, i);
-          }
-        } else if (m_actual > l_m) {
-          mat.StoreC((__ubuf__ T *)dst, l0c + l_m * BLOCK_SIZE, unit_flag, type, m_actual - l_m, n_size, mat.n0,
+        uint64_t offset = i * split_m;
+        if (m_actual > offset) {
+          uint64_t move_m = min(split_m, m_actual - offset);
+          mat.StoreC((__ubuf__ T *)dst, l0c + offset * BLOCK_SIZE, unit_flag, type, move_m, n_size, mat.n0,
                      src_stride, i);
         }
         set_intra_block(PIPE_FIX, V_INTRA_UB_MIX_FORWARD_ID + i * V_INTRA_BLOCK_AIV_OFFSET);
       }
     } else if (mat.flags & V_CUBE_FLAG_STORE_UB) {
-      if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
-        set_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
-        wait_flag(PIPE_M, PIPE_FIX, EVENT_ID0);
-        unit_flag = 0b00;
-      }
       uint64_t subtile0, subtile1, dst;
       vCubeOp::UbInfoDecode(mat.ub_c, dst, subtile0, subtile1);
       uint64_t tile_num = subtile0 + subtile1;
@@ -647,13 +636,13 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
         }
         set_intra_block(PIPE_FIX, V_INTRA_UB_MIX_FORWARD_ID + subblock_id * V_INTRA_BLOCK_AIV_OFFSET);
       }
-      if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
-        set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
-        wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
-      }
     } else {
       mat.StoreC((__gm__ T *)mat.gm_c + mat.GmOffset(cidx, midx, nidx), l0c, unit_flag, type, m_actual, n_actual,
                  mat.n_real, src_stride);
+    }
+    if (mat.flags & V_CUBE_FLAG_DIS_UNITFLAG) {
+      set_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
+      wait_flag(PIPE_FIX, PIPE_M, EVENT_ID0);
     }
   }
   wait_flag(PIPE_MTE1, PIPE_MTE2, EVENT_ID0);

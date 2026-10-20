@@ -643,6 +643,8 @@ def test_matmul_post_fusion_cc_ub_sync_1(shape_a, shape_b):
     [[256, 256], [256, 256]],
     [[1024, 128], [128, 1024]],
     [[301, 256], [256, 401]],
+    [[300, 6400], [6400, 10240]],
+    [[2, 4800, 6400], [2, 6400, 10240]],
 ])
 @pytest.mark.usefixtures("reset_cube_options")
 def test_matmul_post_fusion_cc_ub_sync_2(shape_a, shape_b):

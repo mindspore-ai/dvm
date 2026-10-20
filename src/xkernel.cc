@@ -315,21 +315,41 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
   MixVisitCoder visit;
   post_fusion_->AddVisitor(&visit);
   size_t post_reserve = code_reserve - CubeKernel::ReserveCodeSize();
+  const uint64_t ub_end = post_fusion_->local_mem_size_;
   if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-    post_fusion_->local_mem_size_ -= cube_op_->BaseSize();
-    code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
-  } else {
-    code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
+    uint64_t ub_budget = cube_op_->BaseSize() / 2;
+    // Reserve the larger Vector's staging, including FixPipe's 16-row padding.
+    while (true) {
+      post_fusion_->local_mem_size_ = ub_end - ub_budget;
+      VectorKernel::TileUpdate update;
+      post_fusion_->ShapeTiling(post_fusion_->AnalyzeTileSizeLimit(), 2, update);
+      auto tile_num = static_cast<uint64_t>(update.tile_num);
+      auto subtile0 = (tile_num + 1) / 2;
+      auto split_m = CeilDiv<uint64_t>(cube_op_->m0_, tile_num) * subtile0;
+      auto aiv_m = RoundUp<uint64_t>(split_m, CubeOp::BLOCK_SIZE);
+      auto required = aiv_m * cube_op_->n0_ * ITEM_SIZE[cube_op_->type_id_];
+      if (required <= ub_budget) {
+        visit.ub_once_base_ = ub_end - required;
+        break;
+      }
+      ub_budget = required;
+    }
   }
-  uint64_t subtile0 = (post_fusion_->tile_num_ + 1) / 2;
-  uint64_t subtile1 = post_fusion_->tile_num_ - subtile0;
-  if (cube_code->flags & V_CUBE_FLAG_STORE_UB) {
-    if (CeilDiv(cube_op_->m0_, post_fusion_->tile_num_) % CubeOp::BLOCK_SIZE) {
+  code_end = post_fusion_->DoCodeGen(2, code_end, post_reserve);
+  auto tile_num = static_cast<uint64_t>(post_fusion_->tile_num_);
+  uint64_t subtile0 = (tile_num + 1) / 2;
+  uint64_t subtile1 = tile_num - subtile0;
+  if (cube_code->flags & (V_CUBE_FLAG_STORE_UB | V_CUBE_FLAG_STORE_UB_ONCE)) {
+    auto split_m = CeilDiv<uint64_t>(cube_op_->m0_, tile_num);
+    uint64_t ub_base = sload_->xbuf_;
+    if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+      split_m *= subtile0;
+      ub_base = visit.ub_once_base_;
+    }
+    if (split_m % CubeOp::BLOCK_SIZE) {
       cube_code->flags |= V_CUBE_FLAG_DIS_UNITFLAG;
     }
-    cube_code->ub_c = vCubeOp::UbInfoEncode(sload_->xbuf_, subtile0, subtile1);
-  } else if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-    cube_code->ub_c = vCubeOp::UbInfoEncode(post_fusion_->local_mem_size_, subtile0, subtile1);
+    cube_code->ub_c = vCubeOp::UbInfoEncode(ub_base, subtile0, subtile1);
   } else {
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   }

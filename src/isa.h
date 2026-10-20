@@ -875,7 +875,7 @@ struct vCopy {
   uint64_t xn;
   uint64_t lenburst;
   // pc[0]: xn(18)
-  // pc[1]: lenburst(16) << 32 |  xd(18)
+  // pc[1]: lenburst(16) << 32 | xd(18)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCopy &op) {
     op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
     uint64_t data = pc[1];
@@ -886,6 +886,28 @@ struct vCopy {
     uint64_t size = 2;
     pc[0] = vMakeSimdHead(id, op.xn, size);
     pc[1] = op.lenburst << 32 | op.xd;
+    return size;
+  }
+};
+
+struct vCubeCopy {
+  uint64_t xd;
+  uint64_t xn;
+  uint64_t lenburst;
+  uint64_t tile_offset;
+  // pc[0]: xn(18)
+  // pc[1]: tile_offset(16) << 48 | lenburst(16) << 32 | xd(18)
+  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vCubeCopy &op) {
+    op.xn = (head >> V_HEAD_EXT_OFFSET) & V_X_MASK;
+    uint64_t data = pc[1];
+    op.xd = data & V_X_MASK;
+    op.lenburst = (data >> 32) & 0xfffful;
+    op.tile_offset = data >> 48;
+  }
+  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vCubeCopy &op) {
+    uint64_t size = 2;
+    pc[0] = vMakeSimdHead(id, op.xn, size);
+    pc[1] = op.tile_offset << 48 | op.lenburst << 32 | op.xd;
     return size;
   }
 };

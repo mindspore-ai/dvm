@@ -265,10 +265,10 @@ class VectorKernel : public VKernel {
     return tail_dim >= 0 && (ndd->pointwise_tile_mask >> tail_dim) ? tile_region_.tail_size : 0;
   }
   int GetTailDim() const { return tile_region_.tail_dim; }
+  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
 
  protected:
   int64_t Analyze();
-  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
   template <bool dyn_shape>
   void Optimize(std::vector<NDObject *> &objects, std::vector<NDObject *> &mng) {
     if (auto opt = g_system.pass_opt_) {

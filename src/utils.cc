@@ -14,18 +14,17 @@
  * limitations under the License.
  */
 
-#include "utils.h"
-
 #include <utility>
-
-#include "system.h"
+#include "utils.h"
 
 namespace dvm {
 
-DagReachability::DagReachability(const std::vector<std::vector<size_t>> &successors)
-    : alive_(successors.size()),
-      ancestors_(successors.size(), DynamicBitset(successors.size())),
-      descendants_(successors.size(), DynamicBitset(successors.size())) {
+DagReachability::DagReachability(const std::vector<std::vector<size_t>> &successors) { Init(successors); }
+
+void DagReachability::Init(const std::vector<std::vector<size_t>> &successors) {
+  alive_.Init(successors.size());
+  ancestors_.assign(successors.size(), alive_);
+  descendants_.assign(successors.size(), alive_);
   for (size_t node = 0; node < successors.size(); ++node) {
     alive_.Set(node);
     for (size_t user : successors[node]) {

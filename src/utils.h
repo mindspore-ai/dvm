@@ -20,12 +20,20 @@
 #include <cstddef>
 #include <cstdint>
 #include <vector>
+#include "system.h"
 
 namespace dvm {
 
 class DynamicBitset {
  public:
-  explicit DynamicBitset(size_t size = 0) : size_(size), words_((size + kWordBits - 1) / kWordBits, 0) {}
+  explicit DynamicBitset(size_t size = 0) : size_(size) {
+    if (size) words_.assign((size + kWordBits - 1) / kWordBits, 0);
+  }
+
+  void Init(size_t size) {
+    size_ = size;
+    words_.assign((size + kWordBits - 1) / kWordBits, 0);
+  }
 
   void Set(size_t id) { words_[id / kWordBits] |= uint64_t{1} << (id % kWordBits); }
 
@@ -71,9 +79,17 @@ class DynamicBitset {
 class DagReachability {
  public:
   // IDs must be a topological ordering of the initial singleton graph.
+  DagReachability() = default;
   explicit DagReachability(const std::vector<std::vector<size_t>> &successors);
 
+  void Init(const std::vector<std::vector<size_t>> &successors);
+
   bool WouldCreateCycle(size_t a, size_t b) const;
+
+  bool HasPath(size_t from, size_t to) const {
+    ASSERT(from != to && alive_.Test(from) && alive_.Test(to));
+    return descendants_[from].Test(to);
+  }
 
   // Caller must first reject cyclic contractions with WouldCreateCycle.
   void Contract(size_t keep, size_t drop);

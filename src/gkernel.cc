@@ -21,6 +21,7 @@
 #include <unordered_map>
 #include <unordered_set>
 #include "gkernel.h"
+#include "utils.h"
 
 namespace dvm {
 static int sym_dump_ = -1;
@@ -64,7 +65,7 @@ class GraphSpliter {
     StagesKernel::Stage *stage{nullptr};
 
     int64_t GetSpace(int64_t init_size = 1) const {
-      constexpr int64_t kDynDimSpace= 512;
+      constexpr int64_t kDynDimSpace = 512;
       int64_t size = init_size;
       for (size_t i = 0; i < shape->size; ++i) {
         size *= shape->data[i] > 0 ? shape->data[i] : kDynDimSpace;
@@ -101,6 +102,7 @@ class GraphSpliter {
       op->prop_id_ = -1;
     }
     InitArea(kernel->build_ops_);
+    InitReachability();
     if (sym_dump_ < 0) {
       sym_dump_ = getenv("DVM_SPLIT_SYM_DUMP") ? 1 : 0;
     }
@@ -290,19 +292,7 @@ class GraphSpliter {
     return true;
   }
 
-  bool CheckCycle(Area *area, Area *prod) {
-    std::unordered_set<Area *> visited;
-    std::function<bool(Area *)> dfs;
-    dfs = [this, &dfs, area, &visited](Area *a) -> bool {
-      if (a == area) return true;
-      if (!visited.insert(a).second) return false;
-      for (const auto &bt : a->borders) {
-        if (dfs(areas_[bt.first])) return true;
-      }
-      return false;
-    };
-    return dfs(prod);
-  }
+  bool CheckCycle(Area *area, Area *prod) { return reachability_.HasPath(area->id, prod->id); }
 
   void InitArea(const std::vector<NDObject *> &build_ops) {
     int next_area_id = 0;
@@ -364,6 +354,16 @@ class GraphSpliter {
       });
       areas_.push_back(area);
     }
+  }
+
+  void InitReachability() {
+    std::vector<std::vector<size_t>> successors(areas_.size());
+    for (auto area : areas_) {
+      for (const auto &entry : area->borders) {
+        successors[entry.first].push_back(area->id);
+      }
+    }
+    reachability_.Init(successors);
   }
 
   template <typename T>
@@ -444,8 +444,7 @@ class GraphSpliter {
           cons->ops.size() < 8) {
         return std::make_pair(kPatCubePost, phase_score(kPhaseCV));
       }
-    } else if (in_range(prod_op_mask, kAffineMask | kPatReshape) &&
-               in_range(cons_op_mask, kAffineMask | kPatReshape)) {
+    } else if (in_range(prod_op_mask, kAffineMask | kPatReshape) && in_range(cons_op_mask, kAffineMask | kPatReshape)) {
       if (cons_op_mask == kPatReshape) {
         return std::make_pair(kPatReshape, phase_score(kPhaseReshape) + 2);
       }
@@ -603,9 +602,7 @@ class GraphSpliter {
         cands.push_back({x, y, score, kPatHorizontal, peak_live});
       }
     }
-    std::sort(cands.begin(), cands.end(), [](const Candidate &l, const Candidate &r) {
-      return l.score >= r.score;
-    });
+    std::sort(cands.begin(), cands.end(), [](const Candidate &l, const Candidate &r) { return l.score > r.score; });
     return cands;
   }
 
@@ -639,6 +636,7 @@ class GraphSpliter {
         cons->borders.erase(it);
       }
     }
+    reachability_.Contract(surv->id, abs->id);
   }
 
   void DumpArea(const char *pat) {
@@ -675,6 +673,7 @@ class GraphSpliter {
   std::unordered_map<NDObject *, std::vector<NDObject *>> consumers_;
   std::vector<NDObject *> temp_ops_;
   uint32_t fuse_epoch_{0};
+  DagReachability reachability_;
 };
 
 GraphKernel::GraphKernel(uint32_t flags) : StagesKernel(flags) {}

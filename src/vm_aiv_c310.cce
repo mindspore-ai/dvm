@@ -1091,7 +1091,7 @@ __simd_callee__ __aicore_inline__ void ReduceLoop4(RegTensor<T> &accum, RegTenso
 enum class ReduceLoad { Single, Loop, Loop4 };
 
 template <ReduceLoad LOAD, vReduceOpType RED_TYPE, typename T>
-__aicore_inline__ void ReduceXLoop(__ubuf__ T *xd, __ubuf__ T *xn, const vReduceX &op, bool has_tail) {
+__aicore_inline__ void ReduceXLoop(__ubuf__ T *xd, __ubuf__ T *xn, const vReduceX &op, uint16_t has_tail) {
   constexpr uint32_t vector_lanes = BlockNum(T);
   const uint16_t load_count = op.red_size / vector_lanes;
   const uint16_t block_count = load_count >> 2;
@@ -1190,7 +1190,7 @@ __aicore_inline__ void ReduceXGroup(__ubuf__ T *xd, __ubuf__ T *xn, const vReduc
 
 // Specialize the load loop before entering the VF.
 template <vReduceOpType RED_TYPE, typename T>
-__aicore_inline__ void ReduceXDispatch(__ubuf__ T *xd, __ubuf__ T *xn, const vReduceX &op, bool has_tail) {
+__aicore_inline__ void ReduceXDispatch(__ubuf__ T *xd, __ubuf__ T *xn, const vReduceX &op, uint16_t has_tail) {
   const uint16_t load_count = op.red_size / BlockNum(T);
   if (load_count < 2) {
     ReduceXLoop<ReduceLoad::Single, RED_TYPE>(xd, xn, op, has_tail);
@@ -1218,9 +1218,9 @@ __aicore_inline__ void ReduceXImpl(__ubuf__ T *xd, __ubuf__ T *xn, const vReduce
       break;
   }
   if (op.red_size > BlockNum(T) && op.red_size % BlockNum(T) != 0) {
-    ReduceXDispatch<RED_TYPE>(xd, xn, op, true);
+    ReduceXDispatch<RED_TYPE>(xd, xn, op, 1);
   } else {
-    ReduceXDispatch<RED_TYPE>(xd, xn, op, false);
+    ReduceXDispatch<RED_TYPE>(xd, xn, op, 0);
   }
 }
 

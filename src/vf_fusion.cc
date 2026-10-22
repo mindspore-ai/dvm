@@ -43,7 +43,6 @@
 #include "utils.h"
 
 namespace dvm::pass {
-namespace detail {
 
 constexpr int kSameShapeMode = 2;
 
@@ -151,26 +150,11 @@ bool IsCapabilityNode(NDObject *op, bool is_dynamic) {
 }
 
 // One Vec scope uses the widest element in the partition for its lane count.
-size_t DataTypeByteSize(DataType type) {
-  switch (type) {
-    case kBool:
-      return sizeof(uint8_t);
-    case kFloat16:
-    case kBFloat16:
-      return sizeof(uint16_t);
-    case kFloat32:
-    case kInt32:
-      return sizeof(uint32_t);
-    default:
-      return 0;
-  }
-}
-
 size_t MaxDataTypeByteSize(const VfPartition &partition) {
   size_t max_size = 0;
   auto update = [&max_size](const std::vector<NDObject *> &nodes) {
     for (auto *node : nodes) {
-      max_size = std::max(max_size, DataTypeByteSize(node->type_id_));
+      max_size = std::max<size_t>(max_size, ITEM_SIZE[node->type_id_]);
     }
   };
   update(partition.inputs);
@@ -180,7 +164,7 @@ size_t MaxDataTypeByteSize(const VfPartition &partition) {
 }
 
 const char *LoadDistribution(DataType type, size_t max_type_size) {
-  const size_t type_size = DataTypeByteSize(type);
+  const size_t type_size = ITEM_SIZE[type];
   if (type_size == max_type_size) {
     return "NORM";
   }
@@ -197,7 +181,7 @@ const char *LoadDistribution(DataType type, size_t max_type_size) {
 }
 
 const char *StoreDistribution(DataType type, size_t max_type_size) {
-  const size_t type_size = DataTypeByteSize(type);
+  const size_t type_size = ITEM_SIZE[type];
   if (type_size == max_type_size) {
     return max_type_size == sizeof(uint8_t) ? "dist_b8" : max_type_size == sizeof(uint16_t) ? "dist_b16" : "dist_b32";
   }
@@ -321,6 +305,37 @@ struct WorkingPartition {
   std::vector<NDObject *> nodes;
   size_t representative;
 };
+
+bool IsUpcast(const NDObject *node) {
+  return node->GetObjectType() == kCast && ITEM_SIZE[node->lhs_->type_id_] < ITEM_SIZE[node->type_id_];
+}
+
+bool IsDowncast(const NDObject *node) {
+  return node->GetObjectType() == kCast && ITEM_SIZE[node->lhs_->type_id_] > ITEM_SIZE[node->type_id_];
+}
+
+bool HasCastBoundaryBetween(const VfGraphContext &graph, const WorkingPartition &partition, size_t other_partition,
+                            const NodeIndex &assignment) {
+  const auto belongs_to_other = [&](NDObject *node) {
+    const auto found = assignment.find(node);
+    return found != assignment.end() && found->second == other_partition;
+  };
+  for (auto *node : partition.nodes) {
+    const bool is_upcast = IsUpcast(node);
+    const bool is_downcast = IsDowncast(node);
+    for (auto *input : GetInputs(node)) {
+      if (belongs_to_other(input) && (is_upcast || IsDowncast(input))) {
+        return true;
+      }
+    }
+    for (auto *user : graph.bb.GetUsers(node)) {
+      if (belongs_to_other(user) && (is_downcast || IsUpcast(user))) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
 
 void SortByIndex(std::vector<NDObject *> &objects, const NodeIndex &indices) {
   std::sort(objects.begin(), objects.end(),
@@ -1339,24 +1354,20 @@ bool RewritePartition(BasicBlock &bb, const VfPartition &partition, uint64_t fun
   return true;
 }
 
-}  // namespace detail
-
 VfPayloadLayout::VfPayloadLayout(size_t input_count, size_t output_count)
     : field_count(input_count + output_count + 1),
-      word_count((field_count + detail::kPayloadSlotsPerWord - 1) / detail::kPayloadSlotsPerWord),
+      word_count((field_count + kPayloadSlotsPerWord - 1) / kPayloadSlotsPerWord),
       extra_code_bytes(word_count > 2 ? (word_count - 2) * sizeof(uint64_t) : 0) {}
 
 VfPayloadLayout::VfPayloadLayout(const VfPartition &partition)
     : VfPayloadLayout(partition.inputs.size(), partition.outputs.size()) {}
 
-std::string VfPayloadLayout::DecodeField(size_t field) const { return detail::PayloadFieldExpr(field); }
+std::string VfPayloadLayout::DecodeField(size_t field) const { return PayloadFieldExpr(field); }
 
 std::string BuildVfCceSource(const VfPartition &partition, const std::string &nspace) {
-  const detail::VfProgram program(partition, nspace);
-  return detail::VfCceSourceEmitter(program, nspace).Emit(true);
+  const VfProgram program(partition, nspace);
+  return VfCceSourceEmitter(program, nspace).Emit(true);
 }
-
-namespace detail {
 
 std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
   if (!graph.valid) {
@@ -1401,6 +1412,11 @@ std::vector<VfPartition> ProposePartitions(const VfGraphContext &graph) {
       reachability.emplace(successors);
     }
     for (size_t other : merge_candidates) {
+      const size_t smaller = partitions[base].nodes.size() <= partitions[other].nodes.size() ? base : other;
+      const size_t larger = smaller == base ? other : base;
+      if (HasCastBoundaryBetween(graph, partitions[smaller], larger, assignment)) {
+        continue;
+      }
       const size_t drop = partitions[other].representative;
       if (reachability->WouldCreateCycle(keep, drop)) {
         continue;
@@ -1494,33 +1510,31 @@ std::vector<VfPartition> SplitPartition(const VfGraphContext &graph, const VfPar
   return result;
 }
 
-}  // namespace detail
-
 void VfFusion(BasicBlock &bb) {
   if (!g_system.vf_fusion_) {
     return;
   }
 
-  const detail::VfGraphContext graph(bb);
-  auto proposals = detail::ProposePartitions(graph);
+  const VfGraphContext graph(bb);
+  auto proposals = ProposePartitions(graph);
   if (proposals.empty()) {
     return;
   }
-  const detail::VfSplitPolicy policy(graph);
+  const VfSplitPolicy policy(graph);
   std::vector<VfPartition> partitions;
   partitions.reserve(proposals.size());
   for (auto &partition : proposals) {
     switch (policy.Classify(partition)) {
-      case detail::VfPartitionDisposition::kFuse:
+      case VfPartitionDisposition::kFuse:
         partitions.push_back(std::move(partition));
         break;
-      case detail::VfPartitionDisposition::kSplit: {
-        auto splits = detail::SplitPartition(graph, partition, policy);
+      case VfPartitionDisposition::kSplit: {
+        auto splits = SplitPartition(graph, partition, policy);
         partitions.insert(partitions.end(), std::make_move_iterator(splits.begin()),
                           std::make_move_iterator(splits.end()));
         break;
       }
-      case detail::VfPartitionDisposition::kSkip:
+      case VfPartitionDisposition::kSkip:
         break;
     }
   }
@@ -1530,9 +1544,9 @@ void VfFusion(BasicBlock &bb) {
   std::sort(partitions.begin(), partitions.end(),
             [](const VfPartition &lhs, const VfPartition &rhs) { return lhs.first_index < rhs.first_index; });
 
-  detail::VfFusionCompiler::FunctionMap functions;
+  VfFusionCompiler::FunctionMap functions;
   try {
-    detail::VfFusionCompiler compiler;
+    VfFusionCompiler compiler;
     functions = compiler.CompileAndRegister(partitions);
   } catch (...) {
     return;
@@ -1541,11 +1555,11 @@ void VfFusion(BasicBlock &bb) {
   // Process consumers first.  This makes a later producer replacement update
   // the already-created downstream Custom input through BasicBlock edges.
   for (auto it = partitions.rbegin(); it != partitions.rend(); ++it) {
-    const auto function = functions.find(detail::VfFusionCompiler::NamespaceFor(*it));
+    const auto function = functions.find(VfFusionCompiler::NamespaceFor(*it));
     if (function == functions.end()) {
       continue;
     }
-    detail::RewritePartition(bb, *it, function->second, bb.is_dynamic_);
+    RewritePartition(bb, *it, function->second, bb.is_dynamic_);
   }
 }
 

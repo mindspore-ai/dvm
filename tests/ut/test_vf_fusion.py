@@ -185,7 +185,6 @@ def test_dynamic_same_shape_select_codegen(request):
 
     assert dump.count("Custom") == 1
     assert "Broadcast" not in dump
-    assert all(op not in dump for op in ("Abs", "Add", "Minimum", "Mul", "Select", "Cast"))
 
 
 @arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
@@ -387,8 +386,37 @@ def test_reduce_boundary():
 
     assert "Custom" in dump
     assert "Reduce" in dump
-    assert all(op not in dump for op in ("Add", "Sub", "Cast"))
     assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() != "AscendC310", reason="VF Fusion only supports C310")
+def test_upcast_boundary():
+    dvm.Kernel.set_vf_fusion(1)
+    t = Tester("vector", use_pass_opt=True)
+    array = np.linspace(-0.5, 0.5, 129, dtype=np.float32)
+    x = t.load(array.astype(np.float16))
+    value = t.mul(t.add(x, 0.25), 0.5)
+    value = t.cast(value, "float32")
+    value = t.mul(t.add(value, 0.25), 0.5)
+    t.store_expect(value, ((array + 0.25) * 0.5 + 0.25) * 0.5, eps=0)
+    assert t.run_check()
+    assert t.dump().count("Custom") == 2
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() != "AscendC310", reason="VF Fusion only supports C310")
+def test_downcast_boundary():
+    dvm.Kernel.set_vf_fusion(1)
+    t = Tester("vector", use_pass_opt=True)
+    array = np.linspace(-0.5, 0.5, 129, dtype=np.float32)
+    x = t.load(array)
+    value = t.mul(t.add(x, 0.25), 0.5)
+    value = t.cast(value, "float16")
+    value = t.mul(t.add(value, 0.25), 0.5)
+    t.store_expect(value, ((array + 0.25) * 0.5 + 0.25) * 0.5, eps=0)
+    assert t.run_check()
+    assert t.dump().count("Custom") == 2
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -665,11 +693,9 @@ def test_broadcast_select():
     t.codegen()
     dump = t.dump()
 
-    # Eleven elementwise nodes, one Broadcast, and an external fused output.
     assert dump.count("Broadcast") == 1
     assert dump.count("Custom") == 2
-    assert dump.count("ExtOut") == 1
-    assert all(op not in dump for op in ("Abs", "Add", "Sub", "Mul", "Compare", "Minimum", "Select", "Cast"))
+    assert dump.count("ExtOut") == 2
     assert t.run_check()
 
 

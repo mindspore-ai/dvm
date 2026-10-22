@@ -68,8 +68,6 @@ struct VfPayloadLayout {
 // VfFusion.
 std::string BuildVfCceSource(const VfPartition &partition, const std::string &nspace);
 
-namespace detail {
-
 constexpr uint64_t kPayloadSlotBits = 20;
 constexpr uint64_t kPayloadSlotMask = (1ull << kPayloadSlotBits) - 1;
 constexpr size_t kPayloadSlotsPerWord = 3;
@@ -230,8 +228,6 @@ class VfFusionCompiler {
  private:
   static bool WriteFile(const std::string &path, const std::string &contents);
 };
-
-}  // namespace detail
 
 // C310 pointwise graph pass.  It is a no-op unless Config::SetVfFusion() was
 // called before codegen.

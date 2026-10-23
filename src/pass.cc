@@ -534,38 +534,98 @@ void EliminateReshape(BasicBlock &bb) {
 }
 
 void VectorDoubleBuffer(BasicBlock &bb) {
-  struct Span {
-    NDObject *first_op;
-    int first_ref;
-    int last_ref;
+  constexpr int LOAD_SPAN = 6;
+  constexpr int STORE_SPAN = 3;
+  constexpr int MIN_DB_SPAN = 2;
+  constexpr int64_t MIN_DB_SIZE = 1024 * 1024;
+  static const std::unordered_map<int, int> long_simd_spans = {
+    {kReduce, 3}, {kBroadcastTo, 2}, {kOneHot, 3}, {kCustom, 4}};
+  auto get_simd_span = [](NDObject *op) -> int {
+    auto it = long_simd_spans.find(op->obj_id_);
+    return it != long_simd_spans.end() ? it->second : 1;
   };
-  std::unordered_map<NDObject *, Span> load_span;
-  int index = 0;
-  for (auto obj = bb.ReverseBegin(); obj != bb.ReverseEnd(); obj = bb.Prev(obj)) {
-    obj->ForInput([&load_span, index, obj](NDObject *in) {
-      if (in->IsLoad()) {
-        auto it = load_span.find(in);
-        if (it == load_span.end()) {
-          load_span[in] = {obj, index, index};
-        } else {
-          it->second.first_op = obj;
-          it->second.first_ref = index;
-        }
+  struct LoadInfo {
+    NDObject *load;
+    NDObject *start_ref_op;
+    int start_ref;
+    int end_ref;
+  };
+  std::vector<LoadInfo> loads;
+  std::vector<NDObject *> stores;
+  size_t load_num = 0;
+  for (auto op = bb.Begin(); op != bb.End(); op = bb.Next(op)) {
+    if (op->IsLoad()) {
+      load_num++;
+    } else if (op->IsStore()) {
+      auto id = op->lhs_->obj_id_;
+      if (id != kReduce && id != kRemovePad && (bb.is_dynamic_ || op->nd_.dims().prod() > MIN_DB_SIZE)) {
+        stores.push_back(op);
       }
-    });
-    index++;
+    }
   }
-  std::vector<NDObject *> stuff_ops;
-  constexpr int MIN_DB_SPAN = 3;
-  for (auto &p : load_span) {
-    auto &span = p.second;
-    if (span.first_ref - span.last_ref >= MIN_DB_SPAN) {
-      auto copy = new CopyOp(p.first);
-      copy->Normalize(stuff_ops);
-      for (auto succ : bb.GetUsers(p.first)) {
-        bb.UpdateInput(succ, p.first, copy);
+  loads.reserve(load_num);
+  int cur_tm = 0;
+  for (auto op = bb.Begin(); op != bb.End(); op = bb.Next(op)) {
+    if (op->IsSimd()) {
+      int end_tm = cur_tm + get_simd_span(op);
+      op->ForInput([&bb, &loads, cur_tm, end_tm, op](NDObject *in) {
+        if (in->IsLoad()) {
+          auto it = std::find_if(loads.begin(), loads.end(), [in](LoadInfo &i) { return i.load == in; });
+          if (it != loads.end()) {
+            it->end_ref = end_tm;
+          } else if (bb.is_dynamic_ || in->nd_.dims().prod() > MIN_DB_SIZE) {
+            loads.emplace_back(LoadInfo{in, op, cur_tm, end_tm});
+          }
+        }
+      });
+      cur_tm = end_tm;
+    }
+  }
+  auto &stuff_ops = stores;
+  int total_tm = cur_tm;
+  while (true) {
+    int end_ref = 0;
+    LoadInfo *info = nullptr;
+    for (auto &i : loads) {
+      if (i.end_ref > end_ref) {
+        end_ref = i.end_ref;
       }
-      bb.Insert(span.first_op, copy);
+      auto span = end_ref - i.start_ref;
+      if (span > MIN_DB_SPAN && span + LOAD_SPAN > total_tm) {
+        info = &i;
+        break;
+      }
+    }
+    if (info == nullptr) {
+      break;
+    }
+    auto load = info->load;
+    auto copy = new CopyOp(load);
+    copy->Normalize(stuff_ops);
+    for (auto succ : bb.GetUsers(load)) {
+      bb.UpdateInput(succ, load, copy);
+    }
+    bb.Insert(info->start_ref_op, copy);
+    auto end_tm = info->start_ref + 1;
+    info->end_ref = end_tm;
+    for (auto &i : loads) {
+      if (i.start_ref > end_tm) {
+        i.start_ref++;
+      }
+      if (i.end_ref > end_tm) {
+        i.end_ref++;
+      }
+    }
+    total_tm++;
+  }
+  for (auto store : stores) {
+    auto input = store->lhs_;
+    if (int span = get_simd_span(input); span > MIN_DB_SPAN && span + STORE_SPAN > total_tm) {
+      auto copy = new CopyOp(input);
+      copy->Normalize(stuff_ops);
+      bb.UpdateInput(store, input, copy);
+      bb.Insert(bb.Next(input), copy);
+      total_tm++;
     }
   }
 }
@@ -850,9 +910,9 @@ class PassOptimizerC220 : public PassOptimizer {
     }
     EliminateDiamondView(bb);
     CompactPeakLiveness(bb);
-    VectorDoubleBuffer(bb);
     ReorderLoad(bb);
     ReorderStore(bb);
+    VectorDoubleBuffer(bb);
     InsertRemovePad(bb);
   }
 };
@@ -867,9 +927,9 @@ class PassOptimizerC310 : public PassOptimizer {
     EliminateDiamondView(bb);
     CompactPeakLiveness(bb);
     VfFusion(bb);
-    VectorDoubleBuffer(bb);
     ReorderLoad(bb);
     ReorderStore(bb);
+    VectorDoubleBuffer(bb);
   }
 };
 

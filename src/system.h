@@ -136,7 +136,6 @@ const char *SocTypeName(SocType type);
 enum CubeStoreType {
   kCubeStoreGM = 0,
   kCubeStoreUB,
-  kCubeStoreUBOnce,
 };
 
 enum ProfilerLevel {
@@ -197,7 +196,7 @@ class System : public Config {
   SocType SocName() const { return soc_name_; }
   uint32_t BtSize() const { return bt_size_; }
   void SetCubeStoreType(CubeStoreType type) { cube_store_type_ = type; }
-  CubeStoreType GetCubeStoreType() { return Arch() == kAiCore_C310 ? cube_store_type_ : kCubeStoreGM; }
+  CubeStoreType GetCubeStoreType() { return cube_store_type_; }
 
   // features config
 

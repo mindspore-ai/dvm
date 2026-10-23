@@ -88,12 +88,6 @@ void DumpSLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
   }
 }
 
-void DumpCLoad(const DumpInfo &dump_info, std::ostringstream &oss) {
-  vccload op;
-  vccload::Decode(dump_info.insn, *dump_info.insn, op);
-  oss << "cload " << reinterpret_cast<void *>(op.xn);
-}
-
 void DumpSStore(const DumpInfo &dump_info, std::ostringstream &oss) {
   vSStore op;
   vSStore::Decode(dump_info.insn, *dump_info.insn, op);
@@ -886,7 +880,6 @@ std::unordered_map<uint64_t, DumpFunc *> acc_dump_func_table = {
   {V_LOAD_VIEW_X, &DumpLoadViewX},
   {V_LOAD_VIEW_TRANS, &DumpLoadViewT},
   {V_SLOAD, &DumpSLoad},
-  {V_LOAD_CC, &DumpCLoad},
   {V_MULTI_LOAD, &DumpMultiLoad},
   {V_PINGPONG_LOAD, &DumpPingPongLoad},
   {V_PINGPONG_PEER_LOAD, &DumpPingpongPeerLoad},

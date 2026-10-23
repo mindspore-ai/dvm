@@ -603,7 +603,7 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
     } else if (mat.flags & V_CUBE_FLAG_OUT_FP32) {
       mat.StoreC((__gm__ float *)mat.gm_c + mat.GmOffset(cidx, midx, nidx), l0c, unit_flag, GetQuantMode<float>(),
                  m_actual, n_actual, mat.n_real, src_stride);
-    } else if (mat.flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+    } else if (mat.flags & V_CUBE_FLAG_STORE_UB) {
       uint64_t subtile0, subtile1, dst;
       vCubeOp::UbInfoDecode(mat.ub_c, dst, subtile0, subtile1);
       uint64_t split_m = CeilDiv(mat.m0, subtile0 + subtile1) * subtile0;
@@ -617,24 +617,6 @@ __aicore_inline__ void CutMKN(__gm__ vCubeOp *__restrict__ op, uint64_t blockidx
                      src_stride, i);
         }
         set_intra_block(PIPE_FIX, V_INTRA_UB_MIX_FORWARD_ID + i * V_INTRA_BLOCK_AIV_OFFSET);
-      }
-    } else if (mat.flags & V_CUBE_FLAG_STORE_UB) {
-      uint64_t subtile0, subtile1, dst;
-      vCubeOp::UbInfoDecode(mat.ub_c, dst, subtile0, subtile1);
-      uint64_t tile_num = subtile0 + subtile1;
-      uint64_t aiv_m = CeilDiv(mat.m0, tile_num);
-      uint64_t n_size = RoundUp(n_actual, BLOCK_SIZE);
-      for (uint64_t i = 0; i < tile_num; i++) {
-        uint64_t subblock_id = i & 1;
-        uint64_t aiv_tile_idx = (i >> 1) + subblock_id * subtile0;
-        uint64_t offset = aiv_tile_idx * aiv_m;
-        wait_intra_block(PIPE_FIX, V_INTRA_UB_MIX_BACKWARD_ID + subblock_id * V_INTRA_BLOCK_AIV_OFFSET);
-        if (m_actual > offset) {
-          uint64_t real_aiv_m = min(aiv_m, m_actual - offset);
-          mat.StoreC((__ubuf__ T *)dst, l0c + offset * BLOCK_SIZE, unit_flag, type, real_aiv_m, n_size, mat.n0,
-                     src_stride, subblock_id);
-        }
-        set_intra_block(PIPE_FIX, V_INTRA_UB_MIX_FORWARD_ID + subblock_id * V_INTRA_BLOCK_AIV_OFFSET);
       }
     } else {
       mat.StoreC((__gm__ T *)mat.gm_c + mat.GmOffset(cidx, midx, nidx), l0c, unit_flag, type, m_actual, n_actual,

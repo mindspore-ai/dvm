@@ -50,7 +50,7 @@ struct RedVisitCoder : public VisitCoder {
 
 class MixVisitCoder : public VisitCoder {
  public:
-  uint64_t ub_once_base_{0};
+  uint64_t ub_base_{0};
 };
 
 struct RelocAddr {

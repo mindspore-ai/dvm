@@ -8,7 +8,7 @@ from tests.mark_utils import arg_mark
 @pytest.fixture
 def reset_cube_options():
     yield
-    Tester.set_cube_store_type(0)
+    Tester.set_cube_store_type(1 if dvm.Device.arch() == 'AscendC310' else 0)
     Tester.set_online_tuning(False)
 
 
@@ -198,7 +198,8 @@ def test_matmul_post_broadcast_fusion_0(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
-    assert (t.das().count("PingPongLoad") > 0)
+    if dvm.Device.arch() == 'AscendC220':
+        assert (t.das().count("PingPongLoad") > 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -604,7 +605,6 @@ def test_matmul_post_fusion_cc_ub_sync_0(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
-    assert (t.das().count("cload") > 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -633,11 +633,10 @@ def test_matmul_post_fusion_cc_ub_sync_1(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
-    assert (t.das().count("cload") > 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="c310 support L0C->UB")
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="A5 GM sync test")
 @pytest.mark.mix
 @pytest.mark.parametrize('shape_a, shape_b', [
     [[256, 256], [256, 256]],
@@ -647,9 +646,9 @@ def test_matmul_post_fusion_cc_ub_sync_1(shape_a, shape_b):
     [[2, 4800, 6400], [2, 6400, 10240]],
 ])
 @pytest.mark.usefixtures("reset_cube_options")
-def test_matmul_post_fusion_cc_ub_sync_2(shape_a, shape_b):
+def test_matmul_post_fusion_cc_gm_sync_a5(shape_a, shape_b):
     t = Tester("mix")
-    Tester.set_cube_store_type(2)
+    Tester.set_cube_store_type(0)
     ax = np.random.normal(0, 0.1, shape_a).astype(np.float16)
     bx = np.random.normal(0, 0.1, shape_b).astype(np.float16)
     np_c = np.matmul(ax.astype(np.float32), bx.astype(np.float32))
@@ -664,7 +663,6 @@ def test_matmul_post_fusion_cc_ub_sync_2(shape_a, shape_b):
     expect = np.abs(np_c + zx)
     t.store_expect(e, expect, 2e-3)
     assert (t.run_check())
-    assert (t.das().count("CopyCubeTile") > 0)
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

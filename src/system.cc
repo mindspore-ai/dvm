@@ -542,6 +542,7 @@ void System::DoInit() {
   const unsigned char *g_vkernel_bin = nullptr;
   unsigned int g_vkernel_bin_len = 0;
   if (arch_ == kAiCore_C220) {
+    cube_store_type_ = kCubeStoreGM;
     bt_size_ = 1024;
     ub_workspace_size_ = 512;
     g_access_func_offset_ = g_access_func_offset_c220;
@@ -553,6 +554,7 @@ void System::DoInit() {
     local_mem_size_ = 192 * 1024;
     l2_cache_line_size_ = kC220L2CacheLineBytes;
   } else if (arch_ == kAiCore_C310) {
+    cube_store_type_ = kCubeStoreUB;
     bt_size_ = 4096;
     ub_workspace_size_ = 256; // avoid access overflow: vlds etc.
     g_access_func_offset_ = g_access_func_offset_c310;

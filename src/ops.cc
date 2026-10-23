@@ -726,18 +726,14 @@ uint64_t NDLoad::Emit(VectorKernel &k) {
   if (auto shard = k.shard_) {
     constexpr int SHARD_M = 1;
     constexpr int SHARD_N = 0;
-    if (flags_ & OBJ_FLAG_LOAD_FROM_CC_ONCE) {
+    if (flags_ & OBJ_FLAG_LOAD_FROM_CC) {
       *insn_ = vMakeAccHead(V_LOAD_DUMMY, 0, 1);
       vCubeCopy op;
       op.xd = xbuf_;
-      op.xn = k.GetVisitor<MixVisitCoder>()->ub_once_base_;
+      op.xn = k.GetVisitor<MixVisitCoder>()->ub_base_;
       op.lenburst = GetBlocks(src_tile_stride_);
       op.tile_offset = (k.tile_num_ + 1) / 2;
       return vCubeCopy::Encode(insn_ + 1, V_COPY_CUBE_TILE, op) + 1;
-    } else if (flags_ & OBJ_FLAG_LOAD_FROM_CC) {
-      vccload op;
-      op.xn = xbuf_;
-      return vccload::Encode(insn_, vAccInsnID::V_LOAD_CC, op);
     } else if (flags_ & OBJ_FLAG_LOAD_PINGPONG) {
       vPingPongLoad op;
       op.from = addr_.gm;

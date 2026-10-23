@@ -409,8 +409,7 @@ class VectorKernel;
 #define OBJ_FLAG_DEAD 16
 
 #define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
-#define OBJ_FLAG_LOAD_FROM_CC (1u << 11)
-#define OBJ_FLAG_LOAD_FROM_CC_ONCE (1u << 12)
+#define OBJ_FLAG_LOAD_FROM_CC (1u << 12)
 #define OBJ_FLAG_LOAD_SHARD_BCAST0 (1u << 13)
 #define OBJ_FLAG_LOAD_SHARD_BCAST1 (1u << 14)
 #define OBJ_FLAG_LOAD_SHARD_ROUND (1u << 15)

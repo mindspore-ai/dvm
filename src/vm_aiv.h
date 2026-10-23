@@ -534,7 +534,7 @@ __aicore_inline__ uint64_t VisitMix(bcodeptr_t pc) {
       set_intra_block(PIPE_MTE3, V_INTRA_GM_MIX_BACKWARD_ID);
     }
     wait_intra_block(PIPE_MTE2, V_INTRA_GM_MIX_FORWARD_ID);
-  } else if (cube->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+  } else if (cube->flags & V_CUBE_FLAG_STORE_UB) {
     set_intra_block(PIPE_V, V_INTRA_UB_MIX_BACKWARD_ID);
     wait_intra_block(PIPE_V, V_INTRA_UB_MIX_FORWARD_ID);
   }

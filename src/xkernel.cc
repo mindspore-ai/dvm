@@ -277,10 +277,7 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
     code_.BindOpFast(sload_->addr_, cube_op_->output_->addr_);
   } else if (cube_op_->output_->CheckFlag(OBJ_FLAG_STAGE_IO)) {
     CubeStoreType sync_type = (cube_code->flags & V_CUBE_FLAG_OUT_FP32) ? kCubeStoreGM : g_system.GetCubeStoreType();
-    if (sync_type == kCubeStoreUBOnce) {
-      static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC_ONCE;
-      cube_code->flags |= V_CUBE_FLAG_STORE_UB_ONCE;
-    } else if (sync_type == kCubeStoreUB) {
+    if (sync_type == kCubeStoreUB) {
       static_cast<NDLoad *>(sload_)->flags_ |= OBJ_FLAG_LOAD_FROM_CC;
       cube_code->flags |= V_CUBE_FLAG_STORE_UB;
     } else {
@@ -316,7 +313,7 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
   post_fusion_->AddVisitor(&visit);
   size_t post_reserve = code_reserve - CubeKernel::ReserveCodeSize();
   const uint64_t ub_end = post_fusion_->local_mem_size_;
-  if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
+  if (cube_code->flags & V_CUBE_FLAG_STORE_UB) {
     uint64_t ub_budget = cube_op_->BaseSize() / 2;
     // Reserve the larger Vector's staging, including FixPipe's 16-row padding.
     while (true) {
@@ -329,7 +326,7 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
       auto aiv_m = RoundUp<uint64_t>(split_m, CubeOp::BLOCK_SIZE);
       auto required = aiv_m * cube_op_->n0_ * ITEM_SIZE[cube_op_->type_id_];
       if (required <= ub_budget) {
-        visit.ub_once_base_ = ub_end - required;
+        visit.ub_base_ = ub_end - required;
         break;
       }
       ub_budget = required;
@@ -339,17 +336,12 @@ MixKernelBase::GenOut MixKernelBase::DoCodeGen(uint8_t *code_ptr, uint64_t core_
   auto tile_num = static_cast<uint64_t>(post_fusion_->tile_num_);
   uint64_t subtile0 = (tile_num + 1) / 2;
   uint64_t subtile1 = tile_num - subtile0;
-  if (cube_code->flags & (V_CUBE_FLAG_STORE_UB | V_CUBE_FLAG_STORE_UB_ONCE)) {
-    auto split_m = CeilDiv<uint64_t>(cube_op_->m0_, tile_num);
-    uint64_t ub_base = sload_->xbuf_;
-    if (cube_code->flags & V_CUBE_FLAG_STORE_UB_ONCE) {
-      split_m *= subtile0;
-      ub_base = visit.ub_once_base_;
-    }
+  if (cube_code->flags & V_CUBE_FLAG_STORE_UB) {
+    auto split_m = CeilDiv<uint64_t>(cube_op_->m0_, tile_num) * subtile0;
     if (split_m % CubeOp::BLOCK_SIZE) {
       cube_code->flags |= V_CUBE_FLAG_DIS_UNITFLAG;
     }
-    cube_code->ub_c = vCubeOp::UbInfoEncode(ub_base, subtile0, subtile1);
+    cube_code->ub_c = vCubeOp::UbInfoEncode(visit.ub_base_, subtile0, subtile1);
   } else {
     cube_code->flags |= V_CUBE_FLAG_GROUP_SET;
   }

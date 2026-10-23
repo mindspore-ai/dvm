@@ -49,7 +49,6 @@ enum vAccInsnID {
   V_LOAD_VIEW_X,
   V_LOAD_VIEW_TRANS,
   V_SLOAD,
-  V_LOAD_CC, // [c310]
   V_MULTI_LOAD, // [c220]
   V_PINGPONG_LOAD,
   V_PINGPONG_PEER_LOAD, // [c220]
@@ -1075,19 +1074,6 @@ struct vCustom {
   }
 };
 
-struct vccload {
-  uint64_t xn;
-  // pc[0]: xn(18)
-  __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vccload &op) {
-    op.xn = (head >> V_M_HEAD_EXT_OFFSET) & V_X_MASK;
-  }
-  __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vccload &op) {
-    uint64_t size = 1;
-    pc[0] = vMakeAccHead(id, op.xn, size);
-    return size;
-  }
-};
-
 struct vSLoad {
   enum { SHARD_OFFSET = 1 };
   enum { RELOC_OFFSET = 2 };
@@ -1922,9 +1908,8 @@ struct vStoreAG {
 #define V_CUBE_FLAG_PEER_STORE (1ul << 12)
 #define V_CUBE_FLAG_GROUPED_LIST (1ul << 13)
 #define V_CUBE_FLAG_GROUP_K (1ul << 14)
-#define V_CUBE_FLAG_STORE_UB (1ul << 15)
 #define V_CUBE_FLAG_DIS_UNITFLAG (1ul << 16)
-#define V_CUBE_FLAG_STORE_UB_ONCE (1ul << 17)
+#define V_CUBE_FLAG_STORE_UB (1ul << 17)
 #define V_CUBE_FLAG_GMM_SIZE_MODE (1ul << 18)
 #define V_CUBE_FLAG_PIPELINE (1ul << 19)
 #define V_CUBE_FLAG_INPUT_A_NZ (1ul << 20)

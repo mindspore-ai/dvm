@@ -784,40 +784,26 @@ __aicore_inline__ void ReduceJoin(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   set_vector_mask(0, join_count);
   op.xd += join_offset * sizeof(float);
   op.ws += join_offset * sizeof(float);
-  uint64_t loop_cnt, bidx;
-  if (thread_idx > 0) {
-    loop_cnt = thread_size - 1;
-    bidx = blockidx - thread_idx;
-  } else {
-    loop_cnt = thread_size - 2;
-    bidx = blockidx + 1;
-  }
-  event_t ping = EVENT_ID6;
-  event_t pong = EVENT_ID7;
-  copy_gm_to_ubuf_align_b8((__ubuf__ float *)op.xs, (__gm__ uint8_t *)op.ws + bidx * ws_stride, 0, 1,
-                           join_count * sizeof(float), 0, 0, 0, 0);
-  set_flag(PIPE_MTE2, PIPE_V, ping);
-  while (loop_cnt--) {
-    if (++bidx == blockidx) continue;
-    copy_gm_to_ubuf_align_b8((__ubuf__ float *)op.xn, (__gm__ uint8_t *)op.ws + bidx * ws_stride, 0, 1,
+  uint64_t block_begin = blockidx - thread_idx;
+  uint64_t ping = 0;
+  set_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+  set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+  for (uint64_t i = 0; i < thread_size; ++i) {
+    if (i == thread_idx) continue;
+    uint64_t xs = ping ? op.xn : op.xs;
+    event_t event = event_t(EVENT_ID6 ^ ping);
+    wait_flag(PIPE_V, PIPE_MTE2, event);
+    copy_gm_to_ubuf_align_b8((__ubuf__ float *)xs, (__gm__ uint8_t *)op.ws + (block_begin + i) * ws_stride, 0, 1,
                              join_count * sizeof(float), 0, 0, 0, 0);
-    set_flag(PIPE_MTE2, PIPE_V, pong);
-    wait_flag(PIPE_MTE2, PIPE_V, ping);
-    vadd((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xs, 1, 1, 1, 1, 8, 8, 8);
-    if (loop_cnt) {
-      set_flag(PIPE_V, PIPE_MTE2, ping);
-      wait_flag(PIPE_V, PIPE_MTE2, ping);
-    }
+    set_flag(PIPE_MTE2, PIPE_V, event);
+    wait_flag(PIPE_MTE2, PIPE_V, event);
+    vadd((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)xs, 1, 1, 1, 1, 8, 8, 8);
     pipe_barrier(PIPE_V);
-    uint64_t xs = op.xs;
-    op.xs = op.xn;
-    op.xn = xs;
-    event_t event = ping;
-    ping = pong;
-    pong = event;
+    set_flag(PIPE_V, PIPE_MTE2, event);
+    ping ^= 1;
   }
-  wait_flag(PIPE_MTE2, PIPE_V, ping);
-  vadd((__ubuf__ float *)op.xd, (__ubuf__ float *)op.xd, (__ubuf__ float *)op.xs, 1, 1, 1, 1, 8, 8, 8);
+  wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID6);
+  wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
 }
 
 template <typename T>

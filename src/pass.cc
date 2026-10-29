@@ -850,10 +850,10 @@ class PassOptimizerC220 : public PassOptimizer {
     }
     EliminateDiamondView(bb);
     CompactPeakLiveness(bb);
-    VectorDoubleBuffer(bb);
     ReorderLoad(bb);
     ReorderStore(bb);
     InsertRemovePad(bb);
+    VectorDoubleBuffer(bb);
   }
 };
 

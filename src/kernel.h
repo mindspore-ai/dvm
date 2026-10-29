@@ -265,10 +265,10 @@ class VectorKernel : public VKernel {
     return tail_dim >= 0 && (ndd->pointwise_tile_mask >> tail_dim) ? tile_region_.tail_size : 0;
   }
   int GetTailDim() const { return tile_region_.tail_dim; }
-  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
 
- protected:
   int64_t Analyze();
+  int64_t TileSizeLimit(int64_t live_peak);
+  void ShapeTiling(int64_t size_limit, int64_t core_limit, TileUpdate &update);
   template <bool dyn_shape>
   void Optimize(std::vector<NDObject *> &objects, std::vector<NDObject *> &mng) {
     if (auto opt = g_system.pass_opt_) {
@@ -282,27 +282,11 @@ class VectorKernel : public VKernel {
   void ApplyTiling(const TileUpdate &update);
   void AlignSimd(int64_t tile_size_limit);
 
+ protected:
   void TileProp(const TileParam &tp) {
     for (auto op : objects_) {
       op->Tile(tp);
     }
-  }
-
-  int64_t TileSizeLimit(int64_t live_peak) {
-    live_peak += static_ops_.size();
-    if (comm_op_) {
-      live_peak += comm_op_->XbufReserve();
-      if (comm_op_->obj_id_ == kReduceScatter && static_cast<ReduceScatterOp *>(comm_op_)->multi_load_) {
-        live_peak += 1;
-      }
-    }
-    int64_t peak_size = ITEM_SIZE[max_type_] * live_peak;
-    if (max_type_ != min_type_ && !comm_op_) {
-      for (auto op : static_ops_) {
-        peak_size -= ITEM_SIZE[max_type_] - ITEM_SIZE[op->type_id_];
-      }
-    }
-    return (local_mem_size_ - ReserveCodeSize()) / peak_size;
   }
 
   void StaticAppend(NDObject *obj) {

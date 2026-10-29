@@ -1219,6 +1219,8 @@ uint64_t StagesKernel::CodeGen() {
   for (auto s : stages_) {
     auto &code = s->kernel->code_;
     code_.CombineBind(code, s->ws_offset);
+  }
+  for (auto s : stages_) {
     for (auto &ss : s->sstores_) {
       if (!ss.is_out) {
         if (ss.store->xbuf_ == STAGE_FLAG_REUSE) {

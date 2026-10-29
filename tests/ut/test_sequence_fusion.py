@@ -219,6 +219,25 @@ def test_seq_broadcast_store_reuse():
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_seq_reloc_depend():
+    """ stage1 dup tiling reloc -> stage 0 output reuse reloc"""
+    t = Tester("seq")
+    t.seq_add(Tester.K_VEC)
+    a0 = np.random.normal(-1, 1, [3, 18911]).astype(np.float32)
+    x0 = t.load(a0)
+    x1 = t.add(x0, 0.01)
+
+    t.seq_add(Tester.K_VEC)
+    y1 = t.mul(x1, 0.8)
+    a1 = np.random.normal(-1, 1, [3, 1]).astype(np.float32)
+    y2 = t.add(y1, t.load(a1))
+    e1 = (a0 + 0.01) * 0.8
+    t.store_expect(y1, e1)
+    t.store_expect(y2, e1 + a1)
+    assert (t.run_check())
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.mix
 def test_seq_vec_mix_dyn():
     t = Tester("seq:dyn")

@@ -20,10 +20,11 @@ from tests.mark_utils import arg_mark
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
-def test_double_buffer_0():
+@pytest.mark.parametrize('shape, copy_num', [([1000, 2000], 1), ([128], 0)])
+def test_load_double_buffer(shape, copy_num):
     t = Tester()
-    a = np.full([1000, 2000], 2, np.float16)
-    b = np.full([1000, 2000], 2, np.float16)
+    a = np.full(shape, 2, np.float16)
+    b = np.full(shape, 2, np.float16)
     x0 = t.load(a)
     x1 = t.load(b)
     x2 = t.add(x0, 0.1)
@@ -34,4 +35,5 @@ def test_double_buffer_0():
     t.set_passes("VectorDoubleBuffer")
     assert (t.run_check())
     graph = t.dump()
-    assert(graph.count("Copy") == 1)
+    assert(graph.count("Copy") == copy_num)
+

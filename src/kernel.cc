@@ -202,43 +202,40 @@ class CodeGenHelper {
   };
 
   CodeGenHelper(VectorKernel &kernel, uint32_t xbuf_size, uint32_t pool_size)
-      : free_xbuf_(pool_size), xbuf_size_(xbuf_size), kernel_(kernel) {}
-  uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve, uint32_t tile_size) {
+      : xbuf_size_(xbuf_size), free_xbuf_(pool_size), kernel_(kernel) {}
+  uint8_t *Generate(uint8_t *code_begin, uint64_t code_reserve) {
     forward_event_num_ = g_system.EventNum() - kernel_.tile_info_.event_reserve;
     uint64_t *code_ptr = reinterpret_cast<uint64_t *>(code_begin);
     static_xbuf_ = code_reserve;
-    for (size_t i = 0; i < kernel_.static_ops_.size(); ++i) {
-      auto op = kernel_.static_ops_[i];
-      if (i < kernel_.load_num_) {
-        op->xbuf_ = static_xbuf_;
-        if (op->obj_id_ == kMultiLoad) {
+    dyn_xbuf_ = kernel_.local_mem_size_ - xbuf_size_;
+    static_remain_ = kernel_.static_ops_.size();
+    if (auto comm = kernel_.comm_op_) {
+      for (size_t i = 0; i < kernel_.load_num_; ++i) {
+        if (auto op = kernel_.static_ops_[i]; op->obj_id_ == kMultiLoad) {
+          op->xbuf_ = static_xbuf_;
           static_xbuf_ += xbuf_size_ + xbuf_size_;
+          static_remain_--;
           static_cast<NDMultiLoad *>(op)->xbuf_size_ = xbuf_size_;
         }
-      } else {
-        op->lhs_->xbuf_ = static_xbuf_;
       }
-      if (op->type_id_ != kernel_.max_type_) {
-        static_xbuf_ += tile_size * ITEM_SIZE[op->type_id_];
-      } else {
-        static_xbuf_ += xbuf_size_;
-      }
-    }
-    if (auto comm = kernel_.comm_op_) {
       for (int i = 0; i < comm->XbufReserve(); ++i) {
         comm->xbufs_.push_back(static_xbuf_);
         static_xbuf_ += xbuf_size_;
       }
       comm->SetXbufSize(xbuf_size_);
     }
+    uint64_t lead_align = kernel_.LeadAlign();
     for (auto op : kernel_.objects_) {
       if (op->flags_ & OBJ_FLAG_DEAD) {
         continue;
       }
+      if (auto ndd = op->Ndd()) {
+        ndd->UpdateStride(lead_align);
+      }
       op->tail_insn_ = op->insn_ = code_ptr;
       switch (op->CgTmpl()) {
         case kGenSimd0: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
+          auto anti_dep = AllocOutXBuf(op);
           code_ptr += op->Emit(kernel_);
           if (anti_dep) {
             SimdBarrier(anti_dep, op);
@@ -246,7 +243,7 @@ class CodeGenHelper {
           break;
         }
         case kGenSimd1: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
+          auto anti_dep = AllocOutXBuf(op);
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.Push(op->lhs_->xbuf_, op);
           }
@@ -258,7 +255,7 @@ class CodeGenHelper {
           break;
         }
         case kGenSimd2: {
-          auto anti_dep = op->xbuf_ == 0 ? AllocOutXBuf(op) : nullptr;
+          auto anti_dep = AllocOutXBuf(op);
           if (op->flags_ & OBJ_FLAG_FREE_LHS) {
             free_xbuf_.Push(op->lhs_->xbuf_, op);
           }
@@ -314,6 +311,7 @@ class CodeGenHelper {
           break;
         };
         case kGenLoad: {
+          AllocStaticXBuf(op);
           code_ptr += op->Emit(kernel_);
 #ifdef DEBUG
           auto head = *(op->tail_insn_);
@@ -339,19 +337,28 @@ class CodeGenHelper {
           break;
         }
         case kGenComm: {
-          if (op->xbuf_ == 0) {
+          if (op->obj_id_ == kMultiLoad) {
+            code_ptr += op->Emit(kernel_);
+          } else {
             AllocOutXBuf(op);
+            if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+              free_xbuf_.Push(op->lhs_->xbuf_, op);
+            }
+            auto code_size = op->Emit(kernel_);
+            code_ptr += code_size;
+            SimdSync(op->lhs_, op);
           }
-          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
-            free_xbuf_.Push(op->lhs_->xbuf_, op);
-          }
-          auto code_size = op->Emit(kernel_);
-          code_ptr += code_size;
-          SimdSync(op->lhs_, op);
           break;
         }
         case kGenCustom: {
           code_ptr += CustomOpGen(static_cast<CustomOp *>(op));
+          break;
+        }
+        case kGenExtOut: {
+          if (op->flags_ & OBJ_FLAG_FREE_LHS) {
+            free_xbuf_.Push(op->lhs_->xbuf_, op);
+          }
+          code_ptr += op->Emit(kernel_);
           break;
         }
         default:
@@ -414,10 +421,8 @@ class CodeGenHelper {
   int GenFlexOpCommon(FlexOp *op) {
     int anti_num = 0;
     NDObject *anti_ops[FlexOp::kWsMax + 1];
-    if (op->xbuf_ == 0) {
-      auto anti = AllocOutXBuf(op);
-      if (anti) anti_ops[anti_num++] = anti;
-    }
+    auto anti = AllocOutXBuf(op);
+    if (anti) anti_ops[anti_num++] = anti;
     ASSERT(op->ws_num_ <= 2);
     if (op->ws_num_ > 0) {
       if (op->flags_ & OBJ_FLAG_FLEX_REUSE_WS) {
@@ -427,11 +432,11 @@ class CodeGenHelper {
           anti_ops[anti_num++] = kernel_.objects_[op->reuse_dep_];
         }
       } else {
-        auto anti = AllocDynXBuf(op, op->wss_[0]);
+        auto anti = AllocDynXBuf(op->wss_[0]);
         if (anti) anti_ops[anti_num++] = anti;
       }
       if (op->ws_num_ > 1) {
-        auto anti = AllocDynXBuf(op, op->wss_[1]);
+        auto anti = AllocDynXBuf(op->wss_[1]);
         if (anti) anti_ops[anti_num++] = anti;
         free_xbuf_.Push(op->wss_[1], op);
       }
@@ -454,8 +459,11 @@ class CodeGenHelper {
     uint32_t dead_mask = 0;
     if (auto xout = op->xout_; xout != nullptr) {
       for (int i = 0; i < xout->out_num; ++i) {
-        if (auto item = xout->data[i]; item->xbuf_ == 0) {
-          AllocDynXBuf(item, item->xbuf_);
+        auto item = xout->data[i];
+        if (item->flags_ & OBJ_FLAG_STC_ALLOC) {
+          AllocStaticXBuf(item);
+        } else {
+          AllocDynXBuf(item->xbuf_); // TODO: anti depend
           if (item->flags_ & OBJ_FLAG_DEAD) {
             dead_mask |= 1u << i;
           }
@@ -515,24 +523,38 @@ class CodeGenHelper {
     return size;
   }
 
-  NDObject *AllocDynXBuf(NDObject *obj, uint64_t &xbuf) {
-    NDObject *anti = nullptr;
-    if (!free_xbuf_.Empty() && free_xbuf_.Front().second->index_ < vector_vector_sync) {
-      // roughly reuse for simplify: ignore inputs barrier to be inserted
-      xbuf = free_xbuf_.Pop().first;
-    } else if (static_xbuf_ + xbuf_size_ <= kernel_.local_mem_size_) {
-      xbuf = static_xbuf_;
-      static_xbuf_ += xbuf_size_;
-    } else {
-      ASSERT(!free_xbuf_.Empty());
-      auto &op = free_xbuf_.Pop();
-      xbuf = op.first;
-      anti = op.second;
+  NDObject *AllocDynXBuf(uint64_t &xbuf) {
+    if (!free_xbuf_.Empty()) {
+      if (free_xbuf_.Front().second->index_ < vector_vector_sync) {
+        // roughly reuse for simplify: ignore inputs barrier to be inserted
+        xbuf = free_xbuf_.Pop().first;
+        return nullptr;
+      }
+      if (static_xbuf_ + static_remain_ * xbuf_size_ > dyn_xbuf_) {
+        auto &op = free_xbuf_.Pop();
+        xbuf = op.first;
+        return op.second;
+      }
     }
-    return anti;
+    ASSERT(static_xbuf_ <= dyn_xbuf_);
+    xbuf = dyn_xbuf_;
+    dyn_xbuf_ -= xbuf_size_;
+    return nullptr;
+  }
+
+  void AllocStaticXBuf(NDObject *op) {
+    op->xbuf_ = static_xbuf_;
+    static_xbuf_ += op->NeedFullXbuf() ? kernel_.tile_size_ * ITEM_SIZE[op->type_id_]
+                                       : op->nd_.stride_back() * ITEM_SIZE[op->type_id_];
+    static_remain_--;
+    ASSERT(static_xbuf_ <= dyn_xbuf_ + xbuf_size_);
   }
 
   NDObject *AllocOutXBuf(NDObject *obj) {
+    if (obj->flags_ & OBJ_FLAG_STC_ALLOC) {
+      AllocStaticXBuf(obj);
+      return nullptr;
+    }
     if (obj->flags_ & OBJ_FLAG_REUSE_LHS) {
       obj->xbuf_ = obj->lhs_->xbuf_;
       return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
@@ -541,7 +563,7 @@ class CodeGenHelper {
       obj->xbuf_ = obj->rhs_->xbuf_;
       return obj->reuse_dep_ ? kernel_.objects_[obj->reuse_dep_] : nullptr;
     }
-    return AllocDynXBuf(obj, obj->xbuf_);
+    return AllocDynXBuf(obj->xbuf_);
   }
 
   inline void SimdBarrier(NDObject *from, NDObject *to) {
@@ -602,9 +624,10 @@ class CodeGenHelper {
   }
 
   uint64_t static_xbuf_;
-  XbufPool free_xbuf_;
-
+  uint64_t dyn_xbuf_;
+  uint64_t static_remain_;
   uint32_t xbuf_size_;
+  XbufPool free_xbuf_;
 
   int vector_vector_sync = 0;
   int forward_event_num_;
@@ -1058,14 +1081,14 @@ uint8_t *VectorKernel::DoCodeGen(uint64_t core_limit, uint8_t *code_ptr, uint64_
   // codegen
   code_.block_dim_ = core_limit;
   CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
-  auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
+  auto code_end = helper.Generate(code_ptr, code_reserve);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) + SIMD_BLOCK_SIZE <= code_reserve);
   return code_end;
 }
 
 uint8_t *VectorKernel::DoTileGen(int64_t live_peak, uint8_t *code_ptr, uint64_t code_reserve) {
   CodeGenHelper helper(*this, tile_size_ * ITEM_SIZE[max_type_], live_peak);
-  auto code_end = helper.Generate(code_ptr, code_reserve, tile_size_);
+  auto code_end = helper.Generate(code_ptr, code_reserve);
   ASSERT(static_cast<uint64_t>(code_end - code_ptr) + SIMD_BLOCK_SIZE <= code_reserve);
   return code_end;
 }
@@ -1160,6 +1183,7 @@ int64_t VectorKernel::Analyze() {
   for (size_t i = load_num_; i < static_ops_.size(); ++i) {
     auto store = static_ops_[i];
     store->first_def_ = store->lhs_->index_;
+    store->lhs_->flags_ |= OBJ_FLAG_STC_ALLOC;
     OP_GEN_S(store->lhs_);
   }
   int cur_live = 0;
@@ -1279,6 +1303,72 @@ int64_t VectorKernel::Analyze() {
     }
   }
   return live_peak;
+}
+
+int64_t VectorKernel::TileSizeLimit(int64_t live_peak) {
+  live_peak += static_ops_.size();
+  if (comm_op_) {
+    live_peak += comm_op_->XbufReserve();
+    if (comm_op_->obj_id_ == kReduceScatter && static_cast<ReduceScatterOp *>(comm_op_)->multi_load_) {
+      live_peak += 1;
+    }
+  }
+  int64_t peak_size = ITEM_SIZE[max_type_] * live_peak;
+  if (max_type_ != min_type_ && !comm_op_) {
+    for (auto op : static_ops_) {
+      peak_size -= ITEM_SIZE[max_type_] - ITEM_SIZE[op->type_id_];
+    }
+  }
+  const int64_t xbuf_mem_size = local_mem_size_ - ReserveCodeSize();
+  int64_t init_size_limit = xbuf_mem_size / peak_size;
+  if (tile_size_ < init_size_limit * static_cast<int64_t>(g_system.CoreNum())) {
+    return init_size_limit;
+  }
+  auto lead_pointwise = [](const DimArray &dims, int depth) -> bool {
+    for (int i = 0; i < depth; ++i) {
+      if (dims[i] > 1) return true;
+    }
+    return false;
+  };
+  int64_t align_space = RoundUp<int64_t>(align_space_, block_align_);
+  int tile_depth = tile_info_.lead_depth;
+  if (init_size_limit <= align_space) {
+    ASSERT(static_cast<uint64_t>(init_size_limit) > block_align_);
+    peak_size *= init_size_limit;
+    for (size_t i = 0; i < static_ops_.size(); ++i) {
+      auto op = static_ops_[i];
+      if ((i < load_num_ || !op->lhs_->NeedFullXbuf()) && !lead_pointwise(op->nd_.dims(), tile_depth)) {
+        peak_size -= init_size_limit - block_align_;
+      }
+    }
+    return xbuf_mem_size * init_size_limit / peak_size;
+  }
+  int64_t tile_space = align_space;
+  for (auto &dims = dom_->nd_.dims(); static_cast<size_t>(tile_depth) < dims.size(); ++tile_depth) {
+    auto new_space = tile_space * dims[tile_depth];
+    if (new_space > init_size_limit) {
+      break;
+    }
+    tile_space = new_space;
+  }
+  peak_size *= tile_space;
+  for (size_t i = 0; i < static_ops_.size(); ++i) {
+    if (auto op = static_ops_[i]; i < load_num_ || !op->lhs_->NeedFullXbuf()) {
+      int depth = tile_info_.lead_depth;
+      auto &dims = op->nd_.dims();
+      int64_t space;
+      if (lead_pointwise(dims, depth)) {
+        space = align_space;
+      } else {
+        space = depth < tile_depth ? RoundUp<int64_t>(dims[depth++], block_align_) : block_align_;
+      }
+      for (; depth < tile_depth; ++depth) {
+        space *= dims[depth];
+      }
+      peak_size -= tile_space - space;
+    }
+  }
+  return xbuf_mem_size * tile_space / peak_size;
 }
 
 void VKernelS::StaticInit(const std::vector<NDObject *> &objects) {

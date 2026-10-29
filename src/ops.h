@@ -376,6 +376,7 @@ enum CodeGenTmpl {
   kGenStore,
   kGenComm,
   kGenCustom,
+  kGenExtOut,
 };
 
 struct ObjectMeta {
@@ -407,6 +408,7 @@ class VectorKernel;
 #define OBJ_FLAG_REUSE_LHS 4
 #define OBJ_FLAG_REUSE_RHS 8
 #define OBJ_FLAG_DEAD 16
+#define OBJ_FLAG_STC_ALLOC 32
 
 #define OBJ_FLAG_FLEX_REUSE_WS (1u << 15)
 #define OBJ_FLAG_LOAD_FROM_CC (1u << 12)
@@ -475,6 +477,7 @@ class __export__ NDObject {
   bool IsSimd() const { return obj_id_ > kStore; }
   bool IsViewOp() const { return obj_id_ == kSliceOp || obj_id_ == kSplitOp || obj_id_ == kConcat; }
   bool NeedTailCopy() const { return obj_id_ > kReduceScatter && obj_id_ <= kAllReduce; }
+  bool NeedFullXbuf() const { return obj_id_ == kReduce; }
   void SetFlag(uint32_t mask) { flags_ |= mask; }
   bool CheckFlag(uint32_t mask) const { return flags_ & mask; }
   NDSpaceData *Ndd() const { return SharedNdd() ? nullptr : const_cast<NDSpaceData *>(nd_.data); }

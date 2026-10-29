@@ -33,7 +33,6 @@ void NDMultiLoad::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t NDMultiLoad::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   int64_t lead_align = ndd_.lead_stride();
   uint64_t src_tile_stride_ = ndd_.stride_back() / lead_align * ndd_.lead_dim();
   vMultiLoad op;
@@ -149,7 +148,6 @@ void ReduceScatterOp::Tile(const TileParam &tp) {
 }
 
 uint64_t ReduceScatterOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   k.code_.InsertWrap(&id_wrap_);
   if (multi_load_) {
     return MultiLoadEmit(k);
@@ -647,7 +645,6 @@ uint64_t AllReduceOp<is_bf16>::MatmulEmit(VectorKernel &k) {
 
 template <bool is_bf16>
 uint64_t AllReduceOp<is_bf16>::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   k.code_.InsertWrap(&id_wrap_);
   if (cube_op_ != nullptr) {
     return MatmulEmit(k);
@@ -984,7 +981,6 @@ void AllGatherOp::TileCollect(NDObject *op, TileInfo &info) {
 }
 
 uint64_t AllGatherOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   k.code_.InsertWrap(&id_wrap_);
   uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];
@@ -1122,7 +1118,6 @@ void AllGatherV2Op::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t AllGatherV2Op::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   k.code_.InsertWrap(&id_wrap_);
   uint64_t tile_stride = ndd_.stride_back();
   uint64_t tile_stride_size = tile_stride * ITEM_SIZE[type_id_];

@@ -912,8 +912,8 @@ class PassOptimizerC220 : public PassOptimizer {
     CompactPeakLiveness(bb);
     ReorderLoad(bb);
     ReorderStore(bb);
-    VectorDoubleBuffer(bb);
     InsertRemovePad(bb);
+    VectorDoubleBuffer(bb);
   }
 };
 

@@ -200,6 +200,17 @@ float GetRedInitScalar(int red_op) {
   }
   return 0;
 }
+
+uint64_t GetDynXBufBegin(const VectorKernel &k, NDObject *cur) {
+  uint64_t xnum = 1;
+  for (size_t i = 0; i < k.static_ops_.size(); ++i) {
+    auto op = i < k.load_num_ ? k.static_ops_[i] : k.static_ops_[i]->lhs_;
+    if (op->index_ > cur->index_) {
+      xnum++;
+    }
+  }
+  return cur->xbuf_ + xnum * k.tile_size_ * ITEM_SIZE[k.MaxType()];
+}
 }  // namespace
 
 bool CollectRoundTile(const DimArray &nd, const TileParam &tp, DimArray &round_tile) {
@@ -443,7 +454,7 @@ static constexpr ObjectMeta GenObjectMeta() {
   constexpr uint32_t F_DM = ObjectMeta::kDom;
   BaseData data[] = {
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // LoadDummy
-    {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // MultiLoad
+    {kGenComm, 0, nullptr, nullptr, nullptr},                                                            // MultiLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                         // GlobalAccess
     {kGenLoad, F_IP, nullptr, nullptr, NDObject::TileCollectSimt},                                       // GatherLoad
     {kGenLoad, 0, NDViewLoad::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},                    // ViewLoad
@@ -478,7 +489,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenSimd1, F_LR, SplitOp::DimChanged, SplitOp::FoldProp, SplitOp::TileCollect, SplitOp::ShapeProp},  // SplitOp
     {kGenSimd1, F_LR, SliceOp::DimChanged, SliceOp::FoldProp, SliceOp::TileCollect, SliceOp::ShapeProp},  // SliceOp
     {kGenCustom, F_DM, CustomDimChanged, CustomFoldProp, CustomTileCollect, CustomShapeProp},                 // Custom
-    {kGenSimd0, F_NS, nullptr, nullptr, nullptr, nullptr},                                                    // ExtOut 
+    {kGenExtOut, F_NS, nullptr, nullptr, nullptr, nullptr},                                                   // ExtOut
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
     {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                              // GmmOp
   };
@@ -678,7 +689,6 @@ void NDAccess::FoldProp(NDObject *op, PropRange &range) {
 }
 
 uint64_t NDLoadDummy::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   *insn_ = vMakeAccHead(V_LOAD_DUMMY, 0, 1);
   return 1;
 }
@@ -709,7 +719,6 @@ void NDLoad::Shard(const ShardParam &sp) {
 }
 
 uint64_t NDLoad::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   if (stride_) {
     return EmitView(k);
   }
@@ -958,9 +967,7 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
       }
     }
     if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
-      auto last_store = k.static_ops_.back();
-      ASSERT(last_store->IsStore());
-      op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
+      op.ws = GetDynXBufBegin(k, this);
       op.ws_size = std::min((g_system.LocalMemSize() - op.ws) / (512 * 3), op.iter_size);
       ASSERT(op.ws_size);
     } else {
@@ -1029,9 +1036,7 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     op.from = addr_.data;
     op.offset = offset_bytes_;
     op.type_size = item_size;
-    auto last_store = k.static_ops_.back();
-    ASSERT(last_store->IsStore());
-    op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
+    op.ws = GetDynXBufBegin(k, this);
     auto ws_block_num = (g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
     op.ws_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
     op.iter_size = fold_dim[0];
@@ -1113,7 +1118,6 @@ void NDGatherLoad::Normalize(std::vector<NDObject *> &run_ops) {
 
 uint64_t NDGatherLoad::Emit(VectorKernel &k) {
   ASSERT(k.shard_ == nullptr);
-  ndd_.UpdateStride(k.LeadAlign());
   uint64_t rounds[2];
   DimArray round_tile;
   BuildRoundTile(k, ndd_, (flags_ & OBJ_FLAG_LOAD_SHARD_ROUND) != 0, round_tile);
@@ -1572,9 +1576,7 @@ uint64_t NDStore::EmitView(VectorKernel &k, uint64_t *insn) {
     op.offset = offset_bytes_;
     op.type_size = item_size;
     if (g_system.Arch() == AiCoreArch::kAiCore_C220) {
-      auto last_store = k.static_ops_.back();
-      ASSERT(last_store->IsStore());
-      op.ws = last_store->lhs_->xbuf_ + k.tile_size_ * ITEM_SIZE[k.MaxType()];
+      op.ws = GetDynXBufBegin(k, lhs_);
       auto ws_block_num = (g_system.LocalMemSize() - op.ws) / (SIMD_BLOCK_SIZE * 2);
       op.ws_size = RoundDown(ws_block_num, SIMD_BLOCK_SIZE / item_size);
     } else {
@@ -1728,7 +1730,6 @@ void ReshapeOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t ReshapeOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   ASSERT(lhs_->nd_.lead_dim() == ndd_.lead_dim());
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
@@ -1826,7 +1827,6 @@ void ConcatOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t ConcatOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   ASSERT(rhs_ == nullptr);
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
@@ -1906,7 +1906,6 @@ void ConcatOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
 }
 
 uint64_t SplitOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
 
@@ -2033,7 +2032,6 @@ NDObject *SplitOpM::Clone(CloneHelper &h) {
 }
 
 uint64_t SliceOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
 
@@ -2100,7 +2098,6 @@ void PermuteOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t PermuteOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   return EmitCopy(insn_, xbuf_, lhs_->xbuf_, ndd_.stride_back() * ITEM_SIZE[type_id_]);
 }
 
@@ -2163,7 +2160,6 @@ void ElementAnyOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t ElementAnyOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   uint64_t clr_tail = 0;
   vElementAny op;
   op.xn = lhs_->xbuf_;
@@ -2602,7 +2598,6 @@ void BroadcastOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t BroadcastOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   DimArray ranges;
   int ridx = 0;
   for (size_t i = ndd_.lead_idx(); i < ndd_.size(); ++i) {
@@ -2790,7 +2785,6 @@ void BroadcastScalarOp::Normalize(std::vector<NDObject *> &run_ops) {
 }
 
 uint64_t BroadcastScalarOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   vBroadcastS op;
   op.scalar = scalar_;
   op.xd = xbuf_;
@@ -2819,7 +2813,6 @@ BroadcastInt64ScalarOp::BroadcastInt64ScalarOp(uint64_t scalar, IntArrayRef *sha
       high_(static_cast<scode_t>((scalar >> 32) & 0xfffffffful)) {}
 
 uint64_t BroadcastInt64ScalarOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   vBroadcastS_B64 op;
   op.scalar = scalar_;
   op.high = high_;
@@ -3035,7 +3028,6 @@ void ReduceOp::Tile(const TileParam &tp) {
 }
 
 uint64_t ReduceOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   if (ws_num_ == 2) {
     return round_tile_.empty() ? EmitBody(k, xbuf_, wss_[0]) : EmitDeterm(k);
   }
@@ -3297,7 +3289,6 @@ void OneHotOp::Tile(const TileParam &tp) {
 }
 
 uint64_t OneHotOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   vOneHot op;
   op.xn = lhs_->xbuf_;
   op.xd = xbuf_;
@@ -3396,7 +3387,6 @@ void ExtOutOp::Dump(bool verbose, std::ostringstream &oss) {
 NDObject *ExtOutOp::Clone(CloneHelper &h) { return new ExtOutOp(h.GetClone(lhs_)); }
 
 uint64_t CustomOp::Emit(VectorKernel &k) {
-  ndd_.UpdateStride(k.LeadAlign());
   uint64_t payload_size = EmitEx(insn_ + vCustom::PAYLOAD_OFFSET);
   vCustom op;
   op.func_addr = func_id_;

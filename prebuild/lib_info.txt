@@ -1,3 +1,3 @@
 [lib information]
-git branch: backport/r211-xbuf-prebuild-cann920-20261104
+git branch: r2.11
 commit  id: baf13954c9b2df6f506b4b315c8b6646a0eb1420

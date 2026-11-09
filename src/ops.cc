@@ -2924,8 +2924,11 @@ void _ReduceOp::FoldProp(NDObject *op, PropRange &range) {
 
 void _ReduceOp::TileCollect(NDObject *op, TileInfo &info) {
   auto self = static_cast<_ReduceOp *>(op);
-  if (self->ws_num_ == 2 && info.event_reserve < 2) {
-    info.event_reserve = 2;
+  if (self->ws_num_ == 2) {
+    info.code_reserve += RedVisitCoder::BCODE_MAX + vReduceJoin::CODE_SIZE * sizeof(uint64_t);
+    if (info.event_reserve < 2) {
+      info.event_reserve = 2;
+    }
   }
   auto &lhs_nd = self->lhs_->nd_;
   auto &ndd = self->ndd_;

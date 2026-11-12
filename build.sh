@@ -73,6 +73,7 @@ done
 MAKE_ARGS="${MAKE_ARGS} -j${THREAD_NUM}"
 
 TARGET_FILE=(libdvm.a g_vkernel_c220_bin g_vkernel_c310_bin)
+echo "test"
 echo "---------------- build start ----------------"
 echo "MAKE_ARGS: ${MAKE_ARGS}"
 set --

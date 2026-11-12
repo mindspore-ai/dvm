@@ -2003,6 +2003,11 @@ uint64_t VKernelS::CodeGen() {
       return ret;
     }
   }
+  if (tiles_.empty()) {
+    if (auto ret = TryReduceReorder(this); ret != -1) {
+      return ret;
+    }
+  }
   uint64_t core_limit = g_system.CoreNum();
   int64_t live_peak = Analyze();
   int64_t tile_size_limit = TileSizeLimit(live_peak);
@@ -2221,6 +2226,7 @@ template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::CodeGen() {
   auto reduce_fall_check = [this](int64_t tile_size_limit) -> bool {
     if (!post_reduces_.empty()) {
+      if (CanTileFullReduction(this)) return false;
       auto ndd = dom_->nd_.data;
       const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
       for (auto op : post_reduces_) {
@@ -2275,6 +2281,9 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
   if (unlikely(!tile_size_)) {
     ProcessIdle();
     return 0;
+  }
+  if (auto ret = TryReduceReorder(this); ret != -1) {
+    return ret;
   }
   uint64_t core_limit = g_system.CoreNum();
   TileUpdate update;
@@ -2472,6 +2481,9 @@ SpecVecContext::~SpecVecContext() {
 }
 
 uint64_t SpecVecBase::CodeGen() {
+  if (auto ret = TryReduceReorder(this); ret != -1) {
+    return ret;
+  }
   auto tile_size_limit = LazyTileLimit();
   uint64_t core_limit = g_system.CoreNum();
   TileUpdate update;
@@ -2657,6 +2669,7 @@ bool SpecVecBase::BroadcastSpec() {
 }
 
 bool SpecVecBase::ReduceSpec() {
+  if (CanTileFullReduction(this)) return false;
   ctx_.ResetSpec();
   const_cast<NDSpaceData *>(dom_->nd_.data)->UpdateStride(lead_align_);
   size_t cut_begin = ctx_.spec_ops_.size();

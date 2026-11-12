@@ -197,6 +197,28 @@ def test_atomic_determ(in_shape, dims, tile_depth):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector', 'vector:spec', 'vector:spec,priv1'])
+@pytest.mark.parametrize('shape, dims', [([16, 2048, 256], (0,)), ([4, 512, 4, 256], (0, 2))])
+def test_full_reduce_determ(mode, shape, dims):
+    t = Tester(mode, use_pass_opt=True)
+    t.set_deterministic(True)
+    try:
+        rng = np.random.default_rng(17)
+        a, b = [rng.uniform(-0.5, 0.5, shape).astype(np.float32) for _ in range(2)]
+        x = t.add(t.load(a), t.load(b))
+        y = t.mul(t.sum(x, dims, True), 0.5)
+        ref = (a + b).sum(axis=dims, keepdims=True, dtype=np.float64) * 0.5
+        out = t.store_expect(y, ref, 1e-4)
+        assert t.run_check()
+        expected = t.output(out).tobytes()
+        for _ in range(3):
+            t.run()
+            assert t.output(out).tobytes() == expected
+    finally:
+        t.set_deterministic(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_multi_determ():
     t = Tester()
     in_shape, dims = [64, 8, 256, 8], (0, 2)

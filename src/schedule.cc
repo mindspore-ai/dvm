@@ -15,7 +15,9 @@
  */
 
 #include <algorithm>
+#include <numeric>
 #include "schedule.h"
+#include "vf_fusion.h"
 
 namespace dvm {
 void VectorSchedule::SpaceInit() {
@@ -1380,6 +1382,221 @@ int64_t GeneralViewSchGen::CodeGen() {
   ResetStrides();
   kernel_->load_num_ = orig_load_num;
   return 0;
+}
+
+namespace {
+struct ReducePlan {
+  int split_dim{-1};
+  int64_t split_factor{1};
+  std::vector<int> order;
+};
+
+bool CanReorderAccesses(const VectorKernel *kernel) {
+  return std::all_of(kernel->static_ops_.begin(), kernel->static_ops_.end(), [](NDObject *op) {
+    auto acc = static_cast<NDAccess *>(op);
+    return !acc->stride_ && acc->IsSupportView();
+  });
+}
+
+int64_t SelectSplitFactor(int64_t size, int64_t limit) {
+  int64_t factor = 1;
+  for (int64_t divisor = 1; divisor <= size / divisor; ++divisor) {
+    if (size % divisor) continue;
+    if (divisor <= limit) factor = std::max(factor, divisor);
+    if (size / divisor <= limit) factor = std::max(factor, size / divisor);
+  }
+  return factor;
+}
+
+bool PlanFullReduction(VectorKernel *kernel, ReducePlan &plan) {
+  if ((kernel->Flags() & K_FLAG_SIMT) || kernel->shard_ || kernel->comm_op_ || !kernel->tile_size_) {
+    return false;
+  }
+  const auto &domain = kernel->DimSpace();
+  ReduceOp *reduce = nullptr;
+  int64_t item_size = 1;
+  int64_t broadcast_num = 0;
+  for (auto op : kernel->objects_) {
+    item_size = std::max<int64_t>(item_size, ITEM_SIZE[op->type_id_]);
+    switch (op->obj_id_) {
+      case kReduce:
+        if (!(op->lhs_->nd_.dims() == domain) || (reduce && !(op->nd_.dims() == reduce->nd_.dims()))) return false;
+        reduce = static_cast<ReduceOp *>(op);
+        break;
+      case kLoad:
+      case kStore:
+      case kCopy:
+      case kUnary:
+      case kBinary:
+      case kBinaryS:
+      case kCast:
+      case kSelect:
+      case kCompare:
+      case kCompareS:
+      case kPower:
+      case kBroadcastS:
+      case kRemovePad:
+      case kExtOut:
+        break;
+      case kBroadcastTo:
+        ++broadcast_num;
+        break;
+      case kCustom:
+        if (dynamic_cast<pass::VfFusionOp *>(op) == nullptr) return false;
+        break;
+      default:
+        return false;
+    }
+  }
+  if (!reduce || !CanReorderAccesses(kernel)) return false;
+  const auto &output = reduce->nd_.dims();
+  std::vector<bool> reduced(domain.size());
+  int64_t reduce_size = 1;
+  int64_t output_size = 1;
+  for (size_t i = 0; i < domain.size(); ++i) {
+    reduced[i] = domain[i] != output[i];
+    if (reduced[i]) {
+      reduce_size *= domain[i];
+    } else {
+      output_size *= domain[i];
+    }
+  }
+  if (reduce_size == 1) return false;
+  size_t output_prefix = 0;
+  while (output_prefix < domain.size() && !reduced[output_prefix]) ++output_prefix;
+
+  int64_t live_buffers = kernel->Analyze() + kernel->static_ops_.size() + broadcast_num;
+  auto view_code = kernel->static_ops_.size() * (domain.size() + 2) * sizeof(uint64_t);
+  auto broadcast_code = broadcast_num * (domain.size() + 1) * 2 * sizeof(uint64_t);
+  int64_t code_reserve = RoundUp(kernel->ReserveCodeSize() + view_code + broadcast_code, 512ul);
+  // View loads can require an additional 1 KiB workspace on C220.
+  int64_t tile_limit =
+    (static_cast<int64_t>(kernel->local_mem_size_) - code_reserve - 1024) / (live_buffers * item_size);
+  if (tile_limit <= 0) return false;
+  int64_t simd_align = SIMD_REPEAT_SIZE / item_size;
+  int64_t core_num = g_system.CoreNum();
+  int64_t inner_size = 1;
+  int64_t aligned_inner_size = 1;
+  size_t inner_end = 0;
+  if (output_prefix) {
+    int64_t capacity = RoundDown(std::min(tile_limit / reduce_size, output_size / core_num), simd_align);
+    if (capacity < simd_align) return false;
+    while (inner_end < output_prefix) {
+      auto next = aligned_inner_size * (inner_end ? domain[inner_end] : RoundUp(domain[0], simd_align));
+      if (next > capacity) break;
+      aligned_inner_size = next;
+      inner_size *= domain[inner_end++];
+    }
+    if (inner_end < output_prefix) {
+      auto size = domain[inner_end];
+      auto factor = SelectSplitFactor(size, capacity / aligned_inner_size);
+      if (factor > 1) {
+        if (domain.size() == DimArray::kMaxDimSize) return false;
+        plan.split_dim = inner_end;
+        plan.split_factor = factor;
+        reduced.insert(reduced.begin() + inner_end, false);
+        inner_size *= factor;
+        ++inner_end;
+      }
+    }
+    if (inner_size < simd_align) return false;
+  } else if (RoundUp(domain[0], simd_align) * (reduce_size / domain[0]) > tile_limit || output_size < core_num) {
+    return false;
+  }
+  // Keep a contiguous output fragment inside all reduced axes.
+  for (size_t i = 0; i < inner_end; ++i) plan.order.push_back(i);
+  for (size_t i = inner_end; i < reduced.size(); ++i) {
+    if (reduced[i]) plan.order.push_back(i);
+  }
+  for (size_t i = inner_end; i < reduced.size(); ++i) {
+    if (!reduced[i]) plan.order.push_back(i);
+  }
+  return !std::is_sorted(plan.order.begin(), plan.order.end());
+}
+
+bool PlanDirectReduction(VectorKernel *kernel, ReducePlan &plan) {
+  const auto &ops = kernel->objects_;
+  if (g_system.deterministic_ || (kernel->Flags() & K_FLAG_SIMT) || kernel->shard_ || ops.size() != 3 ||
+      ops[0]->obj_id_ != kLoad || ops[1]->obj_id_ != kReduce || ops[2]->obj_id_ != kStore ||
+      (ops[0]->type_id_ != kFloat32 && ops[0]->type_id_ != kFloat16) ||
+      ops[1]->lhs_ != ops[0] || ops[2]->lhs_ != ops[1]) {
+    return false;
+  }
+  const auto &input = ops[0]->nd_.dims();
+  const auto &output = ops[1]->nd_.dims();
+  size_t reduce_prefix = 0;
+  int64_t reduce_plane = 1;
+  while (reduce_prefix < input.size() && output[reduce_prefix] == 1) reduce_plane *= input[reduce_prefix++];
+  if (reduce_plane < 4096 || reduce_prefix == input.size()) return false;
+  int64_t outer_tiles = 1;
+  bool outer_reduce = false;
+  for (size_t i = reduce_prefix; i < input.size(); ++i) {
+    outer_tiles *= input[i];
+    outer_reduce |= output[i] == 1 && input[i] > 1;
+  }
+  if (!outer_reduce || outer_tiles < 4 * static_cast<int64_t>(g_system.CoreNum())) return false;
+  if (!CanReorderAccesses(kernel)) return false;
+  plan = {};
+  for (size_t i = 0; i < output.size(); ++i) {
+    if (output[i] == 1) plan.order.push_back(i);
+  }
+  for (size_t i = 0; i < output.size(); ++i) {
+    if (output[i] != 1) plan.order.push_back(i);
+  }
+  return true;
+}
+
+class ReduceSchGen : public SchGenHelper {
+ public:
+  ReduceSchGen(VectorKernel *kernel, const ReducePlan &plan) : SchGenHelper(kernel), plan_(plan) {}
+  int64_t CodeGen() override {
+    SpaceInit();
+    for (auto op : kernel_->static_ops_) AllocStride(static_cast<NDAccess *>(op));
+    if (plan_.split_dim >= 0) {
+      auto size = kernel_->DimSpace()[plan_.split_dim];
+      SpaceSplit(plan_.split_dim, size / plan_.split_factor, plan_.split_factor);
+    }
+    std::vector<int> order(plan_.order.size());
+    std::iota(order.begin(), order.end(), 0);
+    for (size_t i = 0; i < order.size(); ++i) {
+      auto pos = std::find(order.begin() + i, order.end(), plan_.order[i]) - order.begin();
+      for (size_t j = pos; j > i; --j) {
+        SpaceTrans(j - 1, j);
+        std::swap(order[j - 1], order[j]);
+      }
+    }
+    for (auto op : kernel_->static_ops_) {
+      auto acc = static_cast<NDAccess *>(op);
+      int64_t stride = ITEM_SIZE[op->type_id_];
+      bool contiguous = true;
+      for (size_t i = 0; i < op->nd_.size(); ++i) {
+        if (op->nd_[i] > 1 && (*acc->stride_)[i] != stride) contiguous = false;
+        stride *= op->nd_[i];
+      }
+      if (contiguous) acc->stride_ = nullptr;
+    }
+    for (auto op : kernel_->objects_) op->Clear(op->index_);
+    auto ws_size = kernel_->DoCodeGen(g_system.CoreNum());
+    ResetStrides();
+    return ws_size;
+  }
+
+ private:
+  const ReducePlan &plan_;
+};
+}  // namespace
+
+bool CanTileFullReduction(VectorKernel *kernel) {
+  ReducePlan plan;
+  return PlanFullReduction(kernel, plan);
+}
+
+int64_t TryReduceReorder(VectorKernel *kernel) {
+  ReducePlan plan;
+  if (!PlanFullReduction(kernel, plan) && !PlanDirectReduction(kernel, plan)) {
+    return -1;
+  }
+  return ReduceSchGen(kernel, plan).CodeGen();
 }
 
 SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects) {

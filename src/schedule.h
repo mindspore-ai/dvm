@@ -167,5 +167,7 @@ class GeneralViewSchGen : public SchGenHelper {
 };
 
 SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects);
+int64_t TryReduceReorder(VectorKernel *kernel);
+bool CanTileFullReduction(VectorKernel *kernel);
 }  // namespace dvm
 #endif  // _DVM_SCHEDULE_H_

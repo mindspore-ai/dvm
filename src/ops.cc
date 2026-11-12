@@ -504,6 +504,8 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenExtOut, F_NS, nullptr, nullptr, nullptr, nullptr},                                                   // ExtOut
     {kGenSimd0, 0, nullptr, nullptr, nullptr, CubeOp::ShapeProp},                                             // CubeOp
     {kGenSimd0, 0, nullptr, nullptr, nullptr, GmmOp::ShapeProp},                                              // GmmOp
+    // C220 accumulates in xd: do not reuse the other input's buffer.
+    {kGenSimd2, F_IP | F_NS | F_LR, nullptr, nullptr, nullptr, BinaryOp::ShapeProp},                            // Axpy
   };
 
   ObjectMeta meta;
@@ -2438,6 +2440,32 @@ static void BinaryShapeProp(const IntArrayRef *lhs, const IntArrayRef *rhs, Shap
 void BinaryOp::ShapeProp(NDObject *op, int64_t &sym_dim_next) {
   return BinaryShapeProp(op->lhs_->shape_ref_, op->rhs_->shape_ref_, static_cast<BinaryOp *>(op)->norm_.shape_,
                          sym_dim_next);
+}
+
+uint64_t AxpyOp::Emit(VectorKernel &k) {
+  vAxpy op;
+  op.xd = xbuf_;
+  op.xn = lhs_->xbuf_;
+  op.xm = rhs_->xbuf_;
+  op.count = nd_.stride_back();
+  uint32_t scalar;
+  std::memcpy(&scalar, &alpha_, sizeof(scalar));
+  op.scalar = scalar;
+  return vAxpy::Encode(insn_, V_AXPY, op);
+}
+
+NDObject *AxpyOp::Clone(CloneHelper &h) {
+  auto lhs = norm_.lhs_stuff_ == nullptr ? lhs_ : norm_.lhs_stuff_->lhs_;
+  auto rhs = norm_.rhs_stuff_ == nullptr ? rhs_ : norm_.rhs_stuff_->lhs_;
+  return new AxpyOp(h.GetClone(lhs), h.GetClone(rhs), alpha_);
+}
+
+void AxpyOp::Dump(bool verbose, std::ostringstream &oss) { oss << "Axpy(" << alpha_ << ")"; }
+
+void AxpyOp::Inspect(Inspector &sp) {
+  if (type_id_ != kFloat32 || lhs_->type_id_ != kFloat32 || rhs_->type_id_ != kFloat32) {
+    sp.Error("AxpyType") << "Axpy requires float32 inputs.\n";
+  }
 }
 
 uint64_t CompareOp::Emit(VectorKernel &k) {

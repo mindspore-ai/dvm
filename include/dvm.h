@@ -374,6 +374,12 @@ class Kernel {
   NDObject *Binary(L lhs, R rhs);
 
   /**
+   * @brief Compute self + alpha * other with native, architecture-specific Axpy rounding.
+   * Both inputs must be float32. Broadcasting follows the binary operations.
+   */
+  NDObject *Axpy(NDObject *self, NDObject *other, float alpha);
+
+  /**
    * @brief Emit a reduce operation.
    * @param op_type reduce operation type.
    * @param input input operation to reduce.

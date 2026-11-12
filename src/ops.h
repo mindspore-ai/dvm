@@ -73,6 +73,7 @@ enum ObjectType {
   kExtOut,
   kCubeOp,
   kGmmOp,
+  kAxpy,
   kObjectBulk
 };
 
@@ -1007,6 +1008,22 @@ class BinaryOp : public NDObject {
  protected:
   int op_type_;
   _BinaryNormalizer norm_;
+};
+
+// Keep native Axpy rounding (C310 fused; C220 separate multiply/add rounding).
+class AxpyOp : public BinaryOp {
+ public:
+  AxpyOp(NDObject *self, NDObject *other, float alpha)
+      : BinaryOp(BinaryType::kAdd, self, other), alpha_(alpha) {
+    obj_id_ = ObjectType::kAxpy;
+  }
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+  void Inspect(Inspector &sp) override;
+
+ private:
+  float alpha_;
 };
 
 class PowerOp : public FlexOp {

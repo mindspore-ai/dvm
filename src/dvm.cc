@@ -1401,6 +1401,16 @@ DEF_BINARY(BinaryType::kMinimum);
 DEF_BINARY(BinaryType::kLogicalAnd);
 DEF_BINARY(BinaryType::kLogicalOr);
 
+NDObject *Kernel::Axpy(NDObject *self, NDObject *other, float alpha) {
+  if (self->type_id_ != kFloat32 || other->type_id_ != kFloat32) {
+    DvmException("Axpy requires float32 inputs");
+    return nullptr;
+  }
+  auto obj = new AxpyOp(self, other, alpha);
+  kernel_->Append(obj);
+  return obj;
+}
+
 NDObject *Kernel::Select(NDObject *cond, NDObject *lhs, NDObject *rhs) {
   if (lhs->type_id_ == kInt64) {
     cond = NoLossCast(this, cond, kInt32);

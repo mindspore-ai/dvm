@@ -583,6 +583,80 @@ NDObject *CompareScalarInt64(Kernel *kernel, T scalar, NDObject *input) {
   return nullptr;
 }
 
+#ifndef DVM_ARCH_GPU
+float DivScalarC310Value(const ScalarRef *ref) {
+  switch (ref->type) {
+    case kFloat16:
+      return static_cast<float>(Float16(ref->f16));
+    case kBFloat16:
+      return static_cast<float>(BFloat16(ref->f16));
+    case kFloat32:
+      return ref->f32;
+    case kInt32:
+      return static_cast<float>(ref->i32);
+    case kInt64:
+      return static_cast<float>(ref->i64);
+    default:
+      DvmException("unsupported scalar ref type for C310 division");
+      return 0.0f;
+  }
+}
+
+class DivScalarRefC310Op : public BinaryScalarOp {
+ public:
+  DivScalarRefC310Op(int op_type, NDObject *input, ScalarRef *scalar)
+      : BinaryScalarOp(op_type, input, 0), scalar_ref_(scalar) {
+    ASSERT(input->type_id_ == kFloat32);
+    ASSERT(op_type == kDivs || op_type == ksDiv);
+  }
+
+  uint64_t Emit(VectorKernel &) override {
+    const auto value = DivScalarC310Value(scalar_ref_);
+    scalar_ = EncodeScalar(value);
+    vBinaryS op;
+    op.xn = lhs_->xbuf_;
+    op.xd = xbuf_;
+    op.count = nd_.stride_back();
+    op.scalar = scalar_;
+    auto id = op_type_ == kDivs ? V_DIVS : V_SDIV;
+    if (op_type_ == kDivs &&
+        (scalar_ref_->type == kFloat32 || scalar_ref_->type == kFloat16 || scalar_ref_->type == kBFloat16)) {
+      // Match ACLNN Divs: float divisors use a host FP32 reciprocal and Muls.
+      op.scalar = EncodeScalar(1.0f / value);
+      id = V_MULS;
+    }
+    return vBinaryS::Encode(insn_, id, op);
+  }
+  NDObject *Clone(CloneHelper &h) override {
+    return new DivScalarRefC310Op(op_type_, h.GetClone(lhs_), h.GetClone(scalar_ref_));
+  }
+  bool IsScalarRef() const override { return true; }
+
+ private:
+  ScalarRef *scalar_ref_;
+};
+
+template <typename T, bool rhs_val>
+NDObject *DivScalarC310(Kernel *kernel, T val, NDObject *input) {
+  const auto output_type = input->type_id_;
+  const auto scalar_op = rhs_val ? binary_map[kDiv] : lhs_val_binary_map[kDiv];
+  input = kernel->Cast(input, kFloat32);
+  NDObject *obj;
+  if constexpr (std::is_same<T, ScalarRef *>::value) {
+    obj = new DivScalarRefC310Op(scalar_op, input, val);
+  } else {
+    if constexpr (rhs_val && !std::is_integral<T>::value) {
+      float reciprocal = 1.0f / static_cast<float>(val);
+      auto result = kernel->Binary<BinaryType::kMul>(input, reciprocal);
+      return kernel->Cast(result, output_type);
+    }
+    obj = new BinaryScalarOp(scalar_op, input, EncodeScalar(static_cast<float>(val)));
+  }
+  kernel->GetImpl()->Append(obj);
+  return kernel->Cast(obj, output_type);
+}
+#endif
+
 template <BinaryType op_type, typename T, bool rhs_val>
 NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
   auto vkernel = kernel->GetImpl();
@@ -612,6 +686,12 @@ NDObject *GetBinaryS(Kernel *kernel, T val, NDObject *input) {
     vkernel->Append(obj);
     return obj;
   } else if constexpr (op_type == BinaryType::kDiv) {
+#ifndef DVM_ARCH_GPU
+    if (g_system.Arch() == kAiCore_C310 &&
+        (input->type_id_ == kFloat32 || input->type_id_ == kFloat16 || input->type_id_ == kBFloat16)) {
+      return DivScalarC310<T, rhs_val>(kernel, val, input);
+    }
+#endif
     if (input->type_id_ == kBFloat16) {
       auto result = GetBinaryS<op_type, T, rhs_val>(kernel, val, kernel->Cast(input, kFloat32));
       return kernel->Cast(result, input->type_id_);
@@ -1321,6 +1401,13 @@ NDObject *Kernel::Binary(L lhs, R rhs) {
         if constexpr (op_type == BinaryType::kPow) {
           return BinaryPromotion<op_type, DataType::kFloat32>(this, lhs, rhs);
         }
+#ifndef DVM_ARCH_GPU
+        if constexpr (op_type == BinaryType::kDiv) {
+          if (g_system.Arch() == kAiCore_C310) {
+            return BinaryPromotion<op_type, DataType::kFloat32>(this, lhs, rhs);
+          }
+        }
+#endif
         break;
       }
       case kInt32: {

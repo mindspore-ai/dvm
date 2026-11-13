@@ -98,7 +98,7 @@ git_info_file="${OUTPUT_DIR}/lib_info.txt"
 echo "[lib information]" > ${git_info_file}
 echo "git branch: ${git_branch}" >> ${git_info_file}
 echo "commit  id: ${git_commit_id}" >> ${git_info_file}
-
+echo "aaa"
 # Copy target to output directory
 cp ${TARGET_FILE[@]} ${OUTPUT_DIR}
 cd ${OUTPUT_DIR}

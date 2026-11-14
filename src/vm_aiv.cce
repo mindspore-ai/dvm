@@ -242,6 +242,22 @@ __aicore_inline__ void ElementAny(bcodeptr_t pc, uint64_t head, uint64_t tile) {
     builtin(xd, xn, 1, 1, 1, dst_rs, src_rs);                       \
   } while (0)
 
+__aicore_inline__ void Axpy(bcodeptr_t pc, uint64_t head) {
+  vAxpy op;
+  vAxpy::Decode(pc, head, op);
+  auto xd = (__ubuf__ float *)op.xd;
+  auto xn = (__ubuf__ float *)op.xn;
+  auto xm = (__ubuf__ float *)op.xm;
+  if (op.xd != op.xn) {
+    // Copy bits, preserving signed zero, before accumulating into xd.
+    set_vector_mask(0, op.count * 2);
+    vor((__ubuf__ uint16_t *)xd, (__ubuf__ uint16_t *)xn, (__ubuf__ uint16_t *)xn, 1, 1, 1, 1, 8, 8, 8);
+    pipe_barrier(PIPE_V);
+  }
+  set_vector_mask(0, op.count);
+  vaxpy(xd, xm, vAxpy::GetScalar(pc), 1, 1, 1, 8, 8);
+}
+
 #define BINARYS(pc, builtin, head, VTYPE)           \
   do {                                              \
     vBinaryS op;                                    \
@@ -2255,6 +2271,7 @@ DEF_DISP_SIMD(V_TRUNC, CAST(pc, vconv_f322f32z, head, tile, float, float))
 
 DEF_DISP_SIMD(V_ADDS, BINARYS(pc, vadds, head, float))
 DEF_DISP_SIMD(V_MULS, BINARYS(pc, vmuls, head, float))
+DEF_DISP_SIMD(V_AXPY, Axpy(pc, head))
 DEF_DISP_SIMD(V_ADD, BINARY(pc, vadd, head, tile, float))
 DEF_DISP_SIMD(V_SUB, BINARY(pc, vsub, head, tile, float))
 DEF_DISP_SIMD(V_MUL, BINARY(pc, vmul, head, tile, float))

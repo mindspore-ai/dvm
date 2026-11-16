@@ -3020,9 +3020,16 @@ void ReduceOp::Normalize(std::vector<NDObject *> &run_ops) {
       shape_[dim >= 0 ? dim : dim + in_size] = 1;
     }
     shape_.Resize(in_size);
+    size_t logical_size = in_size;
     for (size_t i = 0; i < nd_size; ++i) {
-      ndd_.dims[i] = shape_[in_size - 1 - i];
+      if (logical_size && lhs_->nd_[i] == lhs_->shape_ref_->data[logical_size - 1]) {
+        ndd_.dims[i] = shape_[--logical_size];
+      } else {
+        EXCEPTION_IF(lhs_->nd_[i] != 1, "reduce input nd does not match its logical shape");
+        ndd_.dims[i] = 1;
+      }
     }
+    EXCEPTION_IF(logical_size != 0, "reduce input nd is missing logical dimensions");
     if (!keepdims_) {
       for (size_t i = 0; i < dims_ref_->size; i++) {
         auto dim = dims_ref_->data[i];

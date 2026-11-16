@@ -1810,26 +1810,49 @@ class EagerArea {
     uint32_t index = 0;
     size_t fused_size = fused_.size();
     const EagerArea *cur = nullptr;
+    std::vector<NDObject *> nodes;
+    std::unordered_set<NDObject *> included;
     do {
       cur = fused_size ? fused_[--fused_size] : this;
       for (auto it = cur->objects_.rbegin(); it != cur->objects_.rend(); ++it) {
         auto op = *it;
+        if (!included.insert(op).second) continue;
+        nodes.push_back(op);
         if (op->IsLoad()) {
           op->index_ = index;
           op->io_reuse_mask_ = index < 64 ? (1ull << op->index_) : 0;
           index++;
-        } else {
-          uint64_t mask = 0;
-          if (op->InplaceProp()) {
-            op->ForInput([&mask](NDObject *in) { mask |= in->io_reuse_mask_; });
-          }
-          op->io_reuse_mask_ = mask;
-          if (auto store = _SplitKernel::GetStore(op); store != nullptr) {
-            store->io_reuse_mask_ = mask;
-          }
         }
       }
     } while (cur != this);
+    std::unordered_set<NDObject *> computed;
+    std::vector<std::pair<NDObject *, bool>> stack;
+    for (auto root : nodes) {
+      stack.emplace_back(root, false);
+      while (!stack.empty()) {
+        auto [op, ready] = stack.back();
+        stack.pop_back();
+        if (computed.count(op)) continue;
+        if (!ready && !op->IsLoad()) {
+          stack.emplace_back(op, true);
+          op->ForInput([&](NDObject *input) {
+            if (included.count(input) && !computed.count(input)) stack.emplace_back(input, false);
+          });
+          continue;
+        }
+        if (!op->IsLoad()) {
+          uint64_t mask = 0;
+          if (op->InplaceProp()) {
+            op->ForInput([&](NDObject *input) {
+              if (computed.count(input)) mask |= input->io_reuse_mask_;
+            });
+          }
+          op->io_reuse_mask_ = mask;
+          if (auto store = _SplitKernel::GetStore(op); store != nullptr) store->io_reuse_mask_ = mask;
+        }
+        computed.insert(op);
+      }
+    }
   }
 
   static EagerArea *Assign(_SplitKernel *k, size_t aid) {

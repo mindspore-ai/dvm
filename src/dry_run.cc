@@ -137,6 +137,8 @@ void set_ctrl(uint64_t) {}
 #define vmuls CCE_CALL(vmuls)
 #define vadds CCE_CALL(vadds)
 #define vadd CCE_CALL(vadd)
+#define vaxpy CCE_CALL(vaxpy)
+#define vor CCE_CALL(vor)
 #define vsub CCE_CALL(vsub)
 #define vmul CCE_CALL(vmul)
 #define vdiv CCE_CALL(vdiv)

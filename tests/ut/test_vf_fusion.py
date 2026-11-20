@@ -14,6 +14,7 @@
 # ============================================================================
 
 import os
+from pathlib import Path
 import subprocess
 import sys
 
@@ -39,9 +40,10 @@ def run_codegen_in_child(request):
     env = os.environ.copy()
     env.setdefault("DVM_SOC_NAME", "Ascend950PR_9599")
     env[child_flag] = "1"
+    test_file = Path(__file__).resolve()
     result = subprocess.run(
-        [sys.executable, "-m", "pytest", "-q", request.node.nodeid],
-        cwd=str(request.config.rootdir),
+        [sys.executable, "-m", "pytest", "-q", f"{test_file}::{request.node.name}"],
+        cwd=str(test_file.parents[2]),
         env=env,
         text=True,
         capture_output=True,
@@ -119,6 +121,26 @@ def test_entry_symbol_lookup_codegen(request):
         t.codegen()
 
         assert t.dump().count("Custom") == 1
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize("mode", [1, 2])
+def test_div_special_scalar_codegen(request, mode):
+    if run_codegen_in_child(request):
+        return
+    dvm.Kernel.set_vf_fusion(mode)
+    t = Tester()
+    t.set_passes("VfFusion")
+    x = t.load(np.ones(131, dtype=np.float32))
+    for scalar in (0.0, -0.0, float("inf"), -float("inf"), float("nan")):
+        t.store(t.abs(t.abs(t.div(x, scalar))))
+        t.store(t.abs(t.abs(t.div(scalar, x))))
+
+    t.codegen()
+
+    # A JIT error silently keeps the VM graph; require actual VF compilation.
+    assert "Custom" in t.dump()
+    assert "Div" not in t.dump() and "Mul" not in t.dump()
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
@@ -542,7 +564,8 @@ def test_diamond_fusion(depth):
     dvm.Device.arch() != "AscendC310",
     reason="VF Fusion only supports C310",
 )
-def test_multi_fusion():
+@pytest.mark.parametrize("with_division", [False, True])
+def test_multi_fusion(with_division):
     dvm.Kernel.set_vf_fusion(1)
     shape = (1024, 1024)
     x_np = np.random.normal(0.0, 0.2, shape).astype(np.float32)
@@ -555,9 +578,9 @@ def test_multi_fusion():
     y = t.load(y_np)
     z = t.load(z_np)
     left = t.add(t.abs(x), y)
-    right = t.sub(t.abs(z), y)
+    right = t.div(t.abs(z), y) if with_division else t.sub(t.abs(z), y)
     t.store_expect(left, np.abs(x_np) + y_np)
-    t.store_expect(right, np.abs(z_np) - y_np)
+    t.store_expect(right, np.abs(z_np) / y_np if with_division else np.abs(z_np) - y_np)
 
     t.codegen()
     dump = t.dump()

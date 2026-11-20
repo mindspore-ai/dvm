@@ -18,6 +18,7 @@
 #define TILING_KEY_VAR 0UL
 #include "reg_compute/kernel_reg_compute_maskreg_intf.h"
 #include "reg_compute/kernel_reg_compute_vec_vconv_intf.h"
+#include "reg_compute/kernel_reg_compute_vec_binary_intf.h"
 #include "vm_aiv.h"
 
 using AscendC::RoundMode;
@@ -30,6 +31,9 @@ using AscendC::MicroAPI::MoveMask;
 using AscendC::MicroAPI::RegLayout;
 using AscendC::MicroAPI::SatMode;
 using AscendC::MicroAPI::Truncate;
+
+static constexpr AscendC::Reg::DivSpecificMode kDvmDivHighPrecisionMode = {
+  AscendC::Reg::MaskMergeMode::ZEROING, true, AscendC::DivAlgo::PRECISION_0ULP_FTZ_TRUE};
 
 // RegTensor<int64_t> -> AscendC::MicroAPI::RegTensor<int64_t, RegTraitNumTwo>
 template <typename T>
@@ -339,6 +343,23 @@ DECLARE_BINARYS(vmins)
 
 DECLARE_BINARYS_EXT(vdiv)
 DECLARE_BINARYS_EXT(vsub)
+
+// Use the same FP32 compensation algorithm as CANN RealDiv.
+template <typename T, typename MergeMode>
+__simd_callee__ __aicore_inline__ void DivHighPrecision(T &dst, T &src0, T &src1, vector_bool &mask, MergeMode) {
+  static_assert(std::is_same<T, RegTensor<float>>::value, "FP32 registers required");
+  AscendC::Reg::RegTensor<float> src0Reg;
+  AscendC::Reg::RegTensor<float> src1Reg;
+  AscendC::Reg::RegTensor<float> dstReg;
+  src0Reg.reg[0] = src0;
+  src1Reg.reg[0] = src1;
+  AscendC::Reg::Div<float, &kDvmDivHighPrecisionMode, AscendC::Reg::RegTensor<float>>(
+      dstReg, src0Reg, src1Reg, mask);
+  dst.reg[0] = dstReg.reg[0];
+}
+
+DECLARE_BINARY(DivHighPrecision)
+DECLARE_BINARYS_EXT(DivHighPrecision)
 
 template <typename DST_TYPE, typename SRC_TYPE, RoundMode R = RoundMode::CAST_ROUND>
 __aicore_inline__ void CastCount(__ubuf__ DST_TYPE *dst, __ubuf__ SRC_TYPE *src0, uint32_t count) {
@@ -2415,7 +2436,7 @@ DEF_DISP_SIMD(V_MULS, BINARYS(pc, vmuls, head, float))
 DEF_DISP_SIMD(V_ADD, BINARY(pc, vadd, head, tile, float))
 DEF_DISP_SIMD(V_SUB, BINARY(pc, vsub, head, tile, float))
 DEF_DISP_SIMD(V_MUL, BINARY(pc, vmul, head, tile, float))
-DEF_DISP_SIMD(V_DIV, BINARY(pc, vdiv, head, tile, float))
+DEF_DISP_SIMD(V_DIV, BINARY(pc, DivHighPrecision, head, tile, float))
 DEF_DISP_SIMD(V_MIN, BINARY(pc, vmin, head, tile, float))
 DEF_DISP_SIMD(V_MAX, BINARY(pc, vmax, head, tile, float))
 
@@ -2496,9 +2517,9 @@ DEF_DISP_SIMD(V_CAST_BF16_TO_FP32, (Cast<float, bfloat16_t>(pc, head, tile)))
 DEF_DISP_SIMD(V_CAST_BF16_TO_INT32, (Cast<int32_t, bfloat16_t, RoundMode::CAST_ROUND>(pc, head, tile)))
 DEF_DISP_SIMD(V_CAST_FP32_TO_BF16, (Cast<bfloat16_t, float, RoundMode::CAST_RINT>(pc, head, tile)))
 
-DEF_DISP_SIMD(V_SDIV, BINARYS_EXT(pc, vdiv, head, float, false))
+DEF_DISP_SIMD(V_SDIV, BINARYS_EXT(pc, DivHighPrecision, head, float, false))
 DEF_DISP_SIMD(V_SDIV_FP16, BINARYS_EXT(pc, vdiv, head, half, false))
-DEF_DISP_SIMD(V_DIVS, BINARYS_EXT(pc, vdiv, head, float, true))
+DEF_DISP_SIMD(V_DIVS, BINARYS_EXT(pc, DivHighPrecision, head, float, true))
 DEF_DISP_SIMD(V_DIVS_FP16, BINARYS_EXT(pc, vdiv, head, half, true))
 
 DEF_DISP_SIMD(V_ABS_INT32, UNARY(pc, vabs, head, tile, int32_t))

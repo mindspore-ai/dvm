@@ -532,6 +532,43 @@ def test_binary_float_scalar_ref(op, func):
         assert (t.check(out, func(d1, i)))
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() != 'AscendC310', reason="C310 scalar division precision")
+@pytest.mark.parametrize('dtype', ['float16', 'bfloat16'])
+def test_div_low_precision_scalar_ref(dtype):
+    t = Tester('vector:dyn', use_pass_opt=True)
+    a = np.arange(1, 132, dtype=np.float16 if dtype == 'float16' else np.float32)
+    x = t.load(a, dtype)
+    scalar = t.scalar()
+    out = t.store(t.div(x, scalar))
+    reverse_out = t.store(t.div(scalar, x))
+    constants = [(value, t.store(t.div(x, value)), t.store(t.div(value, x)))
+                 for value in [1001, 2049]]
+
+    def rounded(values):
+        if dtype == 'float16':
+            return values.astype(np.float16)
+        return t.convert_from_bf16(t.convert_to_bf16(values))
+
+    for value in [1001, 1001.0, 2049, 2049.0, -1001, 3.1, -7.3, 1001]:
+        scalar.update(value)
+        t.run()
+        assert t.check(out, rounded(a.astype(np.float32) / np.float32(value)), eps=0)
+        assert t.check(reverse_out, rounded(np.float32(value) / a.astype(np.float32)), eps=0)
+    for value, forward, reverse in constants:
+        assert t.check(forward, rounded(a.astype(np.float32) / np.float32(value)), eps=0)
+        assert t.check(reverse, rounded(np.float32(value) / a.astype(np.float32)), eps=0)
+
+    clone = Tester('vector:dyn', use_pass_opt=True)
+    cx, cs, co, cr = clone.clone(t, [x, scalar, out, reverse_out])
+    scalar.update(17)
+    clone.input(cx, t.convert_to_bf16(a) if dtype == 'bfloat16' else a)
+    cs.update(1001)
+    clone.run()
+    assert clone.check(co, rounded(a.astype(np.float32) / np.float32(1001)), eps=0)
+    assert clone.check(cr, rounded(np.float32(1001) / a.astype(np.float32)), eps=0)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.gpu
 def test_bool_cast_eliminate():
     t = Tester()

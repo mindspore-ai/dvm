@@ -1034,6 +1034,9 @@ void LazyCubeTuner::BuildSwizzleSpace(vCubeOp *code, TuningInfo *best_tile, std:
 }
 
 int LazyCubeTuner::_TunerWarp::LaunchWrap(void *workspace, void *stream) {
+  if (ctx_ == nullptr) {
+    return next_->LaunchWrap(workspace, stream);
+  }
   TimeProfiler profiler;
   profiler.RecordStart(stream);
   auto err = next_->LaunchWrap(workspace, stream);

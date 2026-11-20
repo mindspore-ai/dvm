@@ -21,6 +21,8 @@
 #include <cstddef>
 #include <vector>
 
+#define DVM_API __attribute__((visibility("default")))
+
 namespace dvm {
 enum DataType {
   kBool = 0,
@@ -111,7 +113,7 @@ class NDObject;
 class VKernel;
 class Communicator;
 
-class Float16 {
+class DVM_API Float16 {
  public:
   explicit Float16(uint16_t v) : value_(v) {}
   explicit Float16(float v);
@@ -124,7 +126,7 @@ class Float16 {
   uint16_t value_;
 };
 
-class BFloat16 {
+class DVM_API BFloat16 {
  public:
   explicit BFloat16(uint16_t v) : value_(v) {}
   explicit BFloat16(float v);
@@ -137,7 +139,7 @@ class BFloat16 {
   uint16_t value_;
 };
 
-struct IntArrayRef {
+struct DVM_API IntArrayRef {
   IntArrayRef() {}
   explicit IntArrayRef(const std::vector<int64_t> &other) : data(other.data()), size(other.size()) {}
   IntArrayRef &operator=(const std::vector<int64_t> &other) {
@@ -149,7 +151,7 @@ struct IntArrayRef {
   size_t size;
 };
 
-struct ScalarRef {
+struct DVM_API ScalarRef {
   ScalarRef() = default;
   template <typename T>
   ScalarRef(T val) {
@@ -189,25 +191,25 @@ struct ScalarRef {
   };
 };
 
-struct RelocEntry {
+struct DVM_API RelocEntry {
   RelocEntry() {}
   RelocEntry(NDObject *p, void *a) : io(p), addr(a) {}
   NDObject *io;
   void *addr;
 };
 
-struct WsAllocator {
+struct DVM_API WsAllocator {
   virtual void *Alloc(size_t size) = 0;
 };
 
-struct CloneHelper {
+struct DVM_API CloneHelper {
   virtual IntArrayRef *GetClone(IntArrayRef *shape) = 0;
   virtual ScalarRef *GetClone(ScalarRef *scalar) = 0;
   virtual NDObject *GetClone(NDObject *op) = 0;
   virtual void SetClone(NDObject *op, NDObject *clone) = 0;
 };
 
-class Comm {
+class DVM_API Comm {
  public:
   enum { kMemory, kHccl, kDummy };
   Comm() = default;
@@ -224,7 +226,7 @@ class Comm {
 /**
  * @brief The main Kernel class.
  */
-class Kernel {
+class DVM_API Kernel {
  public:
   Kernel();
   ~Kernel();
@@ -688,7 +690,7 @@ class Kernel {
 /**
  * @brief DVM Global configure API.
  */
-class Config {
+class DVM_API Config {
  public:
   Config() = default;
   ~Config() = default;
@@ -710,5 +712,7 @@ using ReduceOpType = ReduceType;
 using GroupType = GmmSplitType;
 using GroupListType = GmmListType;
 using ShapeRef = IntArrayRef;
+
+[[noreturn]] DVM_API void DvmException(const char *error_str);
 }  // namespace dvm
 #endif  // _DVM_H_

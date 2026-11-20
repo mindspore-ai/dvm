@@ -496,7 +496,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // LoadDummy
     {kGenComm, 0, nullptr, nullptr, nullptr},                                                            // MultiLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                         // GlobalAccess
-    {kGenLoad, F_IP, nullptr, nullptr, NDObject::TileCollectSimt},                                       // GatherLoad
+    {kGenLoad, F_IP, nullptr, nullptr, NDGatherLoad::TileCollect},                                       // GatherLoad
     {kGenLoad, 0, NDViewLoad::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},                    // ViewLoad
     {kGenLoad, F_IP, nullptr, NDAccess::FoldProp, NDAccess::TileCollect},                                // Load
     {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},        // ViewStore
@@ -1150,6 +1150,27 @@ NDAccess *NDLoad::CloneBind() {
 
 void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 
+void NDGatherLoad::TileCollect(NDObject *op, TileInfo &info) {
+  // Tiling (including a partial tail) can still select the SIMT fallback.
+  NDObject::TileCollectSimt(op, info);
+  auto gather = static_cast<NDGatherLoad *>(op);
+  // Gather exceeds the generic four-word estimate. Include the optional
+  // scratch descriptor and an upper bound on rounds in the code UB budget.
+  info.code_reserve += (vGatherLoad::ROUND_OFFSET + 1 + (gather->ndd_.dims.size() + 1) / 2) * sizeof(uint64_t) -
+                       V_INSN_SIZE_MAX;
+  const uint64_t copy_align = 32 / ITEM_SIZE[op->type_id_];
+  if (gather->gather_mode_ == vGatherLoad::kSliceGather && gather->inner_size_ != 0 &&
+      gather->inner_size_ % copy_align == 0) {
+    info.event_reserve = std::max(info.event_reserve, 1u);
+  }
+}
+
+bool NDGatherLoad::CanBlockCopy() const {
+  const uint64_t align = 32 / ITEM_SIZE[type_id_];
+  return gather_mode_ == vGatherLoad::kSliceGather && inner_size_ != 0 && inner_size_ % align == 0 &&
+         ndd_.lead_stride() == ndd_.lead_dim() && ndd_.stride_back() % align == 0;
+}
+
 void NDGatherLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(src_shape_ref_->size >= 1);
   ASSERT(index_ && index_->shape_ref_);
@@ -1213,6 +1234,11 @@ uint64_t NDGatherLoad::Emit(VectorKernel &k) {
       ? (op.body_iter == 1 ? op.iter_size : op.body_iter)
       : (op.body_iter == 1 ? static_cast<uint64_t>(tail_size)
                            : op.body_iter / static_cast<uint64_t>(ndd_[k.GetTailDim()]) * static_cast<uint64_t>(tail_size));
+  // Scratch is allocated by codegen from the reusable dynamic xbuf pool.
+  // The VM handles an unaligned tail with SIMT independently of body tiles.
+  op.strategy = index_capacity_ != 0 ? vGatherLoad::kSimdBlockCopy : vGatherLoad::kSimt;
+  op.index_scratch = index_scratch_;
+  op.index_capacity = index_capacity_;
   addr_.Update(insn_ + vGatherLoad::RELOC_OFFSET);
   index_->addr_.Update(insn_ + vGatherLoad::INDEX_RELOC_OFFSET);
   const auto insn_id = ITEM_SIZE[type_id_] == 2 ? vAccInsnID::V_LOAD_GATHER_B16 : vAccInsnID::V_LOAD_GATHER_B32;

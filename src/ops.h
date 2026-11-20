@@ -640,6 +640,7 @@ class NDGatherLoad : public NDLoad {
         gather_mode_(gather_mode) {
     obj_id_ = ObjectType::kGatherLoad;
   }
+  static void TileCollect(NDObject *op, TileInfo &info);
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
@@ -653,6 +654,9 @@ class NDGatherLoad : public NDLoad {
   uint64_t gather_dim_size_{0};
   int axis_;
   vGatherLoad::GatherMode gather_mode_;
+  bool CanBlockCopy() const;
+  uint64_t index_scratch_{0};
+  uint64_t index_capacity_{0};
 };
 
 class NDViewLoad : public NDLoad {

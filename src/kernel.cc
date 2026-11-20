@@ -18,6 +18,8 @@
 #include "schedule.h"
 #include "xkernel.h"
 #include "msprof.h"
+#include <algorithm>
+#include <numeric>
 
 namespace dvm {
 class IdleCleanWrap : public CodeWrap {
@@ -436,7 +438,34 @@ class CodeGenHelper {
         };
         case kGenLoad: {
           AllocStaticXBuf(op);
+          NDGatherLoad *gather = op->obj_id_ == kGatherLoad ? static_cast<NDGatherLoad *>(op) : nullptr;
+          if (gather) {
+            gather->index_scratch_ = gather->index_capacity_ = 0;
+            if (gather->CanBlockCopy()) {
+              // A tile can begin inside a slice. Bound the number of indices
+              // needed by any tile, then cap the batch at 4 KiB and one xbuf.
+              uint64_t elements = gather->ndd_.stride_back();
+              uint64_t max_inner = gather->inner_size_ - std::gcd(elements, gather->inner_size_);
+              uint64_t count = CeilDiv(elements + max_inner, gather->inner_size_);
+              gather->index_capacity_ = std::min({count, gather->gather_size_,
+                                                  uint64_t(vGatherLoad::MAX_INDEX_BATCH),
+                                                  uint64_t(xbuf_size_ / sizeof(int32_t))});
+              if (gather->index_capacity_ != 0) {
+                // The VM explicitly waits V->MTE2 before overwriting a reused
+                // slot, including reuse across iterations of the tile loop.
+                if (!free_xbuf_.Empty()) {
+                  gather->index_scratch_ = free_xbuf_.Pop().first;
+                } else {
+                  AllocDynXBuf(gather->index_scratch_);
+                }
+              }
+            }
+          }
           code_ptr += op->Emit(kernel_);
+          if (gather && gather->index_capacity_ != 0) {
+            // Scratch is dead at the end of GatherLoad; its output stays live.
+            free_xbuf_.Push(gather->index_scratch_, op);
+          }
 #ifdef DEBUG
           auto head = *(op->tail_insn_);
           ASSERT((head & 1ul << V_HEAD_SIMD_FLAG_OFFSET) == 0);
@@ -1472,6 +1501,15 @@ int64_t VectorKernel::Analyze() {
     } else if (op->IsLoad()) {
       if (!OP_LIVE(op)) {
         op->flags_ |= OBJ_FLAG_DEAD;
+      } else if (op->obj_id_ == kGatherLoad) {
+        auto gather = static_cast<NDGatherLoad *>(op);
+        const uint64_t align = 32 / ITEM_SIZE[op->type_id_];
+        if (gather->gather_mode_ == vGatherLoad::kSliceGather && gather->inner_size_ != 0 &&
+            gather->inner_size_ % align == 0) {
+          // Reserve a dynamic slot only at this operation's lifetime peak.
+          // Exact layout eligibility is determined after tiling in codegen.
+          live_peak = std::max(live_peak, cur_live + 1);
+        }
       }
     }
   }

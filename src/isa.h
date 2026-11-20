@@ -1456,6 +1456,8 @@ struct vGatherLoad {
   enum { RELOC_OFFSET = 1 };
   enum { INDEX_RELOC_OFFSET = 2 };
   enum GatherMode { kElementGather = 0, kSliceGather = 1 };
+  enum Strategy { kSimt = 0, kSimdBlockCopy = 1 };
+  enum { MAX_INDEX_BATCH = 1024 };
   uint64_t xn;
   uint64_t from;
   uint64_t index;
@@ -1463,6 +1465,9 @@ struct vGatherLoad {
   uint64_t gather_size;
   uint64_t gather_dim_size;
   uint64_t gather_mode;
+  uint64_t strategy;
+  uint64_t index_scratch;
+  uint64_t index_capacity;
   uint64_t body_iter;
   uint64_t tail_iter;
   uint64_t iter_size;
@@ -1472,7 +1477,8 @@ struct vGatherLoad {
   // pc[1]: from
   // pc[2]: index
   // pc[3]: round_rank(4) << 60 | pad_size(8) << 48 | iter_size(16) << 32 | tail_iter(16) << 16 | body_iter(16)
-  // pc[4]: gather_mode(4) << 48 | gather_dim_size(16) << 32 | gather_size(16) << 16 | inner_size(16)
+  // pc[4]: strategy(4) << 52 | gather_mode(4) << 48 | gather_dim_size(16) << 32 | gather_size(16) << 16 | inner_size(16)
+  // After rounds, SIMD only: index_capacity(32) << 32 | index_scratch(32)
   __aicore_inline__ void Decode(bcodeptr_t pc, uint64_t head, vGatherLoad &op) {
     op.xn = vDeCompactX(vGetBitRange(head, V_M_HEAD_EXT_OFFSET, V_C_X_BITS));
     op.from = pc[1];
@@ -1488,6 +1494,15 @@ struct vGatherLoad {
     op.gather_size = (data >> 16) & 0xfffful;
     op.gather_dim_size = (data >> 32) & 0xfffful;
     op.gather_mode = (data >> 48) & 0xful;
+    op.strategy = (data >> 52) & 0xful;
+    // Optional extension follows rounds, preserving the SIMT instruction layout.
+    if (op.strategy == kSimdBlockCopy) {
+      data = pc[ROUND_OFFSET + (op.round_rank + 1) / 2];
+      op.index_scratch = data & 0xfffffffful;
+      op.index_capacity = data >> 32;
+    } else {
+      op.index_scratch = op.index_capacity = 0;
+    }
   }
   __aicore_inline__ uint64_t Encode(bcodeptr_t pc, uint64_t id, const vGatherLoad &op, const uint64_t *rounds) {
     uint64_t round_size = (op.round_rank + 1) / 2;
@@ -1497,9 +1512,13 @@ struct vGatherLoad {
     pc[1] = op.from;
     pc[2] = op.index;
     pc[3] = op.round_rank << 60 | op.pad_size << 48 | op.iter_size << 32 | op.tail_iter << 16 | op.body_iter;
-    pc[4] = op.gather_mode << 48 | op.gather_dim_size << 32 | op.gather_size << 16 | op.inner_size;
+    pc[4] = op.strategy << 52 | op.gather_mode << 48 | op.gather_dim_size << 32 | op.gather_size << 16 | op.inner_size;
     for (uint64_t i = 0; i < round_size; ++i) {
       pc[vGatherLoad::ROUND_OFFSET + i] = rounds[i];
+    }
+    if (op.strategy == kSimdBlockCopy) {
+      pc[size++] = op.index_capacity << 32 | op.index_scratch;
+      pc[0] = vMakeAccHead(id, ext, size);
     }
     return size;
   }

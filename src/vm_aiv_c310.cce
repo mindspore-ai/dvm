@@ -1887,6 +1887,68 @@ __aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+// Like GatherV2's SIMD slice path, copy the contiguous suffix selected by
+// each index rather than issuing one SIMT GM load per output element.
+template <typename T>
+__aicore_inline__ void GatherLoadBlockCopy(const vGatherLoad &op, uint64_t tile_base, uint32_t total) {
+  const uint32_t index_batch = op.index_capacity;
+  auto scratch = (__ubuf__ int32_t *)op.index_scratch;
+  auto dst = (__ubuf__ T *)op.xn;
+  auto src = (__gm__ uint8_t *)op.from;
+  auto indices = (__gm__ int32_t *)op.index;
+  // A previous vector operation (possibly in the previous tile) may own the
+  // same dynamic xbuf. Finish its accesses before loading the index batch.
+  set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+  wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+  uint32_t done = 0;
+  while (done < total) {
+    uint64_t pos = tile_base + done;
+    uint64_t slice = pos / op.inner_size;
+    uint32_t inner = pos % op.inner_size;
+    uint32_t gather = slice % op.gather_size;
+    uint64_t outer = slice / op.gather_size;
+    uint32_t count = CeilDiv(static_cast<uint64_t>(total - done) + inner, op.inner_size);
+    count = count < index_batch ? count : index_batch;
+    count = count < op.gather_size - gather ? count : op.gather_size - gather;
+    uint32_t batch_elements = count * op.inner_size - inner;
+    batch_elements = batch_elements < total - done ? batch_elements : total - done;
+
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)scratch, (__gm__ uint8_t *)(indices + gather),
+                           0, 1, count * sizeof(int32_t), 0, 0, false, 0, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_S, EVENT_ID7);
+    wait_flag(PIPE_MTE2, PIPE_S, EVENT_ID7);
+    for (uint32_t j = 0; j < count; ++j) {
+      int64_t index = scratch[j];
+      if (index < 0) index += op.gather_dim_size;
+      uint32_t begin = j == 0 ? 0 : j * op.inner_size - inner;
+      uint32_t end = (j + 1) * op.inner_size - inner;
+      end = end < batch_elements ? end : batch_elements;
+      uint32_t size = end - begin;
+      if (index >= 0 && static_cast<uint64_t>(index) < op.gather_dim_size) {
+        uint64_t offset = (outer * op.gather_dim_size + index) * op.inner_size + (j == 0 ? inner : 0);
+        copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)(dst + done + begin), src + offset * sizeof(T),
+                               0, 1, size * sizeof(T), 0, 0, false, 0, 0, 0);
+      } else {
+        set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+        set_flag(PIPE_S, PIPE_V, EVENT_ID7);
+        wait_flag(PIPE_S, PIPE_V, EVENT_ID7);
+        VectorDupCount(dst + done + begin, static_cast<T>(0), size);
+        // Publish SIMD zero-fill through the normal load's MTE2 completion.
+        set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+        wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+      }
+    }
+    // Retire scalar reads before the next index DMA overwrites this scratch.
+    set_flag(PIPE_S, PIPE_MTE2, EVENT_ID7);
+    wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID7);
+    done += batch_elements;
+  }
+  // The allocator returns this slot to later vector outputs/workspaces.
+  set_flag(PIPE_S, PIPE_V, EVENT_ID7);
+  wait_flag(PIPE_S, PIPE_V, EVENT_ID7);
+}
+
 template <typename T>
 __aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vGatherLoad op;
@@ -1909,6 +1971,10 @@ __aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   uint32_t total = body_iter * iter_size;
   uint32_t dup_num = static_cast<uint32_t>(op.body_iter * op.iter_size);
+  if (op.strategy == vGatherLoad::kSimdBlockCopy && total % (32 / sizeof(T)) == 0) {
+    GatherLoadBlockCopy<T>(op, static_cast<uint64_t>(dup_num) * tile_idx, total);
+    return;
+  }
   uint32_t tile_base = dup_num * static_cast<uint32_t>(tile_idx);
   if (op.pad_size == 0) {
     if (op.gather_mode == vGatherLoad::kElementGather) {

@@ -299,6 +299,13 @@ void _DumpGatherLoad(const DumpInfo &dump_info, const vGatherLoad &op, std::ostr
   DumpVal("gather_dim_size", op.gather_dim_size, oss);
   oss << ", ";
   DumpVal("gather_mode", op.gather_mode, oss);
+  oss << ", strategy(" << (op.strategy == vGatherLoad::kSimdBlockCopy ? "simd_block_copy" : "simt") << ")";
+  if (op.strategy == vGatherLoad::kSimdBlockCopy) {
+    oss << ", ";
+    DumpVal("index_scratch", op.index_scratch, oss);
+    oss << ", ";
+    DumpVal("index_capacity", op.index_capacity, oss);
+  }
   oss << ", ";
   DumpVal("tail_iter", op.tail_iter, oss);
   oss << ", ";

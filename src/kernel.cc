@@ -1981,7 +1981,7 @@ class SplitVector : public VectorKernel {
     BuildDomain();
     ASSERT(sch_gen_ == nullptr);
     if (sch_gen_ = BuildViewSch(this, objects_); sch_gen_ != nullptr) {
-      return sch_gen_->CodeGen();
+      if (auto ret = sch_gen_->CodeGen(); ret != -1) return ret;
     }
     return DoCodeGen(g_system.CoreNum());
   }
@@ -2345,6 +2345,7 @@ template <bool dyn_shape>
 uint64_t SpecVector<dyn_shape>::CodeGen() {
   auto reduce_fall_check = [this](int64_t tile_size_limit) -> bool {
     if (!post_reduces_.empty()) {
+      if (sch_gen_ && sch_gen_->CanFusePostReduction()) return false;
       auto ndd = dom_->nd_.data;
       const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
       for (auto op : post_reduces_) {
@@ -2370,6 +2371,7 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       Optimize<true>(build_ops_, adopt_ops_);
       BrokerInit();
       StaticInit(build_ops_);
+      SchInit(build_ops_);
     }
     if (!Normalize(false) || !BrokerAffine()) {
       return FallCodeGen();
@@ -2388,6 +2390,7 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     }
     Optimize<false>(objects_, build_ops_);
     StaticInit(objects_);
+    SchInit(objects_);
     BuildDomain();
     PrepareTiling();
     live_peak = Analyze();
@@ -2400,6 +2403,9 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
   if (unlikely(!tile_size_)) {
     ProcessIdle();
     return 0;
+  }
+  if (sch_gen_) {
+    if (auto ret = sch_gen_->CodeGen(); ret != -1) return ret;
   }
   uint64_t core_limit = g_system.CoreNum();
   TileUpdate update;
@@ -2597,6 +2603,9 @@ SpecVecContext::~SpecVecContext() {
 }
 
 uint64_t SpecVecBase::CodeGen() {
+  if (sch_gen_) {
+    if (auto ret = sch_gen_->CodeGen(); ret != -1) return ret;
+  }
   auto tile_size_limit = LazyTileLimit();
   uint64_t core_limit = g_system.CoreNum();
   TileUpdate update;
@@ -2609,6 +2618,8 @@ uint64_t SpecVecBase::CodeGen() {
 }
 
 bool SpecVecBase::SpecBuild() {
+  delete sch_gen_;
+  sch_gen_ = nullptr;
   if (fall_opt_ & FALL_CUSTOM_SPLIT) {
     fall_opt_ &= ~FALL_CUSTOM_SPLIT;
     if (CustomSpec()) {
@@ -2632,6 +2643,7 @@ bool SpecVecBase::SpecBuild() {
   }
   // TODO: Optimize
   BuildDomain();
+  SchInit(objects_);
   PrepareTiling();
   tile_limit_ = -1;
   if (fall_opt_ & FALL_REDUCE) {
@@ -2782,6 +2794,7 @@ bool SpecVecBase::BroadcastSpec() {
 }
 
 bool SpecVecBase::ReduceSpec() {
+  if (sch_gen_ && sch_gen_->CanFusePostReduction()) return false;
   ctx_.ResetSpec();
   const_cast<NDSpaceData *>(dom_->nd_.data)->UpdateStride(lead_align_);
   size_t cut_begin = ctx_.spec_ops_.size();

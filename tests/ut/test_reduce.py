@@ -202,6 +202,96 @@ def test_atomic_determ(in_shape, dims, tile_depth):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector', 'vector:spec', 'vector:spec,priv1'])
+@pytest.mark.parametrize('shape, dims, post', [
+    ([16, 2048, 256], (0,), True),
+    ([4, 512, 4, 256], (0, 2), True),
+    ([512, 128, 128], (0,), False),
+    ([128, 32, 256], (0, 2), False),
+])
+def test_reduce_reorder_determ(mode, shape, dims, post):
+    t = Tester(mode, use_pass_opt=True)
+    t.set_deterministic(True)
+    try:
+        rng = np.random.default_rng(17)
+        a, b = [rng.uniform(-0.5, 0.5, shape).astype(np.float32) for _ in range(2)]
+        x = t.add(t.load(a), t.load(b))
+        y = t.sum(x, dims, True)
+        ref = (a + b).sum(axis=dims, keepdims=True, dtype=np.float64)
+        if post:
+            y = t.mul(y, 0.5)
+            ref *= 0.5
+        out = t.store_expect(y, ref, 1e-4)
+        assert t.run_check()
+        expected = t.output(out).tobytes()
+        for _ in range(3):
+            t.run()
+            assert t.output(out).tobytes() == expected
+    finally:
+        t.set_deterministic(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector:spec', 'vector:spec,priv1'])
+@pytest.mark.parametrize('shape, dims', [
+    ([16, 512, 256], (0,)),
+    ([512, 128, 128], (0,)),
+    ([128, 32, 256], (0, 2)),
+])
+def test_reduce_reorder_post(mode, shape, dims):
+    t = Tester(mode, use_pass_opt=True)
+    a = np.random.default_rng(17).uniform(-0.5, 0.5, shape).astype(np.float32)
+    x = t.add(t.load(a), 0.01)
+    y = t.sum(x, dims, True)
+    t.spec_next()
+    y = t.maximum(t.add(y, 0.25), 0.0)
+    ref = np.maximum((a + 0.01).sum(axis=dims, keepdims=True, dtype=np.float64) + 0.25, 0.0)
+    t.store_expect(y, ref, 1e-4)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector', 'vector:spec', 'vector:spec,priv1'])
+@pytest.mark.parametrize('dtype', [np.int64, np.bool_])
+def test_reduce_reorder_cast_input(mode, dtype):
+    t = Tester(mode, use_pass_opt=True)
+    a = (np.arange(128 * 257).reshape(128, 257) % 3).astype(dtype)
+    x = t.load(a)
+    if dtype == np.bool_:
+        x = t.cast(x, 'float16')
+    x = t.cast(x, 'float32')
+    y = t.sum(x, (0,), True)
+    t.store_expect(y, a.astype(np.float32).sum(axis=0, keepdims=True), 0)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector:dyn', 'vector:spec,dyn', 'vector:spec,dyn,priv1'])
+def test_reduce_reorder_dynamic_broadcast(mode):
+    t = Tester(mode, use_pass_opt=True)
+    a, b = [t.load([-1, -1, -1], 'float32') for _ in range(2)]
+    y = t.sum(t.add(a, b), (0,), True)
+    if 'spec' in mode:
+        t.spec_next()
+        y = t.maximum(t.add(y, 0.25), 0.0)
+    out = t.store(y)
+    shapes = [((16, 128, 64), (16, 128, 64)),
+              ((16, 128, 64), (1, 128, 1)),
+              ((7, 65, 63), (7, 1, 63)),
+              ((16, 128, 64), (16, 128, 64))]
+    rng = np.random.default_rng(17)
+    for a_shape, b_shape in shapes * 2:
+        a_data, b_data = [rng.integers(-2, 3, shape).astype(np.float32) * 0.125 for shape in (a_shape, b_shape)]
+        t.input(a, a_data)
+        t.input(b, b_data)
+        expect = (a_data + b_data).sum(axis=0, keepdims=True)
+        if 'spec' in mode:
+            expect = np.maximum(expect + 0.25, 0.0)
+        t.run()
+        assert t.check(out, expect, 0)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 def test_multi_determ():
     t = Tester()
     in_shape, dims = [64, 8, 256, 8], (0, 2)

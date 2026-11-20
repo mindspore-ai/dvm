@@ -57,6 +57,7 @@ class SchGenHelper : public VectorSchedule {
   SchGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
   ~SchGenHelper() override;
   virtual int64_t CodeGen();
+  virtual bool CanFusePostReduction() { return false; }
   RelocAddr *ReserveReloc(size_t size) {
     if (size > reloc_size_) {
       delete []reloc_array_;

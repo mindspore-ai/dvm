@@ -18,6 +18,7 @@
 #define _DVM_CODE_H_
 #include <sstream>
 #include <cstring>
+#include <memory>
 #include "isa.h"
 #include "system.h"
 
@@ -101,6 +102,7 @@ class Code : public CodeWrap {
     bind_wss_ = nullptr;
     bind_ops_ = nullptr;
     wrap_ = nullptr;
+    owned_wraps_.clear();
     ArchClear();
   }
   void Alloc(size_t size);
@@ -203,6 +205,11 @@ class Code : public CodeWrap {
     wrap_ = wrap;
   }
 
+  void InsertOwnedWrap(std::shared_ptr<CodeWrap> wrap) {
+    owned_wraps_.push_back(wrap);
+    InsertWrap(wrap.get());
+  }
+
   void RelocWssBind(void *workspace) {
     for (auto op = bind_wss_; op != nullptr; op = op->bind_list_) {
       op->Reloc(static_cast<char *>(workspace) + op->ws);
@@ -238,6 +245,7 @@ class Code : public CodeWrap {
   RelocAddr *bind_wss_{nullptr};
   RelocAddr *bind_ops_{nullptr};
   CodeWrap *wrap_{nullptr};
+  std::vector<std::shared_ptr<CodeWrap>> owned_wraps_;
   size_t mem_size_{0};
 
  private:

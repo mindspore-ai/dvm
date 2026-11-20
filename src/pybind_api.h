@@ -17,6 +17,7 @@
 #ifndef _DVM_PYBIND_API_H_
 #define _DVM_PYBIND_API_H_
 #include <vector>
+#include <memory>
 #include "pybind11/numpy.h"
 #include "code.h"
 #include "dvm_py.h"
@@ -118,7 +119,7 @@ class RtKernelPy : public KernelPy {
 
   void *workspace_{nullptr};
   ProfileMgr *profile_mgr_{nullptr};
-  KernelRunner *runner_;
+  std::unique_ptr<KernelRunner> runner_;
 };
 using RtKernelPyPtr = std::shared_ptr<RtKernelPy>;
 }  // namespace dvm

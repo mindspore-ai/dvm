@@ -184,9 +184,13 @@ class KernelRunner : public WsAllocator {
   virtual void AllocLoad(const py::buffer_info &buf, LoadInfo &load) = 0;
   virtual void AllocStore(StoreInfo &store) = 0;
   virtual void Release(void *) {}
+  virtual void Activate() const {}
   virtual void Reset() = 0;
   virtual int Run(Kernel &kernel, void *workspace, bool sync) = 0;
-  void *Stream() const { return stream_; }
+  void *Stream() const {
+    Activate();
+    return stream_;
+  }
 
  protected:
   void *stream_{nullptr};
@@ -214,7 +218,10 @@ class DevRunner : public KernelRunner {
     rt::DestroyStream(stream_);
   }
 
+  void Activate() const override { ERROR_CHECK(rt::SetDevice(dev_id_)); }
+
   void AllocLoad(const py::buffer_info &buf, LoadInfo &load) override {
+    Activate();
     size_t size = buf.itemsize * buf.size;
     if (size == 0) return;
     ERROR_CHECK(rt::Malloc(&load.dev, size));
@@ -223,6 +230,7 @@ class DevRunner : public KernelRunner {
   }
 
   void AllocStore(StoreInfo &store) override {
+    Activate();
     if (store.size == 0) return;
     auto buf = store.host.request();
     const uint64_t reserve_mem = 512;
@@ -235,6 +243,7 @@ class DevRunner : public KernelRunner {
   }
 
   void *Alloc(size_t size) override {
+    Activate();
     void *ws = nullptr;
     if (size > 0) {
       ERROR_CHECK(rt::Malloc(&ws, size));
@@ -244,6 +253,7 @@ class DevRunner : public KernelRunner {
   }
 
   void Release(void *mem) override {
+    Activate();
     auto iter = std::find(dev_mem_.begin(), dev_mem_.end(), mem);
     if (iter == dev_mem_.end()) return;
     rt::Free(mem);
@@ -251,6 +261,7 @@ class DevRunner : public KernelRunner {
   }
 
   int Run(Kernel &kernel, void *workspace, bool sync) override {
+    Activate();
     if (kernel.GetImpl()->IsSplit()) {
       kernel.Launch(stream_);
     } else {
@@ -260,6 +271,7 @@ class DevRunner : public KernelRunner {
   }
 
   void Reset() override {
+    Activate();
     for (auto mem : dev_mem_) {
       (void)rt::Free(mem);
     }
@@ -360,51 +372,23 @@ class DasRunner : public KernelRunner {
 
 class RunnerManager {
  public:
-  ~RunnerManager() {
-    delete dev_;
-    delete dry_;
-    delete das_;
-  }
-
   static RunnerManager &Instance() {
     static RunnerManager mng;
     return mng;
   }
 
-  void ResetDevRuner() {
-    delete dev_;
-    dev_ = nullptr;
-  }
-
-  KernelRunner *Get(const std::string type, int dev_id) {
+  std::unique_ptr<KernelRunner> Get(const std::string type, int dev_id) {
     if (type == "dev") {
-      if (dev_) {
-        if (dev_->dev_id_ == dev_id) {
-          return dev_;
-        }
-        delete dev_;
-      }
-      dev_ = new DevRunner(dev_id);
-      return dev_;
+      return std::make_unique<DevRunner>(dev_id);
     } else if (type == "dry") {
-      if (!dry_) {
-        dry_ = new DryRunner(dev_id);
-      }
-      return dry_;
+      return std::make_unique<DryRunner>(dev_id);
     } else if (type == "das") {
-      if (!das_) {
-        das_ = new DasRunner();
-      }
-      return das_;
+      return std::make_unique<DasRunner>();
     }
     ASSERT(0);
     return nullptr;
   }
 
- private:
-  DevRunner *dev_;
-  DryRunner *dry_;
-  DasRunner *das_;
 };
 
 RtKernelPy::RtKernelPy(const std::string &ker_type, const std::string &run_type, int dev_id) {
@@ -419,9 +403,6 @@ RtKernelPy::~RtKernelPy() {
     delete profile_mgr_;
   }
   runner_->Reset();
-#ifdef VK_SIM_MODEL
-  RunnerManager::Instance().ResetDevRuner();
-#endif
   for (auto *ref : shape_) {
     delete ref;
   }
@@ -613,6 +594,7 @@ void RtKernelPy::Tile(int start, int end, int64_t num, int64_t factor) {
 }
 
 void RtKernelPy::CodeGen(py::object pass_names) {
+  runner_->Activate();
   class _PassOptimizer : public pass::PassOptimizer {
    public:
     _PassOptimizer(py::list pass_list) : names_(pass_list.cast<std::vector<std::string>>()) {
@@ -659,7 +641,7 @@ void RtKernelPy::CodeGen(py::object pass_names) {
       PrepareStore(info);
       relocs.emplace_back(info.op, info.dev);
     }
-    kernel_.CodeGen(relocs.data(), relocs.size(), runner_);
+    kernel_.CodeGen(relocs.data(), relocs.size(), runner_.get());
     return;
   }
   uint64_t workspace_size;
@@ -701,7 +683,7 @@ void RtKernelPy::Run() {
 }
 
 void RtKernelPy::DryRun(int core_idx, bool cube_core) {
-  static_cast<DryRunner *>(runner_)->DryRun(kernel_, workspace_, core_idx, cube_core);
+  static_cast<DryRunner *>(runner_.get())->DryRun(kernel_, workspace_, core_idx, cube_core);
 }
 
 void RtKernelPy::RegCustom(const std::string &nspace, const std::string &so_path, const std::string &bin_path) {
@@ -804,6 +786,7 @@ py::object RtKernelPy::Msprof(const std::string &path, int64_t test_num, const s
 }
 
 void RtKernelPy::MsprofStart(const std::string &path, const std::string &metric) {
+  runner_->Activate();
   EXCEPTION_IF(profile_mgr_ != nullptr, "msprof has already started");
   profile_mgr_ = new ProfileMgr(path, metric);
   profile_mgr_->ProfStart();
@@ -854,6 +837,7 @@ void RtKernelPy::ReleaseIO() {
 }
 
 py::object RtKernelPy::Output(py::object store) {
+  runner_->Activate();
   auto op = PyToObj(store);
   auto &info = FindVectorInfo(stores_, op);
   if (info.size > 0) {

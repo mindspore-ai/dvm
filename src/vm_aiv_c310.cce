@@ -1588,14 +1588,21 @@ __aicore_inline__ void SLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
       src += cidx * op.type_size;
       copy_gm_to_ubuf_align_v2(dst, src, 0, 1, op.type_size, 0, 0, false, 0, 0, 0);
     } else {
-      src += (cidx * shard.stride_n + shard_offset % shard.stride_n) * op.type_size;
-      copy_gm_to_ubuf_align_v2(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, false, 0, 0,
-                               0);  // TODO: tail overflow
+      uint64_t begin_n = begin_tmp % shard.slice_n;
+      uint64_t valid_n = shard.last_n ? shard.tail_n : shard.slice_n;
+      if (begin_n < valid_n) {
+        uint64_t count = min(op.tile_stride, valid_n - begin_n);
+        src += (cidx * shard.stride_n + shard_offset % shard.stride_n + begin_n) * op.type_size;
+        copy_gm_to_ubuf_align_v2(dst, src, 0, 1, count * op.type_size, 0, 0, false, 0, 0, 0);
+      }
     }
   } else if (op.broadcast_n) {
-    src += (shard_offset / shard.stride_n + begin_tmp) * op.type_size;
-    copy_gm_to_ubuf_align_v2(dst, src, 0, 1, op.tile_stride * op.type_size, 0, 0, false, 0, 0,
-                             0);  // TODO: tail overflow
+    uint64_t valid_m = shard.last_m ? shard.tail_m : shard.slice_m;
+    if (begin_tmp < valid_m) {
+      uint64_t count = min(op.tile_stride, valid_m - begin_tmp);
+      src += (shard_offset / shard.stride_n + begin_tmp) * op.type_size;
+      copy_gm_to_ubuf_align_v2(dst, src, 0, 1, count * op.type_size, 0, 0, false, 0, 0, 0);
+    }
   } else {
     uint64_t slice_m = shard.slice_m;
     uint64_t slice_n = shard.slice_n;

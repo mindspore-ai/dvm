@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -46,7 +47,7 @@ namespace dvm::pass {
 
 constexpr int kSameShapeMode = 2;
 
-constexpr char kVfCodegenVersion[] = "c310-vf-v16";
+constexpr char kVfCodegenVersion[] = "c310-vf-v21";
 
 using NodeSet = std::unordered_set<NDObject *>;
 
@@ -541,7 +542,21 @@ const char *CompareScalarIntrinsic(int op) { return FindIntrinsic(kCompareScalar
 
 bool IsScalarDivision(int op) { return op == kDivs || op == ksDiv; }
 
+bool HasFp32Division(const VfPartition &partition) {
+  return std::any_of(partition.nodes.begin(), partition.nodes.end(), [](NDObject *node) {
+    return node->type_id_ == kFloat32 &&
+           ((node->GetObjectType() == kBinary && static_cast<BinaryOp *>(node)->GetOpType() == kDiv) ||
+            (node->GetObjectType() == kBinaryS && IsScalarDivision(static_cast<BinaryScalarOp *>(node)->GetOpType())));
+  });
+}
+
 std::string FloatLiteral(float value) {
+  if (std::isnan(value)) {
+    return "__builtin_nanf(\"\")";
+  }
+  if (std::isinf(value)) {
+    return value < 0 ? "-__builtin_inff()" : "__builtin_inff()";
+  }
   std::ostringstream stream;
   stream << std::showpoint << std::setprecision(std::numeric_limits<float>::max_digits10) << value << 'f';
   return stream.str();
@@ -905,6 +920,12 @@ void VfCceInstructionEmitter::EmitUnary(const VfInstruction &instruction) const 
 }
 
 void VfCceInstructionEmitter::EmitBinary(const VfInstruction &instruction) const {
+  const auto *binary = static_cast<BinaryOp *>(instruction.node);
+  if (binary->GetOpType() == kDiv && instruction.node->type_id_ == kFloat32) {
+    source_ << "      DvmDivHighPrecision(" << Value(instruction.node) << ", " << Value(instruction.inputs[0]) << ", "
+            << Value(instruction.inputs[1]) << ", " << program_.mask_name << ");\n";
+    return;
+  }
   source_ << "      " << BinaryIntrinsic(static_cast<BinaryOp *>(instruction.node)->GetOpType()) << '('
           << Value(instruction.node) << ", " << Value(instruction.inputs[0]) << ", " << Value(instruction.inputs[1])
           << ", " << program_.mask_name << ", MODE_ZEROING);\n";
@@ -914,6 +935,16 @@ void VfCceInstructionEmitter::EmitBinaryScalar(size_t index, const VfInstruction
   const auto *binary = static_cast<BinaryScalarOp *>(instruction.node);
   const int op_type = binary->GetOpType();
   if (IsScalarDivision(op_type)) {
+    if (instruction.node->type_id_ == kFloat32) {
+      source_ << "      DvmDivHighPrecision(" << Value(instruction.node) << ", ";
+      if (op_type == ksDiv) {
+        source_ << "vscalar" << index << ", " << Value(instruction.inputs[0]);
+      } else {
+        source_ << Value(instruction.inputs[0]) << ", vscalar" << index;
+      }
+      source_ << ", " << program_.mask_name << ");\n";
+      return;
+    }
     source_ << "      vdiv(" << Value(instruction.node) << ", ";
     if (op_type == ksDiv) {
       source_ << "vscalar" << index << ", " << Value(instruction.inputs[0]);
@@ -1014,14 +1045,37 @@ void VfCceSourceEmitter::BuildProgramState() {
   }
 }
 
-void VfCceSourceEmitter::EmitPreamble() {
-  source_ << "#define __aicore_inline__ static[aicore] __attribute__((always_inline))\n";
-  source_ << "#include <stdint.h>\n#include <type_traits>\n\n";
+std::string BuildVfPreamble(const std::string &registration_namespace, bool has_division) {
+  std::ostringstream source;
+  source << "#define __aicore_inline__ static[aicore] __attribute__((always_inline))\n";
+  source << "#include <stdint.h>\n#include <type_traits>\n\n";
+  if (has_division) {
+    source << R"(
+#include "reg_compute/kernel_reg_compute_vec_binary_intf.h"
+static constexpr AscendC::Reg::DivSpecificMode kDvmDivHighPrecisionMode = {
+    AscendC::Reg::MaskMergeMode::ZEROING, true, AscendC::DivAlgo::PRECISION_0ULP_FTZ_TRUE};
+__aicore_inline__ void DvmDivHighPrecision(vector_f32 &dst, vector_f32 &src0, vector_f32 &src1, vector_bool &mask) {
+  AscendC::Reg::RegTensor<float> dstReg;
+  AscendC::Reg::RegTensor<float> src0Reg;
+  AscendC::Reg::RegTensor<float> src1Reg;
+  src0Reg.reg[0] = src0;
+  src1Reg.reg[0] = src1;
+  AscendC::Reg::Div<float, &kDvmDivHighPrecisionMode, AscendC::Reg::RegTensor<float>>(
+      dstReg, src0Reg, src1Reg, mask);
+  dst = dstReg.reg[0];
+}
+)";
+  }
   // CCEC's standalone JIT preamble does not provide vm_aiv.h's helper.
-  source_ << "#ifndef BlockNum\n#define BlockNum(x) (CCE_VL / sizeof(x))\n#endif\n\n";
-  source_ << "template <ROUND R> __aicore_inline__ auto VfRound() { return std::integral_constant<ROUND, R>(); }\n\n";
-  source_ << "extern \"C\" __global__ [aicore] void dvm_custom_" << registration_namespace_
-          << "(uint64_t) { pipe_barrier(PIPE_ALL); }\n\n";
+  source << "#ifndef BlockNum\n#define BlockNum(x) (CCE_VL / sizeof(x))\n#endif\n\n";
+  source << "template <ROUND R> __aicore_inline__ auto VfRound() { return std::integral_constant<ROUND, R>(); }\n\n";
+  source << "extern \"C\" __global__ [aicore] void dvm_custom_" << registration_namespace
+         << "(uint64_t) { pipe_barrier(PIPE_ALL); }\n\n";
+  return source.str();
+}
+
+void VfCceSourceEmitter::EmitPreamble() {
+  source_ << BuildVfPreamble(registration_namespace_, HasFp32Division(program_.partition));
 }
 
 void VfCceSourceEmitter::EmitEntryPoint() {
@@ -1141,12 +1195,12 @@ void VfCceSourceEmitter::EmitStores() {
 }
 
 std::string BuildVfBundleCceSource(const std::vector<VfCompileUnit> &units, const std::string &bundle_namespace) {
-  std::string source;
-  bool emit_preamble = true;
+  const bool has_division =
+    std::any_of(units.begin(), units.end(), [](const VfCompileUnit &unit) { return HasFp32Division(*unit.partition); });
+  std::string source = BuildVfPreamble(bundle_namespace, has_division);
   for (const auto &unit : units) {
     const VfProgram program(*unit.partition, unit.nspace);
-    source += VfCceSourceEmitter(program, bundle_namespace).Emit(emit_preamble);
-    emit_preamble = false;
+    source += VfCceSourceEmitter(program, bundle_namespace).Emit(false);
   }
   return source;
 }
@@ -1161,39 +1215,48 @@ VfFusionCompiler::FunctionMap ResolveFunctions(const std::vector<VfCompileUnit> 
   return functions;
 }
 
-void CompileVfSource(const std::string &source_path, const std::string &binary_path) {
-  RunCommand(
-    {
-      "ccec",
-      "-c",
-      "-O2",
-      "--std=c++17",
-      "-Wno-int-to-pointer-cast",
-      "--cce-aicore-only",
-      "--cce-auto-sync=off",
-      "--cce-simd-vf-fusion=true",
-      "-mllvm",
-      "-cce-aicore-stack-size=0x8000",
-      "-mllvm",
-      "-cce-aicore-function-stack-size=0x8000",
-      "-mllvm",
-      "-cce-aicore-addr-transform",
-      "-mllvm",
-      "-cce-aicore-or-combine=false",
-      "-mllvm",
-      "-instcombine-code-sinking=false",
-      "-mllvm",
-      "-cce-aicore-jump-expand=true",
-      "-mllvm",
-      "-cce-aicore-mask-opt=false",
-      "-mllvm",
-      "-cce-aicore-dcci-insert-for-scalar=false",
-      "--cce-aicore-arch=dav-c310-vec",
-      source_path,
-      "-o",
-      binary_path,
-    },
-    "device VF JIT compile failed");
+void CompileVfSource(const std::string &source_path, const std::string &binary_path, bool has_division) {
+  std::vector<std::string> command = {
+    "ccec",
+    "-c",
+    "-O2",
+    "--std=c++17",
+    "-Wno-int-to-pointer-cast",
+    "--cce-aicore-only",
+    "--cce-auto-sync=off",
+    "--cce-simd-vf-fusion=true",
+    "-mllvm",
+    "-cce-aicore-stack-size=0x8000",
+    "-mllvm",
+    "-cce-aicore-function-stack-size=0x8000",
+    "-mllvm",
+    "-cce-aicore-addr-transform",
+    "-mllvm",
+    "-cce-aicore-or-combine=false",
+    "-mllvm",
+    "-instcombine-code-sinking=false",
+    "-mllvm",
+    "-cce-aicore-jump-expand=true",
+    "-mllvm",
+    "-cce-aicore-mask-opt=false",
+    "-mllvm",
+    "-cce-aicore-dcci-insert-for-scalar=false",
+    "--cce-aicore-arch=dav-c310-vec",
+    source_path,
+    "-o",
+    binary_path,
+  };
+  if (has_division) {
+    const char *ascend_home = std::getenv("ASCEND_HOME_PATH");
+    if (ascend_home == nullptr) {
+      DvmException("ASCEND_HOME_PATH must be set for high-precision C310 division");
+    }
+    const std::string home(ascend_home);
+    const auto source_arg = std::find(command.begin(), command.end(), source_path);
+    command.insert(source_arg, {"-I" + home + "/asc", "-I" + home + "/asc/include",
+                                "-I" + home + "/asc/include/basic_api", "-I" + home + "/asc/impl/basic_api"});
+  }
+  RunCommand(command, "device VF JIT compile failed");
 }
 
 VfFusionCompiler::FunctionMap VfFusionCompiler::CompileAndRegister(const std::vector<VfPartition> &partitions) {
@@ -1228,7 +1291,9 @@ VfFusionCompiler::FunctionMap VfFusionCompiler::CompileAndRegister(const std::ve
   if (!WriteFile(cce_path, source)) {
     DvmException("cannot write VF JIT source files");
   }
-  CompileVfSource(cce_path, bin_path);
+  const bool has_division = std::any_of(partitions.begin(), partitions.end(),
+                                        [](const VfPartition &partition) { return HasFp32Division(partition); });
+  CompileVfSource(cce_path, bin_path, has_division);
   g_system.RegCustom(registration_namespace, bin_path);
   cache.insert(cache_key);
   return ResolveFunctions(units, registration_namespace);

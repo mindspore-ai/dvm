@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cmath>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
@@ -46,7 +47,7 @@ namespace dvm::pass {
 
 constexpr int kSameShapeMode = 2;
 
-constexpr char kVfCodegenVersion[] = "c310-vf-v16";
+constexpr char kVfCodegenVersion[] = "c310-vf-v17";
 
 using NodeSet = std::unordered_set<NDObject *>;
 
@@ -542,6 +543,12 @@ const char *CompareScalarIntrinsic(int op) { return FindIntrinsic(kCompareScalar
 bool IsScalarDivision(int op) { return op == kDivs || op == ksDiv; }
 
 std::string FloatLiteral(float value) {
+  if (std::isinf(value)) {
+    return std::signbit(value) ? "(-__builtin_inff())" : "__builtin_inff()";
+  }
+  if (std::isnan(value)) {
+    return "__builtin_nanf(\"\")";
+  }
   std::ostringstream stream;
   stream << std::showpoint << std::setprecision(std::numeric_limits<float>::max_digits10) << value << 'f';
   return stream.str();

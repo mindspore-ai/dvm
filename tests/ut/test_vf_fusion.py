@@ -52,6 +52,30 @@ def run_codegen_in_child(request):
     return True
 
 
+@arg_mark(plat_marks=["platform_ascend910b"], level_mark="level0", card_mark="onecard", essential_mark="essential")
+@pytest.mark.skipif(
+    dvm.Device.arch() != "AscendC310",
+    reason="VF Fusion only supports C310",
+)
+@pytest.mark.parametrize("scalar", [float("-inf"), float("inf"), float("nan")])
+def test_nonfinite_compare_scalar_codegen(request, scalar):
+    if run_codegen_in_child(request):
+        return
+    dvm.Kernel.set_vf_fusion(1)
+    t = Tester()
+    t.set_passes("VfFusion")
+    input_np = np.ones((16, 16), dtype=np.float32)
+    x = t.load(input_np)
+    y = t.load(input_np)
+    z = t.load(input_np)
+    value = t.add(x, t.add(y, z))
+    t.store(t.cast(t.equal(value, scalar), "float16"))
+
+    t.codegen()
+
+    assert t.dump().count("Custom") == 1
+
+
 def make_f32_multi_output_graph(t, shape=(1024, 1024)):
     x_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)
     y_np = np.random.normal(-1.0, 1.0, shape).astype(np.float32)

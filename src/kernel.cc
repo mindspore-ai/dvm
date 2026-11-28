@@ -1981,7 +1981,7 @@ class SplitVector : public VectorKernel {
     BuildDomain();
     ASSERT(sch_gen_ == nullptr);
     if (sch_gen_ = BuildViewSch(this, objects_); sch_gen_ != nullptr) {
-      return sch_gen_->CodeGen();
+      if (auto ret = sch_gen_->CodeGen(); ret != -1) return ret;
     }
     return DoCodeGen(g_system.CoreNum());
   }
@@ -2355,9 +2355,6 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       const_cast<NDSpaceData *>(ndd)->UpdateStride(lead_align_);
       for (auto op : post_reduces_) {
         if (ReduceTileInfer(op, ndd, tile_size_limit)) {
-          for (auto red : post_reduces_) {
-            static_cast<ReduceOp *>(red)->SetCum();
-          }
           return true;
         }
       }
@@ -2367,8 +2364,6 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
   for (auto red : post_reduces_) {
     static_cast<ReduceOp *>(red)->UnsetCum();
   }
-  int64_t live_peak = 0;
-  int64_t tile_size_limit = 0;
   if constexpr (dyn_shape) {
     Clear();
     if (static_ops_.empty()) {
@@ -2376,15 +2371,9 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
       Optimize<true>(build_ops_, adopt_ops_);
       BrokerInit();
       StaticInit(build_ops_);
+      SchInit(build_ops_);
     }
     if (!Normalize(false) || !BrokerAffine()) {
-      return FallCodeGen();
-    }
-    BuildDomain();
-    PrepareTiling();
-    live_peak = Analyze();
-    tile_size_limit = TileSizeLimit(live_peak);
-    if (reduce_fall_check(tile_size_limit)) {
       return FallCodeGen();
     }
   } else {
@@ -2394,15 +2383,23 @@ uint64_t SpecVector<dyn_shape>::CodeGen() {
     }
     Optimize<false>(objects_, build_ops_);
     StaticInit(objects_);
-    BuildDomain();
-    PrepareTiling();
-    live_peak = Analyze();
-    tile_size_limit = TileSizeLimit(live_peak);
-    if (reduce_fall_check(tile_size_limit)) {
-      return FallCodeGen();
-    }
+    SchInit(objects_);
   }
+  BuildDomain();
+  PrepareTiling();
+  auto live_peak = Analyze();
+  auto tile_size_limit = TileSizeLimit(live_peak);
+  bool reduce_split = reduce_fall_check(tile_size_limit);
   use_fall_ = false;
+  if (sch_gen_ && tile_size_) {
+    if (auto ret = sch_gen_->SpecCodeGen(reduce_split, live_peak); ret != -1) return ret;
+  }
+  if (reduce_split) {
+    for (auto red : post_reduces_) {
+      static_cast<ReduceOp *>(red)->SetCum();
+    }
+    return FallCodeGen();
+  }
   if (unlikely(!tile_size_)) {
     ProcessIdle();
     return 0;
@@ -2614,47 +2611,52 @@ uint64_t SpecVecBase::CodeGen() {
   return TileGen(live_peak_, core_limit);
 }
 
-bool SpecVecBase::SpecBuild() {
+int64_t SpecVecBase::SpecCodeGen() {
   if (fall_opt_ & FALL_CUSTOM_SPLIT) {
     fall_opt_ &= ~FALL_CUSTOM_SPLIT;
     if (CustomSpec()) {
       SplitBuild();
-      return false;
+      return -1;
     }
   }
   if (fall_opt_ & FALL_RESHAPE) {
     fall_opt_ &= ~FALL_RESHAPE;
     if (ReshapeSpec()) {
       SplitBuild();
-      return false;
+      return -1;
     }
   }
   if (fall_opt_ & FALL_PERMUTE) {
     fall_opt_ &= ~FALL_PERMUTE;
     if (PermuteSpec()) {
       SplitBuild();
-      return false;
+      return -1;
     }
   }
   // TODO: Optimize
   BuildDomain();
   PrepareTiling();
   tile_limit_ = -1;
+  bool reduce_split = false;
   if (fall_opt_ & FALL_REDUCE) {
     fall_opt_ &= ~FALL_REDUCE;
-    if (ReduceSpec()) {
-      SplitBuild();
-      return false;
-    }
+    reduce_split = ReduceSpec();
   }
-  if (fall_opt_ & FALL_BROADCAST) {
+  if (!reduce_split && (fall_opt_ & FALL_BROADCAST)) {
     fall_opt_ &= ~FALL_BROADCAST;
     if (BroadcastSpec()) {
       SplitBuild();
-      return false;
+      return -1;
     }
   }
-  return true;
+  if (sch_gen_) {
+    if (auto ret = sch_gen_->SpecCodeGen(reduce_split, tile_limit_ < 0 ? -1 : live_peak_); ret != -1) return ret;
+  }
+  if (reduce_split) {
+    SplitBuild();
+    return -1;
+  }
+  return SpecVecBase::CodeGen();
 }
 
 void SpecVecBase::SplitPlan(size_t cut_begin) {
@@ -3074,6 +3076,7 @@ void SpecVecBase::SplitBuild() {
         stage->Reset();
       } else {
         stage = new SpecVecStage(flags_, ctx_);
+        stage->spec_k_.sch_gen_ = BuildSpecStageSch(&stage->spec_k_);
         ctx_.stage_pool_.push_back(stage);
       }
       stage->spec_k_.Reset();
@@ -3171,7 +3174,8 @@ void SpecVecBase::SplitBuild() {
   auto stage_end = ctx_.stage_size_;
   for (size_t i = stage_begin; i < stage_end; ++i) {
     auto s = ctx_.stage_pool_[i];
-    if (s->spec_k_.SpecBuild()) {
+    if (auto ws = s->spec_k_.SpecCodeGen(); ws != -1) {
+      s->ws_size = s->kernel->code_.ReserveWorkspace(ws);
       ctx_.stage_k_->AppendStage(s);
     }
   }
@@ -3260,8 +3264,10 @@ void SpecVecKernel::SpecInit() {
   for (size_t i = 0; i < load_num_; ++i) {
     if (static_ops_[i]->CheckFlag(OBJ_FLAG_LOAD_BIND)) {
       fall_opt_init_ |= FALL_CUSTOM_SPLIT;
+      return;  // CustomSpec always splits a graph with bound loads.
     }
   }
+  SchInit(build_ops_);
 }
 
 uint64_t SpecVecKernel::CodeGen() {
@@ -3275,10 +3281,8 @@ uint64_t SpecVecKernel::CodeGen() {
     op->Normalize(objects_);
     objects_.push_back(op);
   }
-  if (SpecBuild()) {
-    return SpecVecBase::CodeGen();
-  }
-  auto ws = context_.stage_k_->CodeGen();
+  if (auto ws = SpecCodeGen(); ws != -1) return ws;
+  auto ws = context_.stage_k_->LinkStages();
   code_ = std::move(context_.stage_k_->code_);
   return ws;
 }
@@ -3297,8 +3301,7 @@ void SpecVecKernel::Dump(std::ostringstream &oss, const std::string &indent, boo
 }
 
 void SpecVecKernel::Clone(VKernel *base, CloneHelper &helper) {
-  context_.tracker_.Recover();
-  static_cast<SpecVecKernel*>(base)->fall_opt_init_ = fall_opt_init_;
+  static_cast<SpecVecKernel *>(base)->context_.tracker_.Recover();
   VKernelS::Clone(base, helper);
 }
 }  // namespace dvm

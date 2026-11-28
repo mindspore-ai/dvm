@@ -50,6 +50,17 @@ def test_gather_load_take_add(src_shape, index_shape, axis, dtype):
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.skipif(dvm.Device.arch() != "AscendC310", reason="GatherLoad currently only supports C310")
+def test_gather_load_reduce():
+    t = Tester('vector', use_pass_opt=True)
+    data = np.random.default_rng(17).integers(-4, 5, (16, 128, 256), dtype=np.int8).astype(np.float32)
+    indices = np.array([15, 0, 8, 3, 8, 1, 6, 13], dtype=np.int32)
+    gathered = t.gather_load(data, t.global_access(indices), axis=0, gather_mode=1)
+    t.store_expect(t.sum(gathered, [0], True), data[indices].sum(axis=0, keepdims=True), 0)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.skipif(dvm.Device.arch() != "AscendC310", reason="GatherLoad currently only supports C310")
 @pytest.mark.parametrize("dtype", [np.float16, np.float32, np.int32])
 @pytest.mark.parametrize("src_shape, gather_size, axis", [
     ((256, 512), 129, 0),

@@ -241,6 +241,7 @@ class StagesKernel : public VKernel {
 
   void Append(NDObject *obj) override;
   uint64_t CodeGen() override;
+  uint64_t LinkStages();
   void Dump(std::ostringstream &oss, const std::string &indent, bool rgraph) override;
   void Clone(VKernel *base, CloneHelper &helper) override;
 

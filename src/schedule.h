@@ -57,6 +57,8 @@ class SchGenHelper : public VectorSchedule {
   SchGenHelper(VectorKernel *kernel) : VectorSchedule(kernel) {}
   ~SchGenHelper() override;
   virtual int64_t CodeGen();
+  // Only a schedule that completes the reduction can override a post-reduction split.
+  virtual int64_t SpecCodeGen(bool reduce_split, int64_t live_peak) { return reduce_split ? -1 : CodeGen(); }
   RelocAddr *ReserveReloc(size_t size) {
     if (size > reloc_size_) {
       delete []reloc_array_;
@@ -82,7 +84,7 @@ class SchGenHelper : public VectorSchedule {
 
 class FractalSchGen : public SchGenHelper {
  public:
-  FractalSchGen(VectorKernel *kernel);
+  using SchGenHelper::SchGenHelper;
   int64_t CodeGen() override;
 };
 
@@ -167,5 +169,6 @@ class GeneralViewSchGen : public SchGenHelper {
 };
 
 SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects);
+SchGenHelper *BuildSpecStageSch(VectorKernel *kernel);
 }  // namespace dvm
 #endif  // _DVM_SCHEDULE_H_

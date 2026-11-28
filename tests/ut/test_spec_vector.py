@@ -422,6 +422,51 @@ def test_spec_slice(is_split):
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_spec_slice_concat_reduce():
+    t = Tester("vector:spec,dyn,priv1", use_pass_opt=True)
+    other = np.ones((4, 8, 64), dtype=np.float32)
+    x = t.load([-1, 17, 64], "float32")
+    sliced = t.slice(t.add(x, 0.25), [0, 1, 0], [4, 8, 64])
+    joined = t.concat([sliced, t.load(other)], 1)
+    out = t.store(t.sum(joined, [0], True))
+    for depth in (4, 6, 4):
+        data = np.arange(depth * 17 * 64, dtype=np.float32).reshape(depth, 17, 64) + depth
+        t.input(x, data)
+        t.run()
+        expected = np.concatenate([data[:4, 1:9, :] + 0.25, other], axis=1)
+        np.testing.assert_array_equal(t.output(out), expected.sum(axis=0, keepdims=True))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('view', ['concat', 'split'])
+def test_spec_reshape_view_reduce(view):
+    t = Tester("vector:spec,dyn,priv1", use_pass_opt=True)
+    x = t.load([-1, -1], "float32")
+    y = t.load([-1, -1], "float32")
+    extra = np.ones((5, 5, 40), dtype=np.float32)
+    reshaped = t.reshape(t.add(x, y), [5, 10, 40])
+    if view == 'concat':
+        value = t.concat([reshaped, t.load(extra)], 1)
+    else:
+        first, value = t.split(reshaped, 1, 5, 2)
+        first_out = t.store(t.add(first, t.load(extra)))
+    out = t.store(t.sum(value, [0], True))
+    for width in (1, 200, 1):
+        a = np.arange(10 * width, dtype=np.float32).reshape(10, width)
+        b = np.arange(200, dtype=np.float32)[None, :] if width == 1 else np.ones_like(a)
+        t.input(x, a)
+        t.input(y, b)
+        t.run()
+        expected = (a + b).reshape(5, 10, 40)
+        if view == 'concat':
+            expected = np.concatenate([expected, extra], axis=1)
+        else:
+            first_ref, expected = np.split(expected, 2, axis=1)
+            np.testing.assert_array_equal(t.output(first_out), first_ref + extra)
+        np.testing.assert_array_equal(t.output(out), expected.sum(axis=0, keepdims=True))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
 @pytest.mark.parametrize('is_split, end', [[True, 700], [True, -2], [False, 100000]])
 def test_spec_slice_dim(is_split, end):
     t = Tester("vector:spec,priv1")

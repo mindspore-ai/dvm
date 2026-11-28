@@ -16,6 +16,7 @@
 import copy
 import pytest
 import numpy as np
+from dvm import Device
 from dvm.tester import Tester
 from tests.mark_utils import arg_mark
 
@@ -199,6 +200,76 @@ def test_atomic_determ(in_shape, dims, tile_depth):
     t.set_deterministic(False)
     assert (np.allclose(output, res, rtol=1e-4, atol=1e-4, equal_nan=True))
     assert (np.allclose(output, expect, rtol=1e-8, atol=1e-8, equal_nan=True))
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reduce_reorder_determ():
+    t = Tester('vector', use_pass_opt=True)
+    a = np.random.default_rng(17).uniform(-0.5, 0.5, (4, 512, 4, 256)).astype(np.float32)
+    ref = a.sum(axis=(0, 2), keepdims=True, dtype=np.float64) * 0.5
+    t.set_deterministic(True)
+    try:
+        y = t.sum(t.load(a), (0, 2), True)
+        out = t.store_expect(t.mul(y, 0.5), ref, 1e-4)
+        assert t.run_check()
+        first = t.output(out).tobytes()
+        t.run()
+        assert t.output(out).tobytes() == first
+    finally:
+        t.set_deterministic(False)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector:dyn', 'vector:spec,dyn', 'vector:spec,dyn,priv1'])
+def test_reduce_reorder_dynamic(mode):
+    t = Tester(mode, use_pass_opt=True)
+    x, b = [t.load([-1, 64, 128], 'float32') for _ in range(2)]
+    axes = t.int_array()
+    out = t.store(t.sum(t.add(x, b), axes, True))
+    rng = np.random.default_rng(17)
+    for depth, bias_depth, axis in [(16, 16, 0), (16, 1, 0), (256, 256, 0), (16, 16, 2), (16, 16, 0)]:
+        a, bias = [rng.integers(-2, 3, (n, 64, 128), dtype=np.int8).astype(np.float32) for n in (depth, bias_depth)]
+        axes.update([axis])
+        t.input(x, a)
+        t.input(b, bias)
+        t.run()
+        assert t.check(out, (a + bias).sum(axis=axis, keepdims=True), 0)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+@pytest.mark.parametrize('mode', ['vector:spec,dyn', 'vector:spec,dyn,priv1', 'vector:spec,dyn,priv1,opt_fractal'])
+def test_spec_reduce_dynamic_post(mode):
+    t = Tester(mode, use_pass_opt=True)
+    x = t.load([-1, 64, 128], 'float32')
+    y = t.sum(x, (0,), True)
+    t.spec_next()
+    out = t.store(t.add(y, 0.25))
+    rng = np.random.default_rng(17)
+    for depth in (16, 512, 16):
+        a = rng.integers(-2, 3, (depth, 64, 128), dtype=np.int8).astype(np.float32)
+        t.input(x, a)
+        t.run()
+        assert t.check(out, a.sum(axis=0, keepdims=True) + 0.25, 0)
+        if Device.arch() == 'AscendC310' and 'opt_fractal' not in mode:
+            assert ('// stage ' in t.dump()) == (depth == 512)
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reduce_reorder_bool_input():
+    t = Tester('vector', use_pass_opt=True)
+    a = np.arange(128 * 257).reshape(128, 257) % 3 != 0
+    x = t.cast(t.load(a), 'float32')
+    t.store_expect(t.sum(x, (0,), True), a.sum(axis=0, keepdims=True, dtype=np.float32), 0)
+    assert t.run_check()
+
+
+@arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')
+def test_reduce_padded_view_input():
+    t = Tester('vector', use_pass_opt=True)
+    a = np.arange(128 * 257, dtype=np.float32).reshape(128, 257)
+    x = t.view_load([128, 256], [257, 1], a)
+    t.store_expect(t.sum(x, (0,), True), a[:, :-1].sum(axis=0, keepdims=True), 0)
+    assert t.run_check()
 
 
 @arg_mark(plat_marks=['platform_ascend910b'], level_mark='level0', card_mark='onecard', essential_mark='essential')

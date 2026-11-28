@@ -1231,6 +1231,10 @@ uint64_t StagesKernel::CodeGen() {
     auto k = s->kernel;
     s->ws_size = k->code_.ReserveWorkspace(k->CodeGen());
   }
+  return LinkStages();
+}
+
+uint64_t StagesKernel::LinkStages() {
   uint64_t ws_size = AllocWorkspace();
   for (auto s : stages_) {
     auto &code = s->kernel->code_;

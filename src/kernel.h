@@ -438,11 +438,11 @@ class SpecVecContext {
 
   void Reset() {
     stage_size_ = 0;
+    tracker_.RecoverClear();
     for (size_t i = spec_begin_; i < spec_ops_.size(); ++i) {
       delete spec_ops_[i];
     }
     spec_ops_.resize(spec_begin_);
-    tracker_.RecoverClear();
   }
   void ResetSpec() { area_size_ = 0; }
 
@@ -516,7 +516,7 @@ class SpecVecBase : public VKernelS {
   }
 
  protected:
-  bool SpecBuild();
+  int64_t SpecCodeGen();
   bool BroadcastSpec();
   bool ReduceSpec();
   bool ReshapeSpec();

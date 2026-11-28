@@ -15,6 +15,8 @@
  */
 
 #include <algorithm>
+#include <memory>
+#include <utility>
 #include "schedule.h"
 
 namespace dvm {
@@ -171,7 +173,7 @@ SchGenHelper::~SchGenHelper() { delete []reloc_array_; }
 int64_t SchGenHelper::CodeGen() { return -1; }
 
 void SchGenHelper::AllocStride(NDAccess *acc) {
-  if (ext_strides_.empty()) {
+  if (!ext_stride_used_ && ext_strides_.size() < kernel_->static_ops_.size()) {
     ext_strides_.resize(kernel_->static_ops_.size());
   }
   auto &ext = ext_strides_[ext_stride_used_++];
@@ -213,13 +215,10 @@ void SchGenHelper::ResetStrides() {
   ext_stride_used_ = 0;
 }
 
-FractalSchGen::FractalSchGen(VectorKernel *kernel) : SchGenHelper(kernel) {
-  for (auto op : kernel->static_ops_) {
+int64_t FractalSchGen::CodeGen() {
+  for (auto op : kernel_->static_ops_) {
     EXCEPTION_IF(!static_cast<NDAccess *>(op)->IsSupportView(), "unsupport view op");
   }
-}
-
-int64_t FractalSchGen::CodeGen() {
   constexpr int64_t min_dim_limit = 6;
   int h_idx = -1;
   int64_t item_size = 0;
@@ -774,9 +773,10 @@ int64_t ConcatSchGen::CodeGen() {
       op->flags_ |= OBJ_FLAG_DEAD;
     }
     std::swap(static_ops, entry.ios);
-    kernel_->load_num_ = entry.load_num;
+    std::swap(kernel_->load_num_, entry.load_num);
     cat_offset += cat_size;
     helper.DoAppend(cat_size);
+    std::swap(kernel_->load_num_, entry.load_num);
     std::swap(static_ops, entry.ios);
   }
   concat_->PartialRecover(ctx);
@@ -920,9 +920,10 @@ int64_t SplitSchGen::CodeGen() {
       op->flags_ |= OBJ_FLAG_DEAD;
     }
     std::swap(static_ops, entry.ios);
-    kernel_->load_num_ = entry.load_num;
+    std::swap(kernel_->load_num_, entry.load_num);
     split_offset += split_size;
     helper.DoAppend(split_size);
+    std::swap(kernel_->load_num_, entry.load_num);
     std::swap(static_ops, entry.ios);
   }
   helper.Submit();
@@ -1372,21 +1373,144 @@ int64_t GeneralViewSchGen::CodeGen() {
   return 0;
 }
 
-SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects) {
+namespace {
+struct ReducePlan {
+  const NDObject *reduce{nullptr};
+  int split_dim{-1};
+  int64_t split_factor{1};
+  std::vector<std::pair<int, int>> moves;
+};
+
+int64_t SelectSplitFactor(int64_t size, int64_t limit) {
+  int64_t factor = 1;
+  for (int64_t divisor = 1; divisor <= limit && divisor <= size / divisor; ++divisor) {
+    if (size % divisor) continue;
+    if (size / divisor <= limit) return size / divisor;
+    factor = divisor;
+  }
+  return factor;
+}
+
+const NDObject *CheckReduceSch(const VectorKernel *kernel) {
+  if (g_system.Arch() != AiCoreArch::kAiCore_C310 || !kernel->tile_size_ || (kernel->Flags() & K_FLAG_SIMT)) {
+    return nullptr;
+  }
+  const NDObject *reduce = nullptr;
+  for (auto *op : kernel->objects_) {
+    if (op->obj_id_ == kOneHot || op->obj_id_ == kPermute || op->IsViewOp()) return nullptr;
+    if (!op->IsSimd() && static_cast<const NDAccess *>(op)->stride_) return nullptr;
+    if (op->obj_id_ == kReduce) reduce = op;
+  }
+  return reduce;
+}
+
+ReducePlan PlanReduction(VectorKernel *kernel, bool check_post, int64_t live_peak = -1) {
+  auto reduce = CheckReduceSch(kernel);
+  if (!reduce) return {};
+  const auto &domain = kernel->DimSpace();
+  const auto &output = reduce->nd_.dims();
+  bool has_post = false;
+  for (auto op : kernel->objects_) {
+    if (check_post && !has_post && op->IsSimd()) {
+      op->ForInput([&has_post](NDObject *in) { has_post |= in->obj_id_ == kReduce; });
+    }
+    if (op->obj_id_ == kReduce && (!(op->lhs_->nd_.dims() == domain) || !(op->nd_.dims() == output))) return {};
+  }
+  int64_t input_size = domain.prod();
+  int64_t output_tiles = output.prod();
+  if (input_size <= output_tiles) return {};
+  int64_t reduce_size = input_size / output_tiles;
+
+  int64_t item_size = ITEM_SIZE[kernel->MaxType()];
+  if (live_peak < 0) live_peak = kernel->Analyze();
+  int64_t live_buffers = live_peak + kernel->static_ops_.size();
+  auto view_code = kernel->static_ops_.size() * (domain.size() + 2) * sizeof(uint64_t);
+  int64_t code_reserve = RoundUp(kernel->ReserveCodeSize() + view_code, 512ul);
+  int64_t tile_limit = (static_cast<int64_t>(kernel->local_mem_size_) - code_reserve) / (live_buffers * item_size);
+  int64_t simd_align = SIMD_REPEAT_SIZE / item_size;
+  if (tile_limit < simd_align) return {};
+  int64_t core_num = g_system.CoreNum();
+  auto capacity = std::min(tile_limit / reduce_size, output_tiles / core_num);
+  capacity = std::max(simd_align, RoundDown(capacity, simd_align));
+
+  int next_axis = 0;
+  int64_t span = 1;
+  auto append_axis = [&](int64_t size) {
+    span *= next_axis == 0 ? RoundUp(size, simd_align) : size;
+    ++next_axis;
+  };
+  // Keep a contiguous output fragment inside all reduction axes.
+  ReducePlan plan;
+  plan.reduce = reduce;
+  int rank = static_cast<int>(domain.size());
+  while (next_axis < rank && domain[next_axis] == output[next_axis]) {
+    auto size = domain[next_axis];
+    auto limit = capacity / span;
+    if (size > limit) {
+      size = SelectSplitFactor(size, limit);
+      if (size == 1) break;
+      if (domain.size() == DimArray::kMaxDimSize) return {};
+      plan.split_dim = next_axis;
+      plan.split_factor = size;
+    }
+    output_tiles /= size;
+    append_axis(size);
+    if (plan.split_dim >= 0) break;
+  }
+  for (int axis = next_axis; axis < rank; ++axis) {
+    if (domain[axis] == output[axis]) continue;
+    int from = plan.split_dim < 0 ? axis : axis + 1;
+    if (from != next_axis) plan.moves.emplace_back(from, next_axis);
+    append_axis(domain[axis]);
+  }
+  if (has_post && (span > tile_limit || output_tiles < core_num)) return {};
+  return plan;
+}
+
+class ReduceSchGen : public SchGenHelper {
+ public:
+  using SchGenHelper::SchGenHelper;
+  int64_t CodeGen() override {
+    kernel_->PrepareTiling();
+    return Emit(PlanReduction(kernel_, false));
+  }
+
+  int64_t SpecCodeGen(bool, int64_t live_peak) override { return Emit(PlanReduction(kernel_, true, live_peak)); }
+
+ private:
+  int64_t Emit(const ReducePlan &plan) {
+    if (plan.moves.empty()) return -1;
+    SpaceInit();
+    for (auto op : kernel_->static_ops_) AllocStride(static_cast<NDAccess *>(op));
+    if (plan.split_dim >= 0) {
+      auto size = kernel_->DimSpace()[plan.split_dim];
+      SpaceSplit(plan.split_dim, size / plan.split_factor, plan.split_factor);
+    }
+    for (auto [from, to] : plan.moves) {
+      for (int i = from; i > to; --i) SpaceTrans(i - 1, i);
+    }
+    for (auto op : kernel_->objects_) {
+      if (!op->IsSimd() && op->nd_.dims() == plan.reduce->nd_.dims()) {
+        static_cast<NDAccess *>(op)->stride_ = nullptr;
+      }
+      op->Clear(op->index_);
+    }
+    auto ws_size = kernel_->DoCodeGen(g_system.CoreNum());
+    ResetStrides();
+    return ws_size;
+  }
+};
+
+SchGenHelper *BuildSpecializedView(VectorKernel *kernel, const std::vector<NDObject *> &objects) {
   NDObject *view = nullptr;
   for (auto op : objects) {
     if (op->obj_id_ == kSliceOp || op->obj_id_ == kConcat ||
         (op->obj_id_ == kSplitOp && static_cast<SplitOp *>(op)->slice_idx_ == 0)) {
-      if (view == nullptr) {
-        view = op;
-      } else {
-        return new GeneralViewSchGen(kernel, objects);
-      }
+      if (view) return new GeneralViewSchGen(kernel, objects);
+      view = op;
     }
   }
-  if (view == nullptr) {
-    return nullptr;
-  }
+  if (!view) return nullptr;
   if (view->obj_id_ == kConcat) {
     return new ConcatSchGen(kernel, static_cast<ConcatOp *>(view), objects);
   } else if (view->obj_id_ == kSplitOp) {
@@ -1395,5 +1519,36 @@ SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &
     ASSERT(view->obj_id_ == kSliceOp);
     return new SliceSchGen(kernel, view, objects);
   }
+}
+
+// SplitBuild reuses pool slots but creates new load/store nodes for each split graph.
+class SpecStageSchGen : public ReduceSchGen {
+ public:
+  using ReduceSchGen::ReduceSchGen;
+
+  int64_t SpecCodeGen(bool reduce_split, int64_t live_peak) override {
+    if (auto ret = ReduceSchGen::SpecCodeGen(reduce_split, live_peak); ret != -1 || reduce_split) return ret;
+    view_.reset(BuildSpecializedView(kernel_, kernel_->objects_));
+    return view_ ? view_->CodeGen() : -1;
+  }
+
+ private:
+  // The emitted code uses the view's address relocations until launch.
+  std::unique_ptr<SchGenHelper> view_;
+};
+}  // namespace
+
+SchGenHelper *BuildViewSch(VectorKernel *kernel, const std::vector<NDObject *> &objects) {
+  if (auto view = BuildSpecializedView(kernel, objects)) return view;
+  if (g_system.Arch() == AiCoreArch::kAiCore_C310 &&
+      std::any_of(objects.begin(), objects.end(), [](NDObject *op) { return op->obj_id_ == kReduce; })) {
+    return new ReduceSchGen(kernel);
+  }
+  return nullptr;
+}
+
+SchGenHelper *BuildSpecStageSch(VectorKernel *kernel) {
+  if (kernel->Flags() & KernelFlag::kOptFractalTrans) return new FractalSchGen(kernel);
+  return new SpecStageSchGen(kernel);
 }
 }  // namespace dvm

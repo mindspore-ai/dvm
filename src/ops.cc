@@ -1080,7 +1080,8 @@ uint64_t NDLoad::EmitView(VectorKernel &k) {
     addr_.Update(insn_ + vViewLoadT::RELOC_OFFSET);
     return vViewLoadT::Encode(insn_, V_LOAD_VIEW_TRANS, op);
   } else {
-    EXCEPTION_IF(item_size != 2 && item_size != 4, "view load x only support itemsize 2\4");
+    bool byte_load = type_id_ == kBool && g_system.Arch() == AiCoreArch::kAiCore_C310;
+    EXCEPTION_IF(item_size != 2 && item_size != 4 && !byte_load, "unsupported ViewLoadX element size");
     vViewLoadX op;
     op.xd = xbuf_;
     op.from = addr_.data;

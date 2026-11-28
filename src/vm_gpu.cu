@@ -24,6 +24,7 @@
 #define _VM_KERNEL_ 1
 #include "isa.h"
 #include "vm_gpu.h"
+#include "gpu_pointwise.cuh"
 
 namespace dvm::gpu {
 namespace {
@@ -154,6 +155,10 @@ __device__ __forceinline__ float BF16ToF32(uint16_t v) {
 
 __device__ __forceinline__ uint16_t F32ToBF16(float v) {
   uint32_t u = __float_as_uint(v);
+  // Rounding a NaN payload as an integer can carry into the sign bit or truncate it to infinity.
+  if ((u & 0x7fffffffu) > 0x7f800000u) {
+    return 0x7fc0u;
+  }
   uint32_t lsb = (u >> 16) & 1u;
   u += 0x7fffu + lsb;
   return static_cast<uint16_t>(u >> 16);
@@ -270,6 +275,9 @@ struct LogOp {
 struct ExpOp {
   __device__ __forceinline__ float operator()(float a) const { return expf(a); }
 };
+struct TanhOp {
+  __device__ __forceinline__ float operator()(float a) const { return tanhf(a); }
+};
 struct RoundOp {
   __device__ __forceinline__ float operator()(float a) const { return nearbyintf(a); }
 };
@@ -345,6 +353,27 @@ __device__ __forceinline__ bool CompareValue(T a, T b, int type) {
       return a <= b;
     default:
       return false;
+  }
+}
+
+__device__ __forceinline__ void FmaOp(VmCtx &ctx, const vFma &op) {
+  float *dst = UBPtr<float>(ctx, NarrowU32(op.xd));
+  const float *lhs = UBCPtr<float>(ctx, NarrowU32(op.xn));
+  const float *rhs = UBCPtr<float>(ctx, NarrowU32(op.xm));
+  const auto count = NarrowU32(op.count);
+  const auto fma = [negate = op.negate_product](float a, float b, float c) {
+    return __fmaf_rn(negate ? -a : a, b, c);
+  };
+  if (op.mode == vFma::kTensors) {
+    const float *addend = UBCPtr<float>(ctx, op.operand);
+    ParallelFor(count, [&](uint32_t i) { dst[i] = fma(lhs[i], rhs[i], addend[i]); });
+  } else {
+    const float scalar = __uint_as_float(op.operand);
+    if (op.mode == vFma::kScalarAddend) {
+      ParallelFor(count, [&](uint32_t i) { dst[i] = fma(lhs[i], rhs[i], scalar); });
+    } else {
+      ParallelFor(count, [&](uint32_t i) { dst[i] = fma(lhs[i], scalar, rhs[i]); });
+    }
   }
 }
 
@@ -936,6 +965,15 @@ __device__ __forceinline__ void StoreAtomicOp(VmCtx &ctx, uint64_t *pc, uint64_t
     float value = reinterpret_cast<const float *>(src + row * src_row)[col];
     atomicAdd(reinterpret_cast<float *>(dst + row * iter_size) + col, value);
   });
+}
+
+// Keep the packed arithmetic temporaries out of the general interpreter's live register set.
+__device__ __noinline__ void PointwiseOp(const uint64_t *pc, uint64_t head, uint32_t tile_idx) {
+  const auto table_offset = (head >> V_HEAD_EXT_OFFSET) & V_HEAD_EXT_MASK;
+  const auto &program = *reinterpret_cast<const PointwiseProgram *>(pc + table_offset);
+  for (uint32_t lane = threadIdx.x; lane < kPointwiseThreads; lane += blockDim.x) {
+    RunPointwise(program, tile_idx * kPointwiseThreads + lane);
+  }
 }
 
 __device__ __forceinline__ void RunOp(VmCtx &ctx, uint64_t *pc, uint64_t head, uint32_t tile_idx, bool is_begin,
@@ -1541,6 +1579,21 @@ __device__ __forceinline__ void RunOp(VmCtx &ctx, uint64_t *pc, uint64_t head, u
     case F_ATOMICCUM:
       AtomicCumOp(ctx, pc, head, tile_idx, is_begin);
       break;
+    case F_POINTWISE:
+      PointwiseOp(pc, head, tile_idx);
+      break;
+    case F_FMA: {
+      vFma op;
+      vFma::Decode(pc, head, op);
+      FmaOp(ctx, op);
+      break;
+    }
+    case F_TANH: {
+      vUnary op;
+      vUnary::Decode(pc, head, op);
+      UnaryOp<F32Tag>(ctx, NarrowU32(op.xd), NarrowU32(op.xn), NarrowU32(op.count), TanhOp{});
+      break;
+    }
     default:
       TrapUnsupported(id, head, pc);
       break;
@@ -1548,6 +1601,11 @@ __device__ __forceinline__ void RunOp(VmCtx &ctx, uint64_t *pc, uint64_t head, u
 }
 
 }  // namespace
+
+__global__ void dvm_vm_gpu_packed_code(__grid_constant__ const VmParam param) {
+  const auto &program = *reinterpret_cast<const PointwiseProgram *>(param.code + PointwiseCode::kProgram);
+  RunPointwise(program, blockIdx.x * kPointwiseThreads + threadIdx.x);
+}
 
 __global__ void dvm_vm_gpu(__grid_constant__ const VmParam param) {
   extern __shared__ uint8_t smem[];
@@ -1635,8 +1693,12 @@ static GpuSystem g_gpu;
 
 int LaunchVM(const VmParam &param, uint32_t block_dim, uint32_t threads, uint32_t shared_bytes, void *stream) {
   cudaStream_t cuda_stream = reinterpret_cast<cudaStream_t>(stream);
-  dvm_vm_gpu<<<block_dim, threads, shared_bytes, cuda_stream>>>(param);
-  return 0;
+  if (PointwiseCode::Matches(param, threads, shared_bytes)) {
+    dvm_vm_gpu_packed_code<<<block_dim, threads, 0, cuda_stream>>>(param);
+  } else {
+    dvm_vm_gpu<<<block_dim, threads, shared_bytes, cuda_stream>>>(param);
+  }
+  return static_cast<int>(cudaPeekAtLastError());
 }
 
 uint64_t SelectBlockThread(uint64_t op_num, uint64_t tile_num, uint64_t tile_size, uint32_t shared_bytes) {

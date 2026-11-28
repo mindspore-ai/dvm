@@ -73,6 +73,8 @@ enum ObjectType {
   kExtOut,
   kCubeOp,
   kGmmOp,
+  kFmaScalarOp,
+  kFmaTensorOp,
   kObjectBulk
 };
 
@@ -1031,6 +1033,27 @@ class AxpyOp : public BinaryOp {
  private:
   static constexpr int kOpType = kBinaryTypeEnd;
   scode_t alpha_;
+};
+
+class FmaOp : public FlexOp {
+ public:
+  FmaOp(NDObject *lhs, NDObject *rhs, NDObject *addend, scode_t scalar, vFma::Mode mode, ProductSign sign);
+  // In a*b+c, a null b or c denotes the encoded FP32 immediate.
+  NDObject *Factor() const { return mode_ == vFma::kScalarFactor ? nullptr : rhs_; }
+  NDObject *Addend() const { return mode_ == vFma::kScalarFactor ? rhs_ : (xhs_ ? xhs_->data[0] : nullptr); }
+  scode_t GetScalar() const { return scalar_; }
+  bool NegateProduct() const { return sign_ == ProductSign::kNegative; }
+  static void CheckShapes(const NDObject *lhs, const NDObject *rhs, const NDObject *addend);
+  void Normalize(std::vector<NDObject *> &run_ops) override;
+  uint64_t Emit(VectorKernel &k) override;
+  NDObject *Clone(CloneHelper &h) override;
+  void Dump(bool verbose, std::ostringstream &oss) override;
+
+ private:
+  XhsN<1> addend_;
+  scode_t scalar_;
+  vFma::Mode mode_;
+  ProductSign sign_;
 };
 
 class PowerOp : public FlexOp {

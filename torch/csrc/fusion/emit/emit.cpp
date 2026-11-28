@@ -1,0 +1,783 @@
+/**
+ * Copyright 2026 Huawei Technologies Co., Ltd
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ * http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+#include "fusion/emit/emit.h"
+
+#include <ATen/ExpandUtils.h>
+#include <ATen/Context.h>
+#include <ATen/MemoryOverlap.h>
+#include <ATen/WrapDimUtilsMulti.h>
+
+#include <cmath>
+#include <limits>
+#include <utility>
+
+#include "adapter/adapter.h"
+
+namespace dvm_torch {
+namespace {
+
+bool SupportedDtype(at::ScalarType t) {
+  switch (t) {
+    case at::kFloat:
+    case at::kHalf:
+    case at::kBFloat16:
+    case at::kInt:
+    case at::kLong:
+      return true;
+    default:
+      return false;
+  }
+}
+
+at::Tensor AllocateLike(const std::vector<int64_t> &shape, at::ScalarType dtype,
+                        const at::Tensor &device_from) {
+  auto opts = at::TensorOptions().dtype(dtype).device(device_from.device());
+  // Allocation dispatches through aten like any other op. Flushing here would
+  // free the graph nodes the caller is still holding.
+  GraphManager::NoFlushScope no_flush;
+  return GetAdapter().Allocate(at::IntArrayRef(shape), opts);
+}
+
+std::optional<std::vector<int64_t>> TryBroadcastShape(const at::Tensor &a, const at::Tensor &b) {
+  try {
+    return at::infer_size(a.sizes(), b.sizes());
+  } catch (const c10::Error &) {
+    return std::nullopt;
+  }
+}
+
+dvm::NDObject *DivideByScalar(dvm::Kernel &kernel, dvm::NDObject *input,
+                              float divisor, at::ScalarType dtype) {
+  // A power of two has an exact reciprocal. Require the divisor and reciprocal
+  // to be normal, and limit the rewrite to FP32 to avoid constant narrowing.
+  if (dtype == at::kFloat && std::isnormal(divisor)) {
+    int exponent;
+    if (std::abs(std::frexp(divisor, &exponent)) == 0.5f) {
+      const float reciprocal = 1.0f / divisor;
+      if (std::isnormal(reciprocal)) {
+        return kernel.Binary<dvm::kMul>(input, reciprocal);
+      }
+    }
+  }
+  return kernel.Binary<dvm::kDiv>(input, divisor);
+}
+
+/**
+ * A Python scalar keeps the tensor dtype for floating tensors, so `fp16 * 2.0`
+ * stays fp16. Integers are excluded: the VM materialises the constant as a
+ * float, and torch promotes `int32 / 2` to float even for integral values, so
+ * mixing an integer tensor with a scalar cannot be fused without lying about
+ * the result.
+ */
+bool ScalarTypeIsFusable(const at::Tensor &t) { return IsFloatDtype(t); }
+
+bool IsAddSub(dvm::BinaryType op) { return op == dvm::kAdd || op == dvm::kSub; }
+
+double UnitAlphaFactor(dvm::BinaryType op) { return op == dvm::kAdd ? 1.0 : -1.0; }
+
+bool EligibleBinary(dvm::BinaryType op, const at::Tensor &t) {
+  return Eligible(t) && (!IsAddSub(op) || (t.numel() != 0 && !t.is_neg() && !t.is_conj()));
+}
+
+float FloatOperand(const at::Scalar &value) {
+  // TensorIterator converts floating CPU operands to the CUDA opmath dtype, including overflow to infinity.
+  return value.isFloatingPoint() ? static_cast<float>(value.toDouble()) : value.toFloat();
+}
+
+std::optional<double> BinaryAlpha(dvm::BinaryType op, const at::Tensor &input,
+                                  const at::Scalar &alpha) {
+  if (!IsAddSub(op)) {
+    return 1.0;
+  }
+  // Let the captured native kernel report invalid alpha types and overflow.
+  const bool integral = input.scalar_type() == at::kInt;
+  if (alpha.isBoolean() || alpha.isComplex() || (integral && !alpha.isIntegral(false))) {
+    return std::nullopt;
+  }
+  const double value = alpha.toDouble();
+  if (value == 1.0) {
+    return UnitAlphaFactor(op);
+  }
+  // ATen implements sub with -alpha in the original Scalar type. Negating after
+  // the FP32 conversion would give integer zero the wrong sign.
+  const auto factor = op == dvm::kSub ? -alpha : alpha;
+  if (integral) {
+    const double signed_value = factor.toDouble();
+    if (signed_value < std::numeric_limits<int32_t>::min() || signed_value > std::numeric_limits<int32_t>::max()) {
+      return std::nullopt;
+    }
+    return signed_value;
+  }
+  if (std::isfinite(value) && std::abs(value) > std::numeric_limits<float>::max()) {
+    return std::nullopt;
+  }
+  const float scale = factor.toFloat();
+  // The eager graph launches on the current device's stream.
+  if (scale != UnitAlphaFactor(op) &&
+      input.get_device() != at::globalContext().getAcceleratorHooksInterface(at::kCUDA).getCurrentDevice()) {
+    return std::nullopt;
+  }
+  return scale;
+}
+
+dvm::NDObject *FmaOperand(GraphKernel &graph, dvm::NDObject *input, const std::vector<int64_t> &shape) {
+  auto *value = graph.GetKernel().Cast(input, dvm::kFloat32);
+  const auto *dims = dvm::Kernel::GetShape(value);
+  if (at::IntArrayRef(dims->data, dims->size) != at::IntArrayRef(shape)) {
+    value = graph.Broadcast(value, shape);
+  }
+  return value;
+}
+
+dvm::NDObject *ScaledAddSub(GraphKernel &graph, dvm::BinaryType op, dvm::NDObject *left, dvm::NDObject *right,
+                            double factor, dvm::DType dtype, const std::vector<int64_t> &shape) {
+  auto &kernel = graph.GetKernel();
+  if (factor == UnitAlphaFactor(op)) {
+    auto *result = op == dvm::kAdd ? kernel.Binary<dvm::kAdd>(left, right) : kernel.Binary<dvm::kSub>(left, right);
+    return kernel.Cast(result, dtype);
+  }
+  if (dtype == dvm::kInt32) {
+    right = kernel.Binary<dvm::kMul>(right, static_cast<int32_t>(factor));
+    return kernel.Binary<dvm::kAdd>(left, right);
+  }
+  left = FmaOperand(graph, left, shape);
+  right = FmaOperand(graph, right, shape);
+  auto *result = kernel.Fma(right, static_cast<float>(factor), left);
+  return kernel.Cast(result, dtype);
+}
+
+dvm::NDObject *ScaledAddSubScalar(dvm::Kernel &kernel, dvm::BinaryType op,
+                                  dvm::NDObject *left, float right, double factor) {
+  const auto dtype = dvm::Kernel::GetDType(left);
+  left = kernel.Cast(left, dvm::kFloat32);
+  if (factor == UnitAlphaFactor(op)) {
+    auto *result = op == dvm::kAdd ? kernel.Binary<dvm::kAdd>(left, right) : kernel.Binary<dvm::kSub>(left, right);
+    return kernel.Cast(result, dtype);
+  }
+  // Keep the two scalar factors separate until FMA rounds the full expression.
+  auto *operand = kernel.Broadcast(right, dvm::Kernel::GetShape(left), dvm::kFloat32);
+  auto *result = kernel.Fma(operand, static_cast<float>(factor), left);
+  return kernel.Cast(result, dtype);
+}
+
+bool EligibleBool(const at::Tensor &t) {
+  return t.defined() && t.is_cuda() && t.is_contiguous() && t.dim() <= 10 &&
+         t.scalar_type() == at::kBool && t.numel() != 0;
+}
+
+bool EligibleComparison(const at::Tensor &t) {
+  return EligibleBool(t) || (Eligible(t) && IsFloatDtype(t) && t.numel() != 0);
+}
+
+}  // namespace
+
+bool IsWrappedScalar(const at::Tensor &t) {
+  // Python scalars arrive as 0-dim CPU tensors ("wrapped numbers").
+  return t.defined() && t.dim() == 0 && t.device().is_cpu();
+}
+
+bool Eligible(const at::Tensor &t) {
+  if (!t.defined()) {
+    return false;
+  }
+  if (!t.is_cuda() || !t.is_contiguous()) {
+    return false;
+  }
+  // dvm::DimArray and ShapeWithRef store at most ten dimensions.
+  if (t.dim() > 10) {
+    return false;
+  }
+  if (t.scalar_type() == at::kLong) {
+    // GPU VM has no int64 arithmetic path; only loads/stores are defined.
+    return false;
+  }
+  return SupportedDtype(t.scalar_type());
+}
+
+bool IsFloatDtype(const at::Tensor &t) {
+  switch (t.scalar_type()) {
+    case at::kFloat:
+    case at::kHalf:
+    case at::kBFloat16:
+      return true;
+    default:
+      return false;
+  }
+}
+
+bool IsIntegerDtype(const at::Tensor &t) { return t.scalar_type() == at::kInt; }
+
+EmitResult EmitBinary(EmitCtx &ctx, dvm::BinaryType op, const at::Tensor &a,
+                      const at::Tensor &b, const at::Scalar &alpha) {
+  if (!EligibleBinary(op, a) || !EligibleBinary(op, b) || a.device() != b.device()) {
+    return std::nullopt;
+  }
+  if (a.scalar_type() != b.scalar_type()) {
+    // DVM arithmetic does not promote; let ATen do the promotion.
+    return std::nullopt;
+  }
+  if (op == dvm::kDiv && IsIntegerDtype(a)) {
+    // ATen true division on integers produces float32; the VM would truncate.
+    return std::nullopt;
+  }
+  auto out_shape = TryBroadcastShape(a, b);
+  if (!out_shape) {
+    return std::nullopt;
+  }
+  auto scale = BinaryAlpha(op, a, alpha);
+  if (!scale) {
+    return std::nullopt;
+  }
+
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *lb = ctx.k->Read(b);
+  dvm::NDObject *res = [&]() -> dvm::NDObject * {
+    switch (op) {
+      case dvm::kAdd:
+      case dvm::kSub:
+        return ScaledAddSub(*ctx.k, op, la, lb, *scale, ToDvmDtype(a.scalar_type()), *out_shape);
+      case dvm::kMul: return ctx.k->GetKernel().Binary<dvm::kMul>(la, lb);
+      case dvm::kDiv: return ctx.k->GetKernel().Binary<dvm::kDiv>(la, lb);
+      case dvm::kMaximum: return ctx.k->GetKernel().Binary<dvm::kMaximum>(la, lb);
+      case dvm::kMinimum: return ctx.k->GetKernel().Binary<dvm::kMinimum>(la, lb);
+      case dvm::kPow: return ctx.k->GetKernel().Binary<dvm::kPow>(la, lb);
+      default: return nullptr;
+    }
+  }();
+  if (res == nullptr) {
+    return std::nullopt;
+  }
+
+  if ((op == dvm::kMaximum || op == dvm::kMinimum) && IsFloatDtype(a)) {
+    // The VM comparison selects b when a is NaN. ATen propagates either NaN.
+    auto &kernel = ctx.k->GetKernel();
+    auto nan = kernel.Binary<dvm::kNotEqual>(la, la);
+    res = kernel.Select(nan, la, res);
+  }
+
+  at::Tensor out = AllocateLike(*out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitBinaryScalar(EmitCtx &ctx, dvm::BinaryType op, const at::Tensor &a,
+                            const at::Scalar &b, const at::Scalar &alpha) {
+  if (!EligibleBinary(op, a) || !ScalarTypeIsFusable(a) || b.isComplex() || (op == dvm::kSub && b.isBoolean())) {
+    return std::nullopt;
+  }
+  auto scale = BinaryAlpha(op, a, alpha);
+  if (!scale) {
+    return std::nullopt;
+  }
+  const float constant = FloatOperand(b);
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *res = [&]() -> dvm::NDObject * {
+    switch (op) {
+      case dvm::kAdd:
+      case dvm::kSub: return ScaledAddSubScalar(ctx.k->GetKernel(), op, la, constant, *scale);
+      case dvm::kMul: return ctx.k->GetKernel().Binary<dvm::kMul>(la, constant);
+      case dvm::kDiv: return DivideByScalar(ctx.k->GetKernel(), la, constant, a.scalar_type());
+      case dvm::kMaximum: return ctx.k->GetKernel().Binary<dvm::kMaximum>(la, constant);
+      case dvm::kMinimum: return ctx.k->GetKernel().Binary<dvm::kMinimum>(la, constant);
+      case dvm::kPow: return ctx.k->GetKernel().Binary<dvm::kPow>(la, constant);
+      default: return nullptr;
+    }
+  }();
+  if (res == nullptr) {
+    return std::nullopt;
+  }
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitExpandedDiv(EmitCtx &ctx, const at::Tensor &input, const at::Scalar &divisor) {
+  if (!input.defined() || !input.is_cuda() || input.scalar_type() != at::kFloat ||
+      input.dim() == 0 || input.dim() > 10 || input.numel() == 0 ||
+      input.size(-1) <= 1 || input.stride(-1) != 0 || divisor.isComplex()) {
+    return std::nullopt;
+  }
+  const float constant = static_cast<float>(divisor.to<double>());
+  if (!std::isfinite(constant) || constant == 0.0f) {
+    return std::nullopt;
+  }
+
+  auto shape = input.sizes().vec();
+  auto strides = input.strides().vec();
+  shape.back() = 1;
+  strides.back() = 1;
+  int64_t expected_stride = 1;
+  for (int64_t dim = input.dim() - 1; dim >= 0; --dim) {
+    if (shape[dim] != 1 && strides[dim] != expected_stride) {
+      return std::nullopt;
+    }
+    expected_stride *= shape[dim];
+  }
+
+  at::Tensor compact;
+  {
+    // This view only describes the contiguous storage read by the graph.
+    GraphManager::NoFlushScope metadata_scope;
+    compact = input.as_strided(shape, strides, input.storage_offset());
+  }
+  // A zero-stride view can have the same shape/offset as a pending dense value.
+  // Never replace that entry with a compact Load of its uncomputed storage.
+  if (ctx.k->HasStorage(compact) && !ctx.k->IsExactPending(compact)) {
+    return std::nullopt;
+  }
+  auto *value = ctx.k->Read(compact);
+  auto *result = DivideByScalar(ctx.k->GetKernel(), value, constant, at::kFloat);
+  result = ctx.k->Broadcast(result, input.sizes().vec());
+  at::Tensor out = AllocateLike(input.sizes().vec(), at::kFloat, input);
+  ctx.k->Write(out, result);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitDropoutBackward(EmitCtx &ctx, const at::Tensor &grad, const at::Tensor &mask,
+                               double scale) {
+  const float constant = static_cast<float>(scale);
+  if (!Eligible(grad) || grad.scalar_type() != at::kFloat || grad.numel() == 0 ||
+      !EligibleBool(mask) || grad.sizes() != mask.sizes() || grad.device() != mask.device() ||
+      !std::isfinite(constant)) {
+    return std::nullopt;
+  }
+  auto &kernel = ctx.k->GetKernel();
+  auto *g = ctx.k->Read(grad);
+  auto *m = kernel.Cast(ctx.k->Read(mask), dvm::kFloat32);
+  // Multiplication preserves NaN/Inf behavior even where the mask is false.
+  auto *masked = kernel.Binary<dvm::kMul>(g, m);
+  auto *result = kernel.Binary<dvm::kMul>(masked, constant);
+  at::Tensor out = AllocateLike(grad.sizes().vec(), at::kFloat, grad);
+  ctx.k->Write(out, result);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitTanhBackward(EmitCtx &ctx, const at::Tensor &grad, const at::Tensor &output) {
+  if (!Eligible(grad) || !Eligible(output) || grad.scalar_type() != at::kFloat || output.scalar_type() != at::kFloat ||
+      grad.numel() == 0 || grad.device() != output.device() || grad.sizes() != output.sizes() ||
+      grad.is_neg() || output.is_neg() || grad.is_conj() || output.is_conj()) {
+    return std::nullopt;
+  }
+  auto &kernel = ctx.k->GetKernel();
+  auto *upstream = ctx.k->Read(grad);
+  auto *saved = ctx.k->Read(output);
+  auto *derivative = kernel.Fma(saved, saved, 1.0f, dvm::ProductSign::kNegative);
+  auto *result = kernel.Binary<dvm::kMul>(upstream, derivative);
+
+  at::Tensor out = AllocateLike(grad.sizes().vec(), at::kFloat, grad);
+  ctx.k->Write(out, result);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitBinaryScalarLhs(EmitCtx &ctx, dvm::BinaryType op, const at::Scalar &a,
+                               const at::Tensor &b, const at::Scalar &alpha) {
+  if (!EligibleBinary(op, b) || !ScalarTypeIsFusable(b) || a.isComplex() || (op == dvm::kSub && a.isBoolean())) {
+    return std::nullopt;
+  }
+  auto scale = BinaryAlpha(op, b, alpha);
+  if (!scale) {
+    return std::nullopt;
+  }
+  const float constant = IsAddSub(op) ? FloatOperand(a) : a.toFloat();
+  const auto out_shape = b.sizes().vec();
+  dvm::NDObject *lb = ctx.k->Read(b);
+  dvm::NDObject *res = [&]() -> dvm::NDObject * {
+    if (op == dvm::kAdd || op == dvm::kSub) {
+      auto &kernel = ctx.k->GetKernel();
+      auto *left = kernel.Broadcast(constant, dvm::Kernel::GetShape(lb), dvm::kFloat32);
+      return ScaledAddSub(*ctx.k, op, left, kernel.Cast(lb, dvm::kFloat32), *scale,
+                          ToDvmDtype(b.scalar_type()), out_shape);
+    }
+    switch (op) {
+      case dvm::kAdd: return ctx.k->GetKernel().Binary<dvm::kAdd>(constant, lb);
+      case dvm::kSub: return ctx.k->GetKernel().Binary<dvm::kSub>(constant, lb);
+      case dvm::kMul: return ctx.k->GetKernel().Binary<dvm::kMul>(constant, lb);
+      case dvm::kDiv: return ctx.k->GetKernel().Binary<dvm::kDiv>(constant, lb);
+      case dvm::kPow: return ctx.k->GetKernel().Binary<dvm::kPow>(constant, lb);
+      default: return nullptr;
+    }
+  }();
+  if (res == nullptr) {
+    return std::nullopt;
+  }
+  at::Tensor out = AllocateLike(out_shape, b.scalar_type(), b);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitEq(EmitCtx &ctx, const at::Tensor &a, const at::Tensor &b) {
+  if (!EligibleComparison(a) || !EligibleComparison(b) || a.device() != b.device() ||
+      a.scalar_type() != b.scalar_type()) {
+    return std::nullopt;
+  }
+  auto shape = TryBroadcastShape(a, b);
+  if (!shape) {
+    return std::nullopt;
+  }
+  auto *left = ctx.k->Read(a);
+  auto *right = ctx.k->Read(b);
+  auto *result = ctx.k->GetKernel().Binary<dvm::kEqual>(left, right);
+  at::Tensor out = AllocateLike(*shape, at::kBool, a);
+  ctx.k->Write(out, result);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitEqScalar(EmitCtx &ctx, const at::Tensor &a, const at::Scalar &b) {
+  if (!EligibleComparison(a) || b.isComplex()) {
+    return std::nullopt;
+  }
+  // Encoding a non-Boolean scalar as bool would change comparisons such as
+  // True == 2. Let ATen handle promotion outside the exact 0/1 cases.
+  if (a.scalar_type() == at::kBool && b.to<double>() != 0.0 && b.to<double>() != 1.0) {
+    return std::nullopt;
+  }
+  // Comparisons narrow floating scalars without the overflow check used by
+  // fill operations; a very large scalar compares as infinity in FP32/FP16.
+  const float value = b.isFloatingPoint() ? static_cast<float>(b.to<double>()) : b.to<float>();
+  auto *input = ctx.k->Read(a);
+  auto *result = ctx.k->GetKernel().Binary<dvm::kEqual>(input, value);
+  if (a.scalar_type() == at::kBool) {
+    ctx.k->RecordBoolPredicate(result, input, value == 0.0f);
+  }
+  at::Tensor out = AllocateLike(std::vector<int64_t>(a.sizes().begin(), a.sizes().end()),
+                                at::kBool, a);
+  ctx.k->Write(out, result);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitMaskedFill(EmitCtx &ctx, const at::Tensor &self, const at::Tensor &mask,
+                          const at::Scalar &value, bool inplace) {
+  if (!Eligible(self) || !IsFloatDtype(self) || self.numel() == 0 || !EligibleBool(mask) ||
+      self.device() != mask.device() || value.isComplex()) {
+    return std::nullopt;
+  }
+  auto shape = TryBroadcastShape(self, mask);
+  if (!shape || (inplace && at::IntArrayRef(*shape) != self.sizes())) {
+    return std::nullopt;
+  }
+  // Preserve ATen's checked narrowing (e.g. finite 1e9 cannot fill an FP16 tensor).
+  const float fill = self.scalar_type() == at::kHalf ? static_cast<float>(value.to<at::Half>()) :
+                     self.scalar_type() == at::kBFloat16 ? static_cast<float>(value.to<at::BFloat16>()) :
+                     value.to<float>();
+  auto &kernel = ctx.k->GetKernel();
+  auto *input = ctx.k->Read(self);
+  const auto condition = ctx.k->ResolveBoolPredicate(ctx.k->Read(mask));
+  auto *constant = kernel.Broadcast(fill, dvm::Kernel::GetShape(input), ToDvmDtype(self.scalar_type()));
+  // Keep the comparison available for saved masks and other consumers. Only
+  // Select bypasses bool == 0/1, using the original condition and its polarity.
+  auto *result = condition.inverted ? kernel.Select(condition.value, input, constant) :
+                                     kernel.Select(condition.value, constant, input);
+  if (inplace) {
+    ctx.k->WriteInplace(self, result);
+    ctx.k->AppendSignature(std::string(ctx.op_name) + "!");
+    return self;
+  }
+  at::Tensor out = AllocateLike(*shape, self.scalar_type(), self);
+  ctx.k->Write(out, result);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitUnary(EmitCtx &ctx, dvm::UnaryType op, const at::Tensor &a) {
+  if (!Eligible(a)) {
+    return std::nullopt;
+  }
+  if (op == dvm::kTanh && (a.scalar_type() != at::kFloat || a.numel() == 0 || a.is_neg() || a.is_conj())) {
+    return std::nullopt;
+  }
+  // Two separate constraints on integers:
+  //  * sqrt/log/exp/reciprocal promote an int input to float in ATen, so fusing
+  //    them would return the wrong dtype.
+  //  * round/floor/ceil/trunc keep int32 in ATen, but the GPU VM has no INT32
+  //    form of those opcodes and traps at runtime. Only kAbs has one.
+  if (!IsFloatDtype(a) && op != dvm::kAbs) {
+    return std::nullopt;
+  }
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *res = [&]() -> dvm::NDObject * {
+    switch (op) {
+      case dvm::kSqrt: return ctx.k->GetKernel().Unary<dvm::kSqrt>(la);
+      case dvm::kAbs: return ctx.k->GetKernel().Unary<dvm::kAbs>(la);
+      case dvm::kLog: return ctx.k->GetKernel().Unary<dvm::kLog>(la);
+      case dvm::kExp: return ctx.k->GetKernel().Unary<dvm::kExp>(la);
+      case dvm::kTanh: return ctx.k->GetKernel().Unary<dvm::kTanh>(la);
+      case dvm::kReciprocal: return ctx.k->GetKernel().Unary<dvm::kReciprocal>(la);
+      case dvm::kRound: return ctx.k->GetKernel().Unary<dvm::kRound>(la);
+      case dvm::kFloor: return ctx.k->GetKernel().Unary<dvm::kFloor>(la);
+      case dvm::kCeil: return ctx.k->GetKernel().Unary<dvm::kCeil>(la);
+      case dvm::kTrunc: return ctx.k->GetKernel().Unary<dvm::kTrunc>(la);
+      default: return nullptr;
+    }
+  }();
+  if (res == nullptr) {
+    return std::nullopt;
+  }
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitNeg(EmitCtx &ctx, const at::Tensor &a) {
+  if (!Eligible(a)) {
+    return std::nullopt;
+  }
+  // Scalar-left subtraction lowers to a multiply followed by an add of zero.
+  // A direct multiply avoids that add and preserves the sign of zero.
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *res = ctx.k->GetKernel().Binary<dvm::kMul>(la, -1.0f);
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitRelu(EmitCtx &ctx, const at::Tensor &a) {
+  if (!Eligible(a)) {
+    return std::nullopt;
+  }
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *res = ctx.k->GetKernel().Binary<dvm::kMaximum>(la, 0.0f);
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitRsqrt(EmitCtx &ctx, const at::Tensor &a) {
+  if (!Eligible(a) || !IsFloatDtype(a)) {
+    return std::nullopt;
+  }
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *sq = ctx.k->GetKernel().Unary<dvm::kSqrt>(la);
+  dvm::NDObject *res = ctx.k->GetKernel().Unary<dvm::kReciprocal>(sq);
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitSigmoid(EmitCtx &ctx, const at::Tensor &a) {
+  if (!Eligible(a) || !IsFloatDtype(a)) {
+    return std::nullopt;
+  }
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *neg = ctx.k->GetKernel().Binary<dvm::kSub>(0.0f, la);
+  dvm::NDObject *e = ctx.k->GetKernel().Unary<dvm::kExp>(neg);
+  dvm::NDObject *den = ctx.k->GetKernel().Binary<dvm::kAdd>(e, 1.0f);
+  dvm::NDObject *res = ctx.k->GetKernel().Unary<dvm::kReciprocal>(den);
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitPowScalar(EmitCtx &ctx, const at::Tensor &a, double exponent) {
+  if (!Eligible(a)) {
+    return std::nullopt;
+  }
+  if (!IsFloatDtype(a) && exponent < 0) {
+    // A negative exponent on an integer base is an error in ATen; let it report.
+    return std::nullopt;
+  }
+  dvm::NDObject *la = ctx.k->Read(a);
+  dvm::NDObject *res = ctx.k->GetKernel().Binary<dvm::kPow>(la, static_cast<float>(exponent));
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, res);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitClamp(EmitCtx &ctx, const at::Tensor &a, const std::optional<c10::Scalar> &min,
+                     const std::optional<c10::Scalar> &max) {
+  if (!Eligible(a)) {
+    return std::nullopt;
+  }
+  if (!min.has_value() && !max.has_value()) {
+    return std::nullopt;
+  }
+  if (a.scalar_type() != at::kFloat) {
+    // Only the float path is verified on the GPU VM.
+    return std::nullopt;
+  }
+  dvm::NDObject *node = ctx.k->Read(a);
+  if (min.has_value()) {
+    node = ctx.k->GetKernel().Binary<dvm::kMaximum>(node, min->to<float>());
+  }
+  if (max.has_value()) {
+    node = ctx.k->GetKernel().Binary<dvm::kMinimum>(node, max->to<float>());
+  }
+  std::vector<int64_t> out_shape(a.sizes().begin(), a.sizes().end());
+  at::Tensor out = AllocateLike(out_shape, a.scalar_type(), a);
+  ctx.k->Write(out, node);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitReduction(EmitCtx &ctx, const at::Tensor &a, at::OptionalIntArrayRef dims,
+                         bool keepdim, std::optional<at::ScalarType> dtype, bool mean) {
+  if (!Eligible(a) || !IsFloatDtype(a) || a.numel() == 0 ||
+      at::globalContext().deterministicAlgorithms()) {
+    return std::nullopt;
+  }
+  const at::ScalarType out_dtype = dtype.value_or(a.scalar_type());
+  if (out_dtype != at::kFloat && out_dtype != at::kHalf && out_dtype != at::kBFloat16) {
+    return std::nullopt;
+  }
+
+  // ATen treats both an omitted dim and an empty dim list as a full reduction.
+  if (dims.has_value() && dims->empty()) {
+    dims = std::nullopt;
+  }
+  std::bitset<at::dim_bitset_size> mask;
+  try {
+    mask = at::dim_list_to_bitset(dims, a.dim());
+  } catch (const c10::Error &) {
+    return std::nullopt;
+  }
+  std::vector<int64_t> axes;
+  std::vector<int64_t> out_shape;
+  int64_t count = 1;
+  for (int64_t dim = 0; dim < a.dim(); ++dim) {
+    if (mask[dim]) {
+      axes.push_back(dim);
+      count *= a.size(dim);
+      if (keepdim) {
+        out_shape.push_back(1);
+      }
+    } else {
+      out_shape.push_back(a.size(dim));
+    }
+  }
+
+  auto &kernel = ctx.k->GetKernel();
+  dvm::NDObject *node = ctx.k->Read(a);
+  // An explicit dtype casts each input before reduction, including narrowing.
+  node = kernel.Cast(node, ToDvmDtype(out_dtype));
+  node = kernel.Cast(node, dvm::kFloat32);
+  if (!axes.empty()) {
+    node = ctx.k->ReduceSum(node, axes, keepdim);
+  }
+  if (mean && count != 1) {
+    node = kernel.Binary<dvm::kDiv>(node, static_cast<float>(count));
+  }
+  node = kernel.Cast(node, ToDvmDtype(out_dtype));
+  at::Tensor out = AllocateLike(out_shape, out_dtype, a);
+  ctx.k->Write(out, node);
+  ctx.k->AppendSignature(ctx.op_name);
+  return out;
+}
+
+EmitResult EmitBinaryInplace(EmitCtx &ctx, dvm::BinaryType op, at::Tensor &self,
+                             const at::Tensor &other, const at::Scalar &alpha) {
+  if (!EligibleBinary(op, self) || !EligibleBinary(op, other) || self.device() != other.device()) {
+    return std::nullopt;
+  }
+  if (self.scalar_type() != other.scalar_type()) {
+    return std::nullopt;
+  }
+  // An in-place result must keep the destination shape: broadcasting self up
+  // would change it.
+  auto shape = TryBroadcastShape(self, other);
+  if (!shape || at::IntArrayRef(*shape) != self.sizes()) {
+    return std::nullopt;
+  }
+  if (IsAddSub(op) && self.is_alias_of(other) && at::get_overlap_status(self, other) == at::MemOverlapStatus::Partial) {
+    return std::nullopt;
+  }
+  auto scale = BinaryAlpha(op, self, alpha);
+  if (!scale) {
+    return std::nullopt;
+  }
+
+  dvm::NDObject *ls = ctx.k->Read(self);
+  dvm::NDObject *lo = ctx.k->Read(other);
+  dvm::NDObject *res = [&]() -> dvm::NDObject * {
+    switch (op) {
+      case dvm::kAdd:
+      case dvm::kSub:
+        return ScaledAddSub(*ctx.k, op, ls, lo, *scale, ToDvmDtype(self.scalar_type()), *shape);
+      case dvm::kMul: return ctx.k->GetKernel().Binary<dvm::kMul>(ls, lo);
+      case dvm::kDiv: return ctx.k->GetKernel().Binary<dvm::kDiv>(ls, lo);
+      case dvm::kMaximum: return ctx.k->GetKernel().Binary<dvm::kMaximum>(ls, lo);
+      case dvm::kMinimum: return ctx.k->GetKernel().Binary<dvm::kMinimum>(ls, lo);
+      default: return nullptr;
+    }
+  }();
+  if (res == nullptr) {
+    return std::nullopt;
+  }
+  ctx.k->WriteInplace(self, res);
+  ctx.k->AppendSignature(std::string(ctx.op_name) + "!");
+  return self;
+}
+
+EmitResult EmitBinaryInplaceScalar(EmitCtx &ctx, dvm::BinaryType op, at::Tensor &self,
+                                   const at::Scalar &other, const at::Scalar &alpha) {
+  if (!EligibleBinary(op, self) || !ScalarTypeIsFusable(self) || other.isComplex() ||
+      (op == dvm::kSub && other.isBoolean())) {
+    return std::nullopt;
+  }
+  auto scale = BinaryAlpha(op, self, alpha);
+  if (!scale) {
+    return std::nullopt;
+  }
+  const float constant = IsAddSub(op) ? FloatOperand(other) : other.toFloat();
+  dvm::NDObject *ls = ctx.k->Read(self);
+  dvm::NDObject *res = [&]() -> dvm::NDObject * {
+    switch (op) {
+      case dvm::kAdd:
+      case dvm::kSub: return ScaledAddSubScalar(ctx.k->GetKernel(), op, ls, constant, *scale);
+      case dvm::kMul: return ctx.k->GetKernel().Binary<dvm::kMul>(ls, constant);
+      case dvm::kDiv: return DivideByScalar(ctx.k->GetKernel(), ls, constant, self.scalar_type());
+      default: return nullptr;
+    }
+  }();
+  if (res == nullptr) {
+    return std::nullopt;
+  }
+  ctx.k->WriteInplace(self, res);
+  ctx.k->AppendSignature(std::string(ctx.op_name) + "!");
+  return self;
+}
+
+EmitResult EmitReluInplace(EmitCtx &ctx, at::Tensor &self) {
+  if (!Eligible(self)) {
+    return std::nullopt;
+  }
+  dvm::NDObject *ls = ctx.k->Read(self);
+  dvm::NDObject *res = ctx.k->GetKernel().Binary<dvm::kMaximum>(ls, 0.0f);
+  ctx.k->WriteInplace(self, res);
+  ctx.k->AppendSignature("relu_");
+  return self;
+}
+
+}  // namespace dvm_torch

@@ -901,17 +901,7 @@ void OnlineCubeTuner::Tuning(TuneData &td, const TuningInfo &parameter) {
   }
 }
 
-LazyCubeTuner::~LazyCubeTuner() {
-  for (auto it = context_.begin(); it != context_.end(); ++it) {
-    delete it->second;
-  }
-  for (auto w = wrap_->next_w_; w != wrap_;) {
-    auto next = w->next_w_;
-    delete w;
-    w = next;
-  }
-  delete wrap_;
-}
+LazyCubeTuner::~LazyCubeTuner() = default;
 
 void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
   constexpr size_t kCacheTableMax = 2000;
@@ -923,10 +913,10 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
   if (it != tuning_table.end()) {
     info = &it->second;
   } else if (tuning_table.size() < kCacheTableMax) {
-    Context *ctx;
+    std::shared_ptr<Context> ctx;
     auto ctx_it = context_.find(key);
     if (ctx_it == context_.end()) {
-      ctx = new Context();
+      ctx = std::make_shared<Context>();
       BuildTileSpace(op, code, ctx->tile_space);
       context_[key] = ctx;
     } else {
@@ -947,7 +937,6 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
         auto it = tuning_table.emplace(key, *ctx->swizzle_space[cur_idx]);
         info = &it.first->second;
         context_.erase(key);
-        delete ctx;
       } else {  // tile_space finished, switch to swizzle_space
         BuildSwizzleSpace(code, ctx->tile_space[cur_idx], ctx->swizzle_space);
         ctx->tuning_stage = kSwizzleTuning;
@@ -965,16 +954,10 @@ void LazyCubeTuner::GenTile(CubeOp *op, vCubeOp *code) {
       ctx->gen_cnt++;
     }
     if (space_idx != (uint32_t)-1) {
-      auto wrap = wrap_->next_w_;
-      if (wrap->ctx_) {
-        wrap = new _TunerWarp();
-        wrap->next_w_ = wrap_->next_w_;
-        wrap_->next_w_ = wrap;
-      }
+      auto wrap = std::make_shared<_TunerWarp>();
       wrap->ctx_ = ctx;
-      wrap_ = wrap;
       ASSERT(cur_code_ != nullptr);
-      cur_code_->InsertWrap(wrap);
+      cur_code_->InsertOwnedWrap(wrap);
     }
   } else {
     op->GenTiling(code);
@@ -1038,7 +1021,7 @@ int LazyCubeTuner::_TunerWarp::LaunchWrap(void *workspace, void *stream) {
   profiler.RecordStart(stream);
   auto err = next_->LaunchWrap(workspace, stream);
   float time = profiler.RecordEnd(stream);
-  auto ctx = const_cast<Context *>(ctx_);
+  auto ctx = ctx_;
   if (!err && (ctx->best_idx < 0 || time < ctx->best_time)) {
     ctx->best_idx = ctx->run_cnt;
     ctx->best_time = time;

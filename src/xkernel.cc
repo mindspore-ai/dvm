@@ -874,6 +874,7 @@ void MixKernel::Dump(std::ostringstream &oss, const std::string &indent, bool rg
 }
 
 uint64_t DynMixKernel::CodeGen() {
+  tuner_ = g_system.dyn_lazy_tuner_;
   if (stage_kernel_) {
     delete stage_kernel_;
     stage_kernel_ = nullptr;

@@ -1524,6 +1524,14 @@ Code &Code::operator=(Code &&other) {
     bind_wss_ = other.bind_wss_;
     bind_ops_ = other.bind_ops_;
     wrap_ = other.wrap_;
+    owned_wraps_ = std::move(other.owned_wraps_);
+    for (auto wrapper = wrap_; wrapper && wrapper != &other; wrapper = wrapper->next_) {
+      if (wrapper->next_ == &other) {
+        wrapper->next_ = this;
+        break;
+      }
+    }
+    other.wrap_ = nullptr;
   }
   return *this;
 }
@@ -1596,6 +1604,7 @@ void Code::CombineBind(const Code &code, uint64_t ws_base) {
 
 void Code::Combine(const Code &code, uint64_t ws_base) {
   CombineBind(code, ws_base);
+  owned_wraps_.insert(owned_wraps_.end(), code.owned_wraps_.begin(), code.owned_wraps_.end());
   if (code.wrap_) {
     code.wrap_->CombineWrap(this, ws_base);
   }

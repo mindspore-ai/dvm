@@ -498,7 +498,7 @@ static constexpr ObjectMeta GenObjectMeta() {
     {kGenLoad, 0, nullptr, nullptr, nullptr},                                                            // LoadDummy
     {kGenComm, 0, nullptr, nullptr, nullptr},                                                            // MultiLoad
     {kGenLoad, F_IP, nullptr, nullptr, nullptr},                                                         // GlobalAccess
-    {kGenLoad, F_IP, nullptr, nullptr, NDObject::TileCollectSimt},                                       // GatherLoad
+    {kGenLoad, F_IP, nullptr, nullptr, NDGatherLoad::TileCollect},                                       // GatherLoad
     {kGenLoad, 0, NDViewLoad::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},                    // ViewLoad
     {kGenLoad, F_IP, nullptr, NDAccess::FoldProp, NDAccess::TileCollect},                                // Load
     {kGenStore, F_NS | F_LD, NDViewStore::DimChanged, NDAccess::FoldProp, NDAccess::TileCollect},        // ViewStore
@@ -1152,6 +1152,30 @@ NDAccess *NDLoad::CloneBind() {
 
 void NDLoad::Dump(bool verbose, std::ostringstream &oss) { oss << "Load"; }
 
+void NDGatherLoad::TileCollect(NDObject *op, TileInfo &info) {
+  if (!info.IsGen()) return;
+  NDObject::TileCollectSimt(op, info);
+  auto gather = static_cast<NDGatherLoad *>(op);
+  constexpr uint32_t max_words = vGatherLoad::ROUND_OFFSET + 2 + 2;
+  info.code_reserve += max_words * sizeof(uint64_t) - V_INSN_SIZE_MAX;
+#ifdef DEBUG
+  // The existing Load wrapper appends one debug word to this instruction.
+  info.code_reserve += sizeof(uint64_t);
+#endif
+  const auto &shape = gather->shape_;
+  if (gather->gather_dim_size_ && std::find(shape.data, shape.data + shape.size, 0) == shape.data + shape.size) {
+    constexpr uint64_t reserve_limit = 64 * 1024;
+    constexpr uint64_t index_reserve = 64;
+    const uint64_t src = gather->gather_dim_size_ * gather->inner_size_ * ITEM_SIZE[op->type_id_];
+    const uint64_t indices = gather->gather_size_ *
+      (gather->gather_mode_ == vGatherLoad::kSliceGather ? 1 : gather->inner_size_);
+    const uint64_t index_bytes = RoundUp(std::min(indices, index_reserve) * sizeof(int32_t), 32ul);
+    info.ext_ws = std::max(info.ext_ws,
+      static_cast<uint32_t>(std::min(RoundUp(src, 32ul) + index_bytes, reserve_limit)));
+    info.event_reserve = std::max(info.event_reserve, 1u);
+  }
+}
+
 void NDGatherLoad::Normalize(std::vector<NDObject *> &run_ops) {
   ASSERT(src_shape_ref_->size >= 1);
   ASSERT(index_ && index_->shape_ref_);
@@ -1187,38 +1211,97 @@ void NDGatherLoad::Normalize(std::vector<NDObject *> &run_ops) {
   NDLoad::Normalize(run_ops);
 }
 
-uint64_t NDGatherLoad::Emit(VectorKernel &k) {
-  ASSERT(k.shard_ == nullptr);
-  uint64_t rounds[2];
-  DimArray round_tile;
-  BuildRoundTile(k, ndd_, (flags_ & OBJ_FLAG_LOAD_SHARD_ROUND) != 0, round_tile);
-  if (!round_tile.empty()) {
-    BuildDimRounds(round_tile, rounds);
-  }
-  const uint64_t lead_align = static_cast<uint64_t>(ndd_.lead_stride());
-  const uint64_t lead_dim = static_cast<uint64_t>(ndd_.lead_dim());
-  int64_t tail_size = k.GetTailSize(&ndd_);
-  vGatherLoad op;
+void NDGatherLoad::Plan(const VectorKernel &k, vGatherLoad &op) {
   op.xn = xbuf_;
-  op.from = reinterpret_cast<uint64_t>(addr_.gm);
-  op.index = reinterpret_cast<uint64_t>(index_->addr_.gm);
   op.inner_size = inner_size_;
   op.gather_size = gather_size_;
   op.gather_dim_size = gather_dim_size_;
   op.gather_mode = gather_mode_;
-  op.body_iter = static_cast<uint64_t>(ndd_.stride_back()) / lead_align;
-  op.iter_size = lead_dim;
-  op.pad_size = lead_align - lead_dim;
+  op.iter_size = ndd_.lead_dim();
+  op.body_iter = ndd_.stride_back() / ndd_.lead_stride();
+  op.pad_size = ndd_.lead_stride() - op.iter_size;
+  op.tail_iter = op.body_iter == 1 ? op.iter_size : op.body_iter;
+  if (const auto tail = k.GetTailSize(&ndd_)) {
+    op.tail_iter = op.body_iter == 1 ? tail : op.body_iter / ndd_[k.GetTailDim()] * tail;
+  }
+  if (!gather_dim_size_ || !inner_size_ || !gather_size_) return;
+  // Prefer the shorter SIMT instruction when the program's upper bound approaches the entry length limit.
+  if (k.ReserveCodeSize() > (1u << V_ENTRY_CODE_SIZE_BITS) * sizeof(uint64_t)) return;
+
+  const uint64_t d = ITEM_SIZE[type_id_];
+  const uint64_t body = op.body_iter * op.iter_size;
+  const uint64_t n = k.tile_num_ == 1 ? (op.body_iter == 1 ? op.tail_iter : op.tail_iter * op.iter_size) : body;
+  const bool slice = gather_mode_ == vGatherLoad::kSliceGather;
+  // Like ViewLoadX, rely on ReorderLoad and borrow the space after static buffers.
+  // C310's upper bound excludes the system and SIMT reservations.
+  const uint64_t ws = RoundUp(GetDynXBufBegin(k, this), 32ul);
+  const uint64_t ws_end = k.local_mem_size_ + k.tile_info_.ext_ws;
+  const uint64_t bytes = ws < ws_end ? ws_end - ws : 0;
+
+  uint64_t block_capacity = 0;
+  uint64_t transfers = 0;
+  if (slice && bytes >= 32) {
+    const uint64_t max_indices = CeilDiv(body + inner_size_ - std::gcd(body, inner_size_), inner_size_);
+    block_capacity = std::min({max_indices, gather_size_, bytes / 32 * 8});
+    transfers = vGatherLoad::BlockTransfers(op, 0, n, d);
+    if (transfers && !op.pad_size && (inner_size_ * d) % 32 == 0 && body * d % 32 == 0) {
+      op.strategy = vGatherLoad::kSimdBlockCopy;
+      op.index_scratch = ws;
+      op.index_capacity = block_capacity;
+      return;
+    }
+  }
+
+  const uint64_t source_bytes = RoundUp(gather_dim_size_ * inner_size_ * d, 32ul);
+  const uint64_t capacity = bytes >= source_bytes + 32 ? (bytes - source_bytes) / 32 * 8 : 0;
+  const uint64_t per_outer = gather_size_ * inner_size_;
+  const uint64_t full = n / per_outer;
+  const uint64_t tail = n % per_outer;
+  const uint64_t full_indices = slice ? gather_size_ : per_outer;
+  const uint64_t tail_indices = slice ? CeilDiv(tail, inner_size_) : tail;
+  auto batches = [&](uint64_t cap) {
+    return full * CeilDiv(full_indices, cap) + CeilDiv(tail_indices, cap);
+  };
+  // 4 bytes per logical index is common to all three scores.
+  uint64_t best = 32 * n;
+  if (capacity) {
+    uint64_t outers = full + (tail != 0);
+    uint64_t cost = outers * (source_bytes + 32) + 32 * batches(capacity);
+    if (cost <= best) {
+      best = cost;
+      op.strategy = vGatherLoad::kSimdGather;
+      op.src_scratch = ws;
+      op.index_scratch = ws + source_bytes;
+      op.index_capacity = capacity;
+    }
+  }
+  if (transfers && n * d + 32 * (transfers + batches(block_capacity)) <= best) {
+    op.strategy = vGatherLoad::kSimdBlockCopy;
+    op.src_scratch = 0;
+    op.index_scratch = ws;
+    op.index_capacity = block_capacity;
+  }
+}
+
+uint64_t NDGatherLoad::Emit(VectorKernel &k) {
+  ASSERT(k.shard_ == nullptr);
+  vGatherLoad op{};
+  Plan(k, op);
+  DimArray round_tile;
+  BuildRoundTile(k, ndd_, (flags_ & OBJ_FLAG_LOAD_SHARD_ROUND) != 0, round_tile);
+  uint64_t rounds[2]{};
+  if (!round_tile.empty()) {
+    BuildDimRounds(round_tile, rounds);
+  }
   op.round_rank = round_tile.size();
-  op.tail_iter =
-    tail_size == 0
-      ? (op.body_iter == 1 ? op.iter_size : op.body_iter)
-      : (op.body_iter == 1 ? static_cast<uint64_t>(tail_size)
-                           : op.body_iter / static_cast<uint64_t>(ndd_[k.GetTailDim()]) * static_cast<uint64_t>(tail_size));
+  op.from = addr_.data;
+  op.index = index_->addr_.data;
   addr_.Update(insn_ + vGatherLoad::RELOC_OFFSET);
-  index_->addr_.Update(insn_ + vGatherLoad::INDEX_RELOC_OFFSET);
-  const auto insn_id = ITEM_SIZE[type_id_] == 2 ? vAccInsnID::V_LOAD_GATHER_B16 : vAccInsnID::V_LOAD_GATHER_B32;
-  return vGatherLoad::Encode(insn_, insn_id, op, rounds);
+  index_->addr_.Update(&index_->addr_.data);
+  index_site_.Update(insn_ + vGatherLoad::INDEX_RELOC_OFFSET);
+  k.code_.BindOpFast(index_site_, index_->addr_);
+  const auto id = ITEM_SIZE[type_id_] == 2 ? vAccInsnID::V_LOAD_GATHER_B16 : vAccInsnID::V_LOAD_GATHER_B32;
+  return vGatherLoad::Encode(insn_, id, op, rounds);
 }
 
 NDObject *NDGatherLoad::Clone(CloneHelper &h) {

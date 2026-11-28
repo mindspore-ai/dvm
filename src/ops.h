@@ -640,10 +640,13 @@ class NDGatherLoad : public NDLoad {
         gather_mode_(gather_mode) {
     obj_id_ = ObjectType::kGatherLoad;
   }
+  static void TileCollect(NDObject *op, TileInfo &info);
   void Normalize(std::vector<NDObject *> &run_ops) override;
   uint64_t Emit(VectorKernel &k) override;
   NDObject *Clone(CloneHelper &h) override;
   void Dump(bool verbose, std::ostringstream &oss) override;
+
+  void Plan(const VectorKernel &k, vGatherLoad &op);
 
   IntArrayRef *src_shape_ref_;
   NDAccess *index_;
@@ -653,6 +656,7 @@ class NDGatherLoad : public NDLoad {
   uint64_t gather_dim_size_{0};
   int axis_;
   vGatherLoad::GatherMode gather_mode_;
+  RelocAddr index_site_;
 };
 
 class NDViewLoad : public NDLoad {

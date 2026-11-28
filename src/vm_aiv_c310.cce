@@ -149,7 +149,7 @@ __simt_vf__ inline void GatherLoadSimtNoPad(__ubuf__ T *dst, __gm__ T *src, __gm
     if constexpr (gather_mode == vGatherLoad::kElementGather) {
       index_offset = out_idx;
     }
-    int32_t src_idx = index[index_offset];
+    int32_t src_idx = gather_dim_size ? index[index_offset] : 0;
     if (src_idx < 0) {
       src_idx += static_cast<int32_t>(gather_dim_size);
     }
@@ -174,7 +174,7 @@ __simt_vf__ inline void GatherLoadSimtPad(__ubuf__ T *dst, __gm__ T *src, __gm__
     if constexpr (gather_mode == vGatherLoad::kElementGather) {
       index_offset = out_idx;
     }
-    int32_t src_idx = index[index_offset];
+    int32_t src_idx = gather_dim_size ? index[index_offset] : 0;
     if (src_idx < 0) {
       src_idx += static_cast<int32_t>(gather_dim_size);
     }
@@ -1911,10 +1911,178 @@ __aicore_inline__ void ViewLoadT(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
 }
 
+// Process one index batch in a VF, keeping each group inside an output row.
+template <typename T, bool Slice>
+__aicore_inline__ void GatherBatch(const vGatherLoad &op, uint32_t done, uint32_t first_inner, uint32_t batch) {
+  auto out = (__ubuf__ T *)op.xn + vGatherLoad::OutputOffset(op, done);
+  auto src = (__ubuf__ T *)op.src_scratch;
+  auto indices = (__ubuf__ int32_t *)op.index_scratch;
+  const uint32_t inner_size = op.inner_size;
+  const uint32_t gather_dim = op.gather_dim_size;
+  const uint32_t pad_size = op.pad_size;
+  const uint32_t row_size = pad_size ? op.iter_size : batch;
+  const uint32_t first_row_left = pad_size ? row_size - done % row_size : batch;
+  const uint16_t rows = CeilDiv(batch + row_size - first_row_left, row_size);
+  __VEC_SCOPE__ {
+    vector_u32 lane, position, width, row, row_start, inner, index_offset, src_offset;
+    vector_s32 index, adjusted;
+    vector_bool negative, valid;
+    vci((vector_s32 &)lane, (int32_t)0, INC_ORDER);
+    vbr(width, inner_size);
+    uint32_t used = 0;
+    uint32_t row_left = first_row_left;
+    for (uint16_t r = 0; r < rows; ++r) {
+      uint32_t count = min(batch - used, row_left);
+      const uint16_t repeat = CeilDiv(count, 64u);
+      for (uint16_t i = 0; i < repeat; ++i) {
+        const uint32_t lanes = min(count, 64u);
+        vector_bool active = AscendC::MicroAPI::UpdateMask<uint32_t>(count);
+        vadds(position, lane, first_inner + used, active, MODE_ZEROING);
+        vdiv(row, position, width, active, MODE_ZEROING);
+        vmul(row_start, row, width, active, MODE_ZEROING);
+        vsub(inner, position, row_start, active, MODE_ZEROING);
+        if constexpr (Slice) {
+          vgather2(index, indices, row, active);
+        } else {
+          vadds(index_offset, lane, used, active, MODE_ZEROING);
+          vgather2(index, indices, index_offset, active);
+        }
+        vcmps_lt(negative, index, 0, active);
+        vadds(adjusted, index, (int32_t)gather_dim, negative, MODE_ZEROING);
+        vsel(index, adjusted, index, negative);
+        vcmps_lt(valid, (vector_u32 &)index, gather_dim, active);
+        vmul(src_offset, (vector_u32 &)index, width, valid, MODE_ZEROING);
+        vadd(src_offset, src_offset, inner, valid, MODE_ZEROING);
+
+        vector_align store;
+        if constexpr (sizeof(T) == 4) {
+          vector_u32 values;
+          vgather2(values, src, src_offset, valid);
+          vstus(store, lanes, values, out, POST_UPDATE);
+        } else {
+          // B16 with 32-bit offsets returns one value in each even halfword.
+          vector_u16 spaced, packed, odd;
+          vgather2_bc(spaced, src, src_offset, valid);
+          vdintlv(packed, odd, spaced, spaced);
+          vstus(store, lanes, packed, out, POST_UPDATE);
+        }
+        vstas(store, out, 0);
+        used += lanes;
+      }
+      out += pad_size;
+      row_left = row_size;
+    }
+  }
+}
+
+// Reuse the same source image across index batches within this outer.
+template <typename T, bool Slice>
+__aicore_inline__ void GatherLoadVector(const vGatherLoad &op, uint64_t base, uint32_t total) {
+  auto src = (__ubuf__ T *)op.src_scratch;
+  auto idx = (__ubuf__ int32_t *)op.index_scratch;
+  const uint64_t outer_size = op.gather_size * op.inner_size;
+  const uint64_t src_size = op.gather_dim_size * op.inner_size;
+  uint32_t done = 0;
+  while (done < total) {
+    uint64_t linear = base + done;
+    uint64_t outer = linear / outer_size;
+    uint64_t local = linear % outer_size;
+    uint32_t remaining = total - done;
+    if (remaining > outer_size - local) remaining = outer_size - local;
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)src, (__gm__ uint8_t *)op.from + outer * src_size * sizeof(T),
+                             0, 1, src_size * sizeof(T), 0, 0, false, 0, 0, 0);
+    while (remaining) {
+      uint32_t inner = local % op.inner_size;
+      uint64_t first = Slice ? local / op.inner_size : base + done;
+      uint32_t count = Slice ? CeilDiv(remaining + inner, (uint32_t)op.inner_size) : remaining;
+      if (count > op.index_capacity) count = op.index_capacity;
+      copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)idx, (__gm__ uint8_t *)((__gm__ int32_t *)op.index + first),
+                               0, 1, count * sizeof(int32_t), 0, 0, false, 0, 0, 0);
+      set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+      wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+      uint32_t batch = Slice ? count * op.inner_size - inner : count;
+      if (batch > remaining) batch = remaining;
+      GatherBatch<T, Slice>(op, done, inner, batch);
+      set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+      wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+      remaining -= batch;
+      done += batch;
+      local += batch;
+    }
+  }
+  set_flag(PIPE_V, PIPE_S, EVENT_ID7);
+  wait_flag(PIPE_V, PIPE_S, EVENT_ID7);
+}
+
+// Like GatherV2's SIMD slice path, copy the contiguous suffix selected by
+// each index rather than issuing one SIMT GM load per output element.
+template <typename T>
+__aicore_inline__ void GatherLoadBlockCopy(const vGatherLoad &op, uint64_t tile_base, uint32_t total) {
+  const uint32_t index_batch = op.index_capacity;
+  auto scratch = (__ubuf__ int32_t *)op.index_scratch;
+  auto dst = (__ubuf__ T *)op.xn;
+  auto src = (__gm__ uint8_t *)op.from;
+  auto indices = (__gm__ int32_t *)op.index;
+  uint32_t done = 0;
+  while (done < total) {
+    uint64_t pos = tile_base + done;
+    uint64_t slice = pos / op.inner_size;
+    uint32_t inner = pos % op.inner_size;
+    uint32_t gather = slice % op.gather_size;
+    uint64_t outer = slice / op.gather_size;
+    uint32_t count = CeilDiv(static_cast<uint64_t>(total - done) + inner, op.inner_size);
+    count = count < index_batch ? count : index_batch;
+    count = count < op.gather_size - gather ? count : op.gather_size - gather;
+    uint32_t batch_elements = count * op.inner_size - inner;
+    batch_elements = batch_elements < total - done ? batch_elements : total - done;
+
+    copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)scratch, (__gm__ uint8_t *)(indices + gather),
+                           0, 1, count * sizeof(int32_t), 0, 0, false, 0, 0, 0);
+    set_flag(PIPE_MTE2, PIPE_S, EVENT_ID7);
+    wait_flag(PIPE_MTE2, PIPE_S, EVENT_ID7);
+    for (uint32_t j = 0; j < count; ++j) {
+      int64_t index = scratch[j];
+      if (index < 0) index += op.gather_dim_size;
+      uint32_t begin = j == 0 ? 0 : j * op.inner_size - inner;
+      uint32_t end = (j + 1) * op.inner_size - inner;
+      end = end < batch_elements ? end : batch_elements;
+      uint32_t source_inner = j == 0 ? inner : 0;
+      while (begin < end) {
+        uint32_t pos = done + begin;
+        uint32_t size = vGatherLoad::SegmentSize(op, pos, source_inner, end - begin);
+        auto output = dst + vGatherLoad::OutputOffset(op, pos);
+        if (index >= 0 && static_cast<uint64_t>(index) < op.gather_dim_size) {
+          uint64_t offset = (outer * op.gather_dim_size + index) * op.inner_size + source_inner;
+          copy_gm_to_ubuf_align_v2((__ubuf__ uint8_t *)output, src + offset * sizeof(T),
+                                   0, 1, size * sizeof(T), 0, 0, false, 0, 0, 0);
+        } else {
+          set_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+          wait_flag(PIPE_MTE2, PIPE_V, EVENT_ID7);
+          set_flag(PIPE_S, PIPE_V, EVENT_ID7);
+          wait_flag(PIPE_S, PIPE_V, EVENT_ID7);
+          VectorDupCount(output, static_cast<T>(0), size);
+          set_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+          wait_flag(PIPE_V, PIPE_MTE2, EVENT_ID7);
+        }
+        begin += size;
+        source_inner += size;
+      }
+    }
+    // Retire scalar reads before the next index DMA overwrites this scratch.
+    set_flag(PIPE_S, PIPE_MTE2, EVENT_ID7);
+    wait_flag(PIPE_S, PIPE_MTE2, EVENT_ID7);
+    done += batch_elements;
+  }
+  // Later vector instructions may reuse the workspace after these scalar reads.
+  set_flag(PIPE_S, PIPE_V, EVENT_ID7);
+  wait_flag(PIPE_S, PIPE_V, EVENT_ID7);
+}
+
 template <typename T>
 __aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   vGatherLoad op;
   vGatherLoad::Decode(pc, head, op);
+  if (op.strategy != vGatherLoad::kSimt) pipe_barrier(PIPE_ALL);
   uint64_t tile_idx = TileIdx(tile);
   if (op.round_rank > 0) {
     tile_idx = RoundUpTileIdx<kRoundCacheLoad>(tile, tile_idx, op.round_rank, pc + vGatherLoad::ROUND_OFFSET);
@@ -1933,6 +2101,19 @@ __aicore_inline__ void GatherLoad(bcodeptr_t pc, uint64_t head, uint64_t tile) {
   }
   uint32_t total = body_iter * iter_size;
   uint32_t dup_num = static_cast<uint32_t>(op.body_iter * op.iter_size);
+  uint64_t base = static_cast<uint64_t>(dup_num) * tile_idx;
+  if (op.strategy == vGatherLoad::kSimdGather) {
+    if (op.gather_mode == vGatherLoad::kSliceGather) {
+      GatherLoadVector<T, true>(op, base, total);
+    } else {
+      GatherLoadVector<T, false>(op, base, total);
+    }
+    return;
+  }
+  if (op.strategy == vGatherLoad::kSimdBlockCopy && vGatherLoad::BlockTransfers(op, base, total, sizeof(T))) {
+    GatherLoadBlockCopy<T>(op, base, total);
+    return;
+  }
   uint32_t tile_base = dup_num * static_cast<uint32_t>(tile_idx);
   if (op.pad_size == 0) {
     if (op.gather_mode == vGatherLoad::kElementGather) {

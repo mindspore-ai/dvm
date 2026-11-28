@@ -830,7 +830,14 @@ void RtKernelPy::Input(py::object obj, py::object val, size_t offset) {
       for (size_t i = 0; i < static_cast<size_t>(buf.ndim); ++i) {
         info.shape[i] = buf.shape[i];
       }
-      *(op->shape_ref_) = info.shape;
+      if (op->obj_id_ == kGatherLoad) {
+        auto *gather = static_cast<NDGatherLoad *>(op);
+        // Refresh the source shape for Gather's input binding.
+        *(gather->src_shape_ref_) = info.shape;
+      } else {
+        // Keep the existing shape binding for other operators.
+        *(op->shape_ref_) = info.shape;
+      }
     }
   } else if (py::isinstance<IntArrayRefPy>(obj)) {
     auto shape = obj.cast<std::shared_ptr<IntArrayRefPy>>();

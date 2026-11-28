@@ -775,3 +775,25 @@ def test_custom_instruction_length_boundary(output_count):
         t.store_expect(value, expect)
 
     assert t.run_check()
+
+
+@pytest.mark.skipif(dvm.Device.arch() != "AscendC310", reason="GatherLoad requires C310")
+@pytest.mark.parametrize("mode", [1, 2])
+@pytest.mark.parametrize("dtype", [np.float16, np.float32])
+def test_gather_workspace_before_multi_output_vf(mode, dtype):
+    dvm.Kernel.set_vf_fusion(mode)
+    t = Tester("vector:dyn" if mode == 2 else "vector")
+    t.set_passes("VfFusion", "ReorderLoad", "ReorderStore")
+    src = (np.arange(111) % 37 - 18).astype(dtype).reshape(1, 37, 3)
+    index = (np.arange(4113, dtype=np.int32) % 37 - 37).reshape(1, 1371, 3)
+    y = t.gather_load(src, t.global_access(index), axis=1)
+    bias = (np.arange(index.size) % 5).astype(np.float32).reshape(index.shape)
+    scaled = t.add(t.abs(t.cast(y, "float32")), t.load(bias))
+    out = t.mul(scaled, 2)
+    expected = np.abs(np.take_along_axis(src, index, axis=1).astype(np.float32)) + bias
+    t.store_expect(scaled, expected)
+    t.store_expect(out, expected * 2)
+    for _ in range(2):
+        assert t.run_check()
+        assert "strategy(simd_gather)" in t.das()
+        assert "Custom" in t.dump() and "ExtOut" in t.dump()
